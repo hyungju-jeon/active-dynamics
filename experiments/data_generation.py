@@ -17,7 +17,6 @@ def scale_velocity(U, V, max_norm):
 
 
 def get_random_vector_field_from_ringattractor(
-    fixed_pt=(0, 0),
     min_val_sim=2,
     n_grid=40,
     norm=0.05,
@@ -29,8 +28,6 @@ def get_random_vector_field_from_ringattractor(
         -min_val_sim : min_val_sim : complex(0, n_grid),
         -min_val_sim : min_val_sim : complex(0, n_grid),
     ]
-    X -= fixed_pt[0]
-    Y -= fixed_pt[1]
 
     # Ring attractor vector field
     U = X * (1 - np.sqrt(X**2 + Y**2))

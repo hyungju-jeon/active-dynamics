@@ -21,6 +21,7 @@ data/
 dev/
 develop-eggs/
 dist/
+docs/
 downloads/
 eggs/
 .eggs/
