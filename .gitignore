@@ -10,8 +10,6 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
-# C extensions
 *.so
 
 # Distribution / packaging
@@ -22,6 +20,7 @@ dev/
 develop-eggs/
 dist/
 docs/
+reference/
 downloads/
 eggs/
 .eggs/
@@ -46,3 +45,48 @@ MANIFEST
 # Installer logs
 pip-log.txt
 pip-delete-this-directory.txt
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Project specific
+results/
+data/
+logs/
+*.log
+*.pkl
+*.pt
+*.pth
+*.ckpt
+
+# Testing
+.coverage
+htmlcov/
+.pytest_cache/
+.tox/
+.nox/
+coverage.xml
+*.cover
+.hypothesis/
+
+# Documentation
+docs/_build/
+site/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# Distribution
+dist/
+build/
+*.egg-info/
