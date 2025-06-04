@@ -37,8 +37,7 @@ class Rollout:
         if self.finalized:
             raise RuntimeError("Cannot add to a finalized rollout.")
 
-        # make sure only one of transitions or kwargs is provided
-        if transitions and kwargs:
+        if transitions is not None and kwargs:
             raise ValueError(
                 "Cannot provide both transitions and kwargs. Use one or the other."
             )
@@ -46,7 +45,7 @@ class Rollout:
             for transition in transitions:
                 assert isinstance(transition, dict), "Each transition must be a dict"
                 self.add(**transition)
-        else:
+        if kwargs:
             for key, value in kwargs.items():
                 if key not in self.allowed_fields:
                     raise KeyError(
@@ -78,6 +77,7 @@ class Rollout:
             if isinstance(self._data[key], torch.Tensor):
                 self._data[key] = self._data[key].to(device)
         self.device = device
+        return self
 
     def to_tensordict(self, batch_size=None):
         """
@@ -183,18 +183,6 @@ class RolloutBuffer:
             merged[key] = torch.cat(merged[key], dim=0)
         return merged
 
-    @property
-    def stack(self):
-        merged = {}
-        for rollout_data in self.buffer:
-            for key, val in rollout_data.as_dict().items():
-                if key not in merged:
-                    merged[key] = []
-                merged[key].append(val)
-        for key in merged:
-            merged[key] = torch.stack(merged[key], dim=0)
-        return merged
-
     def __len__(self):
         return len(self.buffer)
 
@@ -205,6 +193,27 @@ class RolloutBuffer:
             return self.buffer[index]
         else:
             raise TypeError("Index must be int or slice")
+
+    def as_batch(self, batch_size=1, shuffle=False):
+        """
+        Yield batches as flattened dictionaries of tensors, for batch processing (like a DataLoader).
+        If shuffle is True, the rollouts are shuffled before batching.
+        Each batch is a dict of tensors, where each tensor is of shape [batch_size, ...].
+        The last batch may be smaller if the total number is not divisible by batch_size.
+        """
+        flat = self.flat
+        total = next(iter(flat.values())).shape[0] if flat else 0
+        indices = list(range(total))
+        if shuffle:
+            random.shuffle(indices)
+        for i in range(0, total, batch_size):
+            batch_indices = indices[i : i + batch_size]
+            yield {k: v[batch_indices] for k, v in flat.items()}
+
+    def to(self, device):
+        for rollout in self.buffer:
+            rollout.to(device)
+        return self
 
 
 class RecentRollout(Rollout):

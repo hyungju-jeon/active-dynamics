@@ -94,18 +94,25 @@ class LimitCycle(VectorField):
         n_grid: int = 40,
         w: float = 1,
         d: float = 1.0,
-        alpha: float = 1.0,
         **kwargs
     ):
         super().__init__(x_range=x_range, n_grid=n_grid)
         self.w = w
         self.d = d
-        self.alpha = alpha
+        self.alpha = 1
+        self.scaling = self.get_scaling()
+        self.alpha = 1 / self.scaling
+
+    def get_scaling(self):
+        U, V = self.generate_vector_field()
+        speed = torch.sqrt(U**2 + V**2)
+        speed = speed.max()
+        return speed
 
     def compute(self, x: ArrayType) -> ArrayType:
-        r = torch.sqrt(x[:, 0] ** 2 + x[:, 1] ** 2)
-        U = x[:, 0] * (self.d - r**2) - self.w * x[:, 1]
-        V = x[:, 1] * (self.d - r**2) + self.w * x[:, 0]
+        r = torch.sqrt(x[..., 0] ** 2 + x[..., 1] ** 2)
+        U = x[..., 0] * (self.d - r**2) - self.w * x[..., 1] * (self.d * 2 - r**2)
+        V = x[..., 1] * (self.d - r**2) + self.w * x[..., 0] * (self.d * 2 - r**2)
 
         U = self.alpha * U
         V = self.alpha * V
