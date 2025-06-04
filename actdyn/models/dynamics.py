@@ -16,7 +16,7 @@ class LinearDynamics(BaseDynamics):
 
     def __init__(self, state_dim, device="cpu"):
         super().__init__(state_dim, device=device)
-        self.dynamics = nn.Linear(state_dim, state_dim)
+        self.network = nn.Linear(state_dim, state_dim)
 
 
 class MLPDynamics(BaseDynamics):
@@ -26,7 +26,7 @@ class MLPDynamics(BaseDynamics):
 
     def __init__(self, state_dim, hidden_dim=16, device="cpu"):
         super().__init__(state_dim, device=device)
-        self.dynamics = nn.Sequential(
+        self.network = nn.Sequential(
             nn.Linear(state_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, state_dim),
@@ -52,7 +52,7 @@ class RBFDynamics(BaseDynamics):
             state = state.unsqueeze(0)
         return torch.exp(-torch.cdist(state, self.centers, p=2) ** 2) * (self.sigmas**2)
 
-    def dynamics(self, state):
+    def network(self, state):
         return torch.matmul(self._rbf(state), self.weights)
 
 

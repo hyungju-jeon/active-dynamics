@@ -13,6 +13,11 @@ eps = 1e-6
 class BaseEncoder(nn.Module):
     """Base class for encoder models."""
 
+    def __init__(self, device="cpu"):
+        super().__init__()
+        self.device = device
+        self.network = None
+
     def compute_param(self, x):
         raise NotImplementedError
 
@@ -22,15 +27,34 @@ class BaseEncoder(nn.Module):
     def forward(self, x, n_samples=1):
         raise NotImplementedError
 
+    def to(self, device):
+        self.device = device
+        self.network.to(device)
+        return self
+
 
 # Observation mappings
 class BaseMapping(nn.Module):
+    def __init__(self, device="cpu"):
+        super().__init__()
+        self.device = device
+        self.network = None
+
     def forward(self, z):
-        raise NotImplementedError
+        return self.network(z)
+
+    def to(self, device):
+        self.device = device
+        self.network.to(device)
+        return self
 
 
 # Noise models
 class BaseNoise(nn.Module):
+    def __init__(self, device="cpu"):
+        super().__init__()
+        self.device = device
+
     def log_prob(self, mean, x):
         raise NotImplementedError
 
@@ -72,9 +96,10 @@ class BaseDynamics(nn.Module):
         self.log_var = nn.Parameter(
             -2 * torch.rand(1, state_dim, device=self.device), requires_grad=True
         )
+        self.network = None
 
     def compute_param(self, state):
-        mu = self.dynamics(state)
+        mu = self.network(state)
         var = softplus(self.log_var) + eps
         return mu, var
 
@@ -90,4 +115,4 @@ class BaseDynamics(nn.Module):
         return next_state, var
 
     def forward(self, state):
-        return self.dynamics(state).view_as(state)
+        return self.network(state).view_as(state)

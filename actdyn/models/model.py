@@ -8,6 +8,7 @@ from .encoder import BaseEncoder
 from .decoder import Decoder
 from actdyn.environment.action import BaseAction
 from actdyn.utils.rollout import Rollout
+from torch.utils.data import DataLoader
 
 
 class SeqVae(BaseModel):
@@ -93,29 +94,15 @@ class SeqVae(BaseModel):
         training_losses = []
         if isinstance(data, Rollout) or isinstance(data, dict):
             batch_iter = [data]
-            is_dict = True
         else:
             batch_iter = data
-            is_dict = False
         for _ in tqdm(range(n_epochs), disable=not verbose):
             for batch in batch_iter:
                 opt.zero_grad()
-                if is_dict:
-                    obs = batch["obs"].to(self.device)
-                    action = batch.get("action", None)
-                    if action is not None:
-                        action = action.to(self.device)
-                else:
-                    obs = (
-                        batch[..., : -self.action_dim].to(self.device)
-                        if self.action_dim > 0
-                        else batch.to(self.device)
-                    )
-                    action = (
-                        batch[..., -self.action_dim :].to(self.device)
-                        if self.action_dim > 0
-                        else None
-                    )
+                obs = batch["obs"].to(self.device)
+                action = batch.get("action", None)
+                if action is not None:
+                    action = action.to(self.device)
                 loss = self.compute_elbo(obs, u=action, idx=idx)
                 loss.backward()
                 opt.step()

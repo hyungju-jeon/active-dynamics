@@ -18,8 +18,9 @@ class MLPEncoder(BaseEncoder):
         hidden_dims: list = [16],
         latent_dim: int = 2,
         activation: nn.Module = nn.ReLU(),
+        device: str = "cpu",
     ):
-        super().__init__()
+        super().__init__(device)
 
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
@@ -33,7 +34,7 @@ class MLPEncoder(BaseEncoder):
             layers.extend([nn.Linear(prev_dim, hidden_dim), activation])
             prev_dim = hidden_dim
 
-        self.encoder = nn.Sequential(*layers)
+        self.network = nn.Sequential(*layers)
 
         # Output layers for mean and log variance
         self.fc_mu = nn.Linear(prev_dim, latent_dim)
@@ -46,7 +47,7 @@ class MLPEncoder(BaseEncoder):
         x_flat = x.view(batch_dim * time_dim, -1)
 
         # Apply MLP
-        out_flat = self.encoder(x_flat)  # Shape: (Batch * Time, hidden_dims[-1])
+        out_flat = self.network(x_flat)  # Shape: (Batch * Time, hidden_dims[-1])
 
         # Reshape output back to (Batch, Time, hidden_dims[-1])
         out = out_flat.view(batch_dim, time_dim, -1)
@@ -88,8 +89,9 @@ class RNNEncoder(nn.Module):
         latent_dim: int = 2,
         rnn_type: str = "gru",  # or "lstm"
         num_layers: int = 1,
+        device: str = "cpu",
     ):
-        super().__init__()
+        super().__init__(device)
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
@@ -97,9 +99,9 @@ class RNNEncoder(nn.Module):
         self.num_layers = num_layers
 
         if self.rnn_type == "gru":
-            self.rnn = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
+            self.network = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
         elif self.rnn_type == "lstm":
-            self.rnn = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+            self.network = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
         else:
             raise ValueError("rnn_type must be 'gru' or 'lstm'")
 
@@ -109,9 +111,9 @@ class RNNEncoder(nn.Module):
     def compute_param(self, x):
         # x: (batch, k, input_dim)
         if self.rnn_type == "lstm":
-            _, (h_n, _) = self.rnn(x)
+            _, (h_n, _) = self.network(x)
         else:
-            _, h_n = self.rnn(x)
+            _, h_n = self.network(x)
         h = h_n[-1]  # (batch, hidden_dim)
         mu = self.fc_mu(h)
         log_var = self.fc_log_var(h)
