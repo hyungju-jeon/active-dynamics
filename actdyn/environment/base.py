@@ -4,8 +4,9 @@ import gymnasium as gym
 from gymnasium import spaces
 import torch
 import numpy as np
-from typing import Optional, Tuple, Dict, Any, Union, Sequence
+from typing import Optional, Tuple, Dict, Any, Sequence
 from abc import ABC, abstractmethod
+import torch.nn as nn
 
 
 class BaseDynamicsEnv(gym.Env, ABC):
@@ -91,3 +92,69 @@ class BaseDynamicsEnv(gym.Env, ABC):
     def close(self):
         """Clean up resources."""
         pass
+
+
+class BaseAction(nn.Module):
+    """Base class for deterministic action encoder."""
+
+    def __init__(self, input_dim, latent_dim, device="cpu"):
+        super().__init__()
+        self.input_dim = input_dim
+        self.latent_dim = latent_dim
+        self.network = None
+
+    def forward(self, action):
+        return self.network(action)
+
+    def to(self, device):
+        if self.network is not None:
+            self.network.to(device)
+        return self
+
+
+class BaseObservation(nn.Module):
+    """Base class for observation models."""
+
+    def __init__(
+        self,
+        latent_dim: int,
+        obs_dim: int,
+        noise_type: Optional[str] = None,
+        noise_scale: float = 0.0,
+        device: str = "cpu",
+    ):
+        super().__init__()
+        self.latent_dim = latent_dim  # latent dimension
+        self.obs_dim = obs_dim  # observation dimension
+        self.noise_type = noise_type
+        self.noise_scale = noise_scale
+        self.network = None
+        self.device = torch.device(device)
+
+    def _add_noise(self, y: torch.Tensor) -> torch.Tensor:
+        if self.noise_type is None or self.noise_scale == 0.0:
+            return y
+        if self.noise_type == "gaussian":
+            noise = torch.randn_like(y) * self.noise_scale
+            return y + noise
+        elif self.noise_type == "poisson":
+            # For Poisson, the rate parameter (lambda) should be positive
+            rate = torch.clamp(y, min=1e-6)
+            noise = torch.poisson(rate) - rate
+            return y + noise * self.noise_scale
+        else:
+            raise ValueError(f"Unknown noise type: {self.noise_type}")
+
+    def to(self, device: str):
+        self.device = torch.device(device)
+        if self.network is not None:
+            self.network.to(device)
+        return self
+
+    def observe(self, z: torch.Tensor) -> torch.Tensor:
+        """Nonlinear mapping (z → y)."""
+        y = self.network(z)
+        return self._add_noise(y)
+
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        return self.observe(z)

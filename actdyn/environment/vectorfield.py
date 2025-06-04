@@ -52,12 +52,35 @@ class VectorFieldEnv(BaseDynamicsEnv):
         """Compute vector field at given state."""
         return self.dynamics(state)
 
+    @torch.no_grad()
+    def generate_trajectory(self, x0, n_steps, action=None):
+        if x0.ndim == 2:
+            if x0.shape[0] == 1:
+                x0 = x0.unsqueeze(0)
+            else:
+                x0 = x0.unsqueeze(1)
+        B, T, D = x0.shape
+        if action is None:
+            action = torch.zeros(B, n_steps, D, device=self.device)
+        traj = [x0]
+        for i in range(n_steps):
+            traj.append(
+                traj[i]
+                + (
+                    self._get_dynamics(traj[i])
+                    + action[:, i].unsqueeze(1)
+                    + torch.randn_like(traj[i]) * self.noise_scale
+                )
+                * self.dt
+            )
+        return torch.cat(traj, dim=-2)
+
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment."""
         super().reset(seed=seed)
-        self.state = torch.randn(self.state_dim, device=self.device) * 0.1
+        self.state = torch.rand(self.state_dim, device=self.device) * 2 - 1
         return self.state, {}
 
     def step(
@@ -71,7 +94,7 @@ class VectorFieldEnv(BaseDynamicsEnv):
         self.state = self.state + (dynamics + action) * self.dt
 
         # Add noise
-        self.state += torch.randn_like(self.state) * self.noise_scale
+        self.state += torch.randn_like(self.state) * self.noise_scale * self.dt
 
         # Compute reward
         reward = 0

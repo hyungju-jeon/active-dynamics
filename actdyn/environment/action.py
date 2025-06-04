@@ -1,33 +1,35 @@
 import torch.nn as nn
+from .base import BaseAction
 
 
-class BaseAction(nn.Module):
-    """Base class for deterministic action encoder."""
+class IdentityActionEncoder(BaseAction):
+    """Identity action encoder."""
 
-    def __init__(self, input_dim, latent_dim):
-        super().__init__()
-        self.input_dim = input_dim
-        self.latent_dim = latent_dim
-
-    def forward(self, action):
-        return self.encoder(action)
+    def __init__(self, input_dim, latent_dim, device="cpu"):
+        super().__init__(input_dim, latent_dim, device)
+        self.network = nn.Identity()
 
 
 class LinearActionEncoder(BaseAction):
     """Simpler action encoder: just a single linear layer."""
 
-    def __init__(self, input_dim, latent_dim):
-        super().__init__(input_dim, latent_dim)
-        self.encoder = nn.Linear(input_dim, latent_dim)
+    def __init__(self, input_dim, latent_dim, device="cpu"):
+        super().__init__(input_dim, latent_dim, device)
+        self.network = nn.Linear(input_dim, latent_dim).to(device)
 
 
 class MlpActionEncoder(BaseAction):
     """MLP-based action encoder."""
 
     def __init__(
-        self, input_dim, latent_dim, hidden_dims=[16, 16], activation=nn.ReLU()
+        self,
+        input_dim,
+        latent_dim,
+        hidden_dims=[16, 16],
+        activation=nn.ReLU(),
+        device="cpu",
     ):
-        super().__init__(input_dim, latent_dim)
+        super().__init__(input_dim, latent_dim, device)
         layers = []
         prev_dim = input_dim
         for h in hidden_dims:
@@ -35,7 +37,7 @@ class MlpActionEncoder(BaseAction):
             layers.append(activation)
             prev_dim = h
         layers.append(nn.Linear(prev_dim, latent_dim))
-        self.encoder = nn.Sequential(*layers)
+        self.network = nn.Sequential(*layers).to(device)
 
 
 # Factory function for modularity

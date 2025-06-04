@@ -7,6 +7,7 @@ import numpy as np
 
 from .observation import BaseObservation
 from .action import BaseAction
+from .vectorfield import VectorFieldEnv
 
 
 class GymObservationWrapper(gym.Wrapper):
@@ -32,7 +33,7 @@ class GymObservationWrapper(gym.Wrapper):
         super().__init__(env)
         self.obs_model = obs_model
         self.action_model = action_model
-        self.device = torch.device(device)
+        self.device = device
 
         # Detect if the environment is torch-native (returns torch.Tensor from reset/step)
         self._torch_native = self._is_torch_native_env()
@@ -64,15 +65,13 @@ class GymObservationWrapper(gym.Wrapper):
         obs, info = self.env.reset(seed=seed, options=options)
 
         # Convert to tensor and apply observation model
-        obs_tensor = self._to_tensor(obs)
-        latent_state = obs_tensor  # z
+        latent_state = self._to_tensor(obs)
         observed = self.obs_model.observe(latent_state)
 
         # Add observation info (all torch tensors)
         info.update(
             {
                 "latent_state": latent_state,
-                "observed_state": observed,
             }
         )
 
@@ -91,15 +90,13 @@ class GymObservationWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(env_action)
 
         # Convert to tensor and apply observation model
-        obs_tensor = self._to_tensor(obs)
-        latent_state = obs_tensor  # z
+        latent_state = self._to_tensor(obs)
         observed = self.obs_model.observe(latent_state)
 
         # Add observation info (all torch tensors)
         info.update(
             {
                 "latent_state": latent_state,
-                "observed_state": observed,
             }
         )
 
