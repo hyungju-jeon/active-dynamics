@@ -29,7 +29,7 @@ class VAEWrapper(gym.Env):
         self.model = model
         self.observation_space = observation_space
         self.action_space = action_space
-        self.device = device
+        self.device = torch.device(device)
 
         # Initialize state tracking
         self._state = None

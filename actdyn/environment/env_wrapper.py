@@ -33,7 +33,7 @@ class GymObservationWrapper(gym.Wrapper):
         super().__init__(env)
         self.obs_model = obs_model
         self.action_model = action_model
-        self.device = device
+        self.device = torch.device(device)
 
         # Detect if the environment is torch-native (returns torch.Tensor from reset/step)
         self._torch_native = self._is_torch_native_env()

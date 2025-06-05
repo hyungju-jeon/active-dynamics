@@ -1,4 +1,5 @@
 from actdyn.utils.rollout import RecentRollout
+import torch
 
 
 class Agent:
@@ -17,7 +18,7 @@ class Agent:
         self.model_env = model_env
         self.policy = policy
         self.action_encoder = action_encoder  # Learnable transfer function g(.)
-        self.device = device
+        self.device = torch.device(device)
 
         # Buffers on GPU for training
         self.recent = RecentRollout(max_len=20, device=device)

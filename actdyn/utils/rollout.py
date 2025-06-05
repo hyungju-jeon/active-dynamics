@@ -27,7 +27,7 @@ class Rollout:
     def __init__(self, device="cpu"):
         self._data = {}
         self.length = 0
-        self.device = device
+        self.device = torch.device(device)
         self.finalized = False
 
     def add(self, transitions: Iterable = None, **kwargs):
@@ -76,7 +76,7 @@ class Rollout:
         for key in self._data:
             if isinstance(self._data[key], torch.Tensor):
                 self._data[key] = self._data[key].to(device)
-        self.device = device
+        self.device = torch.device(device)
         return self
 
     def to_tensordict(self, batch_size=None):

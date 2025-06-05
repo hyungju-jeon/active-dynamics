@@ -97,7 +97,7 @@ class Decoder(nn.Module):
         super().__init__()
         self.mapping = mapping.to(device)
         self.noise = noise.to(device)
-        self.device = device
+        self.device = torch.device(device)
 
     def compute_param(self, z):
         return self.mapping(z)
@@ -110,50 +110,7 @@ class Decoder(nn.Module):
         return self.compute_param(z)
 
     def to(self, device):
-        self.device = device
+        self.device = torch.device(device)
         self.mapping.to(device)
         self.noise.to(device)
         return self
-
-
-# --- Example Factory Functions ---
-def make_identity_gaussian_decoder(latent_dim, sigma=1.0, device="cpu"):
-    return Decoder(
-        IdentityMapping(device=device),
-        GaussianNoise(latent_dim, sigma, device=device),
-        device=device,
-    )
-
-
-def make_linear_gaussian_decoder(latent_dim, output_dim, sigma=1.0, device="cpu"):
-    return Decoder(
-        LinearMapping(latent_dim, output_dim, device=device),
-        GaussianNoise(output_dim, sigma, device=device),
-        device=device,
-    )
-
-
-def make_loglinear_gaussian_decoder(latent_dim, output_dim, sigma=1.0, device="cpu"):
-    return Decoder(
-        LogLinearMapping(latent_dim, output_dim, device=device),
-        GaussianNoise(output_dim, sigma, device=device),
-        device=device,
-    )
-
-
-def make_loglinear_poisson_decoder(latent_dim, output_dim, device="cpu"):
-    return Decoder(
-        LogLinearMapping(latent_dim, output_dim, device=device),
-        PoissonNoise(device=device),
-        device=device,
-    )
-
-
-def make_mlp_gaussian_decoder(
-    latent_dim, output_dim, hidden_dims=[16, 16], sigma=1.0, device="cpu"
-):
-    return Decoder(
-        MLPMapping(latent_dim, output_dim, hidden_dims, device=device),
-        GaussianNoise(output_dim, sigma, device=device),
-        device=device,
-    )

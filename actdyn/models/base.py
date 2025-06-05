@@ -15,7 +15,7 @@ class BaseEncoder(nn.Module):
 
     def __init__(self, device="cpu"):
         super().__init__()
-        self.device = device
+        self.device = torch.device(device)
         self.network = None
 
     def compute_param(self, x):
@@ -28,7 +28,7 @@ class BaseEncoder(nn.Module):
         raise NotImplementedError
 
     def to(self, device):
-        self.device = device
+        self.device = torch.device(device)
         self.network.to(device)
         return self
 
@@ -37,14 +37,14 @@ class BaseEncoder(nn.Module):
 class BaseMapping(nn.Module):
     def __init__(self, device="cpu"):
         super().__init__()
-        self.device = device
+        self.device = torch.device(device)
         self.network = None
 
     def forward(self, z):
         return self.network(z)
 
     def to(self, device):
-        self.device = device
+        self.device = torch.device(device)
         self.network.to(device)
         return self
 
@@ -53,7 +53,7 @@ class BaseMapping(nn.Module):
 class BaseNoise(nn.Module):
     def __init__(self, device="cpu"):
         super().__init__()
-        self.device = device
+        self.device = torch.device(device)
 
     def log_prob(self, mean, x):
         raise NotImplementedError
