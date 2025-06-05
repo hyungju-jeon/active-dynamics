@@ -1,19 +1,14 @@
-import os
-import pickle
+import numpy as np
+import colorednoise
+from gym import spaces
 from warnings import warn
 
-import allogger
-import colorednoise
-import numpy as np
-from gym import spaces
-from scipy.stats import truncnorm
-
-from controllers.mpc import MpcController
-from misc.rolloutbuffer import RolloutBuffer
+from actdyn.policy.base import BaseMPC
+from actdyn.utils.rollout import RolloutBuffer
+from actdyn.utils.logger import Logger
 
 
-# our improved CEM
-class MpcICem(MpcController):
+class MpcICem(BaseMPC):
     mean: np.ndarray
     std: np.ndarray
     model_evals_per_timestep: int
@@ -25,9 +20,7 @@ class MpcICem(MpcController):
         self._parse_action_sampler_params(**action_sampler_params)
         self._check_validity_parameters()
 
-        self.logger = allogger.get_logger(
-            scope=self.__class__.__name__, default_outputs=["tensorboard"]
-        )
+        self.logger = Logger()
         self.was_reset = False
 
     def beginning_of_rollout(self, *, observation, state=None, mode):

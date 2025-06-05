@@ -1,20 +1,20 @@
 """Base policy classes for the active dynamics package."""
 
+import gym
 import torch
 import numpy as np
-from typing import Optional, Tuple, Dict, Any
+from typing import Dict, Any, Callable
+from actdyn.models.model import BaseModel
 
 
 class BasePolicy:
     """Base class for all policies."""
 
-    def __init__(self, action_dim: int, device: str = "cpu"):
-        self.action_dim = action_dim
+    def __init__(self, action_space: gym.Space, device: str = "cpu"):
+        self.action_space = action_space
         self.device = torch.device(device)
 
-    def get_action(
-        self, state: torch.Tensor, deterministic: bool = False, **kwargs
-    ) -> torch.Tensor:
+    def get_action(self, state: torch.Tensor, **kwargs) -> torch.Tensor:
         """Get action for given state."""
         raise NotImplementedError
 
@@ -32,7 +32,12 @@ class BasePolicy:
 
     def to_device(self, device: str) -> None:
         """Move policy to specified device."""
+
         self.device = torch.device(device)
+
+    def __call__(self, state: torch.Tensor, **kwargs) -> torch.Tensor:
+        """Get action for given state."""
+        return self.get_action(state, **kwargs)
 
 
 class BaseMPC(BasePolicy):
@@ -41,6 +46,8 @@ class BaseMPC(BasePolicy):
     def __init__(
         self,
         action_dim: int,
+        cost_fn: Callable,
+        model: BaseModel,
         horizon: int,
         num_samples: int,
         num_elite: int,
@@ -50,9 +57,5 @@ class BaseMPC(BasePolicy):
         self.horizon = horizon
         self.num_samples = num_samples
         self.num_elite = num_elite
-
-    def optimize(
-        self, state: torch.Tensor, dynamics_model: Any, cost_fn: Any, **kwargs
-    ) -> torch.Tensor:
-        """Optimize action sequence."""
-        raise NotImplementedError
+        self.cost_fn = cost_fn
+        self.model = model
