@@ -1,8 +1,9 @@
+import gym
 from actdyn.policy.base import BasePolicy
 
 
 class LazyPolicy(BasePolicy):
-    def __init__(self, action_space, **kwargs):
+    def __init__(self, action_space: gym.Space, **kwargs):
         super().__init__(action_space, **kwargs)
 
     def get_action(self, state):

@@ -69,6 +69,9 @@ class VAEWrapper(gym.Env):
 
         return observed, info
 
+    def set_state(self, state: torch.Tensor):
+        self._state = state
+
     def step(
         self, action: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, Any]]:
@@ -85,9 +88,6 @@ class VAEWrapper(gym.Env):
                 - truncated: Whether episode is truncated
                 - info: Additional information
         """
-        # Ensure action is tensor
-        if not isinstance(action, torch.Tensor):
-            action = torch.FloatTensor(action).to(self.device)
 
         # Predict next latent state
         with torch.no_grad():

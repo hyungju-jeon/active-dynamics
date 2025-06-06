@@ -1,4 +1,5 @@
 import numpy as np
+import torch
 import colorednoise
 from gym import spaces
 from warnings import warn
@@ -6,6 +7,7 @@ from warnings import warn
 from actdyn.policy.base import BaseMPC
 from actdyn.utils.rollout import RolloutBuffer
 from actdyn.utils.logger import Logger
+from actdyn.config import PolicyConfig
 
 
 class MpcICem(BaseMPC):
@@ -14,28 +16,37 @@ class MpcICem(BaseMPC):
     model_evals_per_timestep: int
     elite_samples: RolloutBuffer
 
-    def __init__(self, *, action_sampler_params, **kwargs):
+    def __init__(self, *, icem_params: PolicyConfig, **kwargs):
+        super().__init__(icem_params, **kwargs)
+        self.alpha = getattr(icem_params, "alpha", 0.1)
+        self.num_elites = getattr(icem_params, "num_elites", 10)
+        self.opt_iter = getattr(icem_params, "opt_iterations", 40)
+        self.init_std = getattr(icem_params, "init_std", 0.5)
+        self.noise_beta = getattr(icem_params, "noise_beta", 1.0)
 
-        super().__init__(**kwargs)
-        self._parse_action_sampler_params(**action_sampler_params)
-        self._check_validity_parameters()
+        self.frac_prev_elites = getattr(icem_params, "frac_prev_elites", 0.2)
+        self.factor_decrease_num = getattr(icem_params, "factor_decrease_num", 1.25)
+        self.frac_elites_reused = getattr(icem_params, "frac_elites_reused", 0.3)
+        self.use_mean_actions = getattr(icem_params, "use_mean_actions", True)
+        self.shift_elites = getattr(icem_params, "shift_elites", True)
+        self.keep_elites = getattr(icem_params, "keep_elites", True)
 
         self.logger = Logger()
         self.was_reset = False
 
-    def beginning_of_rollout(self, *, observation, state=None, mode):
-        super().beginning_of_rollout(observation=observation, state=state, mode=mode)
+    def beginning_of_rollout(self, state: torch.Tensor):
+        super().beginning_of_rollout(state=state)
         self.mean = self.get_init_mean(True)
         self.std = self.get_init_std(True)
-        self.elite_samples = RolloutBuffer()
+        self.elite_rollouts = RolloutBuffer()
         self.was_reset = True
 
         self.model_evals_per_timestep = (
             sum(
                 [
                     max(
-                        self.elites_size * 2,
-                        int(self.num_sim_traj / (self.factor_decrease_num**i)),
+                        self.num_elites * 2,
+                        int(self.num_samples / (self.factor_decrease_num**i)),
                     )
                     for i in range(0, self.opt_iter)
                 ]
@@ -51,142 +62,128 @@ class MpcICem(BaseMPC):
     def end_of_rollout(self, total_time, total_return, mode):
         super().end_of_rollout(total_time, total_return, mode)
 
-    def get_init_mean(self, relative):
-        if relative:
+    def get_init_mean(self):
+        if self.action_bounds is not None:
             return (
-                np.zeros(self.dim_samples)
-                + (self.env.action_space.high + self.env.action_space.low) / 2.0
+                torch.zeros(self.horizon, self.action_dim, device=self.device)
+                + (self.action_bounds[1] + self.action_bounds[0]) / 2.0
             )
-        else:
-            return np.zeros(self.dim_samples)
+        return torch.zeros(self.horizon, self.action_dim, device=self.device)
 
-    def get_init_std(self, relative):
-        if relative:
+    def get_init_std(self):
+        if self.action_bounds is not None:
             return (
-                np.ones(self.dim_samples)
-                * (self.env.action_space.high - self.env.action_space.low)
+                torch.ones(self.horizon, self.action_dim, device=self.device)
+                * (self.action_bounds[1] - self.action_bounds[0])
                 / 2.0
                 * self.init_std
             )
-        else:
-            return self.init_std * np.ones(self.dim_samples)
+        return self.init_std * torch.ones(
+            self.horizon, self.action_dim, device=self.device
+        )
 
-    def sample_action_sequences(self, obs, num_traj, time_slice=None):
-        """
-        :param num_traj: number of trajectories
-        :param obs: current observation
-        :type time_slice: slice
-        """
-        # colored noise
+    def sample_action_sequences(self, num_samples):
+        # Generate action sequences with colored noise
         if self.noise_beta > 0:
             assert self.mean.ndim == 2
-            # Important improvement
-            # self.mean has shape h,d: we need to swap d and h because temporal correlations are in last axis)
-            # noinspection PyUnresolvedReferences
-            samples = colorednoise.powerlaw_psd_gaussian(
-                self.noise_beta, size=(num_traj, self.mean.shape[1], self.mean.shape[0])
-            ).transpose([0, 2, 1])
+            samples = torch.tensor(
+                colorednoise.powerlaw_psd_gaussian(
+                    self.noise_beta, size=(num_samples, self.horizon, self.action_dim)
+                ),
+                device=self.device,
+                dtype=torch.float32,
+            ).transpose(1, 2)
         else:
-            samples = np.random.randn(num_traj, *self.mean.shape)
+            samples = torch.randn(
+                num_samples, self.horizon, self.action_dim, device=self.device
+            )
+        actions = samples * self.std + self.mean
 
-        samples = np.clip(
-            samples * self.std + self.mean,
-            self.env.action_space.low,
-            self.env.action_space.high,
+        if self.action_bounds is not None:
+            actions = torch.clamp(actions, self.action_bounds[0], self.action_bounds[1])
+        return actions
+
+    def simulate(self, initial_state: torch.Tensor, actions: torch.Tensor):
+        simulated_paths = torch.zeros(
+            actions.shape[0],
+            self.horizon + 1,
+            initial_state.shape[-1],
+            device=self.device,
         )
-        if time_slice is not None:
-            samples = samples[:, time_slice]
-        return samples
+        simulated_paths[:, 0] = initial_state.repeat(actions.shape[0], 1)
 
-    def prepare_action_sequences(self, *, obs, num_traj, iteration):
-        sampled_from_distribution = self.sample_action_sequences(obs, num_traj)
-        # shape:[p,h,d]
-        if self.use_mean_actions and iteration == self.opt_iter - 1:
-            sampled_from_distribution[0] = self.mean
-        return sampled_from_distribution
+        for step in range(self.horizon):
+            simulated_paths[:, step + 1] = self.model.dynamics(
+                simulated_paths[:, step]
+            ) + self.model.action_encoder(actions[:, step])
+        return simulated_paths
 
-    def elites_2_action_sequences(self, *, elites, obs, fraction_to_be_used=1.0):
-        """
-        :param obs: current observation of shape [obs_dim]
-        :param fraction_to_be_used:
-        :type elites: RolloutBuffer
-        """
-        actions = elites.as_array("actions")  # shape: [p,h,d]
-        reused_actions = actions[:, 1:]  # shape: [p,h-1,d]
-        num_elites = int(reused_actions.shape[0] * fraction_to_be_used)
-        reused_actions = reused_actions[:num_elites]
-        # shape:[p,1,d]
-        last_actions = self.sample_action_sequences(
-            time_slice=slice(-1, None), obs=obs, num_traj=num_elites
-        )
-
-        return np.concatenate([reused_actions, last_actions], axis=1)
-
-    def get_action(self, obs, state, mode="train"):
-        simulated_paths = RolloutBuffer()
-
+    def get_action(self, state):
         if not self.was_reset:
             raise AttributeError("beginning_of_rollout() needs to be called before")
-
-        if self.verbose:
-            print(f"-------------------- {self.mean[0][0:6]}")
-            if (
-                mode != "expert"
-            ):  # in expert mode we are relabeling states that are not currently in env
-                self.check_model_consistency()
-
-        self.forward_model_state = (
-            self.forward_model.got_actual_observation_and_env_state(
-                observation=obs, env_state=state, model_state=self.forward_model_state
-            )
-        )
 
         best_traj_idx = None
         costs = [float("inf")]
 
-        num_sim_traj = self.num_sim_traj
-        for i in range(self.opt_iter):
+        current_num_samples = self.num_samples
+        for iter in range(self.opt_iter):
             # Decay of sample size
-            if i > 0:  # Important improvement
-                num_sim_traj = max(
-                    self.elites_size * 2, int(num_sim_traj / self.factor_decrease_num)
+            if iter > 0:
+                current_num_samples = max(
+                    self.num_elites * 2,
+                    int(current_num_samples / self.factor_decrease_num),
                 )
 
-            action_sequences = self.prepare_action_sequences(
-                obs=obs, num_traj=num_sim_traj, iteration=i
-            )
-            # Shifting elites over time: minor improvement?
-            if i == 0 and self.shift_elites_over_time and self.elite_samples:
-                action_seq_from_elites = self.elites_2_action_sequences(
-                    elites=self.elite_samples,
-                    fraction_to_be_used=self.fraction_elites_reused,
-                    obs=obs,
+            # Sample actions from distribution
+            actions = self.sample_action_sequences(current_num_samples)
+
+            # Adding mean actions as candidate at the last iteration
+            if self.use_mean_actions and iter == self.opt_iter - 1:
+                actions[0] = self.mean
+
+            # Shifting elites over time
+            if iter == 0 and self.shift_elites and self.elite_samples:
+                elites_actions = self.elite_samples.as_array("action")
+                reused_actions = elites_actions[:, 1:]
+                num_elites = int(reused_actions.shape[0] * self.frac_elites_reused)
+                reused_actions = reused_actions[:num_elites]
+                last_actions = self.sample_action_sequences(num_elites)[:, -1]
+                elites_actions = torch.cat([reused_actions, last_actions], dim=1)
+                actions = torch.cat([actions, elites_actions], dim=0)
+
+            # Simulate and Compute Cost
+            simulated_paths = self.simulate(state, actions)
+            costs = self.cost_fn(simulated_paths)
+
+            # Keep elites from previous iteration
+            if iter > 0 and self.keep_elites:
+                num_elites_to_keep = int(
+                    len(self.elite_samples) * self.frac_elites_reused
                 )
-                action_sequences = np.concatenate(
-                    [action_sequences, action_seq_from_elites], axis=0
-                )  # shape [p+pe,h,d]
+                if num_elites_to_keep > 0:
+                    prev_elites_actions = self.elite_samples.as_array("action")
+                    prev_elite_costs = self.elite_samples.as_array("cost")
+                    actions = torch.cat(
+                        [actions, prev_elites_actions[:num_elites_to_keep]], dim=0
+                    )
+                    costs = torch.cat(
+                        [costs, prev_elite_costs[:num_elites_to_keep]], dim=0
+                    )
 
-            simulated_paths = self.simulate_trajectories(
-                obs=obs,
-                state=self.forward_model_state,
-                action_sequences=action_sequences,
-            )
+            # Get elite samples
+            elite_idxs = torch.topk(-costs, self.num_elites)[1]
+            elite_actions = actions[elite_idxs]
+            elite_costs = costs[elite_idxs]
+            self.elite_samples.add(
 
-            # keep elites from prev. iteration  # Important improvement
-            if i > 0 and self.keep_previous_elites:
-                assert self.elite_samples
-                simulated_paths.extend(
-                    self.elite_samples[
-                        : int(len(self.elite_samples) * self.fraction_elites_reused)
-                    ]
-                )
+            # Update mean and std
+            new_mean = elite_actions.mean(dim=0)
+            new_std = elite_actions.std(dim=0)
 
-            orig_cost = self.trajectory_cost_fn(
-                self.cost_fn, simulated_paths
-            )  # shape: [num_sim_paths]
-            costs = orig_cost.copy()
-            best_traj_idx = np.argmin(costs)
+            self.mean = (1 - self.alpha) * new_mean + self.alpha * self.mean
+            self.std = (1 - self.alpha) * new_std + self.alpha * self.std
 
+            # Print cost for debugging
             if self.verbose:
 
                 def display_cost(cost):
@@ -244,64 +241,3 @@ class MpcICem(BaseMPC):
 
     def compute_new_mean(self, obs):
         return self.mean[-1]
-
-    def update_distributions(self, sampled_trajectories: RolloutBuffer, costs):
-        """
-        :param sampled_trajectories:
-        :param costs: array of costs: shape (number trajectories)
-        """
-        elite_idxs = np.array(costs).argsort()[: self.num_elites]
-
-        self.elite_samples = RolloutBuffer(rollouts=sampled_trajectories[elite_idxs])
-
-        # Update mean, std
-        elite_sequences = self.elite_samples.as_array("actions")
-
-        # fit around mean of elites
-        new_mean = elite_sequences.mean(axis=0)
-        new_std = elite_sequences.std(axis=0)
-
-        self.mean = (1 - self.alpha) * new_mean + self.alpha * self.mean  # [h,d]
-        self.std = (1 - self.alpha) * new_std + self.alpha * self.std
-
-    def _parse_action_sampler_params(
-        self,
-        *,
-        alpha,
-        elites_size,
-        opt_iterations,
-        init_std,
-        use_mean_actions,
-        keep_previous_elites,
-        shift_elites_over_time,
-        fraction_elites_reused,
-        noise_beta=1,
-    ):
-
-        self.alpha = alpha
-        self.elites_size = elites_size
-        self.opt_iter = opt_iterations
-        self.init_std = init_std
-        self.use_mean_actions = use_mean_actions
-        self.keep_previous_elites = keep_previous_elites
-        self.shift_elites_over_time = shift_elites_over_time
-        self.fraction_elites_reused = fraction_elites_reused
-        self.noise_beta = noise_beta
-
-    def _check_validity_parameters(self):
-
-        self.num_elites = min(self.elites_size, self.num_sim_traj // 2)
-        if self.num_elites < 2:
-            warn(
-                "Number of trajectories is too low for given elites_frac. Setting num_elites to 2."
-            )
-            self.num_elites = 2
-
-        if isinstance(self.env.action_space, spaces.Discrete):
-            raise NotImplementedError(
-                "CEM ERROR: Implement categorical distribution for discrete envs."
-            )
-        elif isinstance(self.env.action_space, spaces.Box):
-            self.dim_samples = (self.horizon, self.env.action_space.shape[0])
-        else:
-            raise NotImplementedError

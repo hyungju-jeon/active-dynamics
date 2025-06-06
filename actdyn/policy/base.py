@@ -4,7 +4,7 @@ import gym
 import torch
 import numpy as np
 from typing import Dict, Any, Callable
-from actdyn.models.model import BaseModel
+from actdyn.models import BaseModel
 
 
 class BasePolicy:
@@ -41,21 +41,32 @@ class BasePolicy:
 
 
 class BaseMPC(BasePolicy):
-    """Base class for Model Predictive Control policies."""
+    """Base class for Model Predictive Control policies.
+    Currently, we only support continuous control with box action space."""
 
     def __init__(
         self,
-        action_dim: int,
         cost_fn: Callable,
         model: BaseModel,
-        horizon: int,
-        num_samples: int,
-        num_elite: int,
+        mpc_params: Dict[str, Any],
+        verbose: bool = False,
         device: str = "cpu",
     ):
-        super().__init__(action_dim, device)
-        self.horizon = horizon
-        self.num_samples = num_samples
-        self.num_elite = num_elite
+        super().__init__(model.action_space, device)
+        assert isinstance(
+            self.action_space, gym.spaces.Box
+        ), "Only box action space is supported"
+        self.action_dim = self.action_space.shape[0]
+        self.action_bounds = (
+            (self.action_space.low, self.action_space.high)
+            if self.action_space.is_bounded()
+            else None
+        )
+        self.horizon = mpc_params["horizon"]
+        self.num_samples = mpc_params["num_samples"]
         self.cost_fn = cost_fn
         self.model = model
+        self.verbose = verbose
+
+    def beginning_of_rollout(self, state: torch.Tensor):
+        pass
