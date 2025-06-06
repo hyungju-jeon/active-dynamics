@@ -15,13 +15,13 @@ class Rollout:
         "obs",
         "next_obs",
         "action",
-        "env_action",
+        "env_action",  # encoded action
         "reward",
         "cost",
-        "env_state",
-        "next_env_state",
-        "model_state",
-        "next_model_state",
+        "env_state",  # state of the environment
+        "next_env_state",  # next state of the environment
+        "model_state",  # belief about the state of the model
+        "next_model_state",  # belief about the next state of the model
     }
 
     def __init__(self, device="cpu"):
@@ -52,13 +52,17 @@ class Rollout:
                         f"Key {key} is not allowed. Allowed keys are: {self.allowed_fields}"
                     )
                 tensor_value = torch.as_tensor(value, device=self.device)
+                # Standardize tensor dimensions (always 2D)
+                if tensor_value.ndim == 1:
+                    tensor_value = tensor_value.unsqueeze(0)
+
                 if tensor_value.requires_grad:
                     tensor_value = tensor_value.detach()
                 if key not in self._data:
-                    self._data[key] = [tensor_value]
+                    self._data[key] = [value for value in tensor_value]
                 else:
-                    self._data[key].append(tensor_value)
-            self.length += 1
+                    self._data[key].append(value for value in tensor_value)
+        self.length = max([len(v) for v in self._data.values()])
 
     def finalize(self):
         """
@@ -66,7 +70,7 @@ class Rollout:
         if self.finalized:
             return
         for key in self._data:
-            self._data[key] = torch.stack(self._data[key], dim=1)
+            self._data[key] = torch.stack(self._data[key], dim=0)
         self.finalized = True
 
     def as_dict(self):
@@ -148,13 +152,24 @@ class Rollout:
 
 
 class RolloutBuffer:
-    def __init__(self, max_size=None):
+    def __init__(self, max_size=None, device="cpu"):
+        self.device = device
         self.buffer = deque(maxlen=max_size) if max_size else []
 
     def add(self, rollout_item: Rollout):
         if not rollout_item.finalized:
             rollout_item.finalize()
         self.buffer.append(rollout_item)
+
+    def from_dict(self, data: dict):
+        self.clear()
+        maxlen = max([len(v) for v in data.values()])
+        self.buffer = [Rollout(device=self.device) for _ in range(maxlen)]
+        for key, tensor in data.items():
+            for i in range(maxlen):
+                self.buffer[i].add(**{key: tensor[i]})
+        for rollout in self.buffer:
+            rollout.finalize()
 
     def get_all(self):
         return list(self.buffer)
@@ -182,6 +197,9 @@ class RolloutBuffer:
         for key in merged:
             merged[key] = torch.cat(merged[key], dim=0)
         return merged
+
+    def as_array(self, key):
+        return self.flat[key]
 
     def __len__(self):
         return len(self.buffer)
@@ -213,6 +231,7 @@ class RolloutBuffer:
     def to(self, device):
         for rollout in self.buffer:
             rollout.to(device)
+        self.device = device
         return self
 
 
