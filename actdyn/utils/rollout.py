@@ -53,15 +53,23 @@ class Rollout:
                     )
                 tensor_value = torch.as_tensor(value, device=self.device)
                 # Standardize tensor dimensions (always 2D)
-                if tensor_value.ndim == 1:
+                if tensor_value.ndim == 0:
                     tensor_value = tensor_value.unsqueeze(0)
+                if tensor_value.ndim == 1:
+                    tensor_value = tensor_value.unsqueeze(-1)
 
                 if tensor_value.requires_grad:
                     tensor_value = tensor_value.detach()
                 if key not in self._data:
-                    self._data[key] = [value for value in tensor_value]
+                    if tensor_value.ndim >= 2 and key == "action":
+                        self._data[key] = tensor_value
+                    else:
+                        self._data[key] = [v for v in tensor_value]
                 else:
-                    self._data[key].append(value for value in tensor_value)
+                    if tensor_value.ndim >= 2 and key == "action":
+                        self._data[key] = tensor_value
+                    else:
+                        self._data[key].extend([v for v in tensor_value])
         self.length = max([len(v) for v in self._data.values()])
 
     def finalize(self):
@@ -70,7 +78,8 @@ class Rollout:
         if self.finalized:
             return
         for key in self._data:
-            self._data[key] = torch.stack(self._data[key], dim=0)
+            if not isinstance(self._data[key], torch.Tensor):
+                self._data[key] = torch.stack(self._data[key], dim=0)
         self.finalized = True
 
     def as_dict(self):
@@ -195,7 +204,7 @@ class RolloutBuffer:
                     merged[key] = []
                 merged[key].append(val)
         for key in merged:
-            merged[key] = torch.cat(merged[key], dim=0)
+            merged[key] = torch.stack(merged[key], dim=0)
         return merged
 
     def as_array(self, key):
