@@ -218,6 +218,8 @@ class RolloutBuffer:
             return list(self.buffer)[index]
         elif isinstance(index, int):
             return self.buffer[index]
+        elif isinstance(index, str):
+            return self.flat[index]
         else:
             raise TypeError("Index must be int or slice")
 
