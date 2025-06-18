@@ -117,11 +117,9 @@ class ContinuousMazeEnv(gym.Env):
         wx *= self.wind_scale
         wy *= self.wind_scale
 
-        # print(f"Wind at ({x:.2f}, {y:.2f}): ({wx:.2f}, {wy:.2f})")
-
         # integrate pose
-        x_new = x + wx + vel * np.sin(theta) * self.dt
-        y_new = y + wy + vel * np.cos(theta) * self.dt
+        x_new = x + (wx if self.wind_field is not None else 0.0) + vel * np.sin(theta) * self.dt
+        y_new = y + (wy if self.wind_field is not None else 0.0) + vel * np.cos(theta) * self.dt
 
         theta_new = theta + omega * self.dt
 
@@ -233,4 +231,4 @@ if __name__ == '__main__':
     print('Finished!', info)
 
 # RUN COMMAND:
-# python -m actdyn.environment.maze_environment
+# python -m actdyn.environment.maze_environment_simple
