@@ -15,6 +15,7 @@ class ContinuousMazeEnv(gym.Env):
                  maze_file,
                  cell_size=32,
                  max_thrust=50.0,
+                 max_engine_acc=10.0,
                  wall_thickness = 4.0,
                  render_mode=None,
                  wind_field=None,
@@ -24,6 +25,7 @@ class ContinuousMazeEnv(gym.Env):
         self.cell_size = cell_size
         self.wall_thickness = wall_thickness
         self.max_thrust = max_thrust
+        self.max_engine_acc = max_engine_acc
         self.render_mode = render_mode
         self.agent_radius = int(0.4*self.cell_size)
         self.wind_field = wind_field
@@ -69,7 +71,7 @@ class ContinuousMazeEnv(gym.Env):
     def reset(self, seed=None, options=None):
         super().reset(seed=seed)
         # reset state to start, zero velocities
-        self.state = np.array([*self.start_pos, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        self.state = np.array([*self.start_pos, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
         return self.state.copy(), {}
     
     def check_collision(self, x, y):
@@ -100,14 +102,21 @@ class ContinuousMazeEnv(gym.Env):
 
 
     def step(self, action):
-        thrust_l, thrust_r = np.clip(action, 0, self.max_thrust)
-        x, y, theta, *_ = self.state
+        target_l, target_r = np.clip(action, 0, self.max_thrust)
+        x, y, theta, _, _, omega, current_l, current_r = self.state
+
+        # update thrust with acceleration limits
+        diff_l = target_l - current_l
+        diff_r = target_r - current_r
+        max_delta = self.max_engine_acc * self.dt
+        new_l = current_l + np.clip(diff_l, -max_delta, max_delta)
+        new_r = current_r + np.clip(diff_r, -max_delta, max_delta)
 
         # velocity forward
-        vel = (thrust_r + thrust_l) / 2.0
+        vel = (new_r + new_l) / 2.0
 
         # angular rate
-        omega = (thrust_r - thrust_l) / (2.0 * self.agent_radius)
+        omega = (new_r - new_l) / (2.0 * self.agent_radius)
 
         # wind effect
         if self.wind_field is not None:
@@ -138,7 +147,8 @@ class ContinuousMazeEnv(gym.Env):
         new_vy = vel * np.cos(new_theta)
 
         self.state = np.array([new_x, new_y, new_theta,
-                               new_vx, new_vy, omega], dtype=np.float32)
+                               new_vx, new_vy, omega,
+                               new_l, new_r], dtype=np.float32)
 
         # compute reward/done
         dist = np.linalg.norm(self.state[:2] - self.goal_pos)
@@ -176,7 +186,7 @@ class ContinuousMazeEnv(gym.Env):
                            self.goal_pos.astype(int), self.agent_radius)
 
         # boat
-        x,y,theta,_,_,_ = self.state
+        x,y,theta,*_ = self.state
         tip = (x + np.sin(theta) * self.agent_radius * 1.5,
                 y + np.cos(theta) * self.agent_radius * 1.5)
         pygame.draw.circle(self.screen,(255,0,0),(int(x),int(y)), self.agent_radius)

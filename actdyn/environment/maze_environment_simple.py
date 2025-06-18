@@ -48,8 +48,6 @@ class ContinuousMazeEnv(gym.Env):
         self.goal_pos  = (self.goal_cell  + 0.5) * cell_size
 
         # physics parameters
-        self.mass = 1.0
-        self.inertia = 0.1
         self.dt = 1.0 / self.metadata["render_fps"]
 
         # state: [x, y, theta, vx, vy, omega]
