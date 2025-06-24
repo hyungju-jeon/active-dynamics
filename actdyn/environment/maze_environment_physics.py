@@ -17,6 +17,9 @@ class ContinuousMazeEnv(gym.Env):
                  max_thrust=50.0,
                  max_engine_acc=10.0,
                  wall_thickness = 4.0,
+                 lidar_num_beams=16,
+                 lidar_range=200.0,
+                 lidar_noise=0.0,
                  render_mode=None,
                  wind_field=None,
                  wind_scale=1.0):
@@ -30,6 +33,16 @@ class ContinuousMazeEnv(gym.Env):
         self.agent_radius = int(0.4*self.cell_size)
         self.wind_field = wind_field
         self.wind_scale = wind_scale
+
+        # LiDAR parameters
+        self.lidar_num_beams = lidar_num_beams
+        self.lidar_range = lidar_range
+        self.lidar_noise = lidar_noise
+        # beam angles evenly over [-FOV/2, FOV/2]
+        self.lidar_fov = np.pi / 2
+        self.lidar_angles = np.linspace(-self.lidar_fov/2,
+                                         self.lidar_fov/2,
+                                         self.lidar_num_beams)
 
         # load maze
         with open(maze_file, 'r', encoding='utf-8') as f:
@@ -73,6 +86,31 @@ class ContinuousMazeEnv(gym.Env):
         # reset state to start, zero velocities
         self.state = np.array([*self.start_pos, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
         return self.state.copy(), {}
+    
+    def _get_obs(self):
+        # compute LiDAR readings
+        lidar = self._compute_lidar()  # shape (N,)
+        # concatenate state and lidar
+        return np.concatenate([self.state.copy(), lidar])
+
+    def _compute_lidar(self):
+        x, y, theta = self.state[0], self.state[1], self.state[2]
+        readings = np.zeros(self.lidar_num_beams, dtype=np.float32)
+        for i, rel_ang in enumerate(self.lidar_angles):
+            beam_ang = theta + rel_ang
+            dist = 0.0
+            step = self.cell_size * 0.2  # step size
+            while dist < self.lidar_range:
+                rx = x + dist * np.sin(beam_ang)
+                ry = y + dist * np.cos(beam_ang)
+                if self.check_collision(rx, ry):
+                    break
+                dist += step
+            # add noise
+            if self.lidar_noise > 0:
+                dist += self.np_random.normal(0, self.lidar_noise)
+            readings[i] = min(dist, self.lidar_range)
+        return readings
     
     def check_collision(self, x, y):
         min_x = x - self.agent_radius
@@ -151,6 +189,7 @@ class ContinuousMazeEnv(gym.Env):
                                new_l, new_r], dtype=np.float32)
 
         # compute reward/done
+        obs = self._get_obs()
         dist = np.linalg.norm(self.state[:2] - self.goal_pos)
         done = dist < (0.5 * self.cell_size)
         reward = -dist
@@ -201,6 +240,19 @@ class ContinuousMazeEnv(gym.Env):
             wind_tip = (x + wx * 10, y + wy * 10)
             pygame.draw.line(self.screen, (255, 165, 0), (int(x), int(y)),
                              (int(wind_tip[0]), int(wind_tip[1])), 2)
+            
+        # LiDAR beams visualization
+        for rel_ang in self.lidar_angles:
+            beam_ang = theta + rel_ang
+            dist = 0.0
+            step = self.cell_size * 0.2
+            while dist < self.lidar_range:
+                rx = x + dist * np.sin(beam_ang)
+                ry = y + dist * np.cos(beam_ang)
+                if self.check_collision(rx, ry): break
+                dist += step
+            end = (int(x + dist * np.sin(beam_ang)), int(y + dist * np.cos(beam_ang)))
+            pygame.draw.line(self.screen, (255,165,0), (int(x), int(y)), end, 1)
 
         # flip or return
         if self.render_mode=='human':
