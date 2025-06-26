@@ -5,6 +5,7 @@ import pygame
 from  actdyn.environment.windfield import WindField
 from actdyn.environment.observation import OBSERVATION_MODELS
 import torch
+import argparse
 
 class ContinuousMazeEnv(gym.Env):
     """
@@ -120,7 +121,7 @@ class ContinuousMazeEnv(gym.Env):
         return np.concatenate([self.state.copy(), proc_lidar], axis=0)
 
     def _compute_lidar(self):
-        x, y, theta = self.state[0], self.state[1], self.state[2]
+        x, y, theta, *_ = self.state
         sensor_x = x + np.sin(theta) * self.agent_radius
         sensor_y = y + np.cos(theta) * self.agent_radius
         readings = np.zeros(self.lidar_num_beams, dtype=np.float32)
@@ -179,7 +180,7 @@ class ContinuousMazeEnv(gym.Env):
 
     def step(self, action):
         target_l, target_r = np.clip(action, 0, self.max_thrust)
-        x, y, theta, _, _, omega, current_l, current_r = self.state
+        x, y, theta, _, _, omega, current_l, current_r, *_ = self.state
 
         # update thrust with acceleration limits
         diff_l = target_l - current_l
@@ -306,14 +307,23 @@ class ContinuousMazeEnv(gym.Env):
 
 
 if __name__ == '__main__':
-    pygame.init()
+    parser = argparse.ArgumentParser(description='Run ContinuousMazeEnv with optional rendering')
+    parser.add_argument('--render', action='store_true', help='enable rendering')
+    parser.add_argument('--manual_controls', action='store_true', help='enable manual controls')
+    parser.add_argument('--no_wind', action='store_true', help='disable wind field')
+    args = parser.parse_args()
 
+    pygame.init()
+    render_mode = 'human' if args.render else None
     env = ContinuousMazeEnv('others/generated_mazes/maze_39x19_seed1_20250618_142109.txt',
-                             render_mode='human')
-    # wind = WindField(dynamics_type="limit_cycle")
-    # env.wind_field = wind
-    # env.wind_scale = 0.00001  # scale the wind effect
+                             render_mode=render_mode)
     
+    if not args.no_wind:
+        wind = WindField(dynamics_type="limit_cycle")
+        env.wind_field = wind
+        env.wind_scale = 0.00001  # scale the wind effect
+    
+    controls_mode = "manual" if args.manual_controls else "random"
     obs, _ = env.reset()
     done = False
     while not done:
@@ -322,17 +332,26 @@ if __name__ == '__main__':
             if e.type == pygame.QUIT:
                 done = True
 
-        keys = pygame.key.get_pressed()
+        if controls_mode == "manual":
+            # manual controls: use arrow keys for thrust
+            keys = pygame.key.get_pressed()
+            # full thrust when pressed, zero otherwise
+            left_thrust  = env.max_thrust if keys[pygame.K_a] else 0.0
+            right_thrust = env.max_thrust if keys[pygame.K_d] else 0.0
+            obs, reward, done, truncated, info = env.step([left_thrust, right_thrust])
+        elif controls_mode == "random":
+            # sample a random action from the action space
+            action = env.action_space.sample()
+            obs, reward, done, truncated, info = env.step(action)
 
-        # full thrust when pressed, zero otherwise
-        left_thrust  = env.max_thrust if keys[pygame.K_a] else 0.0
-        right_thrust = env.max_thrust if keys[pygame.K_d] else 0.0
-
-        obs, reward, done, truncated, info = env.step([left_thrust, right_thrust])
         env.render()
 
     env.close()
     print('Finished!', info)
 
+
 # RUN COMMAND:
 # python -m actdyn.environment.maze_environment_physics
+# --no_wind disables the wind field
+# --manual_controls enables manual controls with A and D keys
+# --render enables rendering in a pygame window
