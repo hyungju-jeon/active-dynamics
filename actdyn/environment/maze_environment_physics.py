@@ -6,7 +6,7 @@ from  actdyn.environment.windfield import WindField
 
 class ContinuousMazeEnv(gym.Env):
     """
-    Continuous 2D maze with a differential-drive boat (two side engines).
+    Continuous 2D maze with a differential-drive robot (two side engines).
     Action = [thrust_left, thrust_right] ∈ [0,50]^2.
     """
     metadata = {"render_modes": ["human", "rgb_array"], "render_fps": 30}
@@ -19,6 +19,7 @@ class ContinuousMazeEnv(gym.Env):
                  wall_thickness = 4.0,
                  lidar_num_beams=8,
                  lidar_range=50.0,
+                 lidar_fov=np.pi,
                  lidar_noise=0.0,
                  render_mode=None,
                  wind_field=None,
@@ -39,7 +40,7 @@ class ContinuousMazeEnv(gym.Env):
         self.lidar_range = lidar_range
         self.lidar_noise = lidar_noise
         # beam angles evenly over [-FOV/2, FOV/2]
-        self.lidar_fov = np.pi / 2
+        self.lidar_fov = lidar_fov
         self.lidar_angles = np.linspace(-self.lidar_fov/2,
                                          self.lidar_fov/2,
                                          self.lidar_num_beams)
@@ -95,14 +96,17 @@ class ContinuousMazeEnv(gym.Env):
 
     def _compute_lidar(self):
         x, y, theta = self.state[0], self.state[1], self.state[2]
+        sensor_x = x + np.sin(theta) * self.agent_radius
+        sensor_y = y + np.cos(theta) * self.agent_radius
         readings = np.zeros(self.lidar_num_beams, dtype=np.float32)
+
         for i, rel_ang in enumerate(self.lidar_angles):
             beam_ang = theta + rel_ang
             dist = 0.0
             step = self.cell_size * 0.2  # step size
             while dist < self.lidar_range:
-                rx = x + dist * np.sin(beam_ang)
-                ry = y + dist * np.cos(beam_ang)
+                rx = sensor_x + dist * np.sin(beam_ang)
+                ry = sensor_y + dist * np.cos(beam_ang)
                 if self._check_lidar_collision(rx, ry):
                     break
                 dist += step
@@ -233,7 +237,7 @@ class ContinuousMazeEnv(gym.Env):
         pygame.draw.circle(self.screen,(0,255,0),
                            self.goal_pos.astype(int), self.agent_radius)
 
-        # boat
+        # robot
         x,y,theta,*_ = self.state
         tip = (x + np.sin(theta) * self.agent_radius * 1.5,
                 y + np.cos(theta) * self.agent_radius * 1.5)
@@ -251,17 +255,19 @@ class ContinuousMazeEnv(gym.Env):
                              (int(wind_tip[0]), int(wind_tip[1])), 2)
             
         # LiDAR beams visualization
+        sensor_x = x + np.sin(theta) * self.agent_radius
+        sensor_y = y + np.cos(theta) * self.agent_radius
         for rel_ang in self.lidar_angles:
             beam_ang = theta + rel_ang
             dist = 0.0
             step = self.cell_size * 0.02
             while dist < self.lidar_range:
-                rx = x + dist * np.sin(beam_ang)
-                ry = y + dist * np.cos(beam_ang)
+                rx = sensor_x + dist * np.sin(beam_ang)
+                ry = sensor_y + dist * np.cos(beam_ang)
                 if self._check_lidar_collision(rx, ry): break
                 dist += step
-            end = (int(x + dist * np.sin(beam_ang)), int(y + dist * np.cos(beam_ang)))
-            pygame.draw.line(self.screen, (255,165,0), (int(x), int(y)), end, 1)
+            end = (int(sensor_x + dist * np.sin(beam_ang)), int(sensor_y + dist * np.cos(beam_ang)))
+            pygame.draw.line(self.screen, (255,165,0), (int(sensor_x), int(sensor_y)), end, 1)
 
         # flip or return
         if self.render_mode=='human':
