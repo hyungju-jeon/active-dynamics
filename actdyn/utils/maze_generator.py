@@ -4,8 +4,8 @@ from datetime import datetime
 
 SAVE_MODE = True
 
-WIDTH = 39          # maze width (must be odd)
-HEIGHT = 19         # maze height (must be odd)
+WIDTH = 11          # maze width (must be odd)
+HEIGHT = 11         # maze height (must be odd)
 assert WIDTH % 2 == 1 and WIDTH >= 3
 assert HEIGHT % 2 == 1 and HEIGHT >= 3
 SEED = 1

@@ -321,7 +321,7 @@ if __name__ == '__main__':
 
     pygame.init()
     render_mode = 'human' if args.render else None
-    env = ContinuousMazeEnv('others/generated_mazes/maze_39x19_seed1_20250618_142109.txt',
+    env = ContinuousMazeEnv('others/generated_mazes/maze_11x11_seed1_20250626_170156.txt',
                              render_mode=render_mode)
     
     if not args.no_wind:
