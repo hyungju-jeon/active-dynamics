@@ -3,6 +3,8 @@ import gymnasium as gym
 from gymnasium import spaces
 import pygame
 from  actdyn.environment.windfield import WindField
+from actdyn.environment.observation import OBSERVATION_MODELS
+import torch
 
 class ContinuousMazeEnv(gym.Env):
     """
@@ -21,6 +23,8 @@ class ContinuousMazeEnv(gym.Env):
                  lidar_range=50.0,
                  lidar_fov=np.pi,
                  lidar_noise=0.0,
+                 obs_model_name: str = "identity",
+                 obs_model_kwargs: dict = None,
                  render_mode=None,
                  wind_field=None,
                  wind_scale=1.0):
@@ -39,7 +43,6 @@ class ContinuousMazeEnv(gym.Env):
         self.lidar_num_beams = lidar_num_beams
         self.lidar_range = lidar_range
         self.lidar_noise = lidar_noise
-        # beam angles evenly over [-FOV/2, FOV/2]
         self.lidar_fov = lidar_fov
         self.lidar_angles = np.linspace(-self.lidar_fov/2,
                                          self.lidar_fov/2,
@@ -78,6 +81,21 @@ class ContinuousMazeEnv(gym.Env):
         # action: left‐thrust, right‐thrust
         self.action_space = spaces.Box(0.0, max_thrust, shape=(2,), dtype=np.float32)
 
+        # set up observation model for lidar
+        obs_model_kwargs = obs_model_kwargs or {}
+        model_cls = OBSERVATION_MODELS.get(obs_model_name)
+        if model_cls is None:
+            raise ValueError(f"Unknown obs_model_name: {obs_model_name}")
+        # latent_dim = number of lidar beams
+        # obs_dim defaults to same as latent
+        self.obs_model = model_cls(
+            latent_dim=self.lidar_num_beams,
+            obs_dim=obs_model_kwargs.get("obs_dim", self.lidar_num_beams),
+            noise_type=obs_model_kwargs.get("noise_type", None),
+            noise_scale=obs_model_kwargs.get("noise_scale", 0.0),
+            device=obs_model_kwargs.get("device", "cpu"),
+        )
+
         # rendering
         self.screen = None
         self.clock = None
@@ -89,10 +107,17 @@ class ContinuousMazeEnv(gym.Env):
         return self.state.copy(), {}
     
     def _get_obs(self):
-        # compute LiDAR readings
-        lidar = self._compute_lidar()  # shape (N,)
-        # concatenate state and lidar
-        return np.concatenate([self.state.copy(), lidar])
+        # raw lidar readings
+        raw_lidar = self._compute_lidar()
+        # convert to tensor
+        device = torch.device(self.obs_model.device)
+        lidar_tensor = torch.tensor(raw_lidar, dtype=torch.float32, device=device)
+        # forward through obs model
+        processed = self.obs_model.network(lidar_tensor)
+        # back to numpy
+        proc_lidar = processed.detach().cpu().numpy()
+        # concatenate state + processed lidar
+        return np.concatenate([self.state.copy(), proc_lidar], axis=0)
 
     def _compute_lidar(self):
         x, y, theta = self.state[0], self.state[1], self.state[2]
