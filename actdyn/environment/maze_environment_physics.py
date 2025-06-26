@@ -21,7 +21,7 @@ class ContinuousMazeEnv(gym.Env):
                  max_engine_acc=25.0,
                  wall_thickness = 4.0,
                  lidar_num_beams=8,
-                 lidar_range=50.0,
+                 lidar_range=200.0,
                  lidar_fov=np.pi,
                  lidar_noise=0.0,
                  obs_model_name: str = "identity",
@@ -178,16 +178,21 @@ class ContinuousMazeEnv(gym.Env):
         return False
 
 
-    def step(self, action):
+    def step(self, action, acceleration_limits=True):
         target_l, target_r = np.clip(action, 0, self.max_thrust)
         x, y, theta, _, _, omega, current_l, current_r, *_ = self.state
 
-        # update thrust with acceleration limits
-        diff_l = target_l - current_l
-        diff_r = target_r - current_r
-        max_delta = self.max_engine_acc * self.dt
-        new_l = current_l + np.clip(diff_l, -max_delta, max_delta)
-        new_r = current_r + np.clip(diff_r, -max_delta, max_delta)
+        if acceleration_limits:
+            # update thrust with acceleration limits
+            diff_l = target_l - current_l
+            diff_r = target_r - current_r
+            max_delta = self.max_engine_acc * self.dt
+            new_l = current_l + np.clip(diff_l, -max_delta, max_delta)
+            new_r = current_r + np.clip(diff_r, -max_delta, max_delta)
+        else:
+            # update thrust without acceleration limits
+            new_l = target_l
+            new_r = target_r
 
         # velocity forward
         vel = (new_r + new_l) / 2.0
@@ -311,6 +316,7 @@ if __name__ == '__main__':
     parser.add_argument('--render', action='store_true', help='enable rendering')
     parser.add_argument('--manual_controls', action='store_true', help='enable manual controls')
     parser.add_argument('--no_wind', action='store_true', help='disable wind field')
+    parser.add_argument('--no_acceleration', action='store_true', help='disable acceleration limits on thrust')
     args = parser.parse_args()
 
     pygame.init()
@@ -324,6 +330,7 @@ if __name__ == '__main__':
         env.wind_scale = 0.00001  # scale the wind effect
     
     controls_mode = "manual" if args.manual_controls else "random"
+    acceleration_limits = not args.no_acceleration
     obs, _ = env.reset()
     done = False
     while not done:
@@ -338,7 +345,7 @@ if __name__ == '__main__':
             # full thrust when pressed, zero otherwise
             left_thrust  = env.max_thrust if keys[pygame.K_a] else 0.0
             right_thrust = env.max_thrust if keys[pygame.K_d] else 0.0
-            obs, reward, done, truncated, info = env.step([left_thrust, right_thrust])
+            obs, reward, done, truncated, info = env.step([left_thrust, right_thrust], acceleration_limits=acceleration_limits)
         elif controls_mode == "random":
             # sample a random action from the action space
             action = env.action_space.sample()
