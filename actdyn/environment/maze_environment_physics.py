@@ -15,10 +15,10 @@ class ContinuousMazeEnv(gym.Env):
                  maze_file,
                  cell_size=32,
                  max_thrust=50.0,
-                 max_engine_acc=10.0,
+                 max_engine_acc=25.0,
                  wall_thickness = 4.0,
-                 lidar_num_beams=16,
-                 lidar_range=200.0,
+                 lidar_num_beams=8,
+                 lidar_range=50.0,
                  lidar_noise=0.0,
                  render_mode=None,
                  wind_field=None,
@@ -103,7 +103,7 @@ class ContinuousMazeEnv(gym.Env):
             while dist < self.lidar_range:
                 rx = x + dist * np.sin(beam_ang)
                 ry = y + dist * np.cos(beam_ang)
-                if self.check_collision(rx, ry):
+                if self._check_lidar_collision(rx, ry):
                     break
                 dist += step
             # add noise
@@ -112,7 +112,7 @@ class ContinuousMazeEnv(gym.Env):
             readings[i] = min(dist, self.lidar_range)
         return readings
     
-    def check_collision(self, x, y):
+    def _check_collision(self, x, y):
         min_x = x - self.agent_radius
         max_x = x + self.agent_radius
         min_y = y - self.agent_radius
@@ -137,6 +137,15 @@ class ContinuousMazeEnv(gym.Env):
                 break
 
         return collision
+    
+    def _check_lidar_collision(self, x, y):
+        i = int(np.floor(x / self.cell_size))
+        j = int(np.floor(y / self.cell_size))
+        if (i < 0 or i >= self.width or
+            j < 0 or j >= self.height or
+            self.maze[i, j] == 1):
+            return True
+        return False
 
 
     def step(self, action):
@@ -170,10 +179,10 @@ class ContinuousMazeEnv(gym.Env):
 
         # collision check with sliding along walls
         new_x = x + dx
-        if self.check_collision(new_x, y):
+        if self._check_collision(new_x, y):
             new_x = x  # block x movement
         new_y = y + dy
-        if self.check_collision(new_x, new_y):
+        if self._check_collision(new_x, new_y):
             new_y = y # block y movement
 
         # update angle
@@ -245,11 +254,11 @@ class ContinuousMazeEnv(gym.Env):
         for rel_ang in self.lidar_angles:
             beam_ang = theta + rel_ang
             dist = 0.0
-            step = self.cell_size * 0.2
+            step = self.cell_size * 0.02
             while dist < self.lidar_range:
                 rx = x + dist * np.sin(beam_ang)
                 ry = y + dist * np.cos(beam_ang)
-                if self.check_collision(rx, ry): break
+                if self._check_lidar_collision(rx, ry): break
                 dist += step
             end = (int(x + dist * np.sin(beam_ang)), int(y + dist * np.cos(beam_ang)))
             pygame.draw.line(self.screen, (255,165,0), (int(x), int(y)), end, 1)
