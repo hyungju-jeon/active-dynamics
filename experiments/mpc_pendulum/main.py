@@ -9,7 +9,7 @@ from actdyn.model import EnsembleModel
 from actdyn.policy import MPCPolicy
 from actdyn.experiment import Experiment
 from actdyn.utils.save_load import save_config
-from actdyn.metrics.costs import COST_FUNCTIONS
+from actdyn.metrics.base import COST_FUNCTIONS
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config", type=str, required=True)

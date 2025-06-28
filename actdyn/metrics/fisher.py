@@ -123,9 +123,6 @@ class FisherMetrics:
             J_list.append(grad_vec.unsqueeze(0))
         return torch.cat(J_list, dim=0)
 
-    def compute_jacobian_params_kfac(self, state):
-        pass
-
     def compute_H_derivative(self, state):
         """Compute derivative of H = d(decoder)/dz with respect to state.
         Args:
@@ -600,57 +597,3 @@ if __name__ == "__main__":
         print(crlb_variances.detach().numpy())
     except RuntimeError as e:
         print("FIM is singular and cannot be inverted. Details:", e)
-
-
-class FisherInformation:
-    """Tracks Fisher Information over time for inference evaluation."""
-
-    def __init__(self, latent_dim: int, device: str = "cuda"):
-        self.latent_dim = latent_dim
-        self.device = device
-
-        # Initialize Fisher Information matrix
-        self.fisher = torch.zeros(latent_dim, latent_dim, device=device)
-        self.num_samples = 0
-
-    def update(self, log_probs: torch.Tensor, params: List[torch.Tensor]) -> None:
-        """Update Fisher Information matrix using gradients of log probabilities."""
-        batch_size = log_probs.shape[0]
-
-        # Compute gradients of log probabilities
-        grads = []
-        for i in range(batch_size):
-            # Compute gradient for each sample
-            grad = torch.autograd.grad(
-                log_probs[i], params, create_graph=False, retain_graph=True
-            )
-
-            # Flatten and concatenate gradients
-            grad_flat = torch.cat([g.flatten() for g in grad])
-            grads.append(grad_flat)
-
-        grads = torch.stack(grads)  # [batch_size, total_params]
-
-        # Update Fisher Information matrix
-        self.fisher = (
-            self.fisher * self.num_samples + torch.matmul(grads.t(), grads)
-        ) / (self.num_samples + batch_size)
-        self.num_samples += batch_size
-
-    def get_eigenvalues(self) -> torch.Tensor:
-        """Get eigenvalues of Fisher Information matrix."""
-        return torch.linalg.eigvals(self.fisher).real
-
-    def get_condition_number(self) -> float:
-        """Get condition number of Fisher Information matrix."""
-        eigenvalues = self.get_eigenvalues()
-        return eigenvalues.max() / eigenvalues.min()
-
-    def get_trace(self) -> float:
-        """Get trace of Fisher Information matrix."""
-        return torch.trace(self.fisher).item()
-
-    def reset(self) -> None:
-        """Reset Fisher Information matrix."""
-        self.fisher = torch.zeros(self.latent_dim, self.latent_dim, device=self.device)
-        self.num_samples = 0
