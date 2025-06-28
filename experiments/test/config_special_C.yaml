@@ -1,0 +1,65 @@
+# Experiment configuration
+seed: 42
+device: "cpu"
+results_dir: "results_special_C"
+
+# Environment configuration
+environment:
+  env_type: vectorfield  # Use factory string key
+  dynamics_type: "limit_cycle"
+  dim: 2
+  noise_scale: 0.1
+  dt: 0.1
+  device: "cpu"
+
+# Model configuration
+model:
+  model_type: seq-vae
+  encoder_type: mlp-encoder
+  mapping_type: loglinear
+  noise_type: gaussian
+  dynamics_type: mlp-dynamics
+  input_dim: 2
+  action_dim: 2
+  ensemble: false
+  num_models: 1
+  latent_dim: 2
+  encoder_hidden_dims: [64, 32]
+  decoder_hidden_dims: [32, 64]
+  dynamics_hidden_dims: [64, 32]
+  observation_model: loglinear  # Use log-linear observation model
+  C_matrix:  # Optional: custom C matrix (2x2)
+    - [1.0, 0.0]
+    - [0.0, 1.0]
+
+# Policy configuration
+policy:
+  policy_type: mpc-icem
+  action_dim: 2
+  horizon: 10
+  num_iterations: 10
+  num_samples: 32
+  num_elite: 100
+  alpha: 0.1
+  device: "cpu"
+
+# Training configuration
+training:
+  total_steps: 1000
+  train_every: 1
+  save_every: 100
+  animate_every: 100
+  rollout_horizon: 20
+  batch_size: 1
+  learning_rate: 1e-3
+  weight_decay: 1e-5
+  patience: 5
+  min_delta: 1e-4
+
+# Logging configuration
+logging:
+  log_every: 100
+  video_path: "results_special_C/videos"
+  model_path: "results_special_C/models"
+  buffer_path: "results_special_C/buffers"
+  logger_path: "results_special_C/logs" 

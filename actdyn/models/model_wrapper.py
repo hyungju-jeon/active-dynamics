@@ -57,10 +57,10 @@ class VAEWrapper(gym.Env):
 
         # Encode initial state to latent space
         with torch.no_grad():
-            self._state = self.model.encode(self._observation)[
+            self._state = self.model.encoder(self._observation)[
                 0
             ]  # Use mean of encoding
-            observed = self.model.decode(self._state)
+            observed = self.model.decoder(self._state)
 
         info = {
             "latent_state": self._state,

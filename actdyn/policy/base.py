@@ -5,6 +5,7 @@ import torch
 import numpy as np
 from typing import Dict, Any, Callable
 from actdyn.models import BaseModel
+import gymnasium
 
 
 class BasePolicy:
@@ -53,8 +54,9 @@ class BaseMPC(BasePolicy):
         device: str = "cpu",
     ):
         super().__init__(model.action_space, device)
+        # Accept both gym and gymnasium Box spaces
         assert isinstance(
-            self.action_space, gym.spaces.Box
+            self.action_space, gymnasium.spaces.Box
         ), "Only box action space is supported"
         self.action_dim = self.action_space.shape[0]
         self.action_bounds = (
