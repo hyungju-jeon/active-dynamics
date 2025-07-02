@@ -1,7 +1,8 @@
 import torch
-import sys
 from typing import Union, Dict
 from actdyn.models import BaseDynamics, Decoder
+from actdyn.models.decoder import LinearMapping, LogLinearMapping
+from actdyn.models.dynamics import RBFDynamics
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from .base import BaseMetric
 
@@ -14,9 +15,7 @@ def compute_jacobian_state(function, state, **kwargs):
 
 
 def compute_jacobian_params(function, state, **kwargs):
-    """Compute Jacobian of a function with respect to parameters efficiently.
-    Uses torch.autograd.functional.jacobian and stateless.functional_call if available (PyTorch 2.0+).
-    """
+    """Compute Jacobian of a function with respect to parameters."""
     params = tuple(function.parameters())
     # PyTorch 2.0+ provides torch.func.functional_call for efficient parameter substitution
     if hasattr(torch, "func") and hasattr(torch.func, "functional_call"):
@@ -62,35 +61,78 @@ class FisherInformationMetric(BaseMetric):
         self.dynamics = dynamics
         self.decoder = decoder
         self.use_diag = use_diag
+        self.I = None
 
-    def compute_rbf_fim(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
+    def compute_dh_dz(self, z):
+        if isinstance(self.decoder, LogLinearMapping):
+            C = self.decoder.mapping.network.weight.data.clone()
+            dh_dz = C.view(1, 1, C.shape[0], C.shape[1]).expand(
+                z.shape[0], z.shape[1], C.shape[0], C.shape[1]
+            )
+
+        elif isinstance(self.decoder, LinearMapping):
+            C = self.decoder.mapping.network.weight.data.clone()
+            dh_dz = torch.einsum(
+                "btd,dn->btdn",
+                self.decoder(z),
+                C,
+            )
+        else:
+            # TODO: add support for other decoder types, use compute_jacobian_state
+            raise ValueError(f"Decoder type {type(self.decoder)} not supported")
+
+        return dh_dz
+
+    def compute_df_dtheta(self, z):
+        if isinstance(self.dynamics, RBFDynamics):
+            df_dtheta = self.dynamics._rbf(z)
+        else:
+            df_dtheta = compute_jacobian_params(self.dynamics, z)
+        return df_dtheta
+
+    def compute_rbf_fim(
+        self, rollout: Union[Rollout, RolloutBuffer], use_diag=True
+    ) -> torch.Tensor:
+        z = rollout["model_state"]
+        assert len(z.shape) == 3, "z must be a tensor of shape (batch, T, d_latent)"
+        batch, T, d_latent = z.shape
+        d_param = self.dynamics.weights.numel()
+
+        dh_dz = self.compute_dh_dz(z)
+        df_dtheta = self.compute_df_dtheta(z).unsqueeze(-1)
+
+        # TODO temporally discounted I
+        if use_diag:
+            I_new = (
+                torch.einsum(
+                    "btd, btk->btdk", (dh_dz**2).sum(-2), df_dtheta.squeeze(-1) ** 2
+                )
+                .reshape(batch, T, d_param)
+                .sum(dim=1)
+            ).unsqueeze(1)
+        else:
+            J = torch.einsum(
+                "...nd,...kd->...nk", dh_dz, torch.kron(torch.eye(d_latent), df_dtheta)
+            )  # (batch, T, d_obs, d_param)
+            I_new = (J.mT @ J).sum(dim=1)  # (batch, d_param, d_param)
+
+        return I_new
+
+    def compute_nn_fim(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
         pass
 
     def compute_fim(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        pass
-
-    def compute_point(
-        self, trajectory: Dict[str, torch.Tensor], t: int
-    ) -> torch.Tensor:
-        z = trajectory["state"][t : t + 2]  # Need current and next state
-        if len(z) < 2:
-            return torch.tensor(0.0, device=self.device)
-
-        C = self.decoder.decoder[0].weight
-        dh_dz = self.decoder(z[1]).unsqueeze(-1) * C
-        phi = self.dynamics.rbf(z[0]).unsqueeze(-1)
-
-        if self.use_diag:
-            fim_diag = torch.einsum("d,k->dk", (dh_dz**2).sum(-2), phi.squeeze(-1) ** 2)
-            return fim_diag.sum()
+        if isinstance(self.dynamics, RBFDynamics):
+            return self.compute_rbf_fim(rollout)
         else:
-            J = torch.einsum(
-                "nd,kd->nk",
-                dh_dz,
-                torch.kron(torch.eye(z.shape[-1], device=self.device), phi),
-            )
-            fim = J.mT @ J
-            return torch.trace(fim)
+            return self.compute_nn_fim(rollout)
+
+    def update_fim(self, rollout: Union[Rollout, RolloutBuffer], discount_factor=0.99):
+        I_new = self.compute_fim(rollout)
+        if self.I is None:
+            self.I = I_new
+        else:
+            self.I = self.I * discount_factor + I_new
 
 
 class AOptimality(FisherInformationMetric):
@@ -108,7 +150,14 @@ class AOptimality(FisherInformationMetric):
         )
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        pass
+        self.update_fim(rollout)
+
+        if self.use_diag:
+            # return reciprocal sum of fim that are greater than 1e-3
+            return torch.reciprocal(self.I).sum(dim=-1)
+        else:
+            # TODO: implement non-diagonal A-optimality
+            pass
 
 
 class DOptimality(FisherInformationMetric):

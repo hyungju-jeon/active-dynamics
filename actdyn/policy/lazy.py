@@ -11,6 +11,3 @@ class LazyPolicy(BasePolicy):
 
     def update(self, batch):
         pass
-
-    def __call__(self, state):
-        return self.get_action(state)

@@ -8,7 +8,4 @@ class RandomPolicy(BasePolicy):
         super().__init__(action_space, **kwargs)
 
     def get_action(self, state: torch.Tensor):
-        return self.action_space.sample()
-
-    def __call__(self, state: torch.Tensor):
-        return self.get_action(state)
+        return torch.FloatTensor(self.action_space.sample()).to(self.device)

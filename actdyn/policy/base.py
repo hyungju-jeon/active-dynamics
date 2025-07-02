@@ -36,9 +36,9 @@ class BasePolicy:
 
         self.device = torch.device(device)
 
-    def __call__(self, state: torch.Tensor, **kwargs) -> torch.Tensor:
+    def __call__(self, state, **kwargs) -> torch.Tensor:
         """Get action for given state."""
-        return self.get_action(state, **kwargs)
+        return torch.FloatTensor(self.get_action(state))
 
 
 class BaseMPC(BasePolicy):
