@@ -1,21 +1,35 @@
 from dataclasses import dataclass, field
 from typing import List
+import yaml
 
 
 @dataclass
 class EnvironmentConfig:
-    dynamics_type: str = "limit_cycle"  # Options: "limit_cycle", "double_limit_cycle"
-    dim: int = 2
-    noise_scale: float = 0.1
+    env_type: str = "vectorfield"
+    dynamics_type: str = "limit_cycle"
+    observation_type: str = "loglinear"
+    noise_type: str = "poisson"
+    action_type: str = "identity"
+    latent_dim: int = 2
+    observation_dim: int = 2
+    action_dim: int = 2
+    noise_scale: float = 0.0
     dt: float = 0.1
     device: str = "cuda"
 
 
 @dataclass
 class ModelConfig:
-    input_dim: int = 2
-    latent_dim: int = 2
+    model_type: str = "seq-vae"
+    encoder_type: str = "mlp-encoder"
+    dynamics_type: str = "mlp-dynamics"
+    observation_type: str = "loglinear"
+    noise_type: str = "gaussian"
+    observation_dim: int = 2
+    action_dim: int = 2
+    ensemble: bool = False
     num_models: int = 1
+    latent_dim: int = 2
     encoder_hidden_dims: List[int] = field(default_factory=lambda: [16])
     decoder_hidden_dims: List[int] = field(default_factory=lambda: [16])
     dynamics_hidden_dims: List[int] = field(default_factory=lambda: [16])
@@ -23,12 +37,14 @@ class ModelConfig:
 
 @dataclass
 class PolicyConfig:
-    device: str = "cuda"
+    policy_type: str = "mpc-icem"
+    action_dim: int = 2
     horizon: int = 10
     num_iterations: int = 10
     num_samples: int = 32
     num_elite: int = 100
     alpha: float = 0.1
+    device: str = "cuda"
 
 
 @dataclass
@@ -57,7 +73,9 @@ class ExperimentConfig:
     seed: int = 42
     device: str = "cuda"
     results_dir: str = "results"
-    action_dim: int = 2  # Single source of truth for action_dim
+    action_dim: int = 2
+    observation_dim: int = 2
+    latent_dim: int = 2
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
@@ -65,14 +83,14 @@ class ExperimentConfig:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     def __post_init__(self):
-        # Ensure model and policy configs use the same action_dim
         self.model.action_dim = self.action_dim
         self.policy.action_dim = self.action_dim
+        self.model.observation_dim = self.observation_dim
+        self.model.latent_dim = self.latent_dim
 
     @classmethod
     def from_yaml(cls, yaml_path: str) -> "ExperimentConfig":
         """Create an ExperimentConfig instance from a YAML file."""
-        import yaml
 
         with open(yaml_path, "r") as f:
             config_dict = yaml.safe_load(f)
