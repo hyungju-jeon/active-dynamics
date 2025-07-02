@@ -1,6 +1,7 @@
 from .base import BaseMetric, CompositeSumCost
 import importlib
 
+__all__ = ["reward_from_str", "cost_from_str", "information_from_str"]
 
 _reward_map = {
     "sum": (".reward", "RewardMetric"),

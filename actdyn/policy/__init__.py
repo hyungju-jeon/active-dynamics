@@ -1,6 +1,8 @@
 from .base import BasePolicy
 import importlib
 
+__all__ = ["policy_factory"]
+
 _policy_map = {
     "mpc-icem": (".icem", "MpcICem"),
     "random": (".random", "RandomPolicy"),

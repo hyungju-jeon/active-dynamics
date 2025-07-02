@@ -36,6 +36,7 @@ _noise_map = {
     "poisson": (".decoder", "PoissonNoise"),
     # Add more mappings as needed
 }
+
 _dynamics_map = {
     "linear-dynamics": (".dynamics", "LinearDynamics"),
     "mlp-dynamics": (".dynamics", "MLPDynamics"),
