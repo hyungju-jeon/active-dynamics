@@ -20,7 +20,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_device(device)
 
 
-def main():
+if __name__ == "__main__":
     # Define the environment
     vf = VectorFieldEnv(
         dynamics_type="limit_cycle", noise_scale=1e-2, device=device, dt=1
@@ -68,7 +68,7 @@ def main():
         for t in range(num_steps):
             rollout.add(
                 obs=y[i, t].unsqueeze(0),
-                action=torch.zeros(1, 3, device=device),
+                action=torch.randn(1, 3, device=device),
                 env_state=z[i, t].unsqueeze(0),
                 next_obs=y[i, t + 1].unsqueeze(0),
             )
@@ -98,7 +98,3 @@ def main():
     plt.plot(to_np(y[0, :, :2]), "--", label="true")
     plt.legend()
     plt.show()
-
-
-if __name__ == "__main__":
-    main()
