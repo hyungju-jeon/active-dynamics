@@ -38,22 +38,32 @@ class RBFDynamics(BaseDynamics):
     RBF-based dynamics model.
     """
 
+    class RBFNetwork(nn.Module):
+        def __init__(self, parent):
+            super().__init__()
+            self.parent = parent
+
+        def forward(self, state):
+            rbf = self.parent.rbf(state)
+            return torch.matmul(rbf, self.parent.weights)
+
     def __init__(self, centers, device="cpu"):
         super().__init__(state_dim=2, device=device)
         self.centers = centers.to(self.device)
-        self.sigmas = 0.25
+        self.alpha = 0.1
+        self.gamma = 1.0
         self.weights = nn.Parameter(
-            torch.randn(self.centers.shape),
+            torch.randn(self.centers.shape, device=self.device),
             requires_grad=True,
         )
+        self.network = self.RBFNetwork(self)
 
-    def _rbf(self, state):
+    def rbf(self, state):
         if len(state.shape) == 1:
             state = state.unsqueeze(0)
-        return torch.exp(-torch.cdist(state, self.centers, p=2) ** 2) * (self.sigmas**2)
-
-    def network(self, state):
-        return torch.matmul(self._rbf(state), self.weights)
+        return self.alpha * torch.exp(
+            -torch.cdist(state, self.centers, p=2) ** 2 * self.gamma
+        )
 
 
 class EnsembleDynamics(BaseDynamics):

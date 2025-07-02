@@ -50,6 +50,8 @@ class Agent:
         self._env_state = info["latent_state"]
         self._model_state = model_info["latent_state"]
 
+        self.recent = RecentRollout(max_len=20, device=self.device)
+
         return self._observation
 
     def step(self, action):
@@ -67,6 +69,7 @@ class Agent:
         """
         # Step both environments with the encoded action
         obs, reward, terminated, truncated, env_info = self.env.step(action)
+        _, model_info = self.model_env.reset(self._observation)
         _, reward, _, _, model_info = self.model_env.step(action)
         done = terminated or truncated
 

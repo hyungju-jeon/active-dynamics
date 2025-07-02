@@ -31,11 +31,12 @@ class BaseDynamicsEnv(gym.Env, ABC):
 
         # Initialize spaces with configurable bounds
         # Create action bounds arrays of shape (state_dim,)
-        action_bounds = np.asarray(action_bounds, dtype=np.float32)
-        if len(action_bounds) != state_dim:
-            raise ValueError(f"Action bounds must have length {state_dim}")
-        action_low = action_bounds
-        action_high = action_bounds
+        if not (isinstance(action_bounds, (tuple, list)) and len(action_bounds) == 2):
+            raise ValueError(
+                f"action_bounds must be a tuple or list of (low, high), got {action_bounds}"
+            )
+        action_low = np.full((state_dim,), action_bounds[0], dtype=np.float32)
+        action_high = np.full((state_dim,), action_bounds[1], dtype=np.float32)
 
         self.action_space = spaces.Box(
             low=action_low,
@@ -48,11 +49,12 @@ class BaseDynamicsEnv(gym.Env, ABC):
                 low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32
             )
         else:
-            state_bounds = np.asarray(state_bounds, dtype=np.float32)
-            if len(state_bounds) != state_dim:
-                raise ValueError(f"State bounds must have length {state_dim}")
-            state_low = state_bounds
-            state_high = state_bounds
+            if not (isinstance(state_bounds, (tuple, list)) and len(state_bounds) == 2):
+                raise ValueError(
+                    f"state_bounds must be a tuple or list of (low, high), got {state_bounds}"
+                )
+            state_low = np.full((state_dim,), state_bounds[0], dtype=np.float32)
+            state_high = np.full((state_dim,), state_bounds[1], dtype=np.float32)
 
             self.observation_space = spaces.Box(
                 low=state_low,
@@ -87,7 +89,10 @@ class BaseDynamicsEnv(gym.Env, ABC):
         if self.render_mode == "rgb_array":
             return np.zeros((100, 100, 3), dtype=np.uint8)
         elif self.render_mode == "human":
-            print(f"Current state: {self.state.cpu().numpy()}")
+            if self.state is not None and hasattr(self.state, "cpu"):
+                print(f"Current state: {self.state.cpu().numpy()}")
+            else:
+                print(f"Current state: {self.state}")
 
     def close(self):
         """Clean up resources."""
@@ -104,7 +109,9 @@ class BaseAction(nn.Module):
         self.network = None
 
     def forward(self, action):
-        return self.network(action)
+        if self.network is not None:
+            return self.network(action)
+        raise NotImplementedError("Network is not defined in BaseAction.")
 
     def to(self, device):
         if self.network is not None:
@@ -153,8 +160,10 @@ class BaseObservation(nn.Module):
 
     def observe(self, z: torch.Tensor) -> torch.Tensor:
         """Nonlinear mapping (z → y)."""
-        y = self.network(z)
-        return self._add_noise(y)
+        if self.network is not None:
+            y = self.network(z)
+            return self._add_noise(y)
+        raise NotImplementedError("Network is not defined in BaseObservation.")
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         return self.observe(z)

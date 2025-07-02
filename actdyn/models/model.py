@@ -96,17 +96,29 @@ class SeqVae(BaseModel):
             batch_iter = [data]
         else:
             batch_iter = data
-        for _ in tqdm(range(n_epochs), disable=not verbose):
+        if verbose:
+            pbar = tqdm(range(n_epochs))
+        else:
+            pbar = range(n_epochs)
+        for epoch in pbar:
+            last_loss = None
             for batch in batch_iter:
-                opt.zero_grad()
+                if not isinstance(batch, dict):
+                    continue  # skip invalid batches
                 obs = batch["obs"].to(self.device)
                 action = batch.get("action", None)
                 if action is not None:
                     action = action.to(self.device)
+                opt.zero_grad()
                 loss = self.compute_elbo(obs, u=action, idx=idx)
                 loss.backward()
                 opt.step()
                 training_losses.append(loss.item())
+                last_loss = loss.item()
+            if verbose:
+                pbar.set_postfix({"loss": last_loss})  # type: ignore
+            else:
+                print(f"Epoch {epoch+1}/{n_epochs}, Loss: {last_loss:.4f}")
         return training_losses
 
     def train(

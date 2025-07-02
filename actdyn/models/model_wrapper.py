@@ -102,7 +102,6 @@ class VAEWrapper(gym.Env):
         env_action = self.model.action_encoder(action)
         info = {
             "latent_state": next_state,
-            "observed_state": next_observation,
             "env_action": env_action,
         }
 
