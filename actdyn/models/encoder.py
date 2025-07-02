@@ -73,6 +73,16 @@ class MLPEncoder(BaseEncoder):
 
     def forward(self, x, n_samples=1):
         """Computes samples, mean, variance, and log probability of the latent distribution."""
+        # check dimension of x is (batch, time, input_dim) if not, add dimension
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        elif x.dim() == 1:
+            x = x.unsqueeze(0).unsqueeze(0)
+        elif x.dim() == 3:
+            pass
+        else:
+            raise ValueError(f"Invalid dimension of x: {x.dim()}")
+
         # compute parameters and sample
         samples, mu, var = self.sample(x, n_samples=n_samples)
         log_prob = torch.sum(Normal(mu, torch.sqrt(var)).log_prob(samples), (-2, -1))

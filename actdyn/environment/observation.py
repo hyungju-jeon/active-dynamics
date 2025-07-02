@@ -104,12 +104,3 @@ class NonlinearObservation(BaseObservation):
             nn.ReLU(),
             nn.Linear(64, obs_dim),
         ).to(device)
-
-
-# Dictionary mapping observation model names to their classes
-OBSERVATION_MODELS = {
-    "identity": IdentityObservation,
-    "linear": LinearObservation,
-    "loglinear": LogLinearObservation,
-    "nonlinear": NonlinearObservation,
-}

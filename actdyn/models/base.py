@@ -114,5 +114,5 @@ class BaseDynamics(nn.Module):
 
         return next_state, var
 
-    def forward(self, state):
-        return self.network(state).view_as(state)
+    def forward(self, state, action=None):
+        return self.sample_forward(state, action)[0]

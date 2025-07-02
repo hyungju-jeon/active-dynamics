@@ -128,8 +128,8 @@ class BaseObservation(nn.Module):
         self.obs_dim = obs_dim  # observation dimension
         self.noise_type = noise_type
         self.noise_scale = noise_scale
-        self.network = None
         self.device = torch.device(device)
+        self.network = None
 
     def _add_noise(self, y: torch.Tensor) -> torch.Tensor:
         if self.noise_type is None or self.noise_scale == 0.0:

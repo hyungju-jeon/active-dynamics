@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import gymnasium as gym
 from gymnasium import spaces
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, SupportsFloat
 import numpy as np
 
 from .observation import BaseObservation
@@ -39,9 +39,9 @@ class GymObservationWrapper(gym.Wrapper):
         self._torch_native = self._is_torch_native_env()
 
         # Update observation space if needed
-        if hasattr(obs_model, "dy"):
+        if hasattr(obs_model, "obs_dim"):
             self.observation_space = spaces.Box(
-                low=-np.inf, high=np.inf, shape=(obs_model.dy,), dtype=np.float32
+                low=-np.inf, high=np.inf, shape=(obs_model.obs_dim,), dtype=np.float32
             )
 
     def _is_torch_native_env(self) -> bool:
@@ -79,10 +79,11 @@ class GymObservationWrapper(gym.Wrapper):
 
     def step(
         self, action: Any
-    ) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
+    ) -> Tuple[torch.Tensor, SupportsFloat, bool, bool, Dict[str, Any]]:
         """Step the environment and return observation."""
         # Pass action through action_model (should output torch.Tensor)
         env_action = self.action_model(action)
+
         # Only convert to numpy if env is not torch-native
         if not self._torch_native and isinstance(env_action, torch.Tensor):
             env_action = env_action.cpu().numpy()
@@ -97,6 +98,7 @@ class GymObservationWrapper(gym.Wrapper):
         info.update(
             {
                 "latent_state": latent_state,
+                "env_action": env_action,
             }
         )
 

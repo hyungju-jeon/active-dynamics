@@ -35,9 +35,7 @@ class VAEWrapper(gym.Env):
         self._state = None
         self._observation = None
 
-    def reset(
-        self, *, seed: int = None, options: Dict[str, Any] = None
-    ) -> Tuple[torch.Tensor, Dict[str, Any]]:
+    def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state.
 
         Args:
@@ -49,11 +47,8 @@ class VAEWrapper(gym.Env):
                 - Initial observation
                 - Additional information
         """
-        super().reset(seed=seed)
-
         # Sample initial state from observation space
-        self._observation = self.observation_space.sample()
-        self._observation = torch.FloatTensor(self._observation).to(self.device)
+        self._observation = observation
 
         # Encode initial state to latent space
         with torch.no_grad():
@@ -93,7 +88,7 @@ class VAEWrapper(gym.Env):
         with torch.no_grad():
             next_state = self.model.dynamics(self._state, action)
             # Decode next state
-            next_observation = self.model.decode(next_state)
+            next_observation = self.model.decoder(next_state)
 
         # Update states
         self._observation = next_observation
@@ -104,9 +99,11 @@ class VAEWrapper(gym.Env):
         reward = torch.tensor(0.0, device=self.device)
         terminated = torch.tensor(False, device=self.device)
         truncated = torch.tensor(False, device=self.device)
+        env_action = self.model.action_encoder(action)
         info = {
             "latent_state": next_state,
             "observed_state": next_observation,
+            "env_action": env_action,
         }
 
         return next_observation, reward, terminated, truncated, info
