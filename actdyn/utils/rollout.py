@@ -22,6 +22,8 @@ class Rollout:
         "next_env_state",  # next state of the environment
         "model_state",  # belief about the state of the model
         "next_model_state",  # belief about the next state of the model
+        "env_action",  # action of the environment
+        "model_action",  # action of the model
     }
 
     def __init__(self, device="cpu"):
@@ -56,20 +58,15 @@ class Rollout:
                 if tensor_value.ndim == 0:
                     tensor_value = tensor_value.unsqueeze(0)
                 if tensor_value.ndim == 1:
-                    tensor_value = tensor_value.unsqueeze(-1)
+                    tensor_value = tensor_value.unsqueeze(0)
 
                 if tensor_value.requires_grad:
                     tensor_value = tensor_value.detach()
+
                 if key not in self._data:
-                    if tensor_value.ndim >= 2 and key == "action":
-                        self._data[key] = tensor_value
-                    else:
-                        self._data[key] = [v for v in tensor_value]
+                    self._data[key] = [v for v in tensor_value]
                 else:
-                    if tensor_value.ndim >= 2 and key == "action":
-                        self._data[key] = tensor_value
-                    else:
-                        self._data[key].extend([v for v in tensor_value])
+                    self._data[key].extend([v for v in tensor_value])
         self.length = max([len(v) for v in self._data.values()])
 
     def finalize(self):
@@ -252,31 +249,34 @@ class RecentRollout(Rollout):
         self.max_len = max_len
 
     def add(self, **kwargs):
-        # Override to ensure detachment for RecentRollout as well
-        for key, value in kwargs.items():
-            if key not in self.allowed_fields:
-                raise KeyError(
-                    f"Key {key} is not allowed. Allowed keys are: {self.allowed_fields}"
-                )
-            tensor_value = torch.as_tensor(value, device=self.device)
-            if tensor_value.requires_grad:
-                tensor_value = tensor_value.detach()
-            if key not in self._data:
-                self._data[key] = [tensor_value]
-            else:
-                self._data[key].append(tensor_value)
-        self.length += 1
-        # If we exceed max_len, truncate oldest entries
-        if len(self) > self.max_len:
-            for key in self._data:
-                self._data[key] = self._data[key][-self.max_len :]
-            self.length = self.max_len
-            self._finalized = True  # Always finalized after trimming
+        if self.finalized:
+            for key, value in kwargs.items():
+                if key not in self.allowed_fields:
+                    raise KeyError(
+                        f"Key {key} is not allowed. Allowed keys are: {self.allowed_fields}"
+                    )
+                tensor_value = torch.as_tensor(value, device=self.device)
+                # Standardize tensor dimensions (always 2D)
+                if tensor_value.ndim == 0:
+                    tensor_value = tensor_value.unsqueeze(0)
+                if tensor_value.ndim == 1:
+                    tensor_value = tensor_value.unsqueeze(0)
+
+                if tensor_value.requires_grad:
+                    tensor_value = tensor_value.detach()
+
+                self._data[key][:-1] = self._data[key][1:].clone()
+                self._data[key][-1] = tensor_value
         else:
-            self._finalized = True  # Ensure it's usable immediately
+            super().add(**kwargs)
+            if len(self) >= self.max_len:
+                for key in self._data:
+                    self._data[key] = self._data[key][-self.max_len :]
+                self.length = self.max_len
+                self.finalize()
 
     def as_batch(self):
-        return self.as_dict()  # Used directly for model training
+        return {k: v.unsqueeze(0) for k, v in self._data.items()}
 
 
 # %%
