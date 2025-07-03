@@ -33,7 +33,21 @@ class GymObservationWrapper(gym.Wrapper):
         super().__init__(env)
         self.obs_model = obs_model
         self.action_model = action_model
-        self.device = torch.device(device)
+
+        # Auto-detect device from observation model if available
+        if hasattr(obs_model, "network") and obs_model.network is not None:
+            try:
+                detected_device = next(obs_model.network.parameters()).device
+                self.device = detected_device
+            except StopIteration:
+                # Network has no parameters, use provided device
+                self.device = torch.device(device)
+        else:
+            self.device = torch.device(device)
+
+        # Ensure action model is on the same device
+        if hasattr(action_model, "to"):
+            action_model.to(self.device)
 
         # Detect if the environment is torch-native (returns torch.Tensor from reset/step)
         self._torch_native = self._is_torch_native_env()
@@ -54,9 +68,14 @@ class GymObservationWrapper(gym.Wrapper):
 
     def _to_tensor(self, x: Any) -> torch.Tensor:
         """Convert input to torch tensor."""
+        # Get the device from the observation model's network if available
+        target_device = self.device
+        if hasattr(self.obs_model, "network") and self.obs_model.network is not None:
+            target_device = next(self.obs_model.network.parameters()).device
+
         if isinstance(x, torch.Tensor):
-            return x.to(self.device)
-        return torch.tensor(x, device=self.device, dtype=torch.float32)
+            return x.to(target_device)
+        return torch.tensor(x, device=target_device, dtype=torch.float32)
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
@@ -81,8 +100,10 @@ class GymObservationWrapper(gym.Wrapper):
         self, action: Any
     ) -> Tuple[torch.Tensor, SupportsFloat, bool, bool, Dict[str, Any]]:
         """Step the environment and return observation."""
+        # Convert action to tensor on correct device before passing to action_model
+        action_tensor = self._to_tensor(action)
         # Pass action through action_model (should output torch.Tensor)
-        env_action = self.action_model(action)
+        env_action = self.action_model(action_tensor)
 
         # Only convert to numpy if env is not torch-native
         if not self._torch_native and isinstance(env_action, torch.Tensor):
@@ -98,7 +119,11 @@ class GymObservationWrapper(gym.Wrapper):
         info.update(
             {
                 "latent_state": latent_state,
-                "env_action": env_action,
+                "env_action": (
+                    self._to_tensor(env_action)
+                    if isinstance(env_action, (np.ndarray, list))
+                    else env_action
+                ),
             }
         )
 

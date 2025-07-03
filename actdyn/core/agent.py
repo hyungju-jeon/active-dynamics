@@ -44,9 +44,10 @@ class Agent:
             torch.Tensor: Initial observation
         """
         # Get initial observation from environment
-        obs, info = self.env.reset()
-        self._observation = obs.unsqueeze(0)
-        _, model_info = self.model_env.reset(self._observation)
+        with torch.no_grad():
+            obs, info = self.env.reset()
+            self._observation = obs.unsqueeze(0)
+            _, model_info = self.model_env.reset(self._observation)
         self._env_state = info["latent_state"]
         self._model_state = model_info["latent_state"]
 
@@ -69,7 +70,6 @@ class Agent:
         """
         # Step both environments with the encoded action
         obs, reward, terminated, truncated, env_info = self.env.step(action)
-        _, model_info = self.model_env.reset(self._observation)
         _, reward, _, _, model_info = self.model_env.step(action)
         done = terminated or truncated
 
@@ -90,6 +90,8 @@ class Agent:
         self.recent.add(**transition)
 
         # Update observation and environment/model state
+        _, model_info = self.model_env.reset(obs)
+
         self._observation = obs
         self._model_state = model_info["latent_state"]
         self._env_state = env_info["latent_state"]

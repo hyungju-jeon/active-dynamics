@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 import torch.nn.functional as F
 from .base import BaseMapping, BaseNoise
+from torch.nn.functional import softplus
 
 eps = 1e-6
 
@@ -66,7 +67,8 @@ class GaussianNoise(BaseNoise):
         )
 
     def log_prob(self, mean, y):
-        var = torch.exp(self.logvar)
+
+        var = softplus(self.logvar) + eps
         return torch.sum(Normal(mean, torch.sqrt(var)).log_prob(y), dim=(-1, -2))
 
     def to(self, device):

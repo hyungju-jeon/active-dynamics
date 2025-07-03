@@ -33,7 +33,6 @@ class VAEWrapper(gym.Env):
 
         # Initialize state tracking
         self._state = None
-        self._observation = None
 
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state.
@@ -47,22 +46,16 @@ class VAEWrapper(gym.Env):
                 - Initial observation
                 - Additional information
         """
-        # Sample initial state from observation space
-        self._observation = observation
 
         # Encode initial state to latent space
         with torch.no_grad():
-            self._state = self.model.encoder(self._observation)[
-                0
-            ]  # Use mean of encoding
-            observed = self.model.decoder(self._state)
+            self._state = self.model.encoder(observation)[0]  # Use mean of encoding
 
         info = {
             "latent_state": self._state,
-            "observed_state": observed,
         }
 
-        return observed, info
+        return observation, info
 
     def set_state(self, state: torch.Tensor):
         self._state = state
@@ -91,7 +84,6 @@ class VAEWrapper(gym.Env):
             next_observation = self.model.decoder(next_state)
 
         # Update states
-        self._observation = next_observation
         self._state = next_state
 
         # For now, return zero reward and not done

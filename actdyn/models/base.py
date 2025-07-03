@@ -115,4 +115,4 @@ class BaseDynamics(nn.Module):
         return next_state, var
 
     def forward(self, state, action=None):
-        return self.sample_forward(state, action)[0]
+        return self.compute_param(state)[0]

@@ -73,7 +73,7 @@ class SeqVae(BaseModel):
         kl_d = self._kl_div(mu_q[..., 1:, :], var_q[..., 1:, :], mu_p_x, var_p_x)
         return kl_d
 
-    def compute_elbo(self, y, u=None, n_samples=1, beta=1.0, idx=None):
+    def compute_elbo(self, y, u=None, n_samples=1, beta=10.0, idx=None):
         x_samples, mu_q_x, var_q_x, log_q = self.encoder(y, n_samples=n_samples)
         if self.action_encoder is not None and u is not None:
             u_encoded = self.action_encoder(u)
@@ -117,8 +117,6 @@ class SeqVae(BaseModel):
                 last_loss = loss.item()
             if verbose:
                 pbar.set_postfix({"loss": last_loss})  # type: ignore
-            else:
-                print(f"Epoch {epoch+1}/{n_epochs}, Loss: {last_loss:.4f}")
         return training_losses
 
     def train(

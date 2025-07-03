@@ -57,5 +57,5 @@ def plot_vector_field(dynamics, ax=None, **kwargs):
     plt.xlabel("Latent Dimension 1")
     plt.ylabel("Latent Dimension 2")
     plt.title("Vector Field of Latent Dynamics")
-    plt.axis("off")
+    # plt.axis("off")
     plt.axis("equal")
