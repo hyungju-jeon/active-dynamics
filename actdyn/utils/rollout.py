@@ -139,16 +139,21 @@ class Rollout:
                     f"Stop index {adj_slice.stop} out of bounds for length {self.length}"
                 )
 
-            sliced_data = {k: v[adj_slice] for k, v in self._data.items()}
-            slice_len = 0
-            if sliced_data:
-                first_key = next(iter(sliced_data))
-                slice_len = len(sliced_data[first_key])
+            if self.finalized:
+                # Return a dict of sliced tensors
+                return {k: v[adj_slice] for k, v in self._data.items()}
+            else:
+                # Return a list of dicts (as before)
+                sliced_data = {k: v[adj_slice] for k, v in self._data.items()}
+                slice_len = 0
+                if sliced_data:
+                    first_key = next(iter(sliced_data))
+                    slice_len = len(sliced_data[first_key])
 
-            return [
-                {k_item: v_item[i] for k_item, v_item in sliced_data.items()}
-                for i in range(slice_len)
-            ]
+                return [
+                    {k_item: v_item[i] for k_item, v_item in sliced_data.items()}
+                    for i in range(slice_len)
+                ]
 
         else:
             raise TypeError(f"Key must be str, int, or slice, not {type(key)}")
