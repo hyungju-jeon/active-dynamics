@@ -1,0 +1,3 @@
+[submodule "docs/active-dynamics-writing"]
+	path = docs/active-dynamics-writing
+	url = https://github.com/hyungju-jeon/active-dynamics-writing
