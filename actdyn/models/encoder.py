@@ -89,7 +89,7 @@ class MLPEncoder(BaseEncoder):
         return samples, mu, var, log_prob
 
 
-class RNNEncoder(nn.Module):
+class RNNEncoder(BaseEncoder):
     """RNN-based encoder for a moving window of k time steps."""
 
     def __init__(
@@ -141,5 +141,5 @@ class RNNEncoder(nn.Module):
 
     def forward(self, x, n_samples=1):
         samples, mu, var = self.sample(x, n_samples=n_samples)
-        log_prob = torch.sum(Normal(mu, torch.sqrt(var)).log_prob(samples), -1)
+        log_prob = torch.sum(Normal(mu, torch.sqrt(var)).log_prob(samples), (-1,))
         return samples, mu, var, log_prob
