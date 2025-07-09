@@ -1,4 +1,29 @@
 # %%
+
+# import torch
+# import gymnasium as gym
+# from actdyn.models.encoder import MLPEncoder, RNNEncoder
+
+# gym_env = gym.make('Pendulum-v1')
+# obs_dim = gym_env.observation_space.shape[0]  # 3-D observation
+# action_dim = gym_env.action_space.shape[0]    # 1-D continuous action
+# latent_dim = obs_dim  # choose latent dimension same as observation dim
+# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# encoder = RNNEncoder(
+#     input_dim=obs_dim,
+#     hidden_dim=32,
+#     latent_dim=latent_dim,
+#     rnn_type="gru",
+#     num_layers=1,
+#     device=device
+# )
+
+# # encoder = MLPEncoder(input_dim=obs_dim, latent_dim=latent_dim,
+# #                          device=device, hidden_dims=[32, 32])
+
+# %%
+
 # Testing SeqVAE components on OpenAI Gymnasium Pendulum environment
 
 import torch
@@ -6,7 +31,7 @@ from matplotlib import pyplot as plt
 import gymnasium as gym
 import torch.nn.functional as F
 
-from actdyn.models.encoder import MLPEncoder
+from actdyn.models.encoder import MLPEncoder, RNNEncoder
 from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping
 from actdyn.models.dynamics import LinearDynamics
 from actdyn.models.model import SeqVae
@@ -27,8 +52,17 @@ if __name__ == "__main__":
     latent_dim = obs_dim  # choose latent dimension same as observation dim
 
     # define SeqVAE model components
-    encoder = MLPEncoder(input_dim=obs_dim, latent_dim=latent_dim,
-                         device=device, hidden_dims=[32, 32])
+    encoder = RNNEncoder(
+        input_dim=obs_dim,
+        hidden_dim=32,
+        latent_dim=latent_dim,
+        rnn_type="gru",
+        num_layers=1,
+        device=device,
+    )
+
+    # encoder = MLPEncoder(input_dim=obs_dim, latent_dim=latent_dim,
+    #                      device=device, hidden_dims=[32, 32])
     decoder = Decoder(
         LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
         GaussianNoise(output_dim=obs_dim, sigma=0.5),
@@ -59,16 +93,22 @@ if __name__ == "__main__":
         obs_raw, _ = gym_env.reset()
         obs_seq[0] = torch.from_numpy(obs_raw).float().to(device)
 
+        done = False
+        t = 0
         for t in range(num_steps):
             # sample a continuous action
             a = gym_env.action_space.sample()
-            a_tensor = torch.from_numpy(a).float().to(device)
-            actions[t] = a_tensor
+            actions[t] = torch.from_numpy(a).float().to(device)
 
             obs_next, _, done, _, _ = gym_env.step(a)
             obs_seq[t+1] = torch.from_numpy(obs_next).float().to(device)
             if done:
                 break
+
+        actual_length = t + 1
+        if actual_length < num_steps:
+            # skip this rollout entirely
+            continue
 
         # build rollout
         rollout = Rollout()
@@ -79,6 +119,7 @@ if __name__ == "__main__":
                 action=actions[t].unsqueeze(0),
                 next_obs=obs_seq[t+1].unsqueeze(0),
             )
+        # rollout.length = actual_steps
         rollout_buffer.add(rollout)
 
     # train model end-to-end
@@ -86,7 +127,7 @@ if __name__ == "__main__":
     model.train(
         list(rollout_buffer.as_batch(batch_size=64, shuffle=True)),
         optimizer="AdamW",
-        n_epochs=20000,
+        n_epochs=5000,
     )
 
 # %%
