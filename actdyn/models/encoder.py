@@ -123,8 +123,8 @@ class RNNEncoder(BaseEncoder):
         if self.rnn_type == "lstm":
             _, (h_n, _) = self.network(x)
         else:
-            _, h_n = self.network(x)
-        h = h_n[-1]  # (batch, hidden_dim)
+            h, _ = self.network(x)
+        # h = h_n[-1]  # (batch, hidden_dim)
         mu = self.fc_mu(h)
         log_var = self.fc_log_var(h)
         var = softplus(log_var) + eps
