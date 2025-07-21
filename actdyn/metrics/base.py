@@ -8,7 +8,6 @@ class BaseMetric:
 
     def __init__(self, compute_type: str = "sum", device: str = "cpu"):
         self.device = device
-        self.metric = None
         self.compute_type = compute_type
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
@@ -55,7 +54,7 @@ class DiscountedMetric(BaseMetric):
         ).unsqueeze(-1) * self.metric.compute(rollout)
 
 
-class CompositeSumCost(BaseMetric):
+class CompositeMetric(BaseMetric):
     """Wrapper for composite cost/metric combining multiple functions."""
 
     def __init__(

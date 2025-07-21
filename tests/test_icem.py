@@ -1,6 +1,6 @@
 import pytest
 import torch
-from actdyn.policy.icem import MpcICem
+from actdyn.policy.mpc import MpcICem
 from actdyn.utils.rollout import RolloutBuffer
 from gym.spaces import Box
 import numpy as np
@@ -64,7 +64,7 @@ def icem_policy(mock_model, icem_config):
         model=mock_model,
         icem_params=icem_config,
         mpc_params=mpc_params,
-        cost_fn=simple_cost_fn,
+        metric=simple_cost_fn,
         device="cpu",
     )
 
@@ -222,7 +222,7 @@ def icem(icem_params, mpc_params, mock_model):
         model=mock_model,
         icem_params=icem_params,
         mpc_params=mpc_params,
-        cost_fn=simple_cost_fn,
+        metric=simple_cost_fn,
         device="cpu",
     )
 

@@ -39,9 +39,10 @@ def plot_vector_field(dynamics, ax=None, **kwargs):
     X, Y, U, V = X.cpu().numpy(), Y.cpu().numpy(), U.cpu().numpy(), V.cpu().numpy()
     speed = np.sqrt(U**2 + V**2)
 
-    plt.figure(figsize=(10, 8))
     if ax is not None:
         plt.sca(ax)
+    else:
+        plt.figure(figsize=(10, 8))
     plt.streamplot(
         X,
         Y,

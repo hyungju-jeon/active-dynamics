@@ -15,7 +15,7 @@ from actdyn.environment.action import IdentityActionEncoder
 from actdyn.environment.observation import LinearObservation
 from actdyn.environment.vectorfield import VectorFieldEnv
 from actdyn.policy.random import RandomPolicy
-from actdyn.policy.lazy import LazyPolicy
+from actdyn.policy.policy import LazyPolicy
 from actdyn.utils.helpers import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 
@@ -30,7 +30,7 @@ if __name__ == "__main__":
         dynamics_type="limit_cycle", noise_scale=1e-2, device=device, dt=1
     )
     obs_model = LinearObservation(latent_dim=2, obs_dim=5, device=device)
-    action_model = IdentityActionEncoder(input_dim=2, latent_dim=2, device=device)
+    action_model = IdentityActionEncoder(action_dim=2, latent_dim=2, device=device)
     env = GymObservationWrapper(
         env=vf, obs_model=obs_model, action_model=action_model, device=device
     )
@@ -42,7 +42,7 @@ if __name__ == "__main__":
         device=device,
     )
     dynamics = LinearDynamics(state_dim=2, device=device)
-    action_encoder = IdentityActionEncoder(input_dim=2, latent_dim=2, device=device)
+    action_encoder = IdentityActionEncoder(action_dim=2, latent_dim=2, device=device)
 
     # Skipping decoder.mapping weight/bias copy and parameter freezing for simplicity
 

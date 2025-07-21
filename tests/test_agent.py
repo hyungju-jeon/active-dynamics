@@ -37,7 +37,7 @@ if __name__ == "__main__":
         dynamics_type="limit_cycle", noise_scale=1e-2, device=device, dt=1
     )
     obs_model = LogLinearObservation(latent_dim=2, obs_dim=50, device=device)
-    action_model = IdentityActionEncoder(input_dim=2, latent_dim=2, device=device)
+    action_model = IdentityActionEncoder(action_dim=2, latent_dim=2, device=device)
     env = GymObservationWrapper(env=vf, obs_model=obs_model, action_model=action_model)
 
     # Define the model
@@ -52,7 +52,7 @@ if __name__ == "__main__":
     rbf_xx, rbf_yy = torch.meshgrid(rbf_grid_x, rbf_grid_y, indexing="ij")  # [H, W]
     rbf_grid_pts = torch.stack([rbf_xx.flatten(), rbf_yy.flatten()], dim=1)
     dynamics = RBFDynamics(centers=rbf_grid_pts, device=device)
-    action_encoder = IdentityActionEncoder(input_dim=2, latent_dim=2, device=device)
+    action_encoder = IdentityActionEncoder(action_dim=2, latent_dim=2, device=device)
 
     # Copy weights from obs_model to decoder mapping and freeze them
     decoder.mapping.network[0].weight.data = obs_model.network[0].weight.data.clone()

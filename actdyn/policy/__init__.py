@@ -1,20 +1,20 @@
-from .base import BasePolicy
+from .base import BasePolicy, BaseMPC
 import importlib
 
-__all__ = ["policy_factory"]
+__all__ = ["policy_from_str", "BasePolicy", "BaseMPC"]
 
 _policy_map = {
-    "mpc-icem": (".icem", "MpcICem"),
-    "random": (".random", "RandomPolicy"),
-    "lazy": (".lazy", "LazyPolicy"),
+    "mpc-icem": (".mpc", "MpcICem"),
+    "random": (".policy", "RandomPolicy"),
+    "lazy": (".policy", "LazyPolicy"),
     # Add more mappings as needed
 }
 
 
-def policy_factory(policy_str: str) -> type[BasePolicy]:
+def policy_from_str(policy_str: str) -> type[BasePolicy]:
     """
     Dynamically import and return the policy class based on the string key.
-    Example: policy_factory('mpc-icem')
+    Example: policy_from_string('mpc-icem')
     """
     if policy_str not in _policy_map:
         raise ImportError(

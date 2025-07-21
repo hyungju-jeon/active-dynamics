@@ -1,11 +1,10 @@
 """Base policy classes for the active dynamics package."""
 
-import gym
 import torch
-import numpy as np
 from typing import Dict, Any, Callable
+from actdyn.metrics.base import BaseMetric
 from actdyn.models import BaseModel
-import gymnasium
+import gymnasium as gym
 
 
 class BasePolicy:
@@ -21,14 +20,6 @@ class BasePolicy:
 
     def update(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """Update policy parameters."""
-        raise NotImplementedError
-
-    def save(self, path: str) -> None:
-        """Save policy to disk."""
-        raise NotImplementedError
-
-    def load(self, path: str) -> None:
-        """Load policy from disk."""
         raise NotImplementedError
 
     def to_device(self, device: str) -> None:
@@ -47,16 +38,17 @@ class BaseMPC(BasePolicy):
 
     def __init__(
         self,
-        cost_fn: Callable,
+        metric: BaseMetric,
         model: BaseModel,
-        mpc_params: Dict[str, Any],
+        horizon: int,
+        num_samples: int,
         verbose: bool = False,
         device: str = "cpu",
     ):
-        super().__init__(model.action_space, device)
+        super().__init__(model.action_encoder.action_space, device)
         # Accept both gym and gymnasium Box spaces
         assert isinstance(
-            self.action_space, gymnasium.spaces.Box
+            self.action_space, gym.spaces.Box
         ), "Only box action space is supported"
         self.action_dim = self.action_space.shape[0]
         self.action_bounds = (
@@ -64,11 +56,14 @@ class BaseMPC(BasePolicy):
             if self.action_space.is_bounded()
             else None
         )
-        self.horizon = mpc_params["horizon"]
-        self.num_samples = mpc_params["num_samples"]
-        self.cost_fn = cost_fn
+        self.horizon = horizon
+        self.num_samples = num_samples
+        self.metric = metric
         self.model = model
         self.verbose = verbose
 
     def beginning_of_rollout(self, state: torch.Tensor):
+        pass
+
+    def end_of_rollout(self, state: torch.Tensor):
         pass

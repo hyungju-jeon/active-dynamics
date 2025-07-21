@@ -45,9 +45,9 @@ torch.set_default_device(device)
 
 if __name__ == "__main__":
     # create Pendulum environment
-    gym_env = gym.make('Pendulum-v1')
+    gym_env = gym.make("Pendulum-v1")
     obs_dim = gym_env.observation_space.shape[0]  # 3-D observation
-    action_dim = gym_env.action_space.shape[0]    # 1-D continuous action
+    action_dim = gym_env.action_space.shape[0]  # 1-D continuous action
 
     latent_dim = obs_dim  # choose latent dimension same as observation dim
 
@@ -87,7 +87,7 @@ if __name__ == "__main__":
     rollout_buffer = RolloutBuffer(num_samples)
 
     for _ in range(num_samples):
-        obs_seq = torch.zeros(num_steps+1, obs_dim, device=device)
+        obs_seq = torch.zeros(num_steps + 1, obs_dim, device=device)
         actions = torch.zeros(num_steps, action_dim, device=device)
 
         obs_raw, _ = gym_env.reset()
@@ -101,7 +101,7 @@ if __name__ == "__main__":
             actions[t] = torch.from_numpy(a).float().to(device)
 
             obs_next, _, done, _, _ = gym_env.step(a)
-            obs_seq[t+1] = torch.from_numpy(obs_next).float().to(device)
+            obs_seq[t + 1] = torch.from_numpy(obs_next).float().to(device)
             if done:
                 break
 
@@ -117,25 +117,25 @@ if __name__ == "__main__":
             rollout.add(
                 obs=obs_seq[t].unsqueeze(0),
                 action=actions[t].unsqueeze(0),
-                next_obs=obs_seq[t+1].unsqueeze(0),
+                next_obs=obs_seq[t + 1].unsqueeze(0),
             )
         # rollout.length = actual_steps
         rollout_buffer.add(rollout)
 
     # train model end-to-end
-    model.action_dim = latent_dim   # latent action dimension
+    model.action_dim = latent_dim  # latent action dimension
     model.train(
         list(rollout_buffer.as_batch(batch_size=64, shuffle=True)),
         optimizer="AdamW",
         n_epochs=5000,
     )
 
-# %%
+    # %%
     # visualize one stored rollout in latent space vs observations
     raw_rollout = rollout_buffer.buffer[0]
     rollout_dict = raw_rollout.as_dict()
 
-    obs = rollout_dict['obs']        # [T,1,obs_dim]
+    obs = rollout_dict["obs"]  # [T,1,obs_dim]
     obs_traj = obs.squeeze(1).unsqueeze(0).to(device)  # [1, T, obs_dim]
 
     with torch.no_grad():
@@ -143,17 +143,17 @@ if __name__ == "__main__":
 
     plt.figure()
     # plot first two latent dims
-    plt.plot(to_np(enc_z[0, :, 0]), to_np(enc_z[0, :, 1]), '-', label='latent')
-    plt.title('Encoded Latent Trajectory')
+    plt.plot(to_np(enc_z[0, :, 0]), to_np(enc_z[0, :, 1]), "-", label="latent")
+    plt.title("Encoded Latent Trajectory")
     plt.legend()
     plt.show()
 
     # reconstruction plot
     recon = model.decoder(enc_z)
     plt.figure()
-    plt.plot(to_np(recon[0]), '-', label='reconstructed obs')
-    plt.plot(to_np(obs_traj[0]), '--', label='true obs')
-    plt.title('Observation Reconstruction')
+    plt.plot(to_np(recon[0]), "-", label="reconstructed obs")
+    plt.plot(to_np(obs_traj[0]), "--", label="true obs")
+    plt.title("Observation Reconstruction")
     plt.legend()
     plt.show()
 
@@ -178,8 +178,8 @@ print(f"Reconstruction MSE on random test batch: {loss.item():.6f}")
 n_show = 3
 for i in range(n_show):
     plt.figure()
-    plt.plot(dummy_obs[:,i].cpu().numpy(), '--', label='original')
-    plt.plot(recon[:,i].detach().cpu().numpy() * 1000, '-', label='recon')
+    plt.plot(dummy_obs[:, i].cpu().numpy(), "--", label="original")
+    plt.plot(recon[:, i].detach().cpu().numpy() * 1000, "-", label="recon")
     plt.title(f"Sample {i} Recon")
     plt.legend()
     plt.show()

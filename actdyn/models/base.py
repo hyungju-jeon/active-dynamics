@@ -116,3 +116,39 @@ class BaseDynamics(nn.Module):
 
     def forward(self, state, action=None):
         return self.compute_param(state)[0]
+
+
+class EnsembleDynamics(nn.Module):
+    """
+    Generic ensemble wrapper for any dynamics model.
+    """
+
+    def __init__(
+        self,
+        dynamics_class,
+        n_models=5,
+        dynamics_kwargs=None,
+    ):
+        super().__init__()
+        if dynamics_kwargs is None:
+            dynamics_kwargs = {}
+        self.models = nn.ModuleList(
+            [dynamics_class(**dynamics_kwargs) for _ in range(n_models)]
+        )
+        self.n_models = n_models
+
+    def sample_forward(self, state, action=None):
+        all_means, all_variances = [], []
+        for model in self.models:
+            means, variances = model.sample_forward(state, action)
+            all_means.append(means)
+            all_variances.append(variances)
+        means = torch.stack(all_means)
+        variances = torch.stack(all_variances)
+        mean_prediction = means.mean(dim=0)
+        total_variance = variances.mean(dim=0) + means.var(dim=0)
+        return mean_prediction, total_variance
+
+    def forward(self, state):
+        predictions = [model(state) for model in self.models]
+        return torch.stack(predictions)

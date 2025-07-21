@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 import gymnasium as gym
 from gymnasium import spaces
 from typing import Optional, Dict, Any, Tuple, SupportsFloat
@@ -7,7 +6,6 @@ import numpy as np
 
 from .observation import BaseObservation
 from .action import BaseAction
-from .vectorfield import VectorFieldEnv
 
 
 class GymObservationWrapper(gym.Wrapper):

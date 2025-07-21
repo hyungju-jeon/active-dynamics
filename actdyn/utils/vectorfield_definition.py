@@ -104,6 +104,8 @@ class LimitCycle(VectorField):
         self.alpha = 1 / self.scaling
 
     def get_scaling(self):
+        if self.xy is None:
+            self.create_grid(self.x_range, self.n_grid)
         U, V = self.generate_vector_field()
         speed = torch.sqrt(U**2 + V**2)
         speed = speed.max()
@@ -111,8 +113,8 @@ class LimitCycle(VectorField):
 
     def compute(self, x: ArrayType) -> ArrayType:
         r = torch.sqrt(x[..., 0] ** 2 + x[..., 1] ** 2)
-        U = x[..., 0] * (self.d - r**2) - self.w * x[..., 1] * (self.d * 2 - r**2)
-        V = x[..., 1] * (self.d - r**2) + self.w * x[..., 0] * (self.d * 2 - r**2)
+        U = x[..., 0] * (self.d - r**2) - self.w * x[..., 1]
+        V = x[..., 1] * (self.d - r**2) + self.w * x[..., 0]
 
         U = self.alpha * U
         V = self.alpha * V
@@ -120,10 +122,10 @@ class LimitCycle(VectorField):
         return torch.stack([U, V], dim=-1)
 
     def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
+        if self.xy is None:
+            self.create_grid(self.x_range, self.n_grid)
         grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
-        r = torch.sqrt(self.xy[:, 0] ** 2 + self.xy[:, 1] ** 2)
         UV = self.compute(self.xy)
-
         return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(
             grid_size, grid_size
         )
@@ -141,24 +143,35 @@ class DoubleLimitCycle(VectorField):
         super().__init__(x_range=x_range, n_grid=n_grid)
         self.w = w
         self.d = d
+        self.alpha = 1
+        self.scaling = self.get_scaling()
+        self.alpha = 1 / self.scaling
 
-    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
-        grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
-        r = torch.sqrt(self.xy[:, 0] ** 2 + self.xy[:, 1] ** 2)
-        U = self.xy[:, 0] * (self.d - r**2) - self.w * self.xy[:, 1] * (
-            2 * self.d - r**2
-        )
-        V = self.xy[:, 1] * (self.d - r**2) + self.w * self.xy[:, 0] * (
-            2 * self.d - r**2
-        )
-
+    def get_scaling(self):
+        if self.xy is None:
+            self.create_grid(self.x_range, self.n_grid)
+        U, V = self.generate_vector_field()
         speed = torch.sqrt(U**2 + V**2)
         speed = speed.max()
+        return speed
 
-        U = U / speed
-        V = V / speed
+    def compute(self, x: ArrayType) -> ArrayType:
+        r = torch.sqrt(x[..., 0] ** 2 + x[..., 1] ** 2)
+        U = x[..., 0] * (self.d - r**2) - self.w * x[..., 1] * (2 * self.d - r**2)
+        V = x[..., 1] * (self.d - r**2) + self.w * x[..., 0] * (2 * self.d - r**2)
 
-        return U.reshape(grid_size, grid_size), V.reshape(grid_size, grid_size)
+        U = self.alpha * U
+        V = self.alpha * V
+        return torch.stack([U, V], dim=-1)
+
+    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
+        if self.xy is None:
+            self.create_grid(self.x_range, self.n_grid)
+        grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
+        UV = self.compute(self.xy)
+        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(
+            grid_size, grid_size
+        )
 
 
 class MultiAttractor(VectorField):

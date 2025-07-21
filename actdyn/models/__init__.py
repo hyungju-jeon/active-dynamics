@@ -1,4 +1,11 @@
-from .base import BaseModel, BaseEncoder, BaseDynamics, BaseMapping, BaseNoise
+from .base import (
+    BaseModel,
+    BaseEncoder,
+    BaseDynamics,
+    BaseMapping,
+    BaseNoise,
+    EnsembleDynamics,
+)
 from .decoder import Decoder
 from .model_wrapper import VAEWrapper
 import importlib
@@ -11,6 +18,7 @@ __all__ = [
     "model_from_str",
     "Decoder",
     "VAEWrapper",
+    "EnsembleDynamics",
 ]
 
 _model_map = {
@@ -19,8 +27,8 @@ _model_map = {
 }
 
 _encoder_map = {
-    "mlp-encoder": (".encoder", "MLPEncoder"),
-    "rnn-encoder": (".encoder", "RNNEncoder"),
+    "mlp": (".encoder", "MLPEncoder"),
+    "rnn": (".encoder", "RNNEncoder"),
     # Add more mappings as needed
 }
 
@@ -38,10 +46,9 @@ _noise_map = {
 }
 
 _dynamics_map = {
-    "linear-dynamics": (".dynamics", "LinearDynamics"),
-    "mlp-dynamics": (".dynamics", "MLPDynamics"),
-    "rbf-dynamics": (".dynamics", "RBFDynamics"),
-    "ensemble-dynamics": (".dynamics", "EnsembleDynamics"),
+    "linear": (".dynamics", "LinearDynamics"),
+    "mlp": (".dynamics", "MLPDynamics"),
+    "rbf": (".dynamics", "RBFDynamics"),
     # Add more mappings as needed
 }
 

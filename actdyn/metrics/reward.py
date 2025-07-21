@@ -7,16 +7,31 @@ from .base import BaseMetric
 class RewardMetric(BaseMetric):
     """Basic reward metric that sums rewards."""
 
+    def __init__(self, compute_type: str = "sum", device: str = "cuda", **kwargs):
+        super().__init__(compute_type, device)
+
     def compute(self, rollout: Rollout or RolloutBuffer) -> torch.Tensor:
-        return rollout["reward"]
+        self.metric = -rollout["reward"]
+        return self.metric
 
 
 class GoalDistanceMetric(BaseMetric):
     """Metric based on final distance to goal."""
 
-    def __init__(self, goal: torch.Tensor, device: str = "cuda"):
-        super().__init__(device)
+    def __init__(
+        self,
+        goal: torch.Tensor,
+        compute_type: str = "sum",
+        device: str = "cuda",
+        **kwargs
+    ):
+        super().__init__(compute_type, device)
         self.goal = goal.to(device)
 
+    def set_goal(self, goal: torch.Tensor):
+        """Set the goal for the metric."""
+        self.goal = goal.to(self.device)
+
     def compute(self, rollout: Rollout or RolloutBuffer) -> torch.Tensor:
-        return -torch.norm(rollout["state"][..., -1, :] - self.goal, dim=-1)
+        self.metric = torch.norm(rollout["model_state"] - self.goal, dim=-1)
+        return self.metric

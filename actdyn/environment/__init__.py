@@ -1,3 +1,4 @@
+import gymnasium
 from .base import BaseDynamicsEnv, BaseObservation, BaseAction
 from .env_wrapper import GymObservationWrapper
 import importlib
@@ -11,8 +12,6 @@ __all__ = [
 
 _environment_map = {
     "vectorfield": (".vectorfield", "VectorFieldEnv"),
-    "cartpole": ("gymnasium.envs:CartPoleEnv", "CartPoleEnv"),
-    # Add more mappings as needed
 }
 
 _observation_map = {
@@ -29,18 +28,27 @@ _action_map = {
 }
 
 
-def environment_from_str(env_str: str) -> type[BaseDynamicsEnv]:
+def environment_from_str(env_str: str) -> type[str, gymnasium.Env]:
     """
     Dynamically import and return the environment class based on the string key.
     Example: environment_factory('vectorfield')
     """
     if env_str not in _environment_map:
-        raise ImportError(
-            f"Unknown environment: {env_str}. Available: {list(_environment_map.keys())}"
-        )
-    module_name, class_name = _environment_map[env_str]
-    module = importlib.import_module(module_name, __package__)
-    return getattr(module, class_name)
+        # Print error message saying the environment is not found and that we are using gymnasium
+        print(f"Unknown environment: {env_str}. Using gymnasium environment instead.")
+        # Fallback to gymnasium environment
+        module_name = "gymnasium"
+        class_name = env_str
+
+    else:
+        module_name, class_name = _environment_map[env_str]
+    if module_name == "gymnasium":
+        # Special case for gymnasium environments
+        module = importlib.import_module(module_name)
+        return class_name
+    else:
+        module = importlib.import_module(module_name, __package__)
+        return getattr(module, class_name)
 
 
 def observation_from_str(obs_str: str) -> type[BaseObservation]:

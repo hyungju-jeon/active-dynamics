@@ -2,6 +2,7 @@
 
 import gymnasium as gym
 from gymnasium import spaces
+import gymnasium
 import torch
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, Sequence
@@ -102,10 +103,17 @@ class BaseDynamicsEnv(gym.Env, ABC):
 class BaseAction(nn.Module):
     """Base class for deterministic action encoder."""
 
-    def __init__(self, input_dim, latent_dim, device="cpu"):
+    def __init__(self, action_dim, latent_dim, action_bounds, device="cpu"):
         super().__init__()
-        self.input_dim = input_dim
+        self.action_dim = action_dim
         self.latent_dim = latent_dim
+        self.action_space = gymnasium.spaces.Box(
+            low=action_bounds[0],
+            high=action_bounds[1],
+            shape=(action_dim,),
+            dtype=np.float32,
+        )
+        self.device = torch.device(device)
         self.network = None
 
     def forward(self, action):

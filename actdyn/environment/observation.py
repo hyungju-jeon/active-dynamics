@@ -3,6 +3,8 @@
 import torch
 import torch.nn as nn
 from typing import Optional
+
+from actdyn.utils.torch_helper import activation_from_str
 from .base import BaseObservation
 
 
@@ -21,6 +23,7 @@ class IdentityObservation(BaseObservation):
         noise_type: Optional[str] = None,
         noise_scale: float = 0.0,
         device: str = "cpu",
+        **kwargs,
     ):
         super().__init__(
             latent_dim=latent_dim,
@@ -44,6 +47,7 @@ class LinearObservation(BaseObservation):
         noise_type: Optional[str] = None,
         noise_scale: float = 0.0,
         device: str = "cpu",
+        **kwargs,
     ):
         super().__init__(
             latent_dim=latent_dim,
@@ -65,6 +69,7 @@ class LogLinearObservation(BaseObservation):
         noise_type: Optional[str] = None,
         noise_scale: float = 0.0,
         device: str = "cpu",
+        **kwargs,
     ):
         super().__init__(
             latent_dim=latent_dim,
@@ -86,6 +91,8 @@ class NonlinearObservation(BaseObservation):
         self,
         latent_dim: int,
         obs_dim: int,
+        hidden_dims: Optional[list] = None,
+        activation: str = "relu",
         noise_type: Optional[str] = None,
         noise_scale: float = 0.0,
         device: str = "cpu",
@@ -97,10 +104,15 @@ class NonlinearObservation(BaseObservation):
             noise_scale=noise_scale,
             device=device,
         )
-        self.network = nn.Sequential(
-            nn.Linear(latent_dim, 64),
-            nn.ReLU(),
-            nn.Linear(64, 64),
-            nn.ReLU(),
-            nn.Linear(64, obs_dim),
-        ).to(device)
+        self.activation = activation_from_str(activation)
+
+        if hidden_dims is None:
+            hidden_dims = [64, 64]
+        layers = []
+        prev_dim = latent_dim
+        for h in hidden_dims:
+            layers.append(nn.Linear(prev_dim, h))
+            layers.append(self.activation)
+            prev_dim = h
+        layers.append(nn.Linear(prev_dim, obs_dim))
+        self.network = nn.Sequential(*layers).to(device)

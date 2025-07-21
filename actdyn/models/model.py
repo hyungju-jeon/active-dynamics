@@ -106,7 +106,7 @@ class SeqVae(BaseModel):
                 if not isinstance(batch, dict):
                     continue  # skip invalid batches
                 obs = batch["obs"].to(self.device)
-                action = batch.get("action", None)
+                action = batch["action"].to(self.device) if "action" in batch else None
                 if action is not None:
                     action = action.to(self.device)
                 opt.zero_grad()

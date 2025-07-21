@@ -1,5 +1,5 @@
 import torch
-from typing import Union, Dict
+from typing import Union
 from actdyn.models import BaseDynamics, Decoder
 from actdyn.models.decoder import LinearMapping, LogLinearMapping
 from actdyn.models.dynamics import RBFDynamics
@@ -54,10 +54,12 @@ class FisherInformationMetric(BaseMetric):
         self,
         dynamics: BaseDynamics,
         decoder: Decoder,
+        compute_type: str = "sum",
         use_diag: bool = True,
         device: str = "cuda",
+        **kwargs,
     ):
-        super().__init__(device)
+        super().__init__(compute_type, device)
         self.dynamics = dynamics
         self.decoder = decoder
         self.use_diag = use_diag
@@ -138,23 +140,13 @@ class FisherInformationMetric(BaseMetric):
 class AOptimality(FisherInformationMetric):
     """Metric that computes A-optimality."""
 
-    def __init__(
-        self,
-        dynamics: BaseDynamics,
-        decoder: Decoder,
-        use_diag: bool = False,
-        device: str = "cuda",
-    ):
-        super().__init__(
-            dynamics=dynamics, decoder=decoder, use_diag=use_diag, device=device
-        )
-
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
         self.update_fim(rollout)
 
         if self.use_diag:
             # return reciprocal sum of fim that are greater than 1e-3
-            return torch.reciprocal(self.I).sum(dim=-1)
+            self.metric = torch.reciprocal(self.I).sum(dim=-1)
+            return self.metric
         else:
             # TODO: implement non-diagonal A-optimality
             pass
@@ -162,17 +154,6 @@ class AOptimality(FisherInformationMetric):
 
 class DOptimality(FisherInformationMetric):
     """Metric that computes D-optimality."""
-
-    def __init__(
-        self,
-        dynamics: BaseDynamics,
-        decoder: Decoder,
-        use_diag: bool = False,
-        device: str = "cuda",
-    ):
-        super().__init__(
-            dynamics=dynamics, decoder=decoder, use_diag=use_diag, device=device
-        )
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
         pass

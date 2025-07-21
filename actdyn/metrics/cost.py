@@ -7,9 +7,9 @@ from .base import BaseMetric
 class ActionCost(BaseMetric):
     """Cost based on action magnitude."""
 
-    def __init__(self, weight: float = 1.0, device: str = "cpu"):
-        super().__init__(device)
-        self.weight = weight
+    def __init__(self, compute_type="sum", device: str = "cpu", **kwargs):
+        super().__init__(compute_type, device)
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        return self.weight * (rollout["action"] ** 2).sum(dim=-1)
+        self.metric = (rollout["action"] ** 2).sum(dim=-1)
+        return self.metric

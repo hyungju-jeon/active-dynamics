@@ -3,6 +3,7 @@ import torch.nn as nn
 from torch.distributions import Normal
 from torch.nn.functional import softplus
 from .base import BaseEncoder
+from actdyn.utils.torch_helper import activation_from_str
 
 
 # Small constant to prevent numerical instability
@@ -17,21 +18,23 @@ class MLPEncoder(BaseEncoder):
         input_dim: int,
         hidden_dims: list = [16],
         latent_dim: int = 2,
-        activation: nn.Module = nn.ReLU(),
+        activation: str = "relu",
         device: str = "cpu",
+        **kwargs,
     ):
         super().__init__(device)
 
         self.input_dim = input_dim
         self.hidden_dims = hidden_dims
         self.latent_dim = latent_dim
+        self.activation = activation_from_str(activation)
 
         # Build encoder layers
         layers = []
         prev_dim = input_dim
 
         for hidden_dim in hidden_dims:
-            layers.extend([nn.Linear(prev_dim, hidden_dim), activation])
+            layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
             prev_dim = hidden_dim
 
         self.network = nn.Sequential(*layers)
@@ -100,6 +103,7 @@ class RNNEncoder(BaseEncoder):
         rnn_type: str = "gru",  # or "lstm"
         num_layers: int = 1,
         device: str = "cpu",
+        **kwargs,
     ):
         super().__init__(device)
         self.input_dim = input_dim
@@ -119,14 +123,14 @@ class RNNEncoder(BaseEncoder):
         self.fc_log_var = nn.Linear(hidden_dim, latent_dim)
 
     def compute_param(self, x):
-        # x: (batch, k, input_dim)
+        # x: (batch, time, input_dim)
         if self.rnn_type == "lstm":
-            _, (h_n, _) = self.network(x)
+            rnn_out, _ = self.network(x)
         else:
-            _, h_n = self.network(x)
-        h = h_n[-1]  # (batch, hidden_dim)
-        mu = self.fc_mu(h)
-        log_var = self.fc_log_var(h)
+            rnn_out, _ = self.network(x)
+        # rnn_out: (batch, time, hidden_dim)
+        mu = self.fc_mu(rnn_out)
+        log_var = self.fc_log_var(rnn_out)
         var = softplus(log_var) + eps
         return mu, var
 
@@ -140,6 +144,16 @@ class RNNEncoder(BaseEncoder):
         return samples, mu, var
 
     def forward(self, x, n_samples=1):
+        # check dimension of x is (batch, time, input_dim) if not, add dimension
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        elif x.dim() == 1:
+            x = x.unsqueeze(0).unsqueeze(0)
+        elif x.dim() == 3:
+            pass
+        else:
+            raise ValueError(f"Invalid dimension of x: {x.dim()}")
+
         samples, mu, var = self.sample(x, n_samples=n_samples)
-        log_prob = torch.sum(Normal(mu, torch.sqrt(var)).log_prob(samples), (-1,))
+        log_prob = torch.sum(Normal(mu, torch.sqrt(var)).log_prob(samples), (-2, -1))
         return samples, mu, var, log_prob

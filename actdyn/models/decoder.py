@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 import torch.nn.functional as F
+
+from actdyn.utils.torch_helper import activation_from_str
 from .base import BaseMapping, BaseNoise
 from torch.nn.functional import softplus
 
@@ -15,19 +17,19 @@ class Exp(nn.Module):
 
 
 class IdentityMapping(BaseMapping):
-    def __init__(self, device="cpu"):
+    def __init__(self, device="cpu", **kwargs):
         super().__init__(device)
         self.network = nn.Identity()
 
 
 class LinearMapping(BaseMapping):
-    def __init__(self, latent_dim, output_dim, device="cpu"):
+    def __init__(self, latent_dim, output_dim, device="cpu", **kwargs):
         super().__init__(device)
         self.network = nn.Linear(latent_dim, output_dim)
 
 
 class LogLinearMapping(BaseMapping):
-    def __init__(self, latent_dim, output_dim, device="cpu"):
+    def __init__(self, latent_dim, output_dim, device="cpu", **kwargs):
         super().__init__(device)
         self.network = nn.Sequential(
             nn.Linear(latent_dim, output_dim),
@@ -40,24 +42,25 @@ class MLPMapping(BaseMapping):
         self,
         latent_dim,
         output_dim,
-        hidden_dims=[16, 16],
-        activation=nn.ReLU(),
+        hidden_dims=[16],
+        activation="relu",
         device="cpu",
+        **kwargs,
     ):
         super().__init__(device)
+        self.activation = activation_from_str(activation)
+
         layers = []
         prev_dim = latent_dim
         for h in hidden_dims:
             layers.append(nn.Linear(prev_dim, h))
-            layers.append(activation)
+            layers.append(self.activation)
             prev_dim = h
         layers.append(nn.Linear(prev_dim, output_dim))
         self.network = nn.Sequential(*layers)
 
 
 # --- Noise Models ---
-
-
 class GaussianNoise(BaseNoise):
     def __init__(self, output_dim, sigma=1.0, device="cpu"):
         super().__init__(device)
@@ -67,7 +70,6 @@ class GaussianNoise(BaseNoise):
         )
 
     def log_prob(self, mean, y):
-
         var = softplus(self.logvar) + eps
         return torch.sum(Normal(mean, torch.sqrt(var)).log_prob(y), dim=(-1, -2))
 
@@ -80,7 +82,7 @@ class GaussianNoise(BaseNoise):
 
 
 class PoissonNoise(BaseNoise):
-    def __init__(self, device="cpu"):
+    def __init__(self, device="cpu", **kwargs):
         super().__init__(device)
 
     def log_prob(self, rate, y):
