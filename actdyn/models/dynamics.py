@@ -59,11 +59,13 @@ class RBFDynamics(BaseDynamics):
     ):
         super().__init__(state_dim=state_dim, device=device)
         self.has_center = False
-        self.centers = centers.to(self.device) if centers is not None else None
+        if centers is not None:
+            self.centers = centers.to(self.device)
+            self.has_center = True
         self.alpha = alpha
         self.gamma = gamma
         self.weights = nn.Parameter(
-            torch.randn(num_centers * state_dim, device=self.device),
+            torch.randn((num_centers, state_dim), device=self.device),
             requires_grad=True,
         )
         self.network = self.RBFNetwork(self)
