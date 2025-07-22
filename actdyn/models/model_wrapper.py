@@ -2,6 +2,8 @@ import torch
 import gymnasium as gym
 from typing import Tuple, Dict, Any
 
+from actdyn.utils.visualize import plot_vector_field
+from matplotlib import pyplot as plt
 from .model import SeqVae
 
 
@@ -51,9 +53,7 @@ class VAEWrapper(gym.Env):
         with torch.no_grad():
             self._state = self.model.encoder(observation)[0]  # Use mean of encoding
 
-        info = {
-            "latent_state": self._state,
-        }
+        info = {"latent_state": self._state}
 
         return observation, info
 
@@ -84,6 +84,7 @@ class VAEWrapper(gym.Env):
             next_observation = self.model.decoder(next_state)
 
         # Update states
+        next_state = next_state
         self._state = next_state
 
         # For now, return zero reward and not done
@@ -100,8 +101,8 @@ class VAEWrapper(gym.Env):
         return next_observation, reward, terminated, truncated, info
 
     def render(self):
-        """Render the current state (not implemented)."""
-        raise NotImplementedError("Rendering not implemented for VAE environment")
+        plot_vector_field(self.model.dynamics, ax=None, device=self.device)
+        plt.show()
 
     def close(self):
         """Clean up resources."""
