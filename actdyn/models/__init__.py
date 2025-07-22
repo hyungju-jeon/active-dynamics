@@ -33,6 +33,7 @@ _encoder_map = {
 }
 
 _mapping_map = {
+    "identity": (".decoder", "IdentityMapping"),
     "linear": (".decoder", "LinearMapping"),
     "loglinear": (".decoder", "LogLinearMapping"),
     "mlp": (".decoder", "MLPMapping"),

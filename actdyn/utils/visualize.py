@@ -32,10 +32,10 @@ def compute_vector_field(dynamics, x_range=2.5, n_grid=50, device="cpu"):
 
 
 def plot_vector_field(dynamics, ax=None, **kwargs):
-    if hasattr(dynamics, "X"):
-        X, Y, U, V = dynamics.X, dynamics.Y, dynamics.U, dynamics.V
-    else:
-        X, Y, U, V = compute_vector_field(dynamics, **kwargs)
+    # if hasattr(dynamics, "X"):
+    #     X, Y, U, V = dynamics.X, dynamics.Y, dynamics.U, dynamics.V
+    # else:
+    X, Y, U, V = compute_vector_field(dynamics, **kwargs)
     X, Y, U, V = X.cpu().numpy(), Y.cpu().numpy(), U.cpu().numpy(), V.cpu().numpy()
     speed = np.sqrt(U**2 + V**2)
 

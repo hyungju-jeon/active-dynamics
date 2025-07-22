@@ -29,7 +29,7 @@ class BasePolicy:
 
     def __call__(self, state, **kwargs) -> torch.Tensor:
         """Get action for given state."""
-        return torch.FloatTensor(self.get_action(state))
+        return self.get_action(state)
 
 
 class BaseMPC(BasePolicy):
