@@ -67,13 +67,9 @@ class GymObservationWrapper(gym.Wrapper):
     def _to_tensor(self, x: Any) -> torch.Tensor:
         """Convert input to torch tensor."""
         # Get the device from the observation model's network if available
-        target_device = self.device
-        if hasattr(self.obs_model, "network") and self.obs_model.network is not None:
-            target_device = next(self.obs_model.network.parameters()).device
-
         if isinstance(x, torch.Tensor):
-            return x.to(target_device)
-        return torch.tensor(x, device=target_device, dtype=torch.float32)
+            return x.to(self.device)
+        return torch.tensor(x, device=self.device, dtype=torch.float32)
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None

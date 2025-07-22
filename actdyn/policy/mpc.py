@@ -8,7 +8,6 @@ from actdyn.models.base import BaseModel
 
 from .base import BaseMPC
 from actdyn.utils.rollout import RolloutBuffer
-from actdyn.utils.logger import Logger
 
 
 class MpcICem(BaseMPC):
@@ -61,14 +60,13 @@ class MpcICem(BaseMPC):
         self.shift_elites = shift_elites
         self.keep_elites = keep_elites
 
-        self.logger = Logger()
         self.was_reset = False
 
     def beginning_of_rollout(self, state: torch.Tensor):
         super().beginning_of_rollout(state=state)
         self.mean = self.get_init_mean()
         self.std = self.get_init_std()
-        self.elite_samples = RolloutBuffer()
+        self.elite_samples = RolloutBuffer(device=self.device)
         self.was_reset = True
 
         self.model_evals_per_timestep = (
@@ -153,7 +151,7 @@ class MpcICem(BaseMPC):
             simulated_paths[:, step + 1] = self.model.dynamics(
                 simulated_paths[:, step]
             ) + self.model.action_encoder(actions[:, step])
-        rollout = RolloutBuffer()
+        rollout = RolloutBuffer(device=self.device)
         rollout.from_dict(
             {
                 "action": actions,
@@ -267,7 +265,5 @@ class MpcICem(BaseMPC):
         shifted_mean[:-1] = self.mean[1:]
         self.mean = shifted_mean
         self.std = self.get_init_std()
-
-        self.logger.log(key="Expected_trajectory_cost", value=best_cost)
 
         return best_first_action

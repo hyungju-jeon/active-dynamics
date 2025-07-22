@@ -113,9 +113,13 @@ class RNNEncoder(BaseEncoder):
         self.num_layers = num_layers
 
         if self.rnn_type == "gru":
-            self.network = nn.GRU(input_dim, hidden_dim, num_layers, batch_first=True)
+            self.network = nn.GRU(
+                input_dim, hidden_dim, num_layers, batch_first=True, device=device
+            )
         elif self.rnn_type == "lstm":
-            self.network = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+            self.network = nn.LSTM(
+                input_dim, hidden_dim, num_layers, batch_first=True, device=device
+            )
         else:
             raise ValueError("rnn_type must be 'gru' or 'lstm'")
 
@@ -146,7 +150,7 @@ class RNNEncoder(BaseEncoder):
     def forward(self, x, n_samples=1):
         # check dimension of x is (batch, time, input_dim) if not, add dimension
         if x.dim() == 2:
-            x = x.unsqueeze(1)
+            x = x.unsqueeze(0)
         elif x.dim() == 1:
             x = x.unsqueeze(0).unsqueeze(0)
         elif x.dim() == 3:

@@ -7,6 +7,7 @@ from actdyn.utils.vectorfield_definition import (
     DoubleLimitCycle,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence
+from actdyn.utils.visualize import plot_vector_field
 
 from .base import BaseDynamicsEnv
 
@@ -81,7 +82,7 @@ class VectorFieldEnv(BaseDynamicsEnv):
         """Reset the environment."""
         super().reset(seed=seed)
         self.state = torch.rand(self.state_dim, device=self.device) * 2 - 1
-        return self.state, {}
+        return self.state.to(self.device), {}
 
     def step(
         self, action: torch.Tensor
@@ -105,7 +106,7 @@ class VectorFieldEnv(BaseDynamicsEnv):
         if self.render_mode == "rgb_array":
             pass
         elif self.render_mode == "human":
-            pass
+            plot_vector_field(self.dynamics)
 
     def close(self):
         pass
