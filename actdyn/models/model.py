@@ -81,6 +81,7 @@ class SeqVae(BaseModel):
             u_encoded = u
         kl_d_x = self._compute_kld_x(mu_q_x, var_q_x, x_samples, u=u_encoded, idx=idx)
         log_like = self.decoder.compute_log_prob(x_samples, y)
+
         elbo = torch.mean(log_like - beta * kl_d_x)
         return -elbo
 
@@ -90,7 +91,9 @@ class SeqVae(BaseModel):
                 if param.grad is not None:
                     param.data += perturbation * torch.randn_like(param.data)
 
-    def _train_loop(self, data, opt, n_epochs, verbose=False, idx=None):
+    def _train_loop(
+        self, data, opt, n_epochs, verbose=False, idx=None, grad_clip_norm=10.0
+    ):
         training_losses = []
         if isinstance(data, Rollout) or isinstance(data, dict):
             batch_iter = [data]
@@ -112,6 +115,18 @@ class SeqVae(BaseModel):
                 opt.zero_grad()
                 loss = self.compute_elbo(obs, u=action, idx=idx)
                 loss.backward()
+
+                # Apply gradient clipping using opt.param_groups
+                if grad_clip_norm is not None and grad_clip_norm > 0:
+                    for group in opt.param_groups:
+                        for p in group["params"]:
+                            torch.nn.utils.clip_grad_norm_(p, grad_clip_norm)
+
+                # for group in opt.param_groups:
+                #     for p in group["params"]:
+                #         if p.grad is not None:
+                #             print(f"Parameter: {p.shape}, Gradient: {p.grad.norm()}")
+
                 opt.step()
                 training_losses.append(loss.item())
                 last_loss = loss.item()
@@ -123,11 +138,12 @@ class SeqVae(BaseModel):
         self,
         data,
         lr=1e-4,
-        weight_decay=1e-4,
-        n_epochs=100,
+        weight_decay=1e-3,
+        n_epochs=1,
         optimizer="SGD",
         verbose=True,
         perturbation=0.0,
+        grad_clip_norm=1.0,
     ):
         if self.is_ensemble:
             for i in range(self.dynamics.n_models):
@@ -137,10 +153,14 @@ class SeqVae(BaseModel):
                     + list(self.decoder.parameters())
                 )
                 opt = self._get_optimizer(optimizer, param_list, lr, weight_decay)
-                self._train_loop(data, opt, n_epochs, verbose, idx=i)
+                self._train_loop(
+                    data, opt, n_epochs, verbose, idx=i, grad_clip_norm=grad_clip_norm
+                )
                 self._add_param_perturbation(self.dynamics.models[i], perturbation)
         else:
             param_list = list(self.parameters())
             opt = self._get_optimizer(optimizer, param_list, lr, weight_decay)
-            self._train_loop(data, opt, n_epochs, verbose)
+            self._train_loop(
+                data, opt, n_epochs, verbose, grad_clip_norm=grad_clip_norm
+            )
             self._add_param_perturbation(self.dynamics, perturbation)
