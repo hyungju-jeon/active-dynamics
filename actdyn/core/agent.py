@@ -83,7 +83,7 @@ class Agent:
             "reward": reward,
             "env_state": self._env_state,  # Current environment state
             "next_env_state": env_info["latent_state"],  # Next environment state
-            "model_state": self._model_state,  # Current belief state
+            "model_state": self._model_state.squeeze(0),  # Current belief state
             "next_model_state": model_info["latent_state"],  # Next belief state
         }
 
@@ -96,7 +96,7 @@ class Agent:
         self._model_state = model_info["latent_state"]
         self._env_state = env_info["latent_state"]
 
-        return obs, reward, done, env_info, model_info
+        return transition, done
 
     def plan(self):
         """Plan next action using the policy.
