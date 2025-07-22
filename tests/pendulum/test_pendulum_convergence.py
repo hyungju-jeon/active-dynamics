@@ -24,7 +24,7 @@ num_samples = 500
 num_steps = 200
 val_split = 0.1
 batch_size = 64
-n_epochs = 50
+n_epochs = 500
 learning_rate = 1e-3
 
 # TensorBoard logger
