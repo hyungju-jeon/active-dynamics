@@ -1,25 +1,25 @@
 seed: 42
-device: "cpu"
+device: "cuda"
 results_dir: "results/vf_test"
 action_dim: 2
-observation_dim: 50
+observation_dim: 2
 latent_dim: 2
 
 environment:
   environment_type: "vectorfield"
   env_dynamics_type: "limit_cycle"
-  env_dt: 0.1
-  env_noise_scale: 0.1
-  env_render_mode: null
+  env_dt: 1
+  env_noise_scale: 0.01
+  env_render_mode: human
   env_action_bounds: [-0.5, 0.5]
   env_state_bounds: null
-  observation_type: "loglinear"
+  observation_type: "identity"
   obs_hidden_dims: [16]
   obs_activation: "relu"
   noise_type: "gaussian"
   noise_scale: 0.0
   action_type: "identity"
-  act_action_bounds: [-0.5, 0.5]
+  act_action_bounds: [-0.1, 0.1]
   act_hidden_dims: [16]
   act_activation: "relu"
 
@@ -30,11 +30,12 @@ model:
   enc_rnn_type: "gru"
   enc_num_layers: 1
   enc_activation: "relu"
-  mapping_type: "loglinear"
+  mapping_type: "identity"
   map_hidden_dims: [16]
   map_activation: "relu"
   noise_type: "gaussian"
-  dynamics_type: "mlp"
+  dynamics_type: "rbf"
+  dyn_num_centers: 625
   is_ensemble: false
   n_models: 1
   dyn_hidden_dims: [16]
@@ -45,11 +46,11 @@ model:
   model_type: "seq-vae"
 
 policy:
-  policy_type: "mpc-icem"
-  mpc_verbose: true
-  mpc_horizon: 10
+  policy_type: "lazy"
+  mpc_verbose: false
+  mpc_horizon: 2
   mpc_num_samples: 32
-  mpc_num_iterations: 10
+  mpc_num_iterations: 5
   mpc_num_elite: 10
   mpc_alpha: 0.1
   mpc_init_std: 0.5
@@ -70,10 +71,10 @@ metric:
   met_use_diag: true
 
 training:
-  total_steps: 10000
+  total_steps: 20000
   train_every: 1
-  save_every: 1000
-  animate_every: 1000
+  save_every: 100000
+  animate_every: 1000000
   rollout_horizon: 20
   batch_size: 1
   learning_rate: 0.001

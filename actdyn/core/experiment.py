@@ -1,8 +1,11 @@
+from tqdm import tqdm
 from actdyn.core.agent import Agent
 from actdyn.utils.logger import Logger
 from actdyn.utils import save_load
+from actdyn.utils.rollout import Rollout
 from actdyn.utils.video import VideoRecorder
-from actdyn.config import *
+from actdyn.config import ExperimentConfig
+import torch
 
 
 class Experiment:
@@ -12,6 +15,7 @@ class Experiment:
         self.env_step = 0
         self.logger = Logger()
         self.video_recorder = None
+        self.rollout = Rollout()
 
         if resume:
             self.agent.model.load(self.config.logging.model_path)
@@ -35,38 +39,39 @@ class Experiment:
         self.agent.reset()
         video_path = self.config.logging.video_path
 
+        # Setup progress bar
+        pbar = tqdm(
+            total=self.config.training.total_steps,
+            desc="Training Progress",
+            mininterval=1,
+        )
+
         while self.env_step < self.config.training.total_steps:
             animate = self.env_step % self.config.training.animate_every == 0
-
             # Setup video recording if needed
             if animate:
                 self._setup_video_recording(video_path)
 
             # Run for rollout horizon
             total_reward = 0
-            for _ in range(self.config.training.rollout_horizon):
+
+            # Use no_grad context for inference to save memory
+            with torch.no_grad():
                 # 1. Plan
                 action = self.agent.plan()
-
                 # 2. Execute
-                # state, reward, done, info = self.agent.step(action)
-                obs, reward, done, env_info, model_info = self.agent.step(action)
-                total_reward += reward
+                transition, done = self.agent.step(action)
 
-                # Capture frame if recording
-                if self.video_recorder:
-                    self.video_recorder.capture_frame()
+            self.rollout.add(**transition)
 
-                # # Log metrics
-                # preds = self.agent.model.predict(state, action)
-                # if isinstance(preds, list):
-                #     import numpy as np
+            total_reward += transition["reward"]
 
-                #     std = np.std(np.array(preds), axis=0).mean()
-                #     self.logger.log("uncertainty", std)
+            # Capture frame if recording
+            if self.video_recorder:
+                self.video_recorder.capture_frame()
 
-                if done:
-                    break
+            if done:
+                break
 
             # Stop video recording if it was active
             if animate:
@@ -74,16 +79,42 @@ class Experiment:
 
             # Log episode metrics
             self.logger.log("reward", total_reward)
-            self.env_step += self.config.training.rollout_horizon
+            self.env_step += 1
+
+            # Update progress bar
+            pbar.update(1)
+
+            # Clean up tensors to prevent memory accumulation
+            if "cuda" in str(self.agent.device):
+                # Delete local variables that might hold GPU tensors
+                del transition
+                if "action" in locals():
+                    del action
 
             # Train model periodically
-            if self.env_step % self.config.training.train_every == 0:
-                self.agent.train_model()
+            if (
+                self.env_step % self.config.training.train_every == 0
+                and self.env_step > self.config.training.rollout_horizon
+            ):
+                self.agent.train_model(
+                    optimizer="SGD",
+                    lr=1e-3,
+                    weight_decay=1e-5,
+                    n_epochs=1,
+                    verbose=False,
+                )
+                # Clear GPU cache to prevent memory leaks
+                if "cuda" in str(self.agent.device):
+                    torch.cuda.empty_cache()
+            if self.env_step % 1000 == 0:
+                self.agent.model_env.render()
 
-            # Save periodically
-            if self.env_step % self.config.logging.save_every == 0:
-                save_load.save_model(self.agent.model)
-                save_load.save_buffer(self.agent.buffer)
-                save_load.save_logger(self.logger)
+            # # Save periodically
+            # if self.env_step % self.config.logging.save_every == 0:
+            #     save_load.save_model(self.agent.model)
+            #     save_load.save_buffer(self.agent.buffer)
+            #     save_load.save_logger(self.logger)
 
+        # Close progress bar
+        pbar.close()
         self.logger.save()
