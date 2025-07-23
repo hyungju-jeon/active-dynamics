@@ -7,7 +7,7 @@ import gymnasium as gym
 import torch.nn.functional as F
 
 from actdyn.models.encoder import MLPEncoder
-from actdyn.models.decoder import Decoder, IdentityMapping, LinearMapping, GaussianNoise
+from actdyn.models.decoder import Decoder, LinearMapping, GaussianNoise
 from actdyn.models.dynamics import LinearDynamics
 from actdyn.models.model import SeqVae
 from actdyn.environment.action import LinearActionEncoder
@@ -17,32 +17,31 @@ from actdyn.utils.rollout import Rollout, RolloutBuffer
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_device(device)
 
+# Define environment parameters for the test
+gym_env = gym.make('Acrobot-v1')
+obs_dim = gym_env.observation_space.shape[0]  # 6-D observation
+action_space = gym_env.action_space.n         # 3 discrete actions
+latent_dim = obs_dim
+
+# Define SeqVAE model components
+encoder = MLPEncoder(input_dim=obs_dim, latent_dim=latent_dim, device=device, hidden_dims=[1])
+decoder = Decoder(
+    LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
+    GaussianNoise(output_dim=obs_dim, sigma=0.5),
+    device=device,
+)
+dynamics = LinearDynamics(state_dim=latent_dim, device=device)
+action_encoder = LinearActionEncoder(input_dim=action_space, latent_dim=latent_dim, device=device)
+
+model = SeqVae(
+    encoder=encoder,
+    decoder=decoder,
+    dynamics=dynamics,
+    action_encoder=action_encoder,
+    device=device,
+)
+
 if __name__ == "__main__":
-    gym_env = gym.make('Acrobot-v1')
-    obs_dim = gym_env.observation_space.shape[0]  # 6-D observation
-    action_space = gym_env.action_space.n         # 3 discrete actions
-
-    latent_dim = obs_dim
-
-    # define SeqVAE model components
-    encoder = MLPEncoder(input_dim=obs_dim, latent_dim=latent_dim, device=device, hidden_dims=[1])
-    decoder = Decoder(
-        LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
-        # IdentityMapping(),
-        GaussianNoise(output_dim=obs_dim, sigma=0.5),
-        device=device,
-    )
-    dynamics = LinearDynamics(state_dim=latent_dim, device=device)
-    action_encoder = LinearActionEncoder(input_dim=action_space, latent_dim=latent_dim, device=device)
-
-    model = SeqVae(
-        encoder=encoder,
-        decoder=decoder,
-        dynamics=dynamics,
-        action_encoder=action_encoder,
-        device=device,
-    )
-
     # generate random rollouts from Acrobot
     num_samples = 500
     num_steps = 100
@@ -117,11 +116,7 @@ if __name__ == "__main__":
 
 # %%
 
-# %%
 # Quick reconstruction test for encoder + decoder
-
-import torch
-import torch.nn.functional as F
 
 # generate a batch of random “observations”
 batch_size = 64
@@ -139,11 +134,6 @@ loss = F.mse_loss(recon, dummy_obs)
 print(f"Reconstruction MSE on random test batch: {loss.item():.6f}")
 
 # (optional) visualize a few examples
-import matplotlib.pyplot as plt
-
-# print("dummy_obs", dummy_obs)
-# print()
-# print("recon", recon)
 
 n_show = 5
 for i in range(n_show):
