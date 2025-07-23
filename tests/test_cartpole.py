@@ -4,6 +4,7 @@ import torch
 from matplotlib import pyplot as plt
 import gymnasium as gym
 import torch.nn.functional as F
+import numpy as np
 
 from actdyn.models.encoder import MLPEncoder
 from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping
@@ -13,20 +14,31 @@ from actdyn.environment.action import LinearActionEncoder
 from actdyn.utils.torch_helper import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 
-# set device
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-torch.set_default_device(device)
+class ContinuousCartPole(gym.ActionWrapper):
+    def __init__(self, env):
+        super().__init__(env)
+        # Override to a Box([0.0],[1.0]) instead of Discrete(2)
+        self.action_space = gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+
+    def action(self, action):
+        # action comes in as an array([float]), threshold at 0.5
+        return int(action[0] > 0.5)
+
 
 if __name__ == "__main__":
+    # set device
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    torch.set_default_device(device)
+
     # create CartPole environment
-    env = gym.make('CartPole-v1')
-    obs_dim = env.observation_space.shape[0]  # 4-D observation
-    action_space = env.action_space.n         # 2 discrete actions
+    env = ContinuousCartPole(gym.make('CartPole-v1'))
+    obs_dim = env.observation_space.shape[0]   # 4-D
+    action_dim = env.action_space.shape[0]     # 1-D continuous
 
     # latent dimension
     latent_dim = obs_dim
 
-    action_bounds = (0, 1)
+    action_bounds = (0.0, 1.0)
 
     # define SeqVAE components
     encoder = MLPEncoder(
@@ -42,7 +54,7 @@ if __name__ == "__main__":
     )
     dynamics = LinearDynamics(state_dim=latent_dim, device=device)
     action_encoder = LinearActionEncoder(
-        action_dim=action_space,
+        action_dim=action_dim,
         latent_dim=latent_dim,
         action_bounds=action_bounds,
         device=device
@@ -63,18 +75,17 @@ if __name__ == "__main__":
 
     for _ in range(num_samples):
         obs_seq = torch.zeros(num_steps+1, obs_dim, device=device)
-        actions = torch.zeros(num_steps, action_space, device=device)
+        actions = torch.zeros(num_steps, action_dim, device=device)
 
         # reset and record
         obs_raw, _ = env.reset()
         obs_seq[0] = torch.from_numpy(obs_raw).float().to(device)
 
         for t in range(num_steps):
-            a_int = env.action_space.sample()
-            a_onehot = F.one_hot(torch.tensor(a_int), num_classes=action_space).float().to(device)
-            actions[t] = a_onehot
+            a_cont = env.action_space.sample()
+            actions[t] = torch.from_numpy(a_cont).to(device)
 
-            obs_raw, _, done, _, _ = env.step(a_int)
+            obs_raw, _, done, _, _ = env.step(a_cont)
             obs_seq[t+1] = torch.from_numpy(obs_raw).float().to(device)
             if done:
                 break
@@ -90,7 +101,7 @@ if __name__ == "__main__":
         buffer.add(rollout)
 
     # train
-    model.action_dim = 2  # latent action dim
+    model.action_dim = action_dim
     model.train(
         list(buffer.as_batch(batch_size=64, shuffle=True)),
         optimizer="AdamW",
