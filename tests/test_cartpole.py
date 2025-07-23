@@ -1,4 +1,4 @@
-# %%
+#%%
 
 import torch
 from matplotlib import pyplot as plt
@@ -14,25 +14,79 @@ from actdyn.environment.action import LinearActionEncoder
 from actdyn.utils.torch_helper import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 
-class ContinuousCartPole(gym.ActionWrapper):
+
+class CircularCartPole(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
-        # Override to a Box([0.0],[1.0]) instead of Discrete(2)
-        self.action_space = gym.spaces.Box(low=0.0, high=1.0, shape=(1,), dtype=np.float32)
+        base = env.unwrapped  # get the true CartPoleEnv
 
-    def action(self, action):
-        # action comes in as an array([float]), threshold at 0.5
-        return int(action[0] > 0.5)
+        # Cart limits from the underlying env
+        self.x_threshold = base.x_threshold
+        self.theta_threshold = base.theta_threshold_radians
 
+        # track length and corresponding circle radius
+        self.length = 2 * self.x_threshold
+        self.radius = self.length / (2 * np.pi)
 
+        # new obs: [cosθ, sinθ, θ̇, pole_angle, pole_ang_vel]
+        low  = np.array([-1.0, -1.0, -np.inf, -self.theta_threshold, -np.inf], dtype=np.float32)
+        high = np.array([ 1.0,  1.0,  np.inf,  self.theta_threshold,  np.inf], dtype=np.float32)
+        self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
+
+        # continuous action 0–1
+        self.action_space = gym.spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32)
+
+    def _wrap_state(self):
+        base = self.env.unwrapped
+        x, x_dot, theta, theta_dot = base.state
+        # wrap-around smoothly
+        if x > self.x_threshold:
+            x -= self.length
+        elif x < -self.x_threshold:
+            x += self.length
+        base.state = np.array([x, x_dot, theta, theta_dot], dtype=np.float32)
+
+    def _make_obs(self):
+        x, x_dot, theta, theta_dot = self.env.unwrapped.state
+        angle   = x / self.radius
+        ang_vel = x_dot / self.radius
+        return np.array([np.cos(angle),
+                         np.sin(angle),
+                         ang_vel,
+                         theta,
+                         theta_dot], dtype=np.float32)
+
+    def reset(self, **kwargs):
+        raw_obs, info = self.env.reset(**kwargs)
+        # raw_obs = [x, x_dot, θ, θ̇]
+        self.env.unwrapped.state = raw_obs.astype(np.float32)
+        return self._make_obs(), info
+
+    def step(self, action):
+        # discretize continuous input
+        discrete_a = int(action[0] > 0.5)
+        obs, reward, terminated, truncated, info = self.env.step(discrete_a)
+
+        # override termination of hitting the x-threshold
+        # only terminate if the pole itself goes beyond its angle threshold
+        x, _, theta, _ = self.env.unwrapped.state
+        if abs(x) > self.x_threshold and abs(theta) <= self.theta_threshold:
+            terminated = False
+
+        # wrap the state for smooth physics continuity
+        self._wrap_state()
+
+        return self._make_obs(), reward, terminated, truncated, info
+    
+    
 if __name__ == "__main__":
     # set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(device)
 
-    # create CartPole environment
-    env = ContinuousCartPole(gym.make('CartPole-v1'))
-    obs_dim = env.observation_space.shape[0]   # 4-D
+    # create circular CartPole environment
+    env = CircularCartPole(gym.make('CartPole-v1'))
+    obs_dim = env.observation_space.shape[0]   # 5-D
     action_dim = env.action_space.shape[0]     # 1-D continuous
 
     # latent dimension
@@ -45,7 +99,7 @@ if __name__ == "__main__":
         input_dim=obs_dim,
         latent_dim=latent_dim,
         device=device,
-        hidden_dims=[64, 64]  # you can adjust hidden sizes
+        hidden_dims=[64, 64]
     )
     decoder = Decoder(
         LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
@@ -77,7 +131,6 @@ if __name__ == "__main__":
         obs_seq = torch.zeros(num_steps+1, obs_dim, device=device)
         actions = torch.zeros(num_steps, action_dim, device=device)
 
-        # reset and record
         obs_raw, _ = env.reset()
         obs_seq[0] = torch.from_numpy(obs_raw).float().to(device)
 
@@ -105,8 +158,149 @@ if __name__ == "__main__":
     model.train(
         list(buffer.as_batch(batch_size=64, shuffle=True)),
         optimizer="AdamW",
-        n_epochs=5000,  # adjust epochs as needed
+        n_epochs=1000,
     )
+
+# %%
+
+# import torch
+# from matplotlib import pyplot as plt
+# import gymnasium as gym
+# import torch.nn.functional as F
+# import numpy as np
+
+# from actdyn.models.encoder import MLPEncoder
+# from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping
+# from actdyn.models.dynamics import LinearDynamics
+# from actdyn.models.model import SeqVae
+# from actdyn.environment.action import LinearActionEncoder
+# from actdyn.utils.torch_helper import to_np
+# from actdyn.utils.rollout import Rollout, RolloutBuffer
+
+
+# class CircularCartPole(gym.Wrapper):
+#     """
+#     Wraps a CartPoleEnv so that the track is circular:
+#       - x-position is wrapped back into [-x_threshold, +x_threshold]
+#       - the 'done' flag is only set by pole-angle limits, not by x
+#     """
+#     def __init__(self, env):
+#         super().__init__(env)
+#         # pull thresholds from the wrapped env
+#         self.x_thr = env.unwrapped.x_threshold              # default 2.4
+#         self.theta_thr = env.unwrapped.theta_threshold_radians  # default ~12°
+
+#     def step(self, action):
+#         obs, reward, done, truncated, info = self.env.step(action)
+#         x, x_dot, theta, theta_dot = obs
+
+#         # wrap x back into [-x_thr, x_thr]
+#         # e.g. if x = x_thr + δ → −x_thr + δ (small jump)
+#         x_wrapped = ((x + self.x_thr) % (2 * self.x_thr)) - self.x_thr
+
+#         # rebuild the obs array with the wrapped x
+#         obs = np.array([x_wrapped, x_dot, theta, theta_dot], dtype=np.float32)
+
+#         # only terminate if the pole itself goes beyond its angle threshold
+#         done = bool(abs(theta) > self.theta_thr)
+#         truncated = False   # never truncate based on x
+
+#         return obs, reward, done, truncated, info
+        
+# class ContinuousAction(gym.ActionWrapper):
+#     """Turns the two-bin CartPole into a [0,1] continuous action."""
+#     def __init__(self, env):
+#         super().__init__(env)
+#         self.action_space = gym.spaces.Box(0.0, 1.0, (1,), np.float32)
+
+#     def action(self, a_cont):
+#         return int(a_cont[0] > 0.5)
+
+
+# if __name__ == "__main__":
+#     # set device
+#     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+#     torch.set_default_device(device)
+
+#     # create CartPole environment
+#     # env = ContinuousCartPole(gym.make('CartPole-v1'))
+#     base_env = gym.make('CartPole-v1')
+#     env = ContinuousAction(CircularCartPole(base_env))
+#     obs_dim = env.observation_space.shape[0]   # 4-D
+#     action_dim = env.action_space.shape[0]     # 1-D continuous
+
+#     # latent dimension
+#     latent_dim = obs_dim
+
+#     action_bounds = (0.0, 1.0)
+
+#     # define SeqVAE components
+#     encoder = MLPEncoder(
+#         input_dim=obs_dim,
+#         latent_dim=latent_dim,
+#         device=device,
+#         hidden_dims=[64, 64]  # you can adjust hidden sizes
+#     )
+#     decoder = Decoder(
+#         LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
+#         GaussianNoise(output_dim=obs_dim, sigma=0.5),
+#         device=device
+#     )
+#     dynamics = LinearDynamics(state_dim=latent_dim, device=device)
+#     action_encoder = LinearActionEncoder(
+#         action_dim=action_dim,
+#         latent_dim=latent_dim,
+#         action_bounds=action_bounds,
+#         device=device
+#     )
+
+#     model = SeqVae(
+#         encoder=encoder,
+#         decoder=decoder,
+#         dynamics=dynamics,
+#         action_encoder=action_encoder,
+#         device=device
+#     )
+
+#     # collect random rollouts
+#     num_samples = 500
+#     num_steps = 100
+#     buffer = RolloutBuffer(num_samples)
+
+#     for _ in range(num_samples):
+#         obs_seq = torch.zeros(num_steps+1, obs_dim, device=device)
+#         actions = torch.zeros(num_steps, action_dim, device=device)
+
+#         # reset and record
+#         obs_raw, _ = env.reset()
+#         obs_seq[0] = torch.from_numpy(obs_raw).float().to(device)
+
+#         for t in range(num_steps):
+#             a_cont = env.action_space.sample()
+#             actions[t] = torch.from_numpy(a_cont).to(device)
+
+#             obs_raw, _, done, _, _ = env.step(a_cont)
+#             obs_seq[t+1] = torch.from_numpy(obs_raw).float().to(device)
+#             if done:
+#                 break
+
+#         rollout = Rollout()
+#         seq_len = obs_seq.size(0) - 1
+#         for t in range(seq_len):
+#             rollout.add(
+#                 obs=obs_seq[t].unsqueeze(0),
+#                 action=actions[t].unsqueeze(0),
+#                 next_obs=obs_seq[t+1].unsqueeze(0)
+#             )
+#         buffer.add(rollout)
+
+#     # train
+#     model.action_dim = action_dim
+#     model.train(
+#         list(buffer.as_batch(batch_size=64, shuffle=True)),
+#         optimizer="AdamW",
+#         n_epochs=1000,  # adjust epochs as needed
+#     )
 
 # %%
 
@@ -130,7 +324,7 @@ if __name__ == "__main__":
     plt.plot(to_np(recon[0]), '-', label='reconstructed obs')
     plt.plot(to_np(obs.squeeze(0)), '--', label='true obs')
     plt.title('Observation Reconstruction (CartPole)')
-    plt.legend()
+    plt.legend(loc='upper right')
     plt.show()
 
 # %%
