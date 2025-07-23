@@ -25,7 +25,7 @@ def save_logger(logger, path="logs/log.json"):
 
 
 def load_logger(path="logs/log.json"):
-    from utils.logger import Logger
+    from actdyn.utils.logger import Logger
 
     logger = Logger()
     with open(path, "r") as f:

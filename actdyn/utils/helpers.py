@@ -2,14 +2,36 @@
 import torch
 import gymnasium
 from dataclasses import asdict
+from typing import TYPE_CHECKING
 
 from actdyn.config import ExperimentConfig
+from actdyn.core.agent import Agent
+from actdyn.core.experiment import Experiment
+from actdyn.environment import (
+    environment_from_str,
+    observation_from_str,
+    action_from_str,
+    GymObservationWrapper,
+)
+from actdyn.models import (
+    encoder_from_str,
+    dynamics_from_str,
+    mapping_from_str,
+    noise_from_str,
+    model_from_str,
+    Decoder,
+    BaseModel,
+    VAEWrapper,
+)
+from actdyn.models.dynamics import EnsembleDynamics
+from actdyn.models.model import SeqVae
+from actdyn.policy import policy_from_str, BaseMPC
+from actdyn.metrics import metric_from_str, FisherInformationMetric, CompositeMetric
 
-from actdyn.environment import *
-from actdyn.models import *
-from actdyn.core import *
-from actdyn.policy import *
-from actdyn.metrics import *
+
+# Use TYPE_CHECKING for forward references if needed
+if TYPE_CHECKING:
+    pass
 
 
 def parse_subconfig(config, prefix):
@@ -88,7 +110,7 @@ def setup_environment(config: ExperimentConfig):
     return env
 
 
-def setup_model(config: ExperimentConfig):
+def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
     """Setup the model based on the configuration."""
     # Model components
     # Encoder module

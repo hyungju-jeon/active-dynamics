@@ -3,7 +3,6 @@ import gymnasium as gym
 from typing import Tuple, Dict, Any
 
 from actdyn.utils.visualize import plot_vector_field
-from matplotlib import pyplot as plt
 from .model import SeqVae
 
 
@@ -102,7 +101,6 @@ class VAEWrapper(gym.Env):
 
     def render(self):
         plot_vector_field(self.model.dynamics, ax=None, device=self.device)
-        plt.show()
 
     def close(self):
         """Clean up resources."""

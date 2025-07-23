@@ -4,9 +4,15 @@ from pathlib import Path
 import numpy as np
 import torch
 from actdyn.config import ExperimentConfig
-from actdyn.utils.helpers import setup_experiment
-from actdyn.utils.visualize import plot_vector_field
-import matplotlib.pyplot as plt
+from actdyn.utils.helpers import (
+    setup_environment,
+    setup_model,
+    setup_metric,
+    setup_policy,
+)
+from actdyn.models.model_wrapper import VAEWrapper
+from actdyn.core.agent import Agent
+from actdyn.core.experiment import Experiment
 
 
 if __name__ == "__main__":
@@ -32,17 +38,24 @@ if __name__ == "__main__":
     rbf_grid_pts = torch.stack([rbf_xx.flatten(), rbf_yy.flatten()], dim=1)
 
     # Set up experiment
-    experiment, agent, env, model_env = setup_experiment(exp_config)
+    # experiment, agent, env, model_env = setup_experiment(exp_config)
+    env = setup_environment(exp_config)
+    model = setup_model(exp_config)
+    model.decoder.mapping.network[0].weight.data = env.obs_model.network[0].weight.data
+    model.decoder.mapping.network[0].bias.data = env.obs_model.network[0].bias.data
+
+    metric = setup_metric(exp_config, model)
+    policy = setup_policy(exp_config, env, model, metric)
+    model_env = VAEWrapper(
+        model, env.observation_space, env.action_space, device=exp_config.device
+    )
     model_env.model.dynamics.set_centers(rbf_grid_pts)
+    agent = Agent(env, model_env, policy, device=exp_config.device)
+    experiment = Experiment(agent, exp_config)
 
     # Run the experiment using the Experiment class's run method
     experiment.run()
     print(f"Experiment completed. Results saved to {results_dir}")
 
     experiment.rollout.finalize()
-    plot_vector_field(model_env.model.dynamics)
-
-    plt.plot(
-        experiment.rollout._data["model_state"][-100:, 0],
-        experiment.rollout._data["model_state"][-100:, 1],
-    )
+    env.env.render()

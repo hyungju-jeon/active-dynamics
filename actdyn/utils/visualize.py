@@ -1,5 +1,4 @@
 import numpy as np
-import scipy as sp
 import torch
 import matplotlib.pyplot as plt
 
@@ -60,3 +59,29 @@ def plot_vector_field(dynamics, ax=None, **kwargs):
     plt.title("Vector Field of Latent Dynamics")
     # plt.axis("off")
     plt.axis("equal")
+
+
+def compute_fisher_map(fisher, grid_x, grid_y, show_plot=False, device="cpu"):
+    """Create a Fisher information map by computing FIM on sampled points in the grid."""
+    xx, yy = torch.meshgrid(grid_x, grid_y, indexing="ij")  # [H, W]
+    grid = torch.stack([xx.flatten(), yy.flatten()], dim=1)
+
+    fisher_map = [
+        fisher.compute_crlb_rbf_point(
+            x.unsqueeze(0).unsqueeze(0).to(device), use_diag=True
+        )
+        for x in grid
+    ]
+    fisher_map = torch.stack(fisher_map, dim=0).reshape(len(grid_x), len(grid_y))
+
+    if show_plot:
+        plt.contourf(xx.cpu(), yy.cpu(), fisher_map.cpu(), levels=10, cmap="plasma")
+        plt.colorbar(label="Fisher Information")
+        plt.title("Fisher Information Map")
+        plt.xlabel("x₁")
+        plt.ylabel("x₂")
+        plt.grid(True)
+        plt.tight_layout()
+        plt.show()
+
+    return fisher_map, xx.cpu(), yy.cpu()

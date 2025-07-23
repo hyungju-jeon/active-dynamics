@@ -1,7 +1,7 @@
 """Base policy classes for the active dynamics package."""
 
 import torch
-from typing import Dict, Any, Callable
+from typing import Dict
 from actdyn.metrics.base import BaseMetric
 from actdyn.models import BaseModel
 import gymnasium as gym

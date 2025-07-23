@@ -2,7 +2,6 @@
 # Test each Policy
 
 import torch
-import gym
 import numpy as np
 from gym.spaces import Box
 from matplotlib import pyplot as plt

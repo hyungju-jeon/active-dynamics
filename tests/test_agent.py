@@ -9,21 +9,22 @@ from actdyn.environment.env_wrapper import GymObservationWrapper
 from actdyn.models.encoder import MLPEncoder
 from actdyn.models.decoder import (
     Decoder,
-    LinearMapping,
+    IdentityMapping,
     GaussianNoise,
-    LogLinearMapping,
 )
 from actdyn.models.dynamics import RBFDynamics
 from actdyn.models.model import SeqVae
 from actdyn.environment.action import IdentityActionEncoder
-from actdyn.environment.observation import LinearObservation, LogLinearObservation
+from actdyn.environment.observation import (
+    IdentityObservation,
+)
 from actdyn.environment.vectorfield import VectorFieldEnv
 from actdyn.core.agent import Agent
-from actdyn.policy import policy_factory
 from actdyn.models import VAEWrapper
-from actdyn.utils.helpers import to_np
-from actdyn.utils.rollout import Rollout, RolloutBuffer
+from actdyn.utils.torch_helper import to_np
+from actdyn.utils.rollout import Rollout
 from actdyn.utils.visualize import plot_vector_field
+from actdyn.policy.policy import policy_from_str
 
 # Set default device to cuda if available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -34,31 +35,45 @@ torch.manual_seed(1)
 if __name__ == "__main__":
     # Define the environment
     vf = VectorFieldEnv(
-        dynamics_type="limit_cycle", noise_scale=1e-2, device=device, dt=1
+        dynamics_type="limit_cycle", noise_scale=1e-3, device=device, dt=1
     )
-    obs_model = LogLinearObservation(latent_dim=2, obs_dim=50, device=device)
-    action_model = IdentityActionEncoder(action_dim=2, latent_dim=2, device=device)
-    env = GymObservationWrapper(env=vf, obs_model=obs_model, action_model=action_model)
+    # obs_model = LogLinearObservation(latent_dim=2, obs_dim=50, device=device)
+    obs_model = IdentityObservation(latent_dim=2, obs_dim=2, device=device)
+    action_model = IdentityActionEncoder(
+        action_dim=2, latent_dim=2, action_bounds=(-0.5, 0.5), device=device
+    )
+    env = GymObservationWrapper(
+        env=vf, obs_model=obs_model, action_model=action_model, device=device
+    )
 
     # Define the model
-    encoder = MLPEncoder(input_dim=50, latent_dim=2, device=device)
+    encoder = MLPEncoder(input_dim=2, latent_dim=2, device=device)
+    # decoder = Decoder(
+    #     LogLinearMapping(latent_dim=2, output_dim=50),
+    #     GaussianNoise(output_dim=50, sigma=1.0),
+    #     device=device,
+    # )
     decoder = Decoder(
-        LogLinearMapping(latent_dim=2, output_dim=50),
-        GaussianNoise(output_dim=50, sigma=1.0),
+        IdentityMapping(latent_dim=2, output_dim=2),
+        GaussianNoise(output_dim=2, sigma=1.0),
         device=device,
     )
     rbf_grid_x = torch.linspace(-5, 5, 25)
     rbf_grid_y = torch.linspace(-5, 5, 25)
     rbf_xx, rbf_yy = torch.meshgrid(rbf_grid_x, rbf_grid_y, indexing="ij")  # [H, W]
     rbf_grid_pts = torch.stack([rbf_xx.flatten(), rbf_yy.flatten()], dim=1)
-    dynamics = RBFDynamics(centers=rbf_grid_pts, device=device)
-    action_encoder = IdentityActionEncoder(action_dim=2, latent_dim=2, device=device)
+    dynamics = RBFDynamics(
+        num_centers=625, state_dim=2, centers=rbf_grid_pts, device=device
+    )
+    action_encoder = IdentityActionEncoder(
+        action_dim=2, latent_dim=2, action_bounds=(-0.5, 0.5), device=device
+    )
 
     # Copy weights from obs_model to decoder mapping and freeze them
-    decoder.mapping.network[0].weight.data = obs_model.network[0].weight.data.clone()
-    decoder.mapping.network[0].bias.data = obs_model.network[0].bias.data.clone()
-    for param in decoder.mapping.network.parameters():
-        param.requires_grad = False
+    # decoder.mapping.network[0].weight.data = obs_model.network[0].weight.data.clone()
+    # decoder.mapping.network[0].bias.data = obs_model.network[0].bias.data.clone()
+    # for param in decoder.mapping.network.parameters():
+    #     param.requires_grad = False
 
     vae = SeqVae(
         encoder=encoder,
@@ -68,7 +83,7 @@ if __name__ == "__main__":
         device=device,
     )
     model = VAEWrapper(vae, env.observation_space, env.action_space, device=device)
-    policy_cls = policy_factory("random")
+    policy_cls = policy_from_str("lazy")
     policy = policy_cls(env.action_space)
 
     # Pretrain
@@ -81,24 +96,24 @@ if __name__ == "__main__":
     y = obs_model.observe(z)
 
     # Create rollout buffer
-    rollout_buffer = RolloutBuffer(num_samples)
-    for i in range(num_samples):
-        rollout = Rollout()
-        for t in range(num_steps):
-            rollout.add(
-                obs=y[i, t].unsqueeze(0),
-                action=torch.randn(1, 2, device=device),
-                env_state=z[i, t].unsqueeze(0),
-            )
-        rollout_buffer.add(rollout)
+    # rollout_buffer = RolloutBuffer(num_samples)
+    # for i in range(num_samples):
+    #     rollout = Rollout()
+    #     for t in range(num_steps):
+    #         rollout.add(
+    #             obs=y[i, t].unsqueeze(0),
+    #             action=torch.randn(1, 2, device=device),
+    #             env_state=z[i, t].unsqueeze(0),
+    #         )
+    #     rollout_buffer.add(rollout)
 
     # Train the model
-    model.train(
-        list(rollout_buffer.as_batch(batch_size=64, shuffle=True)),
-        optimizer="AdamW",
-        n_epochs=50,
-        lr=1e-4,
-    )
+    # model.train(
+    #     list(rollout_buffer.as_batch(batch_size=64, shuffle=True)),
+    #     optimizer="AdamW",
+    #     n_epochs=50,
+    #     lr=1e-4,
+    # )
     plot_vector_field(model.model.dynamics)
 
     agent = Agent(env, model, policy, device=device)
@@ -108,29 +123,25 @@ if __name__ == "__main__":
     agent.reset()
     print(agent._env_state)
     exp_rollout = Rollout(device=device)
-    for i in tqdm(range(10000)):
-        action = agent.plan() * 0.25
-        obs, reward, done, env_info, model_info = agent.step(action)
+    for i in tqdm(range(50000)):
+        action = agent.plan()
+
+        transition, done = agent.step(action)
         if i > 20:
             agent.train_model(
                 optimizer="SGD",
-                lr=1e-4,
+                lr=1e-3,
                 weight_decay=1e-5,
                 n_epochs=1,
                 verbose=False,
             )
-        exp_rollout.add(
-            env_state=env_info["latent_state"],
-            model_state=model_info["latent_state"],
-        )
+        exp_rollout.add(**transition)
         with torch.no_grad():
-            if i % 100 == 0:
+            if i > 0 and i % 1000 == 0:
                 z = torch.stack(exp_rollout["model_state"])
                 z_true = torch.stack(exp_rollout["env_state"])
                 plot_vector_field(agent.model_env.model.dynamics)
-                plt.plot(
-                    to_np(z[-100:, 0, 0]), to_np(z[-100:, 0, 1]), label="Model State"
-                )
+                plt.plot(to_np(z[-100:, 0]), to_np(z[-100:, 1]), label="Model State")
                 plt.plot(
                     to_np(z_true[-100:, 0]),
                     to_np(z_true[-100:, 1]),
@@ -139,20 +150,4 @@ if __name__ == "__main__":
                 plt.legend()
                 plt.show()
 
-    rollout.finalize()
-
-# %%
-plt.plot(
-    rollout["model_state"][1000:, 0, 0],
-    rollout["model_state"][1000:, 0, 1],
-    label="Model State",
-)
-plt.plot(
-    rollout["env_state"][1000:, 0], rollout["env_state"][1000:, 1], label="True State"
-)
-plt.show()
-
-
-plt.show()
-plot_vector_field(agent.env.env._get_dynamics)
-plot_vector_field(agent.model_env.model.dynamics)
+    exp_rollout.finalize()

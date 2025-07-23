@@ -20,7 +20,7 @@ _metric_map = {
 }
 
 
-def metric_from_str(metric_str: str, **kwargs) -> BaseMetric:
+def metric_from_str(metric_str: str, **kwargs) -> type[BaseMetric]:
     """
     Create a metric from string name.
     """

@@ -2,7 +2,7 @@ seed: 42
 device: "cuda"
 results_dir: "results/vf_test"
 action_dim: 2
-observation_dim: 2
+observation_dim: 50
 latent_dim: 2
 
 environment:
@@ -13,7 +13,7 @@ environment:
   env_render_mode: human
   env_action_bounds: [-0.5, 0.5]
   env_state_bounds: null
-  observation_type: "identity"
+  observation_type: "loglinear"
   obs_hidden_dims: [16]
   obs_activation: "relu"
   noise_type: "gaussian"
@@ -30,7 +30,7 @@ model:
   enc_rnn_type: "gru"
   enc_num_layers: 1
   enc_activation: "relu"
-  mapping_type: "identity"
+  mapping_type: "loglinear"
   map_hidden_dims: [16]
   map_activation: "relu"
   noise_type: "gaussian"
@@ -40,15 +40,15 @@ model:
   n_models: 1
   dyn_hidden_dims: [16]
   action_type: "identity"
-  act_action_bounds: [-0.5, 0.5]
+  act_action_bounds: [-0.1, 0.1]
   act_hidden_dims: [16]
   act_activation: "relu"
   model_type: "seq-vae"
 
 policy:
-  policy_type: "lazy"
+  policy_type: "mpc-icem"
   mpc_verbose: false
-  mpc_horizon: 2
+  mpc_horizon: 10
   mpc_num_samples: 32
   mpc_num_iterations: 5
   mpc_num_elite: 10
@@ -63,15 +63,14 @@ policy:
   mpc_keep_elites: true
 
 metric:
-  metric_type: "goal-distance"
+  metric_type: "A-optimality"
   compute_type: "sum"
-  gamma: 1.0
+  gamma: 0.99
   composite_weights: null
-  met_goal: [2.0, 2.0]
   met_use_diag: true
 
 training:
-  total_steps: 20000
+  total_steps: 50000
   train_every: 1
   save_every: 100000
   animate_every: 1000000

@@ -1,8 +1,8 @@
 from typing import Tuple, Optional, Literal
-import numpy as np  # kept only for matplotlib compatibility
 import torch
 import gpytorch
 from gpytorch.kernels import RBFKernel, ScaleKernel
+from abc import abstractmethod
 
 # Type aliases
 ArrayType = torch.Tensor
@@ -47,6 +47,8 @@ class VectorField:
         self.X: Optional[ArrayType] = None
         self.Y: Optional[ArrayType] = None
         self.xy: Optional[ArrayType] = None
+        self.U: Optional[ArrayType] = None
+        self.V: Optional[ArrayType] = None
         self.device = torch.device(device)
 
         self.create_grid(self.x_range, self.n_grid)
@@ -61,12 +63,13 @@ class VectorField:
 
         self.X, self.Y, self.xy = X, Y, xy
 
+    @abstractmethod
     @torch.no_grad()
     def generate_vector_field(self, **kwargs) -> None:
-        raise NotImplementedError(
-            "initialize_vector_field method must be implemented in subclasses."
-        )
+        """Generate the vector field components U and V and store them as attributes."""
+        pass
 
+    @abstractmethod
     @torch.no_grad()
     def compute(self, x: ArrayType) -> ArrayType:
         raise NotImplementedError("compute method must be implemented in subclasses.")

@@ -3,6 +3,7 @@ import torch
 from actdyn.environment.env_wrapper import GymObservationWrapper
 from actdyn.models.model_wrapper import VAEWrapper
 from actdyn.policy.base import BasePolicy
+from actdyn.policy.mpc import BaseMPC
 
 
 class Agent:
@@ -20,7 +21,7 @@ class Agent:
         self,
         env: GymObservationWrapper,
         model_env: VAEWrapper,
-        policy: BasePolicy,
+        policy: BasePolicy | BaseMPC,
         device="cuda",
     ):
         self.env = env

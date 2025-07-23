@@ -66,13 +66,13 @@ class FisherInformationMetric(BaseMetric):
         self.I = None
 
     def compute_dh_dz(self, z):
-        if isinstance(self.decoder, LogLinearMapping):
-            C = self.decoder.mapping.network.weight.data.clone()
+        if isinstance(self.decoder.mapping, LogLinearMapping):
+            C = self.decoder.mapping.network[0].weight.data.clone()
             dh_dz = C.view(1, 1, C.shape[0], C.shape[1]).expand(
                 z.shape[0], z.shape[1], C.shape[0], C.shape[1]
             )
 
-        elif isinstance(self.decoder, LinearMapping):
+        elif isinstance(self.decoder.mapping, LinearMapping):
             C = self.decoder.mapping.network.weight.data.clone()
             dh_dz = torch.einsum(
                 "btd,dn->btdn",
@@ -87,7 +87,7 @@ class FisherInformationMetric(BaseMetric):
 
     def compute_df_dtheta(self, z):
         if isinstance(self.dynamics, RBFDynamics):
-            df_dtheta = self.dynamics._rbf(z)
+            df_dtheta = self.dynamics.rbf(z)
         else:
             df_dtheta = compute_jacobian_params(self.dynamics, z)
         return df_dtheta
@@ -96,6 +96,8 @@ class FisherInformationMetric(BaseMetric):
         self, rollout: Union[Rollout, RolloutBuffer], use_diag=True
     ) -> torch.Tensor:
         z = rollout["model_state"]
+        if len(z.shape) != 3:
+            z = z.unsqueeze(0)  # Ensure z is (batch, T, d_latent)
         assert len(z.shape) == 3, "z must be a tensor of shape (batch, T, d_latent)"
         batch, T, d_latent = z.shape
         d_param = self.dynamics.weights.numel()
@@ -141,12 +143,13 @@ class AOptimality(FisherInformationMetric):
     """Metric that computes A-optimality."""
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        self.update_fim(rollout)
-
+        fim_traj = self.compute_fim(rollout)  # (batch, 1, d_param)
         if self.use_diag:
-            # return reciprocal sum of fim that are greater than 1e-3
-            self.metric = torch.reciprocal(self.I).sum(dim=-1)
-            return self.metric
+            # reciprocal of element greater than 1e-3
+            # return shape (batch, 1)
+            fim_traj[fim_traj < 1e-3] = torch.inf
+            return torch.reciprocal(fim_traj).sum(dim=-1)
+
         else:
             # TODO: implement non-diagonal A-optimality
             pass
