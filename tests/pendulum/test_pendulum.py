@@ -1,29 +1,5 @@
 # %%
 
-# import torch
-# import gymnasium as gym
-# from actdyn.models.encoder import MLPEncoder, RNNEncoder
-
-# gym_env = gym.make('Pendulum-v1')
-# obs_dim = gym_env.observation_space.shape[0]  # 3-D observation
-# action_dim = gym_env.action_space.shape[0]    # 1-D continuous action
-# latent_dim = obs_dim  # choose latent dimension same as observation dim
-# device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-# encoder = RNNEncoder(
-#     input_dim=obs_dim,
-#     hidden_dim=32,
-#     latent_dim=latent_dim,
-#     rnn_type="gru",
-#     num_layers=1,
-#     device=device
-# )
-
-# # encoder = MLPEncoder(input_dim=obs_dim, latent_dim=latent_dim,
-# #                          device=device, hidden_dims=[32, 32])
-
-# %%
-
 # Testing SeqVAE components on OpenAI Gymnasium Pendulum environment
 
 import torch
