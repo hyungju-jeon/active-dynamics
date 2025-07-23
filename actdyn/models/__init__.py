@@ -1,3 +1,7 @@
+"""Models package for Active Dynamics."""
+
+from typing import Type
+
 from .base import (
     BaseModel,
     BaseEncoder,
@@ -8,28 +12,38 @@ from .base import (
 )
 from .decoder import Decoder
 from .model_wrapper import VAEWrapper
+from .model import SeqVae
+
 import importlib
 
 __all__ = [
+    # Base classes
+    "BaseModel",
+    "BaseEncoder",
+    "BaseDynamics",
+    "BaseMapping",
+    "BaseNoise",
+    "EnsembleDynamics",
+    # Concrete implementations
+    "Decoder",
+    "VAEWrapper",
+    "SeqVae",
+    # Factory functions
     "mapping_from_str",
     "noise_from_str",
     "encoder_from_str",
     "dynamics_from_str",
     "model_from_str",
-    "Decoder",
-    "VAEWrapper",
-    "EnsembleDynamics",
 ]
 
+# Factory function mappings
 _model_map = {
     "seq-vae": (".model", "SeqVae"),
-    # Add more mappings as needed
 }
 
 _encoder_map = {
     "mlp": (".encoder", "MLPEncoder"),
     "rnn": (".encoder", "RNNEncoder"),
-    # Add more mappings as needed
 }
 
 _mapping_map = {
@@ -37,20 +51,17 @@ _mapping_map = {
     "linear": (".decoder", "LinearMapping"),
     "loglinear": (".decoder", "LogLinearMapping"),
     "mlp": (".decoder", "MLPMapping"),
-    # Add more mappings as needed
 }
 
 _noise_map = {
     "gaussian": (".decoder", "GaussianNoise"),
     "poisson": (".decoder", "PoissonNoise"),
-    # Add more mappings as needed
 }
 
 _dynamics_map = {
     "linear": (".dynamics", "LinearDynamics"),
     "mlp": (".dynamics", "MLPDynamics"),
     "rbf": (".dynamics", "RBFDynamics"),
-    # Add more mappings as needed
 }
 
 
@@ -110,11 +121,8 @@ def dynamics_from_str(dynamics_str: str) -> type[BaseDynamics]:
     return getattr(module, class_name)
 
 
-def model_from_str(model_str: str) -> type[BaseModel]:
-    """
-    Dynamically import and return the model class based on the string key.
-    Example: model_from_string('seq-vae')
-    """
+def model_from_str(model_str: str) -> Type[BaseModel]:
+    """Dynamically import and return the model class."""
     if model_str not in _model_map:
         raise ImportError(
             f"Unknown model: {model_str}. Available: {list(_model_map.keys())}"

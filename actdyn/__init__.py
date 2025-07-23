@@ -1,28 +1,51 @@
 """
 Active Dynamics: Active Learning for Latent Dynamical System Identification
+
+A framework for active learning of latent dynamical systems using Sequential VAEs
+and Model Predictive Control.
 """
 
-# from .core import *
-# from .models import *
-# from .environment import *
+__version__ = "0.1.0"
+__author__ = "Hyungju Jeon"
 
-# from .policy import *
-# from .metrics import *
-# from .utils import *
+# Core components
+from actdyn.core.agent import Agent
+from actdyn.core.experiment import Experiment
 
-# from .models.vae import VAE
-# from .environment.vectorfield import VectorFieldEnv
-# from .policy.simple_icem import SimpleICem
-# from .metrics.fisher import FisherInformation
+# Configuration
+from actdyn.config import ExperimentConfig
 
-# __version__ = "0.1.0"
+# Utilities
+from actdyn.utils.helpers import setup_experiment
 
-# __all__ = [
-#     "Agent",
-#     "Experiment",
-#     "VAE",
-#     "EnsembleVAE",
-#     "VectorFieldEnv",
-#     "SimpleICem",
-#     "FisherInformation",
-# ]
+# Main model types
+from actdyn.models.model import SeqVae
+from actdyn.models.model_wrapper import VAEWrapper
+
+# Common environments
+from actdyn.environment.vectorfield import VectorFieldEnv
+from actdyn.environment.env_wrapper import GymObservationWrapper
+
+# Common policies
+from actdyn.policy.mpc import MpcICem
+
+# Common metrics
+from actdyn.metrics.information import FisherInformationMetric
+
+__all__ = [
+    # Core
+    "Agent",
+    "Experiment",
+    "ExperimentConfig",
+    "setup_experiment",
+    # Models
+    "SeqVae",
+    "VAEWrapper",
+    # Environments
+    "VectorFieldEnv",
+    "GymObservationWrapper",
+    # Policies
+    "MpcICem",
+    # Metrics
+    "FisherInformationMetric",
+]

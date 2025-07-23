@@ -2,7 +2,6 @@
 
 import gymnasium as gym
 from gymnasium import spaces
-import gymnasium
 import torch
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, Sequence
@@ -73,15 +72,14 @@ class BaseDynamicsEnv(gym.Env, ABC):
     @abstractmethod
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
-    ) -> Tuple[np.ndarray, Dict[str, Any]]:
+    ) -> Tuple[torch.Tensor, Dict[str, Any]]:  # Fixed return type
         """Reset the environment."""
         super().reset(seed=seed)
-        pass
 
     @abstractmethod
     def step(
-        self, action: np.ndarray
-    ) -> Tuple[np.ndarray, float, bool, bool, Dict[str, Any]]:
+        self, action: torch.Tensor  # Changed from np.ndarray to torch.Tensor
+    ) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
         """Step the environment."""
         pass
 
@@ -107,7 +105,7 @@ class BaseAction(nn.Module):
         super().__init__()
         self.action_dim = action_dim
         self.latent_dim = latent_dim
-        self.action_space = gymnasium.spaces.Box(
+        self.action_space = spaces.Box(
             low=action_bounds[0],
             high=action_bounds[1],
             shape=(action_dim,),
@@ -144,7 +142,7 @@ class BaseObservation(nn.Module):
         self.noise_type = noise_type
         self.noise_scale = noise_scale
         self.device = torch.device(device)
-        self.network = None
+        self.network: Optional[nn.Module] = None
 
     def _add_noise(self, y: torch.Tensor) -> torch.Tensor:
         if self.noise_type is None or self.noise_scale == 0.0:

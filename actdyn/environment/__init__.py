@@ -1,4 +1,4 @@
-import gymnasium
+from typing import Type, Union
 from .base import BaseDynamicsEnv, BaseObservation, BaseAction
 from .env_wrapper import GymObservationWrapper
 import importlib
@@ -28,24 +28,24 @@ _action_map = {
 }
 
 
-def environment_from_str(env_str: str) -> type[str, gymnasium.Env]:
+def environment_from_str(env_str: str) -> Union[Type[BaseDynamicsEnv], str]:
     """
     Dynamically import and return the environment class based on the string key.
-    Example: environment_factory('vectorfield')
+
+    Args:
+        env_str: String identifier for the environment
+
+    Returns:
+        Either an environment class or a string for gymnasium environments
     """
     if env_str not in _environment_map:
-        # Print error message saying the environment is not found and that we are using gymnasium
         print(f"Unknown environment: {env_str}. Using gymnasium environment instead.")
-        # Fallback to gymnasium environment
-        module_name = "gymnasium"
-        class_name = env_str
+        module = importlib.import_module("gymnasium")
+        return env_str
 
-    else:
-        module_name, class_name = _environment_map[env_str]
+    module_name, class_name = _environment_map[env_str]
     if module_name == "gymnasium":
-        # Special case for gymnasium environments
-        module = importlib.import_module(module_name)
-        return class_name
+        return env_str
     else:
         module = importlib.import_module(module_name, __package__)
         return getattr(module, class_name)

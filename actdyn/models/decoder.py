@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 from torch.distributions import Normal
-import torch.nn.functional as F
 
 from actdyn.utils.torch_helper import activation_from_str
 from .base import BaseMapping, BaseNoise

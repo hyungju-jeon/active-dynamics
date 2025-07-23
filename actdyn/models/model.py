@@ -8,7 +8,6 @@ from .encoder import BaseEncoder
 from .decoder import Decoder
 from actdyn.environment.action import BaseAction
 from actdyn.utils.rollout import Rollout
-from torch.utils.data import DataLoader
 
 
 class SeqVae(BaseModel):

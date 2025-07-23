@@ -1,7 +1,5 @@
 import torch
 import torch.nn as nn
-from torch.distributions import Normal
-from torch.nn.functional import softplus
 from .base import BaseDynamics
 
 

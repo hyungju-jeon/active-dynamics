@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence
+from typing import List, Optional, Sequence, Union
 import torch
 import yaml
 
@@ -77,9 +77,9 @@ class PolicyConfig:
 
 @dataclass
 class MetricConfig:
-    metric_type: [str, List[str]] = "A-optimality"
+    metric_type: Union[str, List[str]] = "A-optimality"
     compute_type: str = "sum"
-    gamma: [float, List[float]] = 1.0
+    gamma: Union[float, List[float]] = 1.0
     composite_weights: Optional[List[float]] = None
     met_goal: Optional[List[float]] = None
     met_use_diag: Optional[bool] = False

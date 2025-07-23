@@ -1,5 +1,4 @@
 import numpy as np
-from pygame import ver
 import torch
 import colorednoise
 
@@ -223,6 +222,7 @@ class MpcICem(BaseMPC):
                     cost_traj = torch.cat(
                         [cost_traj, prev_elite_costs[:num_elites_to_keep]], dim=0
                     )
+                    costs = cost_traj.sum(dim=1)
 
             # Get elite samples
             elite_idxs = torch.topk(-costs, self.num_elites, dim=0)[1]
@@ -250,13 +250,11 @@ class MpcICem(BaseMPC):
 
             # Print cost for debugging
             if self.verbose:
-                best_actions = self.elite_samples.as_array("action")[0]
                 print(
                     f"iter {iter}:{current_num_samples} "
                     f"--- best cost: {costs.min()} "
                     f"--- mean: {costs.mean()} "
                     f"--- worst: {costs.max()} "
-                    f"--- best action: {best_actions[0:6]}..."
                 )
 
         ### Shift initialization ###
