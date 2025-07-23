@@ -11,7 +11,7 @@ from actdyn.models.decoder import Decoder, IdentityMapping, LinearMapping, Gauss
 from actdyn.models.dynamics import LinearDynamics
 from actdyn.models.model import SeqVae
 from actdyn.environment.action import LinearActionEncoder
-from actdyn.utils.helpers import to_np
+from actdyn.utils.torch_helper import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -23,6 +23,7 @@ if __name__ == "__main__":
     action_space = gym_env.action_space.n         # 3 discrete actions
 
     latent_dim = obs_dim
+    action_bounds = (0, 2)
 
     # define SeqVAE model components
     encoder = MLPEncoder(input_dim=obs_dim, latent_dim=latent_dim, device=device, hidden_dims=[1])
@@ -33,7 +34,12 @@ if __name__ == "__main__":
         device=device,
     )
     dynamics = LinearDynamics(state_dim=latent_dim, device=device)
-    action_encoder = LinearActionEncoder(input_dim=action_space, latent_dim=latent_dim, device=device)
+    action_encoder = LinearActionEncoder(
+        action_dim=action_space,
+        latent_dim=latent_dim,
+        action_bounds=action_bounds,
+        device=device
+    )
 
     model = SeqVae(
         encoder=encoder,

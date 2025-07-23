@@ -12,7 +12,7 @@ from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping, Identit
 from actdyn.models.dynamics import LinearDynamics, MLPDynamics
 from actdyn.models.model import SeqVae
 from actdyn.environment.action import LinearActionEncoder
-from actdyn.utils.helpers import to_np
+from actdyn.utils.torch_helper import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 
 # set device
@@ -26,6 +26,7 @@ if __name__ == "__main__":
     action_dim = gym_env.action_space.shape[0]  # 1-D continuous action
 
     latent_dim = obs_dim  # choose latent dimension same as observation dim
+    action_bounds = (-2.0, 2.0)
 
     # define SeqVAE model components
     encoder = RNNEncoder(
@@ -51,7 +52,10 @@ if __name__ == "__main__":
     )
     dynamics = MLPDynamics(state_dim=latent_dim, device=device)
     action_encoder = LinearActionEncoder(
-        input_dim=action_dim, latent_dim=latent_dim, device=device
+        action_dim=action_dim,
+        latent_dim=latent_dim,
+        action_bounds=action_bounds,
+        device=device
     )
 
     model = SeqVae(
