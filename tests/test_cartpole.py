@@ -1,4 +1,4 @@
-#%%
+# %%
 
 import torch
 from matplotlib import pyplot as plt
@@ -20,28 +20,24 @@ from actdyn.utils.rollout import Rollout, RolloutBuffer
 from torch.utils.tensorboard import SummaryWriter
 
 
-
 class ContinuousCartPoleEnv(gym.Env):
 
-    metadata = {
-        'render.modes': ['human', 'rgb_array'],
-        'video.frames_per_second': 50
-    }
+    metadata = {"render.modes": ["human", "rgb_array"], "video.frames_per_second": 50}
 
     def __init__(self):
         self.gravity = 9.8
         self.masscart = 1.0
         self.masspole = 0.1
-        self.total_mass = (self.masspole + self.masscart)
+        self.total_mass = self.masspole + self.masscart
         self.length = 0.5  # half the pole's length
-        self.polemass_length = (self.masspole * self.length)
+        self.polemass_length = self.masspole * self.length
         self.force_mag = 30.0
         self.tau = 0.01  # seconds between state updates
         self.min_action = -1.0
         self.max_action = 1.0
 
         # angle at which to fail the episode
-        self.theta_threshold_radians = float('inf')  # no angle limit
+        self.theta_threshold_radians = float("inf")  # no angle limit
         self.x_threshold = 2.4
         self.track_length = 2 * self.x_threshold
         # radius of equivalent circle: circumference = track_length
@@ -51,21 +47,21 @@ class ContinuousCartPoleEnv(gym.Env):
         self.min_action = -1.0
         self.max_action = 1.0
         self.action_space = spaces.Box(
-            low=self.min_action,
-            high=self.max_action,
-            shape=(1,),
-            dtype=np.float32
+            low=self.min_action, high=self.max_action, shape=(1,), dtype=np.float32
         )
         # observation structure:
         # [ sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot ]
-        high = np.array([
-            1.0,                       # sin(phi)
-            1.0,                       # cos(phi)
-            np.finfo(np.float32).max,  # phi_dot
-            1.0,                       # sin(theta)
-            1.0,                       # cos(theta)
-            np.finfo(np.float32).max   # theta_dot
-        ], dtype=np.float32)
+        high = np.array(
+            [
+                1.0,  # sin(phi)
+                1.0,  # cos(phi)
+                np.finfo(np.float32).max,  # phi_dot
+                1.0,  # sin(theta)
+                1.0,  # cos(theta)
+                np.finfo(np.float32).max,  # theta_dot
+            ],
+            dtype=np.float32,
+        )
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
 
         # pygame renderer
@@ -80,7 +76,7 @@ class ContinuousCartPoleEnv(gym.Env):
         self.screen_width = 800
         self.screen_height = 600
         self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
-        pygame.display.set_caption('Circular CartPole')
+        pygame.display.set_caption("Circular CartPole")
         self.clock = pygame.time.Clock()
 
         # world-to-pixel scaling for linear track
@@ -101,8 +97,9 @@ class ContinuousCartPoleEnv(gym.Env):
         costheta = math.cos(theta)
         sintheta = math.sin(theta)
         temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
-        thetaacc = (self.gravity * sintheta - costheta * temp) / \
-            (self.length * (4.0/3.0 - self.masspole * costheta**2 / self.total_mass))
+        thetaacc = (self.gravity * sintheta - costheta * temp) / (
+            self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
+        )
         xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
 
         phiacc = xacc / self.radius
@@ -120,11 +117,13 @@ class ContinuousCartPoleEnv(gym.Env):
         to observation: [sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot]
         """
         phi, phi_dot, theta, theta_dot = state
-        return np.array([math.sin(phi), math.cos(phi), phi_dot, math.sin(theta), math.cos(theta), theta_dot], dtype=np.float32)
+        return np.array(
+            [math.sin(phi), math.cos(phi), phi_dot, math.sin(theta), math.cos(theta), theta_dot],
+            dtype=np.float32,
+        )
 
     def step(self, action):
-        assert self.action_space.contains(action), \
-            "%r (%s) invalid" % (action, type(action))
+        assert self.action_space.contains(action), "%r (%s) invalid" % (action, type(action))
         force = self.force_mag * float(action[0])
         self.state = self.stepPhysics(force)
 
@@ -140,7 +139,7 @@ class ContinuousCartPoleEnv(gym.Env):
         self.state = (phi, phi_dot, theta, theta_dot)
         return self._state_to_observation(self.state)
 
-    def render(self, mode='human'):
+    def render(self, mode="human"):
         global RENDER
         if not RENDER:
             return
@@ -157,29 +156,26 @@ class ContinuousCartPoleEnv(gym.Env):
         self.screen.fill((255, 255, 255))
         # draw track line
         pygame.draw.line(
-            self.screen, (0,0,0),
-            (0, self.track_y),
-            (self.screen_width, self.track_y), 2)
+            self.screen, (0, 0, 0), (0, self.track_y), (self.screen_width, self.track_y), 2
+        )
         # compute wrapped linear position s in [0, track_length)
-        s = (phi % (2*math.pi)) * self.radius
+        s = (phi % (2 * math.pi)) * self.radius
         # center to world x
         x_centered = s - self.x_threshold
-        cart_x = int(self.screen_width/2 + x_centered * self.x_scale)
+        cart_x = int(self.screen_width / 2 + x_centered * self.x_scale)
         cart_y = self.track_y - int(self.cart_h_pix)
         # draw cart
         cart_rect = pygame.Rect(
-            cart_x - self.cart_w_pix/2, cart_y,
-            self.cart_w_pix, self.cart_h_pix)
-        pygame.draw.rect(self.screen, (50,100,200), cart_rect)
+            cart_x - self.cart_w_pix / 2, cart_y, self.cart_w_pix, self.cart_h_pix
+        )
+        pygame.draw.rect(self.screen, (50, 100, 200), cart_rect)
         # draw pole
         pole_x0, pole_y0 = cart_x, cart_y
         pole_x1 = pole_x0 + self.length * math.sin(theta) * self.x_scale
         pole_y1 = pole_y0 - self.length * math.cos(theta) * self.y_scale
-        pygame.draw.line(
-            self.screen, (200,50,50),
-            (pole_x0, pole_y0), (pole_x1, pole_y1), 6)
+        pygame.draw.line(self.screen, (200, 50, 50), (pole_x0, pole_y0), (pole_x1, pole_y1), 6)
         pygame.display.flip()
-        self.clock.tick(int(1.0/self.tau))
+        self.clock.tick(int(1.0 / self.tau))
 
     def close(self):
         global RENDER
@@ -206,7 +202,16 @@ learning_rate = 1e-2
 # logger
 writer = SummaryWriter(log_dir="runs/seqvae_cartpole")
 
-def collect_rollouts(env, num_samples, num_steps, mode="random", plot_first_rollout=False, perturb_time=None, perturb_force=0.5):
+
+def collect_rollouts(
+    env,
+    num_samples,
+    num_steps,
+    mode="random",
+    plot_first_rollout=False,
+    perturb_time=None,
+    perturb_force=0.5,
+):
     """
     collects rollouts from the environment
     """
@@ -255,12 +260,12 @@ def collect_rollouts(env, num_samples, num_steps, mode="random", plot_first_roll
                 cos_theta = obs_next[4]
                 phi_rec = math.atan2(sin_phi, cos_phi)
                 theta_rec = math.atan2(sin_theta, cos_theta)
-                example_phi.append(phi_rec)   # reconstructed phi
-                example_theta.append(theta_rec) # reconstructed theta
+                example_phi.append(phi_rec)  # reconstructed phi
+                example_theta.append(theta_rec)  # reconstructed theta
 
             if done:
                 break
-        
+
         if t + 1 < num_steps:
             continue  # Skip short episodes
 
@@ -286,6 +291,7 @@ def collect_rollouts(env, num_samples, num_steps, mode="random", plot_first_roll
 
     return buffer
 
+
 def k_step_prediction(model, rollout, k, writer, epoch):
     """
     performs a K-step prediction on a single rollout and logs the results
@@ -293,15 +299,15 @@ def k_step_prediction(model, rollout, k, writer, epoch):
 
     with torch.no_grad():
         # get data from rollout
-        obs_seq = rollout._data['obs'].to(device)
-        action_seq = rollout._data['action'].to(device)
-        
+        obs_seq = rollout._data["obs"].to(device)
+        action_seq = rollout._data["action"].to(device)
+
         # take first observation as starting point
         obs_initial = obs_seq[0].unsqueeze(0)
-        
+
         # use encoder to get initial latent state
         z_initial, *_ = model.encoder(obs_initial)
-        
+
         # initialize lists to store predictions
         predicted_z_seq = [z_initial]
         predicted_obs_seq = [model.decoder(z_initial)[0]]
@@ -309,7 +315,7 @@ def k_step_prediction(model, rollout, k, writer, epoch):
         # simulate dynamics for k steps
         current_z = z_initial
         for i in range(k):
-            # encode action and predict next latent state 
+            # encode action and predict next latent state
             if i < len(action_seq):
                 current_action = action_seq[i].unsqueeze(0)
                 encoded_action = model.action_encoder(current_action)
@@ -317,13 +323,13 @@ def k_step_prediction(model, rollout, k, writer, epoch):
             else:
                 # if we run out of actions, assume no action (or a zero action)
                 current_z = model.dynamics(current_z)
-            
+
             # append to list
             predicted_z_seq.append(current_z)
-            
+
             # decode predicted latent state to observation
             predicted_obs_seq.append(model.decoder(current_z)[0])
-            
+
         # convert lists to tensors
         predicted_obs_seq = torch.cat(predicted_obs_seq, dim=0)
         predicted_z_seq = torch.cat(predicted_z_seq, dim=0)
@@ -334,11 +340,13 @@ def k_step_prediction(model, rollout, k, writer, epoch):
         if obs_dim == 1:
             axes = [axes]
         for i in range(obs_dim):
-            axes[i].plot(to_np(obs_seq[:k+1, i]), label='True')
-            axes[i].plot(to_np(predicted_obs_seq[:k+1, i]), label=f'Predicted (k={k})', linestyle='--')
-            axes[i].set_title(f'Observation Dim {i}')
+            axes[i].plot(to_np(obs_seq[: k + 1, i]), label="True")
+            axes[i].plot(
+                to_np(predicted_obs_seq[: k + 1, i]), label=f"Predicted (k={k})", linestyle="--"
+            )
+            axes[i].set_title(f"Observation Dim {i}")
             axes[i].legend()
-        fig.suptitle(f'K-step Prediction for Epoch {epoch} (k={k})', fontsize=16)
+        fig.suptitle(f"K-step Prediction for Epoch {epoch} (k={k})", fontsize=16)
         plt.tight_layout()
         plt.show()
         writer.add_figure(f"K-step Prediction/k={k}", fig, epoch)
@@ -351,10 +359,14 @@ if __name__ == "__main__":
 
     # create environment and collect data
     env = ContinuousCartPoleEnv()
-    rollout_buffer = collect_rollouts(env, num_samples, num_steps, mode="passive", plot_first_rollout=True)
+    rollout_buffer = collect_rollouts(
+        env, num_samples, num_steps, mode="passive", plot_first_rollout=True
+    )
 
     # split into train and validation
-    all_rollouts = list(rollout_buffer._buffer if hasattr(rollout_buffer, '_buffer') else rollout_buffer)
+    all_rollouts = list(
+        rollout_buffer._buffer if hasattr(rollout_buffer, "_buffer") else rollout_buffer
+    )
     random.shuffle(all_rollouts)
     n_val = int(len(all_rollouts) * val_split)
     val_rollouts = all_rollouts[:n_val]
@@ -373,27 +385,21 @@ if __name__ == "__main__":
     action_dim = env.action_space.shape[0]
     latent_dim = obs_dim
 
-    action_bounds = (-1.0, 1.0) # Corrected action bounds
+    action_bounds = (-1.0, 1.0)  # Corrected action bounds
 
     encoder = MLPEncoder(
-        input_dim=obs_dim,
-        latent_dim=latent_dim,
-        device=device,
-        hidden_dims=[64, 64]
+        input_dim=obs_dim, latent_dim=latent_dim, device=device, hidden_dims=[64, 64]
     )
     decoder = Decoder(
         # LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
         IdentityMapping(device=device),
         GaussianNoise(output_dim=obs_dim, sigma=0.5),
-        device=device
+        device=device,
     )
     # dynamics = LinearDynamics(state_dim=latent_dim, device=device)
     dynamics = MLPDynamics(state_dim=latent_dim, hidden_dim=64, device=device)
     action_encoder = LinearActionEncoder(
-        action_dim=action_dim,
-        latent_dim=latent_dim,
-        action_bounds=action_bounds,
-        device=device
+        action_dim=action_dim, latent_dim=latent_dim, action_bounds=action_bounds, device=device
     )
 
     model = SeqVae(
@@ -401,10 +407,10 @@ if __name__ == "__main__":
         decoder=decoder,
         dynamics=dynamics,
         action_encoder=action_encoder,
-        device=device
+        device=device,
     )
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
-    model.action_dim = action_dim 
+    model.action_dim = action_dim
 
     # training loop with logging
     train_losses, val_losses = [], []
@@ -412,8 +418,8 @@ if __name__ == "__main__":
         # training
         epoch_train = []
         for batch in train_buffer.as_batch(batch_size=batch_size, shuffle=True):
-            obs = batch['obs'].to(device)
-            action = batch.get('action')
+            obs = batch["obs"].to(device)
+            action = batch.get("action")
             action = action.to(device) if action is not None else None
 
             optimizer.zero_grad()
@@ -427,8 +433,8 @@ if __name__ == "__main__":
         epoch_val = []
         with torch.no_grad():
             for batch in val_buffer.as_batch(batch_size=batch_size, shuffle=False):
-                obs = batch['obs'].to(device)
-                action = batch.get('action')
+                obs = batch["obs"].to(device)
+                action = batch.get("action")
                 action = action.to(device) if action is not None else None
                 loss = model.compute_elbo(obs, u=action)
                 epoch_val.append(loss.item())
@@ -441,14 +447,16 @@ if __name__ == "__main__":
         writer.add_scalar("Loss/Train", avg_train, epoch)
         writer.add_scalar("Loss/Val", avg_val, epoch)
         if epoch == 1 or epoch % 100 == 0:
-            print(f"Epoch {epoch}/{n_epochs} - Train Loss: {avg_train:.3f}, Val Loss: {avg_val:.3f}")
-        
+            print(
+                f"Epoch {epoch}/{n_epochs} - Train Loss: {avg_train:.3f}, Val Loss: {avg_val:.3f}"
+            )
+
         # K-step prediction at the end of some epochs
         if epoch % 50 == 0:
             # Choose a random rollout from the validation set
             sample_rollout = random.choice(val_rollouts)
             k_step_prediction(model, sample_rollout, k=50, writer=writer, epoch=epoch)
-            
+
     writer.close()
 
     # plot losses
