@@ -18,7 +18,10 @@ from actdyn.utils.rollout import Rollout, RolloutBuffer
 class CircularCartPole(gym.Wrapper):
     def __init__(self, env):
         super().__init__(env)
-        base = env.unwrapped  # get the true CartPoleEnv
+        base = env.unwrapped  # true CartPoleEnv
+
+        # disable pole-angle termination by setting its threshold to infinity
+        base.theta_threshold_radians = float('inf')
 
         # Cart limits from the underlying env
         self.x_threshold = base.x_threshold
@@ -160,7 +163,7 @@ if __name__ == "__main__":
         optimizer="AdamW",
         n_epochs=1000,
     )
-    
+
 
 # %%
 
