@@ -3,8 +3,11 @@
 import torch
 from matplotlib import pyplot as plt
 import gymnasium as gym
-import torch.nn.functional as F
 import numpy as np
+import math
+from gym import spaces, logger
+from gym.utils import seeding
+import pygame
 
 from actdyn.models.encoder import MLPEncoder
 from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping
@@ -15,80 +18,174 @@ from actdyn.utils.torch_helper import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 
 
-class CircularCartPole(gym.Wrapper):
-    def __init__(self, env):
-        super().__init__(env)
-        base = env.unwrapped  # true CartPoleEnv
+class ContinuousCartPoleEnv(gym.Env):
 
-        # disable pole-angle termination by setting its threshold to infinity
-        base.theta_threshold_radians = float('inf')
+    metadata = {
+        'render.modes': ['human', 'rgb_array'],
+        'video.frames_per_second': 50
+    }
 
-        # Cart limits from the underlying env
-        self.x_threshold = base.x_threshold
-        self.theta_threshold = base.theta_threshold_radians
+    def __init__(self):
+        self.gravity = 9.8
+        self.masscart = 1.0
+        self.masspole = 0.1
+        self.total_mass = (self.masspole + self.masscart)
+        self.length = 0.5  # half the pole's length
+        self.polemass_length = (self.masspole * self.length)
+        self.force_mag = 30.0
+        self.tau = 0.02  # seconds between state updates
+        self.min_action = -1.0
+        self.max_action = 1.0
 
-        # track length and corresponding circle radius
-        self.length = 2 * self.x_threshold
-        self.radius = self.length / (2 * np.pi)
+        # angle at which to fail the episode
+        self.theta_threshold_radians = float('inf')  # no angle limit
+        self.x_threshold = 2.4
+        self.track_length = 2 * self.x_threshold
+        # radius of equivalent circle: circumference = track_length
+        self.radius = self.track_length / (2 * math.pi)
 
-        # new obs: [cosθ, sinθ, θ̇, pole_angle, pole_ang_vel]
-        low  = np.array([-1.0, -1.0, -np.inf, -self.theta_threshold, -np.inf], dtype=np.float32)
-        high = np.array([ 1.0,  1.0,  np.inf,  self.theta_threshold,  np.inf], dtype=np.float32)
-        self.observation_space = gym.spaces.Box(low, high, dtype=np.float32)
+        # action and observation spaces
+        self.min_action = -1.0
+        self.max_action = 1.0
+        self.action_space = spaces.Box(
+            low=self.min_action,
+            high=self.max_action,
+            shape=(1,),
+            dtype=np.float32
+        )
+        # phi unbounded, phi_dot, theta, theta_dot
+        high = np.array([np.finfo(np.float32).max,
+                         np.finfo(np.float32).max,
+                         np.finfo(np.float32).max,
+                         np.finfo(np.float32).max], dtype=np.float32)
+        self.observation_space = spaces.Box(-high, high, dtype=np.float32)
 
-        # continuous action 0–1
-        self.action_space = gym.spaces.Box(0.0, 1.0, shape=(1,), dtype=np.float32)
+        # pygame renderer
+        self._pygame_inited = False
+        self.viewer = None
 
-    def _wrap_state(self):
-        base = self.env.unwrapped
-        x, x_dot, theta, theta_dot = base.state
-        # wrap-around smoothly
-        if x > self.x_threshold:
-            x -= self.length
-        elif x < -self.x_threshold:
-            x += self.length
-        base.state = np.array([x, x_dot, theta, theta_dot], dtype=np.float32)
+        # RNG
+        self.seed()
+        self.state = None
 
-    def _make_obs(self):
-        x, x_dot, theta, theta_dot = self.env.unwrapped.state
-        angle   = x / self.radius
-        ang_vel = x_dot / self.radius
-        return np.array([np.cos(angle),
-                         np.sin(angle),
-                         ang_vel,
-                         theta,
-                         theta_dot], dtype=np.float32)
+    def _init_pygame(self):
+        pygame.init()
+        self.screen_width = 800
+        self.screen_height = 600
+        self.screen = pygame.display.set_mode((self.screen_width, self.screen_height))
+        pygame.display.set_caption('Circular CartPole')
+        self.clock = pygame.time.Clock()
 
-    def reset(self, **kwargs):
-        raw_obs, info = self.env.reset(**kwargs)
-        # raw_obs = [x, x_dot, θ, θ̇]
-        self.env.unwrapped.state = raw_obs.astype(np.float32)
-        return self._make_obs(), info
+        # world-to-pixel scaling for linear track
+        self.x_scale = self.screen_width / (self.track_length * 1.2)
+        self.y_scale = self.screen_height / (self.length * 2 + 1)
+        self.cart_w_pix = 0.4 * self.x_scale
+        self.cart_h_pix = 0.2 * self.y_scale
+        self.track_y = int(self.screen_height * 0.8)
+        self._pygame_inited = True
+
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [seed]
+
+    def stepPhysics(self, force):
+        phi, phi_dot, theta, theta_dot = self.state
+        # compute linear acceleration xacc from CartPole eqs
+        costheta = math.cos(theta)
+        sintheta = math.sin(theta)
+        temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
+        thetaacc = (self.gravity * sintheta - costheta * temp) / \
+            (self.length * (4.0/3.0 - self.masspole * costheta**2 / self.total_mass))
+        xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
+        # convert linear accel to angular accel on circle
+        phiacc = xacc / self.radius
+
+        # integrate
+        phi = phi + self.tau * phi_dot
+        phi_dot = phi_dot + self.tau * phiacc
+        theta = theta + self.tau * theta_dot
+        theta_dot = theta_dot + self.tau * thetaacc
+
+        return (phi, phi_dot, theta, theta_dot)
 
     def step(self, action):
-        # discretize continuous input
-        discrete_a = int(action[0] > 0.5)
-        obs, reward, terminated, truncated, info = self.env.step(discrete_a)
+        assert self.action_space.contains(action), \
+            "%r (%s) invalid" % (action, type(action))
+        force = self.force_mag * float(action)
+        self.state = self.stepPhysics(force)
 
-        # override termination of hitting the x-threshold
-        # only terminate if the pole itself goes beyond its angle threshold
-        x, _, theta, _ = self.env.unwrapped.state
-        if abs(x) > self.x_threshold and abs(theta) <= self.theta_threshold:
-            terminated = False
+        # # unpack for debug print
+        # phi, phi_dot, theta, theta_dot = self.state
+        # print(f"[DEBUG] phi={phi:.3f}, phi_dot={phi_dot:.3f}, theta={theta:.3f}, theta_dot={theta_dot:.3f}")
 
-        # wrap the state for smooth physics continuity
-        self._wrap_state()
+        # never done in continuous setup
+        reward = 0.0
+        done = False
+        return np.array(self.state, dtype=np.float32), reward, done, {}
 
-        return self._make_obs(), reward, terminated, truncated, info
-    
-    
+    def reset(self):
+        # start near phi=0, small velocities
+        phi = 0.0
+        phi_dot, theta, theta_dot = self.np_random.uniform(-0.05, 0.05, size=(3,))
+        self.state = (phi, phi_dot, theta, theta_dot)
+        return np.array(self.state, dtype=np.float32)
+
+    def render(self, mode='human'):
+        global RENDER
+        if not RENDER:
+            return
+        if self.state is None:
+            return
+
+        phi, phi_dot, theta, theta_dot = self.state
+        if not self._pygame_inited:
+            self._init_pygame()
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                return
+        self.screen.fill((255, 255, 255))
+        # draw track line
+        pygame.draw.line(
+            self.screen, (0,0,0),
+            (0, self.track_y),
+            (self.screen_width, self.track_y), 2)
+        # compute wrapped linear position s in [0, track_length)
+        s = (phi % (2*math.pi)) * self.radius
+        # center to world x
+        x_centered = s - self.x_threshold
+        cart_x = int(self.screen_width/2 + x_centered * self.x_scale)
+        cart_y = self.track_y - int(self.cart_h_pix)
+        # draw cart
+        cart_rect = pygame.Rect(
+            cart_x - self.cart_w_pix/2, cart_y,
+            self.cart_w_pix, self.cart_h_pix)
+        pygame.draw.rect(self.screen, (50,100,200), cart_rect)
+        # draw pole
+        pole_x0, pole_y0 = cart_x, cart_y
+        pole_x1 = pole_x0 + self.length * math.sin(theta) * self.x_scale
+        pole_y1 = pole_y0 - self.length * math.cos(theta) * self.y_scale
+        pygame.draw.line(
+            self.screen, (200,50,50),
+            (pole_x0, pole_y0), (pole_x1, pole_y1), 6)
+        pygame.display.flip()
+        self.clock.tick(int(1.0/self.tau))
+
+    def close(self):
+        global RENDER
+        if self._pygame_inited and RENDER:
+            pygame.quit()
+
+
+RENDER = False
+
 if __name__ == "__main__":
     # set device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.set_default_device(device)
 
     # create circular CartPole environment
-    env = CircularCartPole(gym.make('CartPole-v1'))
+    env = ContinuousCartPoleEnv()
     obs_dim = env.observation_space.shape[0]   # 5-D
     action_dim = env.action_space.shape[0]     # 1-D continuous
 
@@ -134,14 +231,14 @@ if __name__ == "__main__":
         obs_seq = torch.zeros(num_steps+1, obs_dim, device=device)
         actions = torch.zeros(num_steps, action_dim, device=device)
 
-        obs_raw, _ = env.reset()
+        obs_raw = env.reset()
         obs_seq[0] = torch.from_numpy(obs_raw).float().to(device)
 
         for t in range(num_steps):
             a_cont = env.action_space.sample()
             actions[t] = torch.from_numpy(a_cont).to(device)
 
-            obs_raw, _, done, _, _ = env.step(a_cont)
+            obs_raw, _, done, _, = env.step(a_cont)
             obs_seq[t+1] = torch.from_numpy(obs_raw).float().to(device)
             if done:
                 break

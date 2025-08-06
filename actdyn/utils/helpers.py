@@ -23,7 +23,7 @@ from actdyn.models import (
     BaseModel,
     VAEWrapper,
 )
-from actdyn.models.dynamics import EnsembleDynamics
+from actdyn.models.base import EnsembleDynamics
 from actdyn.models.model import SeqVae
 from actdyn.policy import policy_from_str, BaseMPC
 from actdyn.metrics import metric_from_str, FisherInformationMetric, CompositeMetric
