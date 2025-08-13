@@ -8,14 +8,17 @@ import math
 from gym import spaces, logger
 from gym.utils import seeding
 import pygame
+import random
 
 from actdyn.models.encoder import MLPEncoder
 from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping
-from actdyn.models.dynamics import LinearDynamics
+from actdyn.models.dynamics import LinearDynamics, MLPDynamics
 from actdyn.models.model import SeqVae
 from actdyn.environment.action import LinearActionEncoder
 from actdyn.utils.torch_helper import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
+from torch.utils.tensorboard import SummaryWriter
+
 
 
 class ContinuousCartPoleEnv(gym.Env):
@@ -111,7 +114,7 @@ class ContinuousCartPoleEnv(gym.Env):
     def step(self, action):
         assert self.action_space.contains(action), \
             "%r (%s) invalid" % (action, type(action))
-        force = self.force_mag * float(action)
+        force = self.force_mag * float(action[0])
         self.state = self.stepPhysics(force)
 
         # # unpack for debug print
@@ -177,24 +180,165 @@ class ContinuousCartPoleEnv(gym.Env):
             pygame.quit()
 
 
+# %%
+# K-step prediction
+
+# configuration
 RENDER = False
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+torch.set_default_device(device)
+
+# hyperparameters
+num_samples = 500
+num_steps = 200
+val_split = 0.1
+batch_size = 64
+n_epochs = 1500
+learning_rate = 1e-2
+
+# logger
+writer = SummaryWriter(log_dir="runs/seqvae_cartpole")
+
+def collect_rollouts(env, num_samples, num_steps):
+    """
+    collects rollouts from the environment
+    """
+
+    buffer = RolloutBuffer(num_samples)
+    while len(buffer) < num_samples:
+        obs_dim = env.observation_space.shape[0]
+        action_dim = env.action_space.shape[0]
+
+        obs_seq = torch.zeros(num_steps + 1, obs_dim, device=device)
+        actions = torch.zeros(num_steps, action_dim, device=device)
+
+        obs_raw = env.reset()
+        obs_seq[0] = torch.from_numpy(obs_raw).float().to(device)
+        done = False
+        t = 0
+        for t in range(num_steps):
+            a = env.action_space.sample()
+            actions[t] = torch.from_numpy(a).float().to(device)
+            obs_next, _, done, _ = env.step(a)
+            obs_seq[t + 1] = torch.from_numpy(obs_next).float().to(device)
+            if done:
+                break
+        
+        if t + 1 < num_steps:
+            continue  # Skip short episodes
+
+        rollout = Rollout()
+        for i in range(num_steps):
+            rollout.add(
+                obs=obs_seq[i].unsqueeze(0),
+                action=actions[i].unsqueeze(0),
+                next_obs=obs_seq[i + 1].unsqueeze(0),
+            )
+        buffer.add(rollout)
+    return buffer
+
+def k_step_prediction(model, rollout, k, writer, epoch):
+    """
+    performs a K-step prediction on a single rollout and logs the results
+    """
+
+    with torch.no_grad():
+        # get data from rollout
+        obs_seq = rollout._data['obs'].to(device)
+        action_seq = rollout._data['action'].to(device)
+        
+        # take first observation as starting point
+        obs_initial = obs_seq[0].unsqueeze(0)
+        
+        # use encoder to get initial latent state
+        z_initial, *_ = model.encoder(obs_initial)
+        
+        # initialize lists to store predictions
+        predicted_z_seq = [z_initial]
+        predicted_obs_seq = [model.decoder(z_initial)[0]]
+
+        # simulate dynamics for k steps
+        current_z = z_initial
+        for i in range(k):
+            # encode action and predict next latent statei 
+            if i < len(action_seq):
+                current_action = action_seq[i].unsqueeze(0)
+                encoded_action = model.action_encoder(current_action)
+                current_z = model.dynamics(current_z, encoded_action)
+            else:
+                # if we run out of actions, assume no action (or a zero action)
+                current_z = model.dynamics(current_z)
+            
+            # append to list
+            predicted_z_seq.append(current_z)
+            
+            # decode predicted latent state to observation
+            predicted_obs_seq.append(model.decoder(current_z)[0])
+            
+        # convert lists to tensors
+        predicted_obs_seq = torch.cat(predicted_obs_seq, dim=0)
+        predicted_z_seq = torch.cat(predicted_z_seq, dim=0)
+
+        # plot and log predictions
+        # plotting only first two dimensions of observation space (phi and phi_dot)
+        fig, axes = plt.subplots(1, obs_dim, figsize=(20, 5))
+        for i in range(obs_dim):
+            axes[i].plot(to_np(obs_seq[:k+1, i]), label='True')
+            axes[i].plot(to_np(predicted_obs_seq[:k+1, i]), label=f'Predicted (k={k})', linestyle='--')
+            axes[i].set_title(f'Observation Dim {i}')
+            axes[i].legend()
+        fig.suptitle(f'K-step Prediction for Epoch {epoch} (k={k})', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+        writer.add_figure(f"K-step Prediction/k={k}", fig, epoch)
+        plt.close(fig)
+
+        # plot latent states
+        latent_dim = predicted_z_seq.shape[1]
+        fig_latent, axes_latent = plt.subplots(1, latent_dim, figsize=(20, 5))
+        if latent_dim == 1:
+            axes_latent = [axes_latent]
+        for i in range(latent_dim):
+            axes_latent[i].plot(to_np(predicted_z_seq[:, i]), label='Predicted latent', color='orange')
+            axes_latent[i].set_title(f'Latent Dim {i}')
+            axes_latent[i].legend()
+        fig_latent.suptitle(f'Latent Trajectory for Epoch {epoch} (k={k})', fontsize=16)
+        plt.tight_layout()
+        plt.show()
+        writer.add_figure(f"Latent Trajectory/k={k}", fig_latent, epoch)
+        plt.close(fig_latent)
+
+        writer.flush()
+
 
 if __name__ == "__main__":
-    # set device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.set_default_device(device)
 
-    # create circular CartPole environment
+    # create environment and collect data
     env = ContinuousCartPoleEnv()
-    obs_dim = env.observation_space.shape[0]   # 5-D
-    action_dim = env.action_space.shape[0]     # 1-D continuous
+    # rollout_buffer = collect_rollouts(env, num_samples, num_steps)
 
-    # latent dimension
+    # split into train and validation
+    all_rollouts = list(rollout_buffer._buffer if hasattr(rollout_buffer, '_buffer') else rollout_buffer)
+    random.shuffle(all_rollouts)
+    n_val = int(len(all_rollouts) * val_split)
+    val_rollouts = all_rollouts[:n_val]
+    train_rollouts = all_rollouts[n_val:]
+
+    train_buffer = RolloutBuffer(len(train_rollouts))
+    for r in train_rollouts:
+        train_buffer.add(r)
+
+    val_buffer = RolloutBuffer(len(val_rollouts))
+    for r in val_rollouts:
+        val_buffer.add(r)
+
+    # model components
+    obs_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
     latent_dim = obs_dim
 
-    action_bounds = (0.0, 1.0)
+    action_bounds = (-1.0, 1.0) # Corrected action bounds
 
-    # define SeqVAE components
     encoder = MLPEncoder(
         input_dim=obs_dim,
         latent_dim=latent_dim,
@@ -206,7 +350,8 @@ if __name__ == "__main__":
         GaussianNoise(output_dim=obs_dim, sigma=0.5),
         device=device
     )
-    dynamics = LinearDynamics(state_dim=latent_dim, device=device)
+    # dynamics = LinearDynamics(state_dim=latent_dim, device=device)
+    dynamics = MLPDynamics(state_dim=latent_dim, hidden_dim=64, device=device)
     action_encoder = LinearActionEncoder(
         action_dim=action_dim,
         latent_dim=latent_dim,
@@ -221,70 +366,63 @@ if __name__ == "__main__":
         action_encoder=action_encoder,
         device=device
     )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+    model.action_dim = action_dim 
 
-    # collect random rollouts
-    num_samples = 500
-    num_steps = 100
-    buffer = RolloutBuffer(num_samples)
+    # training loop with logging
+    train_losses, val_losses = [], []
+    for epoch in range(1, n_epochs + 1):
+        # training
+        epoch_train = []
+        for batch in train_buffer.as_batch(batch_size=batch_size, shuffle=True):
+            obs = batch['obs'].to(device)
+            action = batch.get('action')
+            action = action.to(device) if action is not None else None
 
-    for _ in range(num_samples):
-        obs_seq = torch.zeros(num_steps+1, obs_dim, device=device)
-        actions = torch.zeros(num_steps, action_dim, device=device)
+            optimizer.zero_grad()
+            loss = model.compute_elbo(obs, u=action, beta=10.0)
+            loss.backward()
+            optimizer.step()
+            epoch_train.append(loss.item())
+        avg_train = sum(epoch_train) / len(epoch_train)
 
-        obs_raw = env.reset()
-        obs_seq[0] = torch.from_numpy(obs_raw).float().to(device)
+        # validation
+        epoch_val = []
+        with torch.no_grad():
+            for batch in val_buffer.as_batch(batch_size=batch_size, shuffle=False):
+                obs = batch['obs'].to(device)
+                action = batch.get('action')
+                action = action.to(device) if action is not None else None
+                loss = model.compute_elbo(obs, u=action)
+                epoch_val.append(loss.item())
+        avg_val = sum(epoch_val) / len(epoch_val)
 
-        for t in range(num_steps):
-            a_cont = env.action_space.sample()
-            actions[t] = torch.from_numpy(a_cont).to(device)
+        train_losses.append(avg_train)
+        val_losses.append(avg_val)
 
-            obs_raw, _, done, _, = env.step(a_cont)
-            obs_seq[t+1] = torch.from_numpy(obs_raw).float().to(device)
-            if done:
-                break
+        # log
+        writer.add_scalar("Loss/Train", avg_train, epoch)
+        writer.add_scalar("Loss/Val", avg_val, epoch)
+        if epoch == 1 or epoch % 100 == 0:
+            print(f"Epoch {epoch}/{n_epochs} - Train Loss: {avg_train:.3f}, Val Loss: {avg_val:.3f}")
+        
+        # K-step prediction at the end of some epochs
+        if epoch % 50 == 0:
+            # Choose a random rollout from the validation set
+            sample_rollout = random.choice(val_rollouts)
+            k_step_prediction(model, sample_rollout, k=50, writer=writer, epoch=epoch)
+            
+    writer.close()
 
-        rollout = Rollout()
-        seq_len = obs_seq.size(0) - 1
-        for t in range(seq_len):
-            rollout.add(
-                obs=obs_seq[t].unsqueeze(0),
-                action=actions[t].unsqueeze(0),
-                next_obs=obs_seq[t+1].unsqueeze(0)
-            )
-        buffer.add(rollout)
-
-    # train
-    model.action_dim = action_dim
-    model.train(
-        list(buffer.as_batch(batch_size=64, shuffle=True)),
-        optimizer="AdamW",
-        n_epochs=1000,
-    )
-
-
-# %%
-
-    # visualize latent trajectory from first rollout
-    raw = buffer.buffer[0]
-    data = raw.as_dict()
-    obs = data['obs'].squeeze(1).unsqueeze(0).to(device)  # [1, T, obs_dim]
-
-    with torch.no_grad():
-        enc_z, *_ = model.encoder(obs)
-
+    # plot losses
+    starting_epoch = 0
+    epochs = range(1, n_epochs + 1)
     plt.figure()
-    plt.plot(to_np(enc_z[0, :, 0]), to_np(enc_z[0, :, 1]), '-', label='latent')
-    plt.title('Encoded Latent Trajectory (CartPole)')
+    plt.plot(epochs[starting_epoch:], train_losses[starting_epoch:], label="Train ELBO")
+    plt.plot(epochs[starting_epoch:], val_losses[starting_epoch:], label="Val ELBO")
+    plt.xlabel("Epoch")
+    plt.ylabel("ELBO")
     plt.legend()
+    plt.title("Cartpole: Training and Validation ELBO over Epochs")
     plt.show()
 
-    # reconstruction comparison
-    recon = model.decoder(enc_z)
-    plt.figure()
-    plt.plot(to_np(recon[0]), '-', label='reconstructed obs')
-    plt.plot(to_np(obs.squeeze(0)), '--', label='true obs')
-    plt.title('Observation Reconstruction (CartPole)')
-    plt.legend(loc='upper right')
-    plt.show()
-
-# %%
