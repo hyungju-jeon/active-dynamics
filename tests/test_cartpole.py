@@ -199,7 +199,7 @@ learning_rate = 1e-2
 # logger
 writer = SummaryWriter(log_dir="runs/seqvae_cartpole")
 
-def collect_rollouts(env, num_samples, num_steps, plotFirstRollout=False):
+def collect_rollouts(env, num_samples, num_steps, mode="random", plotFirstRollout=False):
     """
     collects rollouts from the environment
     """
@@ -220,7 +220,14 @@ def collect_rollouts(env, num_samples, num_steps, plotFirstRollout=False):
         done = False
         t = 0
         for t in range(num_steps):
-            a = env.action_space.sample()
+            if mode == "random":
+                a = env.action_space.sample()
+            elif mode == "passive":
+                a = np.zeros(action_dim, dtype=np.float32)
+            else:
+                raise ValueError(f"Unknown mode: {mode}")
+
+            # a = env.action_space.sample()
             actions[t] = torch.from_numpy(a).float().to(device)
             obs_next, _, done, _ = env.step(a)
             obs_seq[t + 1] = torch.from_numpy(obs_next).float().to(device)
@@ -335,7 +342,7 @@ if __name__ == "__main__":
 
     # create environment and collect data
     env = ContinuousCartPoleEnv()
-    rollout_buffer = collect_rollouts(env, num_samples, num_steps, plotFirstRollout=True)
+    rollout_buffer = collect_rollouts(env, num_samples, num_steps, mode="passive", plotFirstRollout=True)
 
     # split into train and validation
     all_rollouts = list(rollout_buffer._buffer if hasattr(rollout_buffer, '_buffer') else rollout_buffer)
