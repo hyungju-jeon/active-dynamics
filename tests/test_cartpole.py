@@ -199,7 +199,7 @@ learning_rate = 1e-2
 # logger
 writer = SummaryWriter(log_dir="runs/seqvae_cartpole")
 
-def collect_rollouts(env, num_samples, num_steps, mode="random", plotFirstRollout=False):
+def collect_rollouts(env, num_samples, num_steps, mode="random", plot_first_rollout=False, perturb_time=None, perturb_force=0.5):
     """
     collects rollouts from the environment
     """
@@ -218,12 +218,20 @@ def collect_rollouts(env, num_samples, num_steps, mode="random", plotFirstRollou
         obs_raw = env.reset()
         obs_seq[0] = torch.from_numpy(obs_raw).float().to(device)
         done = False
+
+        # if no perturb time given, pick one randomly in the middle of the rollout
+        if mode == "passive" and not perturb_time:
+            perturb_time = np.random.randint(num_steps // 4, 3 * num_steps // 4)
+
         t = 0
         for t in range(num_steps):
             if mode == "random":
                 a = env.action_space.sample()
             elif mode == "passive":
                 a = np.zeros(action_dim, dtype=np.float32)
+                # inject perturbation
+                if t == perturb_time:
+                    a[:] = perturb_force
             else:
                 raise ValueError(f"Unknown mode: {mode}")
 
@@ -233,7 +241,7 @@ def collect_rollouts(env, num_samples, num_steps, mode="random", plotFirstRollou
             obs_seq[t + 1] = torch.from_numpy(obs_next).float().to(device)
 
             # save phi and theta for first rollout only
-            if plotFirstRollout and len(buffer) == 0:
+            if plot_first_rollout and len(buffer) == 0:
                 example_phi.append(obs_next[0])   # phi
                 example_theta.append(obs_next[2]) # theta
 
@@ -253,7 +261,7 @@ def collect_rollouts(env, num_samples, num_steps, mode="random", plotFirstRollou
         buffer.add(rollout)
 
     # plot phi and theta for first rollout
-    if plotFirstRollout and example_phi and example_theta:
+    if plot_first_rollout and example_phi and example_theta:
         plt.figure(figsize=(10, 5))
         plt.plot(example_phi, label="phi (cart angular position)")
         plt.plot(example_theta, label="theta (pole angle)")
@@ -342,7 +350,7 @@ if __name__ == "__main__":
 
     # create environment and collect data
     env = ContinuousCartPoleEnv()
-    rollout_buffer = collect_rollouts(env, num_samples, num_steps, mode="passive", plotFirstRollout=True)
+    rollout_buffer = collect_rollouts(env, num_samples, num_steps, mode="passive", plot_first_rollout=True)
 
     # split into train and validation
     all_rollouts = list(rollout_buffer._buffer if hasattr(rollout_buffer, '_buffer') else rollout_buffer)
