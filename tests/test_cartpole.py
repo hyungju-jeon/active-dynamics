@@ -11,7 +11,7 @@ import pygame
 import random
 
 from actdyn.models.encoder import MLPEncoder
-from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping
+from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping, IdentityMapping
 from actdyn.models.dynamics import LinearDynamics, MLPDynamics
 from actdyn.models.model import SeqVae
 from actdyn.environment.action import LinearActionEncoder
@@ -36,7 +36,7 @@ class ContinuousCartPoleEnv(gym.Env):
         self.length = 0.5  # half the pole's length
         self.polemass_length = (self.masspole * self.length)
         self.force_mag = 30.0
-        self.tau = 0.02  # seconds between state updates
+        self.tau = 0.01  # seconds between state updates
         self.min_action = -1.0
         self.max_action = 1.0
 
@@ -315,7 +315,7 @@ if __name__ == "__main__":
 
     # create environment and collect data
     env = ContinuousCartPoleEnv()
-    # rollout_buffer = collect_rollouts(env, num_samples, num_steps)
+    rollout_buffer = collect_rollouts(env, num_samples, num_steps)
 
     # split into train and validation
     all_rollouts = list(rollout_buffer._buffer if hasattr(rollout_buffer, '_buffer') else rollout_buffer)
@@ -346,7 +346,8 @@ if __name__ == "__main__":
         hidden_dims=[64, 64]
     )
     decoder = Decoder(
-        LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
+        # LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
+        IdentityMapping(device=device),
         GaussianNoise(output_dim=obs_dim, sigma=0.5),
         device=device
     )
