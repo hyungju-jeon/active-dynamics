@@ -199,12 +199,15 @@ learning_rate = 1e-2
 # logger
 writer = SummaryWriter(log_dir="runs/seqvae_cartpole")
 
-def collect_rollouts(env, num_samples, num_steps):
+def collect_rollouts(env, num_samples, num_steps, plotFirstRollout=False):
     """
     collects rollouts from the environment
     """
 
     buffer = RolloutBuffer(num_samples)
+    example_phi = []
+    example_theta = []
+
     while len(buffer) < num_samples:
         obs_dim = env.observation_space.shape[0]
         action_dim = env.action_space.shape[0]
@@ -221,6 +224,12 @@ def collect_rollouts(env, num_samples, num_steps):
             actions[t] = torch.from_numpy(a).float().to(device)
             obs_next, _, done, _ = env.step(a)
             obs_seq[t + 1] = torch.from_numpy(obs_next).float().to(device)
+
+            # save phi and theta for first rollout only
+            if plotFirstRollout and len(buffer) == 0:
+                example_phi.append(obs_next[0])   # phi
+                example_theta.append(obs_next[2]) # theta
+
             if done:
                 break
         
@@ -235,6 +244,18 @@ def collect_rollouts(env, num_samples, num_steps):
                 next_obs=obs_seq[i + 1].unsqueeze(0),
             )
         buffer.add(rollout)
+
+    # plot phi and theta for first rollout
+    if plotFirstRollout and example_phi and example_theta:
+        plt.figure(figsize=(10, 5))
+        plt.plot(example_phi, label="phi (cart angular position)")
+        plt.plot(example_theta, label="theta (pole angle)")
+        plt.xlabel("Time step")
+        plt.ylabel("Angle (radians)")
+        plt.legend()
+        plt.title("Phi and Theta over Time (First Rollout)")
+        plt.show()
+
     return buffer
 
 def k_step_prediction(model, rollout, k, writer, epoch):
@@ -280,7 +301,6 @@ def k_step_prediction(model, rollout, k, writer, epoch):
         predicted_z_seq = torch.cat(predicted_z_seq, dim=0)
 
         # plot and log predictions
-        # plotting only first two dimensions of observation space (phi and phi_dot)
         fig, axes = plt.subplots(1, obs_dim, figsize=(20, 5))
         for i in range(obs_dim):
             axes[i].plot(to_np(obs_seq[:k+1, i]), label='True')
@@ -293,20 +313,20 @@ def k_step_prediction(model, rollout, k, writer, epoch):
         writer.add_figure(f"K-step Prediction/k={k}", fig, epoch)
         plt.close(fig)
 
-        # plot latent states
-        latent_dim = predicted_z_seq.shape[1]
-        fig_latent, axes_latent = plt.subplots(1, latent_dim, figsize=(20, 5))
-        if latent_dim == 1:
-            axes_latent = [axes_latent]
-        for i in range(latent_dim):
-            axes_latent[i].plot(to_np(predicted_z_seq[:, i]), label='Predicted latent', color='orange')
-            axes_latent[i].set_title(f'Latent Dim {i}')
-            axes_latent[i].legend()
-        fig_latent.suptitle(f'Latent Trajectory for Epoch {epoch} (k={k})', fontsize=16)
-        plt.tight_layout()
-        plt.show()
-        writer.add_figure(f"Latent Trajectory/k={k}", fig_latent, epoch)
-        plt.close(fig_latent)
+        # # plot latent states
+        # latent_dim = predicted_z_seq.shape[1]
+        # fig_latent, axes_latent = plt.subplots(1, latent_dim, figsize=(20, 5))
+        # if latent_dim == 1:
+        #     axes_latent = [axes_latent]
+        # for i in range(latent_dim):
+        #     axes_latent[i].plot(to_np(predicted_z_seq[:, i]), label='Predicted latent ' + str(i), color='orange')
+        #     axes_latent[i].set_title(f'Latent Dim {i}')
+        #     axes_latent[i].legend()
+        # fig_latent.suptitle(f'Latent Trajectory for Epoch {epoch} (k={k})', fontsize=16)
+        # plt.tight_layout()
+        # plt.show()
+        # writer.add_figure(f"Latent Trajectory/k={k}", fig_latent, epoch)
+        # plt.close(fig_latent)
 
         writer.flush()
 
@@ -315,7 +335,7 @@ if __name__ == "__main__":
 
     # create environment and collect data
     env = ContinuousCartPoleEnv()
-    rollout_buffer = collect_rollouts(env, num_samples, num_steps)
+    rollout_buffer = collect_rollouts(env, num_samples, num_steps, plotFirstRollout=True)
 
     # split into train and validation
     all_rollouts = list(rollout_buffer._buffer if hasattr(rollout_buffer, '_buffer') else rollout_buffer)
