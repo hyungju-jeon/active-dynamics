@@ -6,8 +6,8 @@ from actdyn.utils.rollout import RolloutBuffer, Rollout
 class BaseMetric:
     """Base class for metrics that compute both point-wise and final values."""
 
-    def __init__(self, compute_type: str = "sum", device: str = "cpu"):
-        self.device = device
+    def __init__(self, compute_type: str = "sum", device: str = "cuda"):
+        self.device = torch.device(device)
         self.compute_type = compute_type
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
@@ -16,15 +16,15 @@ class BaseMetric:
 
     def compute_final(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
         """Compute final metric value over entire trajectory."""
-        if self.metric is None:
-            self.metric = self.compute(rollout)
+
+        metric = self.compute(rollout)
 
         if self.compute_type == "sum":
-            return self.metric.sum(dim=-2)
+            return metric.sum(dim=-2)
         elif self.compute_type == "max":
-            return self.metric.max(dim=-2)[0]
+            return metric.max(dim=-2)[0]
         elif self.compute_type == "last":
-            return self.metric[..., -1, :]
+            return metric[..., -1, :]
         else:
             raise ValueError(f"Invalid compute type: {self.compute_type}")
 
@@ -60,18 +60,24 @@ class CompositeMetric(BaseMetric):
     def __init__(
         self,
         metrics: List[BaseMetric],
+        compute_type: str = "sum",
         weights: Optional[List[float]] = None,
         device: str = "cuda",
     ):
-        super().__init__(device)
+        super().__init__(compute_type=compute_type, device=device)
         self.metrics = metrics
         self.weights = weights if weights is not None else [1.0] * len(metrics)
+        self.weights = torch.tensor(
+            self.weights,
+        ).to(device)
         assert len(self.weights) == len(
             self.metrics
         ), "Number of weights must match number of cost functions"
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        total_cost = torch.zeros(1, device=self.device)
+        total_cost = torch.zeros(1, device=self.device).to(self.device)
         for metric, weight in zip(self.metrics, self.weights):
-            total_cost = total_cost + weight * metric.compute(rollout)
+            val = metric.compute(rollout)
+            # print(f"Metric {metric.__class__.__name__} computed value: {val.mean()}")
+            total_cost = total_cost.to(self.device) + weight * val
         return total_cost

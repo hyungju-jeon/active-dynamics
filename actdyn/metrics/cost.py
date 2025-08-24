@@ -11,5 +11,5 @@ class ActionCost(BaseMetric):
         super().__init__(compute_type, device)
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        self.metric = (rollout["action"] ** 2).sum(dim=-1)
+        self.metric = (rollout["action"] ** 2).sum(dim=-1).sum(dim=-1).unsqueeze(-1)
         return self.metric
