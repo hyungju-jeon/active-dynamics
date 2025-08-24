@@ -3,6 +3,8 @@ import torch
 import gpytorch
 from gpytorch.kernels import RBFKernel, ScaleKernel
 from abc import abstractmethod
+import numpy as np
+from scipy.interpolate import RegularGridInterpolator
 
 # Type aliases
 ArrayType = torch.Tensor
@@ -28,11 +30,18 @@ class VectorField:
         V: Y components of the vector field.
     """
 
+    X: torch.Tensor
+    Y: torch.Tensor
+    xy: torch.Tensor
+    U: torch.Tensor
+    V: torch.Tensor
+
     def __init__(
         self,
         x_range: float = 2,
         n_grid: int = 40,
         device: str = "cpu",
+        **kwargs,
     ):
         """
         Initialize the VectorField instance.
@@ -44,11 +53,6 @@ class VectorField:
         """
         self.x_range = x_range
         self.n_grid = n_grid
-        self.X: Optional[ArrayType] = None
-        self.Y: Optional[ArrayType] = None
-        self.xy: Optional[ArrayType] = None
-        self.U: Optional[ArrayType] = None
-        self.V: Optional[ArrayType] = None
         self.device = torch.device(device)
 
         self.create_grid(self.x_range, self.n_grid)
@@ -59,7 +63,7 @@ class VectorField:
         x = torch.linspace(-x_range, x_range, n_grid, device=self.device)
         y = torch.linspace(-x_range, x_range, n_grid, device=self.device)
         X, Y = torch.meshgrid(x, y, indexing="xy")
-        xy = torch.stack([X.flatten(), Y.flatten()], dim=1)
+        xy = torch.stack([X.flatten(), Y.flatten()], dim=1).to(self.device)
 
         self.X, self.Y, self.xy = X, Y, xy
 
@@ -96,15 +100,15 @@ class LimitCycle(VectorField):
         x_range: float = 2,
         n_grid: int = 40,
         w: float = 1,
-        d: float = 1.0,
-        **kwargs
+        device: str = "cpu",
+        **kwargs,
     ):
-        super().__init__(x_range=x_range, n_grid=n_grid)
+        super().__init__(x_range=x_range, n_grid=n_grid, device=device)
         self.w = w
-        self.d = d
+        self.d = x_range / 2
         self.alpha = 1
         self.scaling = self.get_scaling()
-        self.alpha = 1 / self.scaling
+        self.alpha = 2 / self.scaling
 
     def get_scaling(self):
         if self.xy is None:
@@ -129,9 +133,7 @@ class LimitCycle(VectorField):
             self.create_grid(self.x_range, self.n_grid)
         grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
         UV = self.compute(self.xy)
-        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(
-            grid_size, grid_size
-        )
+        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(grid_size, grid_size)
 
 
 class DoubleLimitCycle(VectorField):
@@ -140,12 +142,12 @@ class DoubleLimitCycle(VectorField):
         x_range: float = 2,
         n_grid: int = 40,
         w: float = 1,
-        d: float = 1.0,
-        **kwargs
+        device: str = "cpu",
+        **kwargs,
     ):
-        super().__init__(x_range=x_range, n_grid=n_grid)
+        super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
         self.w = w
-        self.d = d
+        self.d = x_range / 2
         self.alpha = 1
         self.scaling = self.get_scaling()
         self.alpha = 1 / self.scaling
@@ -160,8 +162,8 @@ class DoubleLimitCycle(VectorField):
 
     def compute(self, x: ArrayType) -> ArrayType:
         r = torch.sqrt(x[..., 0] ** 2 + x[..., 1] ** 2)
-        U = x[..., 0] * (self.d - r**2) - self.w * x[..., 1] * (2 * self.d - r**2)
-        V = x[..., 1] * (self.d - r**2) + self.w * x[..., 0] * (2 * self.d - r**2)
+        U = x[..., 0] * (self.d - r) - self.w * x[..., 1] * (2 * self.d - r)
+        V = x[..., 1] * (self.d - r) + self.w * x[..., 0] * (2 * self.d - r)
 
         U = self.alpha * U
         V = self.alpha * V
@@ -172,9 +174,7 @@ class DoubleLimitCycle(VectorField):
             self.create_grid(self.x_range, self.n_grid)
         grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
         UV = self.compute(self.xy)
-        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(
-            grid_size, grid_size
-        )
+        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(grid_size, grid_size)
 
 
 class MultiAttractor(VectorField):
@@ -185,14 +185,17 @@ class MultiAttractor(VectorField):
         n_grid: int = 40,
         w_attractor: float = 0.1,
         length_scale: float = 0.5,
-        alpha: float = 0.1,
-        **kwargs
+        alpha: float = 0.25,
+        device: str = "cpu",
+        **kwargs,
     ):
-        super().__init__(x_range=x_range, n_grid=n_grid)
+        super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
         self.w_attractor = w_attractor
         self.length_scale = length_scale
         self.alpha = alpha
+        self.U, self.V = self.generate_vector_field()
 
+    @torch.no_grad()
     def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
         base_kernel = RBFKernel(ard_num_dims=2)
         base_kernel.lengthscale = self.length_scale
@@ -218,16 +221,50 @@ class MultiAttractor(VectorField):
         V = self.alpha * V / magnitude
 
         if self.w_attractor > 0:
-            U_attract = (
-                -self.xy[:, 0] * torch.sqrt(torch.sum(self.xy**2, 1)) * self.w_attractor
-            )
-            V_attract = (
-                -self.xy[:, 1] * torch.sqrt(torch.sum(self.xy**2, 1)) * self.w_attractor
-            )
+            U_attract = -self.xy[:, 0] * torch.sqrt(torch.sum(self.xy**2, 1)) * self.w_attractor
+            V_attract = -self.xy[:, 1] * torch.sqrt(torch.sum(self.xy**2, 1)) * self.w_attractor
             U += U_attract.reshape(grid_size, grid_size)
             V += V_attract.reshape(grid_size, grid_size)
 
+        self.U, self.V = U, V
         return U, V
+
+    def compute(self, state: ArrayType) -> ArrayType:
+        """Compute vector field at given state points using interpolation."""
+        # Generate the vector field if not already generated
+        if self.U is None or self.V is None:
+            self.generate_vector_field()
+
+        # Create interpolator for U and V components based on X, Y grid
+        x = self.X[0].cpu().numpy()
+        y = self.Y[:, 0].cpu().numpy()
+        U_interp = RegularGridInterpolator(
+            (x, y),
+            self.U.cpu().numpy(),
+            bounds_error=False,
+            fill_value=None,
+        )
+        V_interp = RegularGridInterpolator(
+            (x, y),
+            self.V.cpu().numpy(),
+            bounds_error=False,
+            fill_value=None,
+        )
+
+        # Interpolate at given state points
+        if isinstance(state, torch.Tensor):
+            state_np = state.cpu().numpy()
+            device = state.device
+        else:
+            state_np = np.array(state)
+            device = torch.device("cpu")
+
+        u_vals = U_interp(state_np)
+        v_vals = V_interp(state_np)
+
+        # Stack and return as tensor
+        result = np.stack([v_vals, u_vals], axis=-1)
+        return torch.tensor(result, device=device, dtype=torch.float32)
 
 
 if __name__ == "__main__":
