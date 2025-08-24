@@ -1,10 +1,13 @@
+from actdyn.models.base import BaseDynamicsEnsemble
 import torch
-from typing import Union
+from typing import Dict, Union
 from actdyn.models import BaseDynamics, Decoder
 from actdyn.models.decoder import LinearMapping, LogLinearMapping
 from actdyn.models.dynamics import RBFDynamics
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from .base import BaseMetric
+
+eps = 1e-12
 
 
 def compute_jacobian_state(function, state, **kwargs):
@@ -52,28 +55,38 @@ class FisherInformationMetric(BaseMetric):
 
     def __init__(
         self,
-        dynamics: BaseDynamics,
-        decoder: Decoder,
+        model,
         compute_type: str = "sum",
         use_diag: bool = True,
+        discount_factor: float = 0.99,
         device: str = "cuda",
+        covariance: str = "invariant",
+        sensitivity: bool = True,
         **kwargs,
     ):
         super().__init__(compute_type, device)
-        self.dynamics = dynamics
-        self.decoder = decoder
+        self.dynamics = model.dynamics
+        if isinstance(self.dynamics, BaseDynamicsEnsemble):
+            self.dynamics = self.dynamics.models[0]  # Use the first model for FIM
+        else:
+            self.dynamics = self.dynamics
+        self.decoder = model.decoder
+        self.encoder = model.encoder
         self.use_diag = use_diag
+        self.discount_factor = discount_factor
+        self.covariance = covariance
+        self.sensitivity = sensitivity
         self.I = None
 
     def compute_dh_dz(self, z):
-        if isinstance(self.decoder.mapping, LogLinearMapping):
-            C = self.decoder.mapping.network[0].weight.data.clone()
+        if isinstance(self.decoder.mapping, LinearMapping):
+            C = self.decoder.mapping.network.weight.data.clone()
             dh_dz = C.view(1, 1, C.shape[0], C.shape[1]).expand(
                 z.shape[0], z.shape[1], C.shape[0], C.shape[1]
             )
 
-        elif isinstance(self.decoder.mapping, LinearMapping):
-            C = self.decoder.mapping.network.weight.data.clone()
+        elif isinstance(self.decoder.mapping, LogLinearMapping):
+            C = self.decoder.mapping.network[0].weight.data.clone()
             dh_dz = torch.einsum(
                 "btd,dn->btdn",
                 self.decoder(z),
@@ -85,15 +98,48 @@ class FisherInformationMetric(BaseMetric):
 
         return dh_dz
 
-    def compute_df_dtheta(self, z):
+    @torch.no_grad()
+    def compute_dz_dtheta(self, z):
         if isinstance(self.dynamics, RBFDynamics):
-            df_dtheta = self.dynamics.rbf(z)
+            if self.sensitivity:
+                e_z = self.dynamics.centers - z.unsqueeze(-2)  # (batch, T, num_centers, d_latent)
+                batch, T, num_centers, d_latent = e_z.shape
+                J = torch.einsum(
+                    "...tc,...tcd->...tcd",
+                    self.dynamics.rbf(z),
+                    e_z,
+                )
+                df_dz = 1 + (J.mT @ self.dynamics.weights)  # (batch, T, num_centers, d_latent)
+                # Compute sensitivity of RBF centers
+                df_dtheta = self.dynamics.rbf(z)  # (batch, T, num_centers)
+
+                # S_{t+1} + S_{t} * df_dz[t] + I x df_dtheta[t]
+                dz_dtheta = torch.zeros(batch, T, d_latent, d_latent * num_centers).to(self.device)
+                # kronecker product of df_dz and eye(d_latent)
+                dz_dtheta[:, :1, :, :] = (
+                    torch.kron(torch.eye(d_latent, device=self.device), df_dtheta[:, 0])
+                    .view(d_latent, batch, 1, d_latent * num_centers)
+                    .movedim(0, 2)
+                )
+
+                for t in range(1, T):
+                    dz_dtheta[:, t, :, :] = (
+                        torch.kron(
+                            torch.eye(d_latent, device=self.device),
+                            df_dtheta[:, t - 1 : t],
+                        )
+                        + df_dz[:, t - 1, :, :] @ dz_dtheta[:, t - 1, :, :]
+                    )
+
+            else:
+                dz_dtheta = self.dynamics.rbf(z)
         else:
-            df_dtheta = compute_jacobian_params(self.dynamics, z)
-        return df_dtheta
+            dz_dtheta = compute_jacobian_params(self.dynamics, z)
+
+        return dz_dtheta
 
     def compute_rbf_fim(
-        self, rollout: Union[Rollout, RolloutBuffer], use_diag=True
+        self, rollout: Union[Rollout, RolloutBuffer, Dict], use_diag=True
     ) -> torch.Tensor:
         z = rollout["model_state"]
         if len(z.shape) != 3:
@@ -103,40 +149,58 @@ class FisherInformationMetric(BaseMetric):
         d_param = self.dynamics.weights.numel()
 
         dh_dz = self.compute_dh_dz(z)
-        df_dtheta = self.compute_df_dtheta(z).unsqueeze(-1)
+        dz_dtheta = self.compute_dz_dtheta(z).detach()  # (B, T, d, p)
+        if self.covariance == "invariant":
+            invCC = torch.linalg.pinv(dh_dz @ dh_dz.mT)  # (B, T, d, d)
+            Ht_H = dh_dz.mT @ invCC @ dh_dz  # (B, T, d, d)
+        else:
+            Ht_H = torch.einsum("btnd,btnf->btdf", dh_dz, dh_dz)  # (B, T, d, d)
 
         # TODO temporally discounted I
         if use_diag:
-            I_new = (
-                torch.einsum(
-                    "btd, btk->btdk", (dh_dz**2).sum(-2), df_dtheta.squeeze(-1) ** 2
-                )
-                .reshape(batch, T, d_param)
-                .sum(dim=1)
-            ).unsqueeze(1)
+            if self.sensitivity:
+                I_new = (
+                    torch.einsum(
+                        "...dp,...dp,...dd->...p",
+                        dz_dtheta,
+                        dz_dtheta,
+                        Ht_H,
+                    )
+                    .sum(dim=1)
+                    .unsqueeze(1)
+                )  # (batch, d_param, d_param)
+            else:
+                I_new = (
+                    torch.einsum("btd, btk->btdk", (dh_dz**2).sum(-2), dz_dtheta.squeeze(-1) ** 2)
+                    .reshape(batch, T, d_param)
+                    .sum(dim=1)
+                ).unsqueeze(1)
+            # # compare difference between I_new and I_new2
+            # if torch.allclose(I_new, I_new2, atol=1e-6):
+            #     print("I_new and I_new2 are close enough, using I_new2 for efficiency.")
+
         else:
             J = torch.einsum(
-                "...nd,...kd->...nk", dh_dz, torch.kron(torch.eye(d_latent), df_dtheta)
+                "...nd,...kd->...nk", dh_dz, torch.kron(torch.eye(d_latent), dz_dtheta)
             )  # (batch, T, d_obs, d_param)
             I_new = (J.mT @ J).sum(dim=1)  # (batch, d_param, d_param)
 
+        if self.I is not None:
+            I_new += self.I * self.discount_factor
+
         return I_new
 
-    def compute_nn_fim(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
+    def compute_nn_fim(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
         pass
 
-    def compute_fim(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
+    def compute_fim(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
         if isinstance(self.dynamics, RBFDynamics):
             return self.compute_rbf_fim(rollout)
         else:
             return self.compute_nn_fim(rollout)
 
-    def update_fim(self, rollout: Union[Rollout, RolloutBuffer], discount_factor=0.99):
-        I_new = self.compute_fim(rollout)
-        if self.I is None:
-            self.I = I_new
-        else:
-            self.I = self.I * discount_factor + I_new
+    def update_fim(self, rollout: Union[Rollout, RolloutBuffer]):
+        self.I = self.compute_fim(rollout)
 
 
 class AOptimality(FisherInformationMetric):
@@ -147,7 +211,7 @@ class AOptimality(FisherInformationMetric):
         if self.use_diag:
             # reciprocal of element greater than 1e-3
             # return shape (batch, 1)
-            fim_traj[fim_traj < 1e-3] = torch.inf
+            fim_traj[fim_traj < eps] = eps
             return torch.reciprocal(fim_traj).sum(dim=-1)
 
         else:
@@ -159,4 +223,13 @@ class DOptimality(FisherInformationMetric):
     """Metric that computes D-optimality."""
 
     def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        pass
+        fim_traj = self.compute_fim(rollout)  # (batch, 1, d_param)
+        if self.use_diag:
+            # reciprocal of element greater than 1e-3
+            # return shape (batch, 1)
+            fim_traj[fim_traj < eps] = eps
+            return -torch.log1p(fim_traj).sum(dim=-1)
+
+        else:
+            # TODO: implement non-diagonal A-optimality
+            pass
