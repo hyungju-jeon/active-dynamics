@@ -8,7 +8,7 @@ from .base import (
     BaseDynamics,
     BaseMapping,
     BaseNoise,
-    EnsembleDynamics,
+    BaseDynamicsEnsemble,
 )
 from .decoder import Decoder
 from .model_wrapper import VAEWrapper
@@ -23,7 +23,7 @@ __all__ = [
     "BaseDynamics",
     "BaseMapping",
     "BaseNoise",
-    "EnsembleDynamics",
+    "BaseDynamicsEnsemble",
     # Concrete implementations
     "Decoder",
     "VAEWrapper",

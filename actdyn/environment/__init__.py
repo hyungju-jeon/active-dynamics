@@ -1,7 +1,7 @@
+import importlib
 from typing import Type, Union
 from .base import BaseDynamicsEnv, BaseObservation, BaseAction
 from .env_wrapper import GymObservationWrapper
-import importlib
 
 __all__ = [
     "environment_from_str",
@@ -65,9 +65,7 @@ def observation_from_str(obs_str: str) -> type[BaseObservation]:
 def action_from_str(act_str: str) -> type[BaseAction]:
     """Dynamically import and return the observation model class based on the string key."""
     if act_str not in _action_map:
-        raise ImportError(
-            f"Unknown action model: {act_str}. Available: {list(_action_map.keys())}"
-        )
+        raise ImportError(f"Unknown action model: {act_str}. Available: {list(_action_map.keys())}")
     module_name, class_name = _action_map[act_str]
     module = importlib.import_module(module_name, __package__)
     return getattr(module, class_name)

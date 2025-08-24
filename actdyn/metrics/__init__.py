@@ -17,6 +17,7 @@ _metric_map = {
     "action": (".cost", "ActionCost"),
     "A-optimality": (".information", "AOptimality"),
     "D-optimality": (".information", "DOptimality"),
+    "Ensemble_disagreement": (".uncertainty", "EnsembleDisagreement"),
 }
 
 
