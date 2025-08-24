@@ -22,29 +22,81 @@ class IdentityMapping(BaseMapping):
 
 
 class LinearMapping(BaseMapping):
-    def __init__(self, latent_dim, output_dim, device="cpu", **kwargs):
+    def __init__(self, latent_dim, obs_dim, device="cpu", **kwargs):
         super().__init__(device)
-        self.network = nn.Linear(latent_dim, output_dim)
+        self.network = nn.Linear(latent_dim, obs_dim).to(device)
+
+    def set_weights(self, weights):
+        """Set the weights of the linear mapping."""
+        assert (
+            weights.shape == self.network.weight.shape
+        ), f"Expected weights shape {self.network.weight.shape}, got {weights.shape}"
+
+        if isinstance(weights, torch.Tensor):
+            self.network.weight.data = weights
+        else:
+            raise ValueError("Weights must be a torch.Tensor")
+
+    def set_bias(self, bias):
+        """Set the bias of the linear mapping."""
+        assert (
+            bias.shape == self.network.bias.shape
+        ), f"Expected bias shape {self.network.bias.shape}, got {bias.shape}"
+
+        if isinstance(bias, torch.Tensor):
+            self.network.bias.data = bias
+        else:
+            raise ValueError("Bias must be a torch.Tensor")
+
+    def set_params(self, weights, bias):
+        """Set both weights and bias of the linear mapping."""
+        self.set_weights(weights)
+        self.set_bias(bias)
 
 
 class LogLinearMapping(BaseMapping):
-    def __init__(self, latent_dim, output_dim, device="cpu", **kwargs):
+    network: nn.Sequential
+
+    def __init__(self, latent_dim, obs_dim, device="cpu", **kwargs):
         super().__init__(device)
         self.network = nn.Sequential(
-            nn.Linear(latent_dim, output_dim),
+            nn.Linear(latent_dim, obs_dim),
             Exp(),
-        )
+        ).to(device)
+
+    def set_weights(self, weights):
+        """Set the weights of the linear mapping."""
+        assert (
+            weights.shape == self.network[0].weight.shape
+        ), f"Expected weights shape {self.network[0].weight.shape}, got {weights.shape}"
+
+        if isinstance(weights, torch.Tensor):
+            self.network[0].weight.data = weights
+        else:
+            raise ValueError("Weights must be a torch.Tensor")
+
+    def set_bias(self, bias):
+        """Set the bias of the linear mapping."""
+        assert (
+            bias.shape == self.network[0].bias.shape
+        ), f"Expected bias shape {self.network[0].bias.shape}, got {bias.shape}"
+
+        if isinstance(bias, torch.Tensor):
+            self.network[0].bias.data = bias
+        else:
+            raise ValueError("Bias must be a torch.Tensor")
 
 
 class MLPMapping(BaseMapping):
+    network: nn.Sequential
+
     def __init__(
         self,
         latent_dim,
-        output_dim,
+        obs_dim,
         hidden_dims=[16],
         activation="relu",
         device="cpu",
-        **kwargs,
     ):
         super().__init__(device)
         self.activation = activation_from_str(activation)
@@ -55,16 +107,16 @@ class MLPMapping(BaseMapping):
             layers.append(nn.Linear(prev_dim, h))
             layers.append(self.activation)
             prev_dim = h
-        layers.append(nn.Linear(prev_dim, output_dim))
+        layers.append(nn.Linear(prev_dim, obs_dim))
         self.network = nn.Sequential(*layers)
 
 
 # --- Noise Models ---
 class GaussianNoise(BaseNoise):
-    def __init__(self, output_dim, sigma=1.0, device="cpu"):
+    def __init__(self, obs_dim, sigma=1.0, device="cpu"):
         super().__init__(device)
         self.logvar = nn.Parameter(
-            torch.log(torch.ones(1, output_dim, device=device) * sigma),
+            torch.log(torch.ones(1, obs_dim, device=device) * sigma),
             requires_grad=True,
         )
 
@@ -74,9 +126,7 @@ class GaussianNoise(BaseNoise):
 
     def to(self, device):
         self.device = device
-        self.logvar = torch.nn.Parameter(
-            self.logvar.data.to(device), requires_grad=True
-        )
+        self.logvar = torch.nn.Parameter(self.logvar.data.to(device), requires_grad=True)
         return self
 
 
@@ -85,9 +135,7 @@ class PoissonNoise(BaseNoise):
         super().__init__(device)
 
     def log_prob(self, rate, y):
-        return torch.sum(
-            y * torch.log(rate + 1e-8) - rate - torch.lgamma(y + 1), dim=(-1, -2)
-        )
+        return torch.sum(y * torch.log(rate + 1e-8) - rate - torch.lgamma(y + 1), dim=(-1, -2))
 
     def to(self, device):
         self.device = device
@@ -102,15 +150,14 @@ class Decoder(nn.Module):
         self.noise = noise.to(device)
         self.device = torch.device(device)
 
-    def compute_param(self, z):
-        return self.mapping(z)
-
     def compute_log_prob(self, z, x):
-        mean = self.compute_param(z)
+        mean = self.mapping(z)
         return self.noise.log_prob(mean, x)
 
     def forward(self, z):
-        return self.compute_param(z)
+        assert z.dim() == 3, "Input z must be of shape (batch_size, seq_length, latent_dim)"
+
+        return self.mapping(z)
 
     def to(self, device):
         self.device = torch.device(device)
