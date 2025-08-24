@@ -1,64 +1,128 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Union
-import torch
+from typing import List, Optional, Union
 import yaml
 
 
 @dataclass
 class EnvironmentConfig:
-    environment_type: str = "vectorfield"
-    env_dynamics_type: Optional[str] = "limit_cycle"
-    env_dt: float = 0.1
+    environment_type: str = "vectorfield"  # Options: "vectorfield", "cartpole", "maze"
+    env_dynamics_type: Optional[str] = (
+        "limit_cycle"  # Options: "limit_cycle", "double_limit_cycle", "multi_attractor"
+    )
+    env_dt: float = 0.1  # Time step for environment dynamics
     env_noise_scale: float = 0.1
-    env_render_mode: Optional[str] = None
-    env_action_bounds: Sequence[float] = field(default_factory=lambda: [-0.1, 0.1])
-    env_state_bounds: Optional[Sequence[float]] = None
+    env_render_mode: Optional[str] = None  # Options: "human", "rgb_array"
+    env_action_bounds: List[float] = field(default_factory=lambda: [-0.1, 0.1])
+    env_state_bounds: Optional[List[float]] = None
+    env_x_range: float = 2.0  # Range for vectorfield environment
+    env_n_grid: int = 40
+    env_w_attractor: float = 0.1
+    env_length_scale: float = 0.5
+    env_alpha: float = 0.25  # Scaling factor for the vector field
 
-    observation_type: str = "loglinear"
+    observation_type: str = "loglinear"  # Options: "loglinear", "linear", "identity"
     obs_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
-    obs_activation: Optional[str] = "relu"
-    noise_type: Optional[str] = "gaussian"
-    noise_scale: float = 0.0
+    obs_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
+    obs_noise_type: Optional[str] = "gaussian"  # Options: "gaussian", "poisson"
+    obs_noise_scale: float = 0.0
 
-    action_type: str = "identity"
-    act_action_bounds: Sequence[float] = field(default_factory=lambda: [-0.1, 0.1])
+    action_type: str = "identity"  # Options: "identity", "linear", "mlp"
     act_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
-    act_activation: Optional[str] = "relu"
+    act_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
+
+    def get_environment_cfg(self):
+        return {
+            "dt": self.env_dt,
+            "noise_scale": self.env_noise_scale,
+            "render_mode": self.env_render_mode,
+            "action_bounds": self.env_action_bounds,
+            "state_bounds": self.env_state_bounds,
+            "x_range": self.env_x_range,
+            "n_grid": self.env_n_grid,
+            "w_attractor": self.env_w_attractor,
+            "length_scale": self.env_length_scale,
+            "alpha": self.env_alpha,
+        }
+
+    def get_observation_cfg(self):
+        return {
+            "hidden_dims": self.obs_hidden_dims,
+            "activation": self.obs_activation,
+            "noise_type": self.obs_noise_type,
+            "noise_scale": self.obs_noise_scale,
+        }
+
+    def get_action_cfg(self):
+        return {
+            "hidden_dims": self.act_hidden_dims,
+            "activation": self.act_activation,
+        }
 
 
 @dataclass
 class ModelConfig:
-    encoder_type: str = "rnn"
+    encoder_type: str = "rnn"  # Options: "rnn", "mlp"
     enc_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     enc_hidden_dim: Optional[int] = 16
-    enc_rnn_type: Optional[str] = "gru"
+    enc_rnn_type: Optional[str] = "gru"  # Options: "gru", "lstm"
     enc_num_layers: Optional[int] = 1
-    enc_activation: Optional[str] = "relu"
+    enc_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
 
-    mapping_type: str = "loglinear"
+    mapping_type: str = "loglinear"  # Options: "loglinear", "linear", "identity", "mlp"
     map_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
-    map_activation: Optional[str] = "relu"
-    noise_type: str = "gaussian"
+    map_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
+    noise_type: str = "gaussian"  # Options: "gaussian", "poisson"
 
-    dynamics_type: str = "mlp"
+    dynamics_type: str = "mlp"  # Options: "mlp", "linear", "rbf"
     is_ensemble: bool = False
     n_models: Optional[int] = 1
     dyn_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     dyn_alpha: float = 0.1
     dyn_gamma: float = 1.0
-    dyn_num_centers: Optional[int] = None
+    dyn_centers: Optional[List[List[float]]] = None  # Will be converted to tensor when needed
+    dyn_range: float = 2.0
+    dyn_num_grid: int = 25
 
-    action_type: str = "identity"
-    act_action_bounds: Sequence[float] = field(default_factory=lambda: [-0.1, 0.1])
+    action_type: str = "identity"  # Options: "identity", "linear", "mlp"
     act_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
-    act_activation: Optional[str] = "relu"
+    act_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
 
-    model_type: str = "seq-vae"
+    model_type: str = "seq-vae"  # Options: "seq-vae"
+
+    def get_encoder_cfg(self):
+        return {
+            "hidden_dims": self.enc_hidden_dims,
+            "activation": self.enc_activation,
+            "rnn_type": self.enc_rnn_type,
+            "num_layers": self.enc_num_layers,
+        }
+
+    def get_decoder_cfg(self):
+        return {
+            "hidden_dims": self.map_hidden_dims,
+            "activation": self.map_activation,
+        }
+
+    def get_dynamics_cfg(self):
+        return {
+            "hidden_dims": self.dyn_hidden_dims,
+            "alpha": self.dyn_alpha,
+            "gamma": self.dyn_gamma,
+            "centers": self.dyn_centers,
+            "range": self.dyn_range,
+            "num_grid": self.dyn_num_grid,
+        }
+
+    def get_action_cfg(self):
+        return {
+            "hidden_dims": self.act_hidden_dims,
+            "activation": self.act_activation,
+        }
 
 
 @dataclass
 class PolicyConfig:
-    policy_type: str = "random"
+    policy_type: str = "random"  # Options: "random", "lazy", "mpc-icem"
     mpc_verbose: bool = False
     mpc_horizon: int = 10
     mpc_num_samples: int = 32
@@ -74,52 +138,121 @@ class PolicyConfig:
     mpc_shift_elites: bool = True
     mpc_keep_elites: bool = True
 
+    def get_mpc_cfg(self):
+        return {
+            "verbose": self.mpc_verbose,
+            "horizon": self.mpc_horizon,
+            "num_samples": self.mpc_num_samples,
+            "num_iterations": self.mpc_num_iterations,
+            "num_elite": self.mpc_num_elite,
+            "alpha": self.mpc_alpha,
+            "init_std": self.mpc_init_std,
+            "noise_beta": self.mpc_noise_beta,
+            "factor_decrease_num": self.mpc_factor_decrease_num,
+            "frac_prev_elites": self.mpc_frac_prev_elites,
+            "frac_elites_reused": self.mpc_frac_elites_reused,
+            "use_mean_actions": self.mpc_use_mean_actions,
+            "shift_elites": self.mpc_shift_elites,
+            "keep_elites": self.mpc_keep_elites,
+        }
+
 
 @dataclass
 class MetricConfig:
-    metric_type: Union[str, List[str]] = "A-optimality"
-    compute_type: str = "sum"
-    gamma: Union[float, List[float]] = 1.0
+    metric_type: List[str] = field(
+        default_factory=lambda: ["A-optimality"]
+    )  # Options: "A-optimality", "D-optimality", "action", "goal", "reward"
+    compute_type: str = "sum"  # Options: "sum", "last", "max"
+    gamma: float = 1.0  # Can be a single value, will be handled as list when needed
     composite_weights: Optional[List[float]] = None
-    met_goal: Optional[List[float]] = None
+    met_goal: Optional[List[float]] = None  # Will be converted to tensor when needed
+    met_discount_factor: float = 0.99
     met_use_diag: Optional[bool] = False
+    met_sensitivity: bool = True
+    met_covariance: str = "invariant"  # Options: "invariant", "1st", "deterministic"
 
-    def __post_init__(self):
-        self.met_goal = (
-            torch.tensor(self.met_goal) if self.met_goal is not None else None
-        )
+    def get_metric_cfg(self):
+        return {
+            "compute_type": self.compute_type,
+            "met_goal": self.met_goal,
+            "met_discount_factor": self.met_discount_factor,
+            "met_use_diag": self.met_use_diag,
+            "met_sensitivity": self.met_sensitivity,
+            "met_covariance": self.met_covariance,
+        }
 
 
 @dataclass
 class TrainingConfig:
+    # Training parameters
     total_steps: int = 10000
     train_every: int = 1
-    save_every: int = 1000
-    animate_every: int = 1000
     rollout_horizon: int = 20
-    batch_size: int = 1
+
+    # ELBO optimizier configuration
+    beta: float = 1.0
+    optimizer: str = "SGD"  # Options: "SGD", "Adam", "AdamW"
     learning_rate: float = 1e-3
     weight_decay: float = 1e-5
+    n_epochs: int = 1
+    verbose: bool = False
+    grad_clip_norm: float = 0.0
+    n_samples: int = 5
+    k_steps: int = 5
+    perturbation: float = 0.01
+    offline_lr: float = 1e-4
+    offline_n_epochs: int = 5000
+    offline_batch_size: int = 32
+    offline_chunk_size: int = 1000
+    offline_decay: float = 1e-4
+
+    def get_offline_optim_cfg(self):
+        return {
+            "lr": self.offline_lr,
+            "n_epochs": self.offline_n_epochs,
+            "batch_size": self.offline_batch_size,
+            "chunk_size": self.offline_batch_size,
+            "weight_decay": self.offline_decay,
+            "optimizer": "AdamW",
+            "perturbation": 0.0,
+            "shuffle": False,
+            "verbose": True,
+        }
+
+    def get_optim_cfg(self):
+        return {
+            "optimizer": self.optimizer,
+            "lr": self.learning_rate,
+            "weight_decay": self.weight_decay,
+            "n_epochs": self.n_epochs,
+            "perturbation": self.perturbation,
+            "grad_clip_norm": self.grad_clip_norm,
+            "n_samples": self.n_samples,
+            "k_steps": self.k_steps,
+            "verbose": self.verbose,
+            "beta": self.beta,
+        }
 
 
 @dataclass
 class LoggingConfig:
-    log_every: int = 100
+    plot_every: int = 1000
     save_every: int = 1000
     video_path: Optional[str] = None
-    model_path: str = "results/models"
-    buffer_path: str = "results/buffers"
-    logger_path: str = "results/logs"
 
 
 @dataclass
 class ExperimentConfig:
     seed: int = 42
-    device: str = "cpu"
+    device: str = "cpu"  # Options: "cpu", "cuda", "mps"
     results_dir: str = "results"
     action_dim: int = 2
     observation_dim: int = 50
     latent_dim: int = 2
+    dt: float = 0.1
+    run_online: bool = True
+    run_offline: bool = True
+    run_analysis: bool = False
     environment: EnvironmentConfig = field(default_factory=EnvironmentConfig)
     model: ModelConfig = field(default_factory=ModelConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
@@ -131,8 +264,12 @@ class ExperimentConfig:
     def from_yaml(cls, yaml_path: str) -> "ExperimentConfig":
         """Create an ExperimentConfig instance from a YAML file."""
 
-        with open(yaml_path, "r") as f:
+        with open(yaml_path, "r", encoding="utf-8") as f:
             config_dict = yaml.safe_load(f)
+
+        # Filter out Hydra-specific sections that aren't part of our dataclass
+        hydra_keys = {"defaults", "hydra"}
+        config_dict = {k: v for k, v in config_dict.items() if k not in hydra_keys}
 
         # Convert nested dictionaries to their respective config classes
         if "environment" in config_dict:
