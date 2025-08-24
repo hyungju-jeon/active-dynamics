@@ -1,5 +1,6 @@
 """Vector field environment implementation."""
 
+from math import sqrt
 import torch
 from actdyn.utils.vectorfield_definition import (
     LimitCycle,
@@ -31,6 +32,7 @@ class VectorFieldEnv(BaseDynamicsEnv):
         render_mode: Optional[str] = None,
         action_bounds: Sequence[float] = (-1.0, 1.0),
         state_bounds: Optional[Sequence[float]] = None,
+        **kwargs: Any,
     ):
         # Initialize base environment
         super().__init__(
@@ -47,7 +49,18 @@ class VectorFieldEnv(BaseDynamicsEnv):
         # Initialize dynamics
         if dynamics_type not in vf_from_string:
             raise ValueError(f"Unknown dynamics type: {dynamics_type}")
-        self.dynamics = vf_from_string[dynamics_type]()
+
+        # Determine x_range: use from kwargs if available, otherwise from state_bounds
+        if "x_range" in kwargs:
+            x_range = kwargs.pop("x_range")  # Remove from kwargs to avoid duplication
+        elif state_bounds is not None:
+            x_range = state_bounds[-1]
+        else:
+            raise ValueError(
+                "Either 'x_range' must be provided in kwargs or 'state_bounds' must be set"
+            )
+
+        self.dynamics = vf_from_string[dynamics_type](device=self.device, x_range=x_range, **kwargs)
 
     def _get_dynamics(self, state: torch.Tensor) -> torch.Tensor:
         """Compute vector field at given state."""
@@ -70,11 +83,11 @@ class VectorFieldEnv(BaseDynamicsEnv):
                 + (
                     self._get_dynamics(traj[i])
                     + action[:, i].unsqueeze(1)
-                    + torch.randn_like(traj[i]) * self.noise_scale
+                    + torch.randn_like(traj[i]) * torch.sqrt(torch.tensor(self.noise_scale))
                 )
                 * self.dt
             )
-        return torch.cat(traj, dim=-2)
+        return torch.cat(traj, dim=1)
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
@@ -84,9 +97,7 @@ class VectorFieldEnv(BaseDynamicsEnv):
         self.state = torch.rand(self.state_dim, device=self.device) * 2 - 1
         return self.state.to(self.device), {}
 
-    def step(
-        self, action: torch.Tensor
-    ) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
+    def step(self, action: torch.Tensor) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
         """Step the environment."""
         # Compute dynamics
         dynamics = self._get_dynamics(self.state)
@@ -95,18 +106,20 @@ class VectorFieldEnv(BaseDynamicsEnv):
         self.state = self.state + (dynamics + action) * self.dt
 
         # Add noise
-        self.state += torch.randn_like(self.state) * self.noise_scale * self.dt
+        self.state += (
+            torch.randn_like(self.state) * torch.sqrt(torch.tensor(self.noise_scale)) * self.dt
+        )
 
         # Compute reward
         reward = 0
 
         return self.state, reward, False, False, {}
 
-    def render(self):
+    def render(self, ax=None, x_range=1):
         if self.render_mode == "rgb_array":
             pass
         elif self.render_mode == "human":
-            plot_vector_field(self.dynamics)
+            plot_vector_field(self.dynamics, x_range=x_range, ax=ax)
 
     def close(self):
         pass
