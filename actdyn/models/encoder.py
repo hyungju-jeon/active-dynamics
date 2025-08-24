@@ -15,7 +15,8 @@ class MLPEncoder(BaseEncoder):
 
     def __init__(
         self,
-        input_dim: int,
+        obs_dim: int,
+        action_dim: int = 0,
         hidden_dims: list = [16],
         latent_dim: int = 2,
         activation: str = "relu",
@@ -24,14 +25,14 @@ class MLPEncoder(BaseEncoder):
     ):
         super().__init__(device)
 
-        self.input_dim = input_dim
-        self.hidden_dims = hidden_dims
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
         self.latent_dim = latent_dim
         self.activation = activation_from_str(activation)
 
         # Build encoder layers
         layers = []
-        prev_dim = input_dim
+        prev_dim = obs_dim
 
         for hidden_dim in hidden_dims:
             layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
@@ -43,53 +44,31 @@ class MLPEncoder(BaseEncoder):
         self.fc_mu = nn.Linear(prev_dim, latent_dim)
         self.fc_log_var = nn.Linear(prev_dim, latent_dim)
 
-    def compute_param(self, x):
+    def compute_param(self, y: torch.Tensor, u: torch.Tensor = None):
         """Computes the mean and variance of the latent distribution for each time step."""
-        batch_dim, time_dim, _ = x.shape
-        # Reshape input to process each time step independently: (Batch * Time, dy)
-        x_flat = x.view(batch_dim * time_dim, -1)
+        batch_dim, time_dim, _ = y.shape
 
         # Apply MLP
-        out_flat = self.network(x_flat)  # Shape: (Batch * Time, hidden_dims[-1])
-
-        # Reshape output back to (Batch, Time, hidden_dims[-1])
-        out = out_flat.view(batch_dim, time_dim, -1)
+        mlp_out = self.network(y)  # (batch * time, hidden_dim)
 
         # Split into mu and logvar
-        mu = self.fc_mu(out)
-        log_var = self.fc_log_var(out)
+        mu = self.fc_mu(mlp_out)
+        log_var = self.fc_log_var(mlp_out)
         var = softplus(log_var) + eps
         return mu, var
 
-    def sample(self, x, n_samples=1):
-        """Samples from the latent distribution."""
-        mu, var = self.compute_param(x)
+    def forward(self, y, u=None, n_samples=1):
+        """Computes samples, mean, variance, and log probability of the latent distribution."""
 
-        samples = mu + torch.sqrt(var) * torch.randn(
-            [n_samples] + list(mu.shape), device=x.device
-        )
+        # compute parameters and sample
+        mu, var = self.compute_param(y)
+        samples = mu + torch.sqrt(var) * torch.randn([n_samples] + list(mu.shape), device=y.device)
+
         # If n_samples is 1, remove the sample dimension
         if n_samples == 1:
             samples = samples.squeeze(0)
 
         return samples, mu, var
-
-    def forward(self, x, n_samples=1):
-        """Computes samples, mean, variance, and log probability of the latent distribution."""
-        # check dimension of x is (batch, time, input_dim) if not, add dimension
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        elif x.dim() == 1:
-            x = x.unsqueeze(0).unsqueeze(0)
-        elif x.dim() == 3:
-            pass
-        else:
-            raise ValueError(f"Invalid dimension of x: {x.dim()}")
-
-        # compute parameters and sample
-        samples, mu, var = self.sample(x, n_samples=n_samples)
-        log_prob = torch.sum(Normal(mu, torch.sqrt(var)).log_prob(samples), (-2, -1))
-        return samples, mu, var, log_prob
 
 
 class RNNEncoder(BaseEncoder):
@@ -97,7 +76,8 @@ class RNNEncoder(BaseEncoder):
 
     def __init__(
         self,
-        input_dim: int,
+        obs_dim: int,
+        action_dim: int = 0,
         hidden_dim: int = 32,
         latent_dim: int = 2,
         rnn_type: str = "gru",  # or "lstm"
@@ -106,58 +86,85 @@ class RNNEncoder(BaseEncoder):
         **kwargs,
     ):
         super().__init__(device)
-        self.input_dim = input_dim
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.latent_dim = latent_dim
+        self.h = None
         self.rnn_type = rnn_type.lower()
         self.num_layers = num_layers
 
         if self.rnn_type == "gru":
             self.network = nn.GRU(
-                input_dim, hidden_dim, num_layers, batch_first=True, device=device
+                self.obs_dim + self.action_dim,
+                hidden_dim,
+                num_layers,
+                batch_first=True,
+                device=self.device,
             )
         elif self.rnn_type == "lstm":
             self.network = nn.LSTM(
-                input_dim, hidden_dim, num_layers, batch_first=True, device=device
+                self.obs_dim + self.action_dim,
+                hidden_dim,
+                num_layers,
+                batch_first=True,
+                device=self.device,
             )
         else:
             raise ValueError("rnn_type must be 'gru' or 'lstm'")
 
-        self.fc_mu = nn.Linear(hidden_dim, latent_dim)
-        self.fc_log_var = nn.Linear(hidden_dim, latent_dim)
+        self.fc_mu = nn.Linear(hidden_dim, latent_dim, device=self.device)
+        self.fc_log_var = nn.Linear(hidden_dim, latent_dim, device=self.device)
 
-    def compute_param(self, x):
-        # x: (batch, time, input_dim)
-        if self.rnn_type == "lstm":
-            rnn_out, _ = self.network(x)
-        else:
-            rnn_out, _ = self.network(x)
-        # rnn_out: (batch, time, hidden_dim)
+    def compute_param(
+        self, y: torch.Tensor, u: torch.Tensor | None = None, h: torch.Tensor | None = None
+    ):
+        y, u = self.validate_input(y, u)
+        # Concatenate y and u along the last dimension
+        y_u = torch.cat((y, u), dim=-1)
+
+        # Compute Hidden state and output
+        rnn_out, _ = self.network(y_u, h)  # (batch, time, hidden_dim)
         mu = self.fc_mu(rnn_out)
+        # mu = torch.tanh(mu)  # Ensure mu is in a reasonable range
         log_var = self.fc_log_var(rnn_out)
         var = softplus(log_var) + eps
+
         return mu, var
 
-    def sample(self, x, n_samples=1):
-        mu, var = self.compute_param(x)
+    def forward(
+        self,
+        y: torch.Tensor,
+        u: torch.Tensor | None = None,
+        n_samples=1,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        y, u = self.validate_input(y, u)
+        # Compute parameters and sample
+        mu, var = self.compute_param(y=y, u=u, h=self.h)
         samples = mu + torch.sqrt(var) * torch.randn(
-            [n_samples] + list(mu.shape), device=x.device
-        )
+            [n_samples] + list(mu.shape), device=y.device
+        )  # [n_samples, batch, time, latent_dim]
         if n_samples == 1:
-            samples = samples.squeeze(0)
+            samples = samples.squeeze(0)  # [batch, time, latent_dim]
+
         return samples, mu, var
 
-    def forward(self, x, n_samples=1):
-        # check dimension of x is (batch, time, input_dim) if not, add dimension
-        if x.dim() == 2:
-            x = x.unsqueeze(0)
-        elif x.dim() == 1:
-            x = x.unsqueeze(0).unsqueeze(0)
-        elif x.dim() == 3:
-            pass
+    def validate_input(self, y, u):
+        assert y.dim() == 3, f"Input y must be of shape (batch, time, input_dim), got {y.shape}"
+        if u is not None:
+            assert u.dim() == 3
+            assert (
+                u.shape[0] == y.shape[0]
+            ), f"Batch size of a {u.shape[0]} must match y {y.shape[0]}"
+            assert (
+                u.shape[1] == y.shape[1]
+            ), f"Time dimension of a {u.shape[1]} must match y {y.shape[1]}"
+            assert (
+                u.shape[2] == self.action_dim
+            ), f"Action dimension of a {u.shape[2]} must match action_dim {self.action_dim}"
         else:
-            raise ValueError(f"Invalid dimension of x: {x.dim()}")
+            u = torch.zeros(
+                (y.shape[0], y.shape[1], self.action_dim), device=y.device, dtype=y.dtype
+            )
 
-        samples, mu, var = self.sample(x, n_samples=n_samples)
-        log_prob = torch.sum(Normal(mu, torch.sqrt(var)).log_prob(samples), (-2, -1))
-        return samples, mu, var, log_prob
+        return y.to(self.device), u.to(self.device)

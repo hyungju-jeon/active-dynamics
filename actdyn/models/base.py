@@ -13,18 +13,17 @@ eps = 1e-6
 class BaseEncoder(nn.Module):
     """Base class for encoder models."""
 
+    network: nn.Module
+
     def __init__(self, device="cpu"):
         super().__init__()
         self.device = torch.device(device)
         self.network = None
 
-    def compute_param(self, x):
+    def compute_param(self, z):
         raise NotImplementedError
 
-    def sample(self, x, n_samples=1):
-        raise NotImplementedError
-
-    def forward(self, x, n_samples=1):
+    def forward(self, y, a, n_samples=1):
         raise NotImplementedError
 
     def to(self, device):
@@ -35,6 +34,9 @@ class BaseEncoder(nn.Module):
 
 # Observation mappings
 class BaseMapping(nn.Module):
+
+    network: nn.Module
+
     def __init__(self, device="cpu"):
         super().__init__()
         self.device = torch.device(device)
@@ -47,6 +49,17 @@ class BaseMapping(nn.Module):
         self.device = torch.device(device)
         self.network.to(device)
         return self
+
+    def set_weights(self, weights):
+        raise NotImplementedError
+
+    def set_bias(self, bias):
+        raise NotImplementedError
+
+    def set_params(self, weights, bias):
+        """Set both weights and bias of the linear mapping."""
+        self.set_weights(weights)
+        self.set_bias(bias)
 
 
 # Noise models
@@ -89,10 +102,11 @@ class BaseModel(nn.Module):
 class BaseDynamics(nn.Module):
     """Base class for all dynamics models with sampling utility."""
 
-    def __init__(self, state_dim, device: str = "cpu"):
+    def __init__(self, state_dim, dt=1, device: str = "cpu"):
         super().__init__()
         self.device = torch.device(device)
         self.to(self.device)
+        self.dt = dt
         self.log_var = nn.Parameter(
             -2 * torch.rand(1, state_dim, device=self.device), requires_grad=True
         )
@@ -101,46 +115,61 @@ class BaseDynamics(nn.Module):
     def compute_param(self, state):
         mu = self.network(state)
         var = softplus(self.log_var) + eps
-        return mu, var
+        return mu, var * self.dt**2
 
-    def sample_forward(self, state, action=None):
+    def sample_forward(self, state, action=None, k_step=1, return_traj=False):
         """Generates samples from forward dynamics model."""
-
-        mu, var = self.compute_param(state)
-        next_state = mu + state
-
         if action is not None:
-            next_state += action
+            if len(action.shape) == 2:
+                action = action.unsqueeze(0)
 
-        return next_state, var
+        samples, mus = [state], []
+        for k in range(k_step):
+            mu, var = self.compute_param(samples[k])
+            next_state = samples[k] + mu * self.dt
+            if len(next_state.shape) == 2:
+                next_state = mu.unsqueeze(0)
+            if action is not None:
+                if k > 0:
+                    next_state[:, :-k, :] += action[:, k:, :] * self.dt
+                else:
+                    next_state += action * self.dt
 
-    def forward(self, state, action=None):
+            mus.append(next_state)
+            samples.append(mus[k] + torch.sqrt(var) * torch.randn_like(mus[k], device=self.device))
+
+        if return_traj:
+            return mus, var
+        else:
+            return mus[-1], var
+
+    def forward(self, state):
         return self.compute_param(state)[0]
 
 
-class EnsembleDynamics(nn.Module):
+class BaseDynamicsEnsemble(nn.Module):
     """
     Generic ensemble wrapper for any dynamics model.
     """
 
     def __init__(
         self,
-        dynamics_class,
+        dynamics_cls,
         n_models=5,
         dynamics_kwargs=None,
     ):
         super().__init__()
         if dynamics_kwargs is None:
             dynamics_kwargs = {}
-        self.models = nn.ModuleList(
-            [dynamics_class(**dynamics_kwargs) for _ in range(n_models)]
-        )
+        self.models = nn.ModuleList([dynamics_cls(**dynamics_kwargs) for _ in range(n_models)])
         self.n_models = n_models
 
-    def sample_forward(self, state, action=None):
+    def sample_forward(self, state, action=None, k_step=1, return_traj=False):
         all_means, all_variances = [], []
         for model in self.models:
-            means, variances = model.sample_forward(state, action)
+            means, variances = model.sample_forward(
+                state, action, k_step=k_step, return_traj=return_traj
+            )
             all_means.append(means)
             all_variances.append(variances)
         means = torch.stack(all_means)
