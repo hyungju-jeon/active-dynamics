@@ -32,9 +32,7 @@ class BaseDynamicsEnv(gym.Env, ABC):
         # Initialize spaces with configurable bounds
         # Create action bounds arrays of shape (state_dim,)
         if not (isinstance(action_bounds, (tuple, list)) and len(action_bounds) == 2):
-            raise ValueError(
-                f"action_bounds must be a tuple or list of (low, high), got {action_bounds}"
-            )
+            raise ValueError(f"action_bounds must be a tuple or list of (low, high), got {action_bounds}")
         action_low = np.full((state_dim,), action_bounds[0], dtype=np.float32)
         action_high = np.full((state_dim,), action_bounds[1], dtype=np.float32)
 
@@ -45,14 +43,10 @@ class BaseDynamicsEnv(gym.Env, ABC):
         )
 
         if state_bounds is None:
-            self.observation_space = spaces.Box(
-                low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32
-            )
+            self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32)
         else:
             if not (isinstance(state_bounds, (tuple, list)) and len(state_bounds) == 2):
-                raise ValueError(
-                    f"state_bounds must be a tuple or list of (low, high), got {state_bounds}"
-                )
+                raise ValueError(f"state_bounds must be a tuple or list of (low, high), got {state_bounds}")
             state_low = np.full((state_dim,), state_bounds[0], dtype=np.float32)
             state_high = np.full((state_dim,), state_bounds[1], dtype=np.float32)
 
@@ -153,8 +147,8 @@ class BaseObservation(nn.Module):
         elif self.noise_type == "poisson":
             # For Poisson, the rate parameter (lambda) should be positive
             rate = torch.clamp(y, min=1e-6)
-            noise = torch.poisson(rate) - rate
-            return y + noise * self.noise_scale
+            noise = torch.poisson(rate)
+            return y + noise
         else:
             raise ValueError(f"Unknown noise type: {self.noise_type}")
 
