@@ -68,8 +68,16 @@ class GymObservationWrapper(gym.Wrapper):
         """Convert input to torch tensor."""
         # Get the device from the observation model's network if available
         if isinstance(x, torch.Tensor):
-            return x.to(self.device)
-        return torch.tensor(x, device=self.device, dtype=torch.float32)
+            x = x.to(self.device)
+        else:
+            x = torch.tensor(x, device=self.device, dtype=torch.float32)
+
+        if x.dim() == 1:
+            x = x.unsqueeze(0).unsqueeze(0)  # Add batch dimension if needed
+        elif x.dim() == 2:
+            x = x.unsqueeze(0)  # Add time dimension if needed
+
+        return x
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
@@ -90,9 +98,7 @@ class GymObservationWrapper(gym.Wrapper):
 
         return observed, info
 
-    def step(
-        self, action: Any
-    ) -> Tuple[torch.Tensor, SupportsFloat, bool, bool, Dict[str, Any]]:
+    def step(self, action: Any) -> Tuple[torch.Tensor, SupportsFloat, bool, bool, Dict[str, Any]]:
         """Step the environment and return observation."""
         # Convert action to tensor on correct device before passing to action_model
         action_tensor = self._to_tensor(action)
