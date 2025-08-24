@@ -8,15 +8,22 @@ class RandomPolicy(BasePolicy):
         super().__init__(action_space, **kwargs)
 
     def get_action(self, state: torch.Tensor):
-        return torch.FloatTensor(self.action_space.sample()).to(self.device)
+        return (
+            torch.FloatTensor(self.action_space.sample()).unsqueeze(0).unsqueeze(0).to(self.device)
+        )
 
 
-class LazyPolicy(BasePolicy):
+class OffPolicy(BasePolicy):
     def __init__(self, action_space: gym.Space, **kwargs):
         super().__init__(action_space, **kwargs)
 
     def get_action(self, state):
-        return self.action_space.sample() * 0.0
+        return (
+            torch.FloatTensor(self.action_space.sample() * 0.0)
+            .unsqueeze(0)
+            .unsqueeze(0)
+            .to(self.device)
+        )
 
     def update(self, batch):
         pass

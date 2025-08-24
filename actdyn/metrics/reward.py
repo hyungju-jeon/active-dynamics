@@ -23,7 +23,7 @@ class GoalDistanceMetric(BaseMetric):
         goal: torch.Tensor,
         compute_type: str = "sum",
         device: str = "cuda",
-        **kwargs
+        **kwargs,
     ):
         super().__init__(compute_type, device)
         self.goal = goal.to(device)
@@ -33,5 +33,7 @@ class GoalDistanceMetric(BaseMetric):
         self.goal = goal.to(self.device)
 
     def compute(self, rollout: Rollout or RolloutBuffer) -> torch.Tensor:
-        self.metric = torch.norm(rollout["model_state"] - self.goal, dim=-1)
+        self.metric = (
+            torch.norm(rollout["model_state"] - self.goal, dim=-1).sum(dim=-1).unsqueeze(-1)
+        )
         return self.metric

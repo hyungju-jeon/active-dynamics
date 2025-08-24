@@ -1,4 +1,5 @@
 import numpy as np
+from actdyn.environment import action
 import torch
 import colorednoise
 
@@ -105,13 +106,11 @@ class MpcICem(BaseMPC):
             std = torch.ones(self.horizon, self.action_dim, device=self.device)
             for dim in range(self.action_dim):
                 std[:, dim] = torch.tensor(
-                    (self.action_bounds[1][dim] - self.action_bounds[0][dim])
-                    / 2.0
-                    * self.init_std,
+                    (self.action_bounds[1][dim] - self.action_bounds[0][dim]) / 2.0 * self.init_std,
                     device=self.device,
                 )
             return std
-        return torch.ones(self.horizon, self.action_dim, device=self.device)
+        return self.init_std * torch.ones(self.horizon, self.action_dim, device=self.device)
 
     def sample_action_sequences(self, num_samples):
         # Generate action sequences with colored noise
@@ -124,9 +123,7 @@ class MpcICem(BaseMPC):
                 dtype=torch.float32,
             ).transpose(1, 2)
         else:
-            samples = torch.randn(
-                num_samples, self.horizon, self.action_dim, device=self.device
-            )
+            samples = torch.randn(num_samples, self.horizon, self.action_dim, device=self.device)
         actions = samples * self.std + self.mean
 
         if self.action_bounds is not None:
@@ -147,11 +144,11 @@ class MpcICem(BaseMPC):
         simulated_paths[:, 0, :] = initial_state[:, 0, :].repeat(actions.shape[0], 1)
 
         for step in range(self.horizon):
-            simulated_paths[:, step + 1] = self.model.dynamics(
-                simulated_paths[:, step]
-            ) + self.model.action_encoder(actions[:, step])
+            simulated_paths[:, step + 1] = self.model.dynamics.sample_forward(
+                simulated_paths[:, step], self.model.action_encoder(actions[:, step])
+            )[0]
         rollout = RolloutBuffer(device=self.device)
-        rollout.from_dict(
+        rollout.add_dict(
             {
                 "action": actions,
                 "model_state": simulated_paths[:, :-1],
@@ -160,7 +157,7 @@ class MpcICem(BaseMPC):
         )
         return rollout
 
-    def get_action(self, state):
+    def get_action(self, state, debug=False):
         if not self.was_reset:
             self.beginning_of_rollout(state)
 
@@ -196,14 +193,11 @@ class MpcICem(BaseMPC):
 
             # Simulate and Compute Cost
             rollout = self.simulate(state, actions)
-            cost_traj = self.metric(rollout)
-            costs = cost_traj.sum(dim=1)
+            costs = self.metric(rollout).squeeze(-1)
 
             # Keep elites from previous iteration
             if iter > 0 and self.keep_elites:
-                num_elites_to_keep = int(
-                    len(self.elite_samples) * self.frac_elites_reused
-                )
+                num_elites_to_keep = int(len(self.elite_samples) * self.frac_elites_reused)
                 if num_elites_to_keep > 0:
                     prev_elites_actions = self.elite_samples.as_array("action")
                     prev_elite_costs = self.elite_samples.as_array("cost")
@@ -211,24 +205,19 @@ class MpcICem(BaseMPC):
                     assert (
                         actions.shape[1:] == prev_elites_actions.shape[1:]
                     ), f"Shape mismatch: actions {actions.shape}, prev_elites_actions {prev_elites_actions.shape}"
-                    actions = torch.cat(
-                        [actions, prev_elites_actions[:num_elites_to_keep]], dim=0
-                    )
+                    actions = torch.cat([actions, prev_elites_actions[:num_elites_to_keep]], dim=0)
                     # Ensure cost dimensions match except for batch dimension
-                    if cost_traj.shape[1:] != prev_elite_costs.shape[1:]:
+                    if costs.shape[1:] != prev_elite_costs.shape[1:]:
                         prev_elite_costs = prev_elite_costs.view(
-                            prev_elite_costs.shape[0], *cost_traj.shape[1:]
+                            prev_elite_costs.shape[0], *costs.shape[1:]
                         )
-                    cost_traj = torch.cat(
-                        [cost_traj, prev_elite_costs[:num_elites_to_keep]], dim=0
-                    )
-                    costs = cost_traj.sum(dim=1)
+                    costs = torch.cat([costs, prev_elite_costs[:num_elites_to_keep]], dim=0)
 
             # Get elite samples
             elite_idxs = torch.topk(-costs, self.num_elites, dim=0)[1]
             elite_actions = actions[elite_idxs]
-            elite_costs_traj = cost_traj[elite_idxs]
-            self.elite_samples.from_dict(
+            elite_costs_traj = costs[elite_idxs]
+            self.elite_samples.add_dict(
                 {
                     "action": elite_actions,
                     "cost": elite_costs_traj,
@@ -264,4 +253,4 @@ class MpcICem(BaseMPC):
         self.mean = shifted_mean
         self.std = self.get_init_std()
 
-        return best_first_action
+        return best_first_action.unsqueeze(0).unsqueeze(0)  # Return as (1, 1, action_dim)
