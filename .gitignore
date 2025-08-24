@@ -22,6 +22,8 @@ dist/
 docs/
 reference/
 downloads/
+tests/
+runs/
 eggs/
 .eggs/
 lib/
