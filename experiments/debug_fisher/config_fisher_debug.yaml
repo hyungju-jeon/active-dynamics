@@ -1,0 +1,88 @@
+seed: 42
+device: "cuda"
+results_dir: "results/vf_test"
+action_dim: 2
+observation_dim: 50
+latent_dim: 2
+
+environment:
+  environment_type: "vectorfield"
+  env_dynamics_type: "double_limit_cycle"
+  env_dt: 1
+  env_noise_scale: 0.01
+  env_render_mode: human
+  env_action_bounds: [-0.5, 0.5]
+  env_state_bounds: null
+  observation_type: "linear"
+  obs_hidden_dims: [16]
+  obs_activation: "relu"
+  noise_type: "gaussian"
+  noise_scale: 0.0
+  action_type: "identity"
+  act_action_bounds: [-0.1, 0.1]
+  act_hidden_dims: [16]
+  act_activation: "relu"
+
+model:
+  encoder_type: "rnn"
+  enc_hidden_dims: [16]
+  enc_hidden_dim: 16
+  enc_rnn_type: "gru"
+  enc_num_layers: 1
+  enc_activation: "relu"
+  mapping_type: "linear"
+  map_hidden_dims: [16]
+  map_activation: "relu"
+  noise_type: "gaussian"
+  dynamics_type: "rbf"
+  dyn_num_centers: 625
+  is_ensemble: false
+  n_models: 1
+  dyn_hidden_dims: [16]
+  action_type: "identity"
+  act_action_bounds: [-0.25, 0.25]
+  act_hidden_dims: [16]
+  act_activation: "relu"
+  model_type: "seq-vae"
+
+policy:
+  policy_type: "mpc-icem"
+  mpc_verbose: false
+  mpc_horizon: 5
+  mpc_num_samples: 32
+  mpc_num_iterations: 5
+  mpc_num_elite: 10
+  mpc_alpha: 0.1
+  mpc_init_std: 1
+  mpc_noise_beta: 2.5
+  mpc_factor_decrease_num: 1.25
+  mpc_frac_prev_elites: 0.2
+  mpc_frac_elites_reused: 0.3
+  mpc_use_mean_actions: true
+  mpc_shift_elites: true
+  mpc_keep_elites: true
+
+metric:
+  metric_type: "D-optimality"
+  compute_type: "sum"
+  gamma: 0.99
+  composite_weights: null
+  met_use_diag: true
+  met_discount_factor: .99
+
+training:
+  total_steps: 50000
+  train_every: 1
+  save_every: 100000
+  animate_every: 1000000
+  rollout_horizon: 20
+  batch_size: 1
+  learning_rate: 0.001
+  weight_decay: 0.00001
+
+logging:
+  log_every: 100
+  save_every: 1000
+  model_path: "results/vf_test/models"
+  buffer_path: "results/vf_test/buffers"
+  logger_path: "results/vf_test/logs"
