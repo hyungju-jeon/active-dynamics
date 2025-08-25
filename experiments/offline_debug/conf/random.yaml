@@ -1,0 +1,18 @@
+# @package _global_
+# Hydra sweep for offline lr and batch size
+
+defaults:
+  - config
+  - _self_
+  - override hydra/launcher: joblib
+
+hydra:
+  launcher:
+    n_jobs: 3
+  sweeper:
+    params:
+      policy.policy_type: random
+      training.offline_lr: 0.01, 0.001
+      training.offline_batch_size: 100, 1000, 10000,
+  sweep:
+    subdir: lr_${training.offline_lr}_batch_${training.offline_batch_size}/seed_${seed}
