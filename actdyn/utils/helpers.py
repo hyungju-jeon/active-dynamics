@@ -1,9 +1,8 @@
 # %%
 import torch
 import gymnasium
-from dataclasses import asdict
-from typing import TYPE_CHECKING
 
+from actdyn.metrics.uncertainty import EnsembleDisagreement
 from actdyn.config import ExperimentConfig
 from actdyn.core.agent import Agent
 from actdyn.core.experiment import Experiment
@@ -29,28 +28,14 @@ from actdyn.policy import policy_from_str, BaseMPC
 from actdyn.metrics import metric_from_str, FisherInformationMetric, CompositeMetric
 
 
-# Use TYPE_CHECKING for forward references if needed
-if TYPE_CHECKING:
-    pass
-
-
-def parse_subconfig(config, prefix):
-    """Parse subconfig from the main config dictionary."""
-    return {
-        k.replace(prefix, "", 1): v
-        for k, v in asdict(config).items()
-        if k.startswith(prefix)
-    }
-
-
 def setup_environment(config: ExperimentConfig):
     """Setup the environment based on the configuration."""
     # Environment
     env_cls = environment_from_str(config.environment.environment_type)
-    env_config = parse_subconfig(config.environment, "env_")
+    env_config = config.environment.get_environment_cfg()
     if isinstance(env_cls, str):
         # If the environment is a gymnasium environment, we need to create it with gymnasium.make
-        base_env = gymnasium.make(env_cls, config.environment.env_render_mode)
+        base_env = gymnasium.make(env_cls)
         # Set action bounds from gymnaisum environment
         config.environment.env_action_bounds = (
             base_env.action_space.low.tolist(),
@@ -63,20 +48,24 @@ def setup_environment(config: ExperimentConfig):
         config.latent_dim = base_env.observation_space.shape[0]
 
     else:
+        # Don't pass dt explicitly if it's already in env_config to avoid conflicts
+        extra_params = {}
+        if "dt" not in env_config:
+            extra_params["dt"] = config.dt
+
         base_env = env_cls(
             **env_config,
+            **extra_params,
             state_dim=config.latent_dim,
             device=config.device,
         )
 
     # Observation model
     obs_model_cls = observation_from_str(config.environment.observation_type)
-    obs_config = parse_subconfig(config.environment, "obs_")
+    obs_config = config.environment.get_observation_cfg()
     observation_model = obs_model_cls(
         obs_dim=config.observation_dim,
         latent_dim=config.latent_dim,
-        noise_type=config.environment.noise_type,
-        noise_scale=config.environment.noise_scale,
         device=config.device,
         **obs_config,
     )
@@ -85,11 +74,12 @@ def setup_environment(config: ExperimentConfig):
     action_model_cls = action_from_str(config.environment.action_type)
     if config.environment.action_type == "identity":
         # For identity action, we can use the latent dimension as the action dimension
-        config.environment.act_action_dim = config.latent_dim
+        config.action_dim = config.latent_dim
 
-    action_config = parse_subconfig(config.environment, "act_")
+    action_config = config.environment.get_action_cfg()
     action_model = action_model_cls(
         **action_config,
+        action_bounds=config.environment.env_action_bounds,
         action_dim=config.action_dim,
         latent_dim=config.latent_dim,
         device=config.device,
@@ -115,9 +105,10 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
     # Model components
     # Encoder module
     encoder_cls = encoder_from_str(config.model.encoder_type)
-    enc_config = parse_subconfig(config.model, "enc_")
+    enc_config = config.model.get_encoder_cfg()
     encoder = encoder_cls(
-        input_dim=config.observation_dim,
+        obs_dim=config.observation_dim,
+        action_dim=config.action_dim,
         latent_dim=config.latent_dim,
         device=config.device,
         **enc_config,
@@ -125,30 +116,30 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
 
     # Decoder module (mapping + noise)
     mapping_cls = mapping_from_str(config.model.mapping_type)
-    map_config = parse_subconfig(config.model, "map_")
+    map_config = config.model.get_decoder_cfg()
     mapping = mapping_cls(
         latent_dim=config.latent_dim,
-        output_dim=config.observation_dim,
+        obs_dim=config.observation_dim,
         device=config.device,
         **map_config,
     )
     noise_cls = noise_from_str(config.model.noise_type)
-    noise = noise_cls(output_dim=config.observation_dim, device=config.device)
-
+    noise = noise_cls(obs_dim=config.observation_dim, device=config.device)
     decoder = Decoder(mapping, noise, device=config.device)
 
     # Dynamics module
     dynamics_cls = dynamics_from_str(config.model.dynamics_type)
-    dyn_config = parse_subconfig(config.model, "dyn_")
+    dyn_config = config.model.get_dynamics_cfg()
     dyn_config.update(
         {
             "state_dim": config.latent_dim,
             "device": config.device,
+            "dt": config.dt,
         }
     )
-    if config.model.is_ensemble:
+    if config.model.is_ensemble and ("ensemble_disagreement" in config.metric.metric_type):
         # If ensemble dynamics, we need to create multiple dynamics models
-        dynamics = EnsembleDynamics(
+        dynamics = BaseDynamicsEnsemble(
             dynamics_cls=dynamics_cls,
             n_models=config.model.n_models,
             dynamics_kwargs=dyn_config,
@@ -162,12 +153,13 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
     action_model_cls = action_from_str(config.model.action_type)
     if config.model.action_type == "identity":
         # For identity action, we can use the latent dimension as the action dimension
-        config.model.act_action_dim = config.latent_dim
+        config.action_dim = config.latent_dim
 
-    action_config = parse_subconfig(config.model, "act_")
+    action_config = config.model.get_action_cfg()
     action_model = action_model_cls(
         **action_config,
         action_dim=config.action_dim,
+        action_bounds=config.environment.env_action_bounds,
         latent_dim=config.latent_dim,
         device=config.device,
     )
@@ -187,36 +179,58 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
 
 def setup_metric(config, model):
     # Metric
-    metric_cls = metric_from_str(config.metric.metric_type)
     if isinstance(config.metric.metric_type, list):
-        metrics = [
-            metric_cls(
-                compute_type=config.metric.compute_type,
-                gamma=gamma,
-                device=config.device,
-            )
-            for gamma in config.metric.gamma
-        ]
-        assert len(metrics) == len(config.metric.composite_weights)
+        metric_config = config.metric.get_metric_cfg()
+        metrics = []
+        for metric_type in config.metric.metric_type:
+            metric_cls = metric_from_str(metric_type)
+            if issubclass(metric_cls, FisherInformationMetric):
+                metrics.append(
+                    metric_cls(
+                        model=model,
+                        device=config.device,
+                        **metric_config,
+                    )
+                )
+            elif issubclass(metric_cls, EnsembleDisagreement):
+                metrics.append(
+                    metric_cls(
+                        ensemble=model.dynamics,
+                        device=config.device,
+                        **metric_config,
+                    )
+                )
+            else:
+                metric = metric_cls(
+                    device=config.device,
+                    **metric_config,
+                )
+                metrics.append(metric)
 
         metric = CompositeMetric(
             metrics=metrics,
+            compute_type=config.metric.compute_type,
             weights=config.metric.composite_weights,
             device=config.device,
         )
     else:
-        metric_config = parse_subconfig(config.metric, "met_")
+        metric_cls = metric_from_str(config.metric.metric_type)
+        metric_config = config.metric.get_metric_cfg()
         if issubclass(metric_cls, FisherInformationMetric):
             metric = metric_cls(
                 dynamics=model.dynamics,
                 decoder=model.decoder,
-                compute_type=config.metric.compute_type,
+                **metric_config,
+                device=config.device,
+            )
+        elif issubclass(metric_cls, EnsembleDisagreement):
+            metric = metric_cls(
+                ensemble=model.dynamics,
                 device=config.device,
                 **metric_config,
             )
         else:
             metric = metric_cls(
-                compute_type=config.metric.compute_type,
                 device=config.device,
                 **metric_config,
             )
@@ -228,7 +242,7 @@ def setup_policy(config, env, model, metric):
     policy_cls = policy_from_str(config.policy.policy_type)
     # check type of policy_cls, BasePolicy or BaseMPC
     if issubclass(policy_cls, BaseMPC):
-        mpc_config = parse_subconfig(config.policy, "mpc_")
+        mpc_config = config.policy.get_mpc_cfg()
         policy = policy_cls(
             metric=metric,
             model=model,
@@ -244,6 +258,10 @@ def setup_policy(config, env, model, metric):
 
 
 def setup_experiment(config: ExperimentConfig):
+    # Import here to avoid circular import
+    from actdyn.core.agent import Agent
+    from actdyn.core.experiment import Experiment
+
     if not torch.cuda.is_available() and config.device == "cuda":
         print("CUDA is not available. Falling back to CPU.")
         config.device = "cpu"
@@ -257,12 +275,12 @@ def setup_experiment(config: ExperimentConfig):
     # ------------------------------------------------------------------------
     # Wrapper for the model environment
     # Model environment
-    model_env = VAEWrapper(
-        model, env.observation_space, env.action_space, device=config.device
-    )
+    model_env = VAEWrapper(model, env.observation_space, env.action_space, device=config.device)
 
     # Agent
-    agent = Agent(env, model_env, policy, device=config.device)
+    agent = Agent(
+        env, model_env, policy, buffer_length=config.training.rollout_horizon, device=config.device
+    )
 
     # Experiment
     experiment = Experiment(agent, config)
@@ -273,9 +291,3 @@ def setup_experiment(config: ExperimentConfig):
         env,
         model_env,
     )
-
-
-if __name__ == "__main__":
-    # Example usage
-    config = ExperimentConfig()
-    experiment, agent, env, model_env = setup_experiment(config)
