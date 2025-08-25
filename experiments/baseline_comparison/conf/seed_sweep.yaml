@@ -1,0 +1,22 @@
+# Configuration for running multiple seeds
+# Usage: python baseline_comparison.py --config-name=seed_sweep --multirun
+
+# @package _global_
+defaults:
+  - config
+  - _self_
+
+# Override with different seeds and policy types (using proper Hydra sweep syntax)
+# This creates a sweep over 5 different seed values and 2 policy types
+hydra:
+  # Ensure .hydra folder is created with configuration metadata
+  sweeper:
+    params:
+      seed: 42,123,456,789,1000
+      policy.policy_type: off-policy,random
+      
+      training.total_steps: 20000
+      training.k_steps: 5
+  sweep:
+    # Organize output by seed and policy type
+    subdir: ${policy.policy_type}/seed_${seed}
