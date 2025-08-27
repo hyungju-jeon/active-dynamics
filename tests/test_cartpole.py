@@ -56,18 +56,22 @@ class ContinuousCartPoleEnv(gym.Env):
             shape=(1,),
             dtype=np.float32
         )
-        # phi unbounded, phi_dot, theta, theta_dot
-        high = np.array([np.finfo(np.float32).max,
-                         np.finfo(np.float32).max,
-                         np.finfo(np.float32).max,
-                         np.finfo(np.float32).max], dtype=np.float32)
+        # observation structure:
+        # [ sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot ]
+        high = np.array([
+            1.0,                       # sin(phi)
+            1.0,                       # cos(phi)
+            np.finfo(np.float32).max,  # phi_dot
+            1.0,                       # sin(theta)
+            1.0,                       # cos(theta)
+            np.finfo(np.float32).max   # theta_dot
+        ], dtype=np.float32)
         self.observation_space = spaces.Box(-high, high, dtype=np.float32)
 
         # pygame renderer
         self._pygame_inited = False
         self.viewer = None
 
-        # RNG
         self.seed()
         self.state = None
 
@@ -93,17 +97,16 @@ class ContinuousCartPoleEnv(gym.Env):
 
     def stepPhysics(self, force):
         phi, phi_dot, theta, theta_dot = self.state
-        # compute linear acceleration xacc from CartPole eqs
+
         costheta = math.cos(theta)
         sintheta = math.sin(theta)
         temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
         thetaacc = (self.gravity * sintheta - costheta * temp) / \
             (self.length * (4.0/3.0 - self.masspole * costheta**2 / self.total_mass))
         xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
-        # convert linear accel to angular accel on circle
+
         phiacc = xacc / self.radius
 
-        # integrate
         phi = phi + self.tau * phi_dot
         phi_dot = phi_dot + self.tau * phiacc
         theta = theta + self.tau * theta_dot
@@ -111,27 +114,31 @@ class ContinuousCartPoleEnv(gym.Env):
 
         return (phi, phi_dot, theta, theta_dot)
 
+    def _state_to_observation(self, state):
+        """
+        Convert internal true state (phi, phi_dot, theta, theta_dot)
+        to observation: [sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot]
+        """
+        phi, phi_dot, theta, theta_dot = state
+        return np.array([math.sin(phi), math.cos(phi), phi_dot, math.sin(theta), math.cos(theta), theta_dot], dtype=np.float32)
+
     def step(self, action):
         assert self.action_space.contains(action), \
             "%r (%s) invalid" % (action, type(action))
         force = self.force_mag * float(action[0])
         self.state = self.stepPhysics(force)
 
-        # # unpack for debug print
-        # phi, phi_dot, theta, theta_dot = self.state
-        # print(f"[DEBUG] phi={phi:.3f}, phi_dot={phi_dot:.3f}, theta={theta:.3f}, theta_dot={theta_dot:.3f}")
-
-        # never done in continuous setup
         reward = 0.0
         done = False
-        return np.array(self.state, dtype=np.float32), reward, done, {}
+        obs = self._state_to_observation(self.state)
+        return obs, reward, done, {}
 
     def reset(self):
         # start near phi=0, small velocities
         phi = 0.0
         phi_dot, theta, theta_dot = self.np_random.uniform(-0.05, 0.05, size=(3,))
         self.state = (phi, phi_dot, theta, theta_dot)
-        return np.array(self.state, dtype=np.float32)
+        return self._state_to_observation(self.state)
 
     def render(self, mode='human'):
         global RENDER
@@ -235,15 +242,21 @@ def collect_rollouts(env, num_samples, num_steps, mode="random", plot_first_roll
             else:
                 raise ValueError(f"Unknown mode: {mode}")
 
-            # a = env.action_space.sample()
             actions[t] = torch.from_numpy(a).float().to(device)
             obs_next, _, done, _ = env.step(a)
             obs_seq[t + 1] = torch.from_numpy(obs_next).float().to(device)
 
-            # save phi and theta for first rollout only
+            # save phi and theta for first rollout only (reconstruct from sin/cos)
             if plot_first_rollout and len(buffer) == 0:
-                example_phi.append(obs_next[0])   # phi
-                example_theta.append(obs_next[2]) # theta
+                # obs_next structure: [sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot]
+                sin_phi = obs_next[0]
+                cos_phi = obs_next[1]
+                sin_theta = obs_next[3]
+                cos_theta = obs_next[4]
+                phi_rec = math.atan2(sin_phi, cos_phi)
+                theta_rec = math.atan2(sin_theta, cos_theta)
+                example_phi.append(phi_rec)   # reconstructed phi
+                example_theta.append(theta_rec) # reconstructed theta
 
             if done:
                 break
@@ -263,12 +276,12 @@ def collect_rollouts(env, num_samples, num_steps, mode="random", plot_first_roll
     # plot phi and theta for first rollout
     if plot_first_rollout and example_phi and example_theta:
         plt.figure(figsize=(10, 5))
-        plt.plot(example_phi, label="phi (cart angular position)")
-        plt.plot(example_theta, label="theta (pole angle)")
+        plt.plot(example_phi, label="phi (reconstructed from sin/cos)")
+        plt.plot(example_theta, label="theta (reconstructed from sin/cos)")
         plt.xlabel("Time step")
         plt.ylabel("Angle (radians)")
         plt.legend()
-        plt.title("Phi and Theta over Time (First Rollout)")
+        plt.title("Phi and Theta over Time (First Rollout, reconstructed)")
         plt.show()
 
     return buffer
@@ -296,7 +309,7 @@ def k_step_prediction(model, rollout, k, writer, epoch):
         # simulate dynamics for k steps
         current_z = z_initial
         for i in range(k):
-            # encode action and predict next latent statei 
+            # encode action and predict next latent state 
             if i < len(action_seq):
                 current_action = action_seq[i].unsqueeze(0)
                 encoded_action = model.action_encoder(current_action)
@@ -316,7 +329,10 @@ def k_step_prediction(model, rollout, k, writer, epoch):
         predicted_z_seq = torch.cat(predicted_z_seq, dim=0)
 
         # plot and log predictions
-        fig, axes = plt.subplots(1, obs_dim, figsize=(20, 5))
+        obs_dim = obs_seq.shape[1]
+        fig, axes = plt.subplots(1, obs_dim, figsize=(4 * obs_dim, 3))
+        if obs_dim == 1:
+            axes = [axes]
         for i in range(obs_dim):
             axes[i].plot(to_np(obs_seq[:k+1, i]), label='True')
             axes[i].plot(to_np(predicted_obs_seq[:k+1, i]), label=f'Predicted (k={k})', linestyle='--')
@@ -327,21 +343,6 @@ def k_step_prediction(model, rollout, k, writer, epoch):
         plt.show()
         writer.add_figure(f"K-step Prediction/k={k}", fig, epoch)
         plt.close(fig)
-
-        # # plot latent states
-        # latent_dim = predicted_z_seq.shape[1]
-        # fig_latent, axes_latent = plt.subplots(1, latent_dim, figsize=(20, 5))
-        # if latent_dim == 1:
-        #     axes_latent = [axes_latent]
-        # for i in range(latent_dim):
-        #     axes_latent[i].plot(to_np(predicted_z_seq[:, i]), label='Predicted latent ' + str(i), color='orange')
-        #     axes_latent[i].set_title(f'Latent Dim {i}')
-        #     axes_latent[i].legend()
-        # fig_latent.suptitle(f'Latent Trajectory for Epoch {epoch} (k={k})', fontsize=16)
-        # plt.tight_layout()
-        # plt.show()
-        # writer.add_figure(f"Latent Trajectory/k={k}", fig_latent, epoch)
-        # plt.close(fig_latent)
 
         writer.flush()
 
@@ -461,4 +462,3 @@ if __name__ == "__main__":
     plt.legend()
     plt.title("Cartpole: Training and Validation ELBO over Epochs")
     plt.show()
-
