@@ -1,7 +1,7 @@
 from tqdm import tqdm
 from actdyn.core.agent import Agent
 
-from actdyn.utils.logger import Logger
+from torch.utils.tensorboard.writer import SummaryWriter
 from actdyn.utils import save_load
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from actdyn.utils.video import VideoRecorder
@@ -19,11 +19,9 @@ class Experiment:
         self.env_step = 0
         self.prev_step = 0
         self.rollout = Rollout(device="cpu")
-        self.logger = Logger()
+        self.writer = None
         self.video_recorder = None
         self.training_loss = 0
-
-        # Create results directory
         self.results_dir = os.path.join(os.path.dirname(__file__), config.results_dir)
         if resume:
             ## TODO : Implement resume functionality
@@ -42,17 +40,15 @@ class Experiment:
             self.video_recorder.save()
             self.video_recorder = None
 
-    def _get_log_path(self, step):
-        # Calculate which JSON file this step belongs to
-        log_file_index = ((step - 1) // self.cfg.logging.save_every) * self.cfg.logging.save_every
-        return os.path.join(self.results_dir, f"logs/log_{log_file_index}.json")
-
     def run(self, reset=True):
         os.makedirs(self.results_dir, exist_ok=True)
         for subdir in ["rollouts", "logs"]:
-            if os.path.exists(os.path.join(self.results_dir, subdir)):
-                shutil.rmtree(os.path.join(self.results_dir, subdir), ignore_errors=True)
-            os.makedirs(os.path.join(self.results_dir, subdir), exist_ok=True)
+            p = os.path.join(self.results_dir, subdir)
+            if os.path.exists(p):
+                shutil.rmtree(p, ignore_errors=True)
+            os.makedirs(p, exist_ok=True)
+
+        self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
 
         # Initialize environment
         if reset:
@@ -63,7 +59,6 @@ class Experiment:
             print("Continueing from previous step:", self.env_step)
             self.prev_step = self.env_step
             self.rollout.clear()
-        video_path = self.cfg.logging.video_path
 
         # Setup progress bar
         pbar = tqdm(total=self.cfg.training.total_steps, desc="Training")
@@ -71,7 +66,6 @@ class Experiment:
         while self.env_step < self.cfg.training.total_steps + self.prev_step:
             self.env_step += 1
 
-            # Use no_grad context for inference to save memory
             with torch.no_grad():
                 # 1. Plan
                 action = self.agent.plan()
@@ -81,31 +75,24 @@ class Experiment:
             # Append transition to rollout
             self.rollout.add(**transition)
 
-            # Log scalar metrics immediately (lightweight)
-            self.logger.log("step", self.env_step)
             if isinstance(self.training_loss, list):
-                self.logger.log("elbo", -self.training_loss[0][0])
-                self.logger.log("log_like", -self.training_loss[0][1])
-                self.logger.log("kl_divergence", self.training_loss[0][2])
+                self.writer.add_scalar("elbo", -self.training_loss[0][0], self.env_step)
+                self.writer.add_scalar("log_like", -self.training_loss[0][1], self.env_step)
+                self.writer.add_scalar("kl_divergence", self.training_loss[0][2], self.env_step)
             else:
-                self.logger.log("elbo", 0)
-                self.logger.log("log_like", 0)
-                self.logger.log("kl_divergence", 0)
-            # Append to JSON every step for real-time monitoring
-            self.logger.save(self._get_log_path(self.env_step))
+                self.writer.add_scalar("elbo", 0, self.env_step)
+                self.writer.add_scalar("log_like", 0, self.env_step)
+                self.writer.add_scalar("kl_divergence", 0, self.env_step)
 
-            # Update policy if necessary
             self.agent.update_policy(transition)
 
-            # Update progress bar only every 10 steps to reduce overhead
             if self.env_step % 10 == 0:
-                # Update progress bar with training loss info
                 if isinstance(self.training_loss, list) and len(self.training_loss) > 0:
                     elbo_loss = self.training_loss[0][0]
                     pbar.set_postfix({"ELBO": f"{elbo_loss:.4f}"})
                 else:
                     pbar.set_postfix({"ELBO": "N/A"})
-                pbar.update(10)  # Update by 10 steps at once
+                pbar.update(10)
 
             # Train model periodically
             if (
@@ -114,11 +101,8 @@ class Experiment:
             ):
                 self.training_loss = self.agent.train_model(**self.cfg.training.get_optim_cfg())
 
-            # Visualization every 1000 steps
             if self.cfg.logging.plot_every > 0:
                 if self.env_step % self.cfg.logging.plot_every == 0:
-                    ## Implement visualization logic for all environments
-                    # self.visualize()
                     pass
 
             # Periodic rollout saving for crash recovery and memory management
@@ -137,16 +121,16 @@ class Experiment:
 
             if done:
                 break
-        # Final save
         pbar.close()
         self.rollout.finalize()
+        self.writer.close()
 
     def post_run(self):
         # TODO: Implement k-step prediction and evaluation
         pass
 
     def offline_learning(self):
-        self.logger.clear()
+        self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
         self.rollout.clear()
         # Check if rollout exists in the results directory
         rollout_files = [
@@ -176,9 +160,8 @@ class Experiment:
             loglike_list.append(-float(t[1]))
             kl_list.append(float(t[2]))
 
-        # Save final metrics
-        self.logger.log("experiment", "offline_learning")
-        self.logger.log("elbo", elbo_list)
-        self.logger.log("log_like", loglike_list)
-        self.logger.log("kl_divergence", kl_list)
-        self.logger.save(os.path.join(self.results_dir, "logs", "offline_metrics.json"))
+        for i, (e, l, k) in enumerate(zip(elbo_list, loglike_list, kl_list), start=1):
+            self.writer.add_scalar("offline/elbo", e, i)
+            self.writer.add_scalar("offline/log_like", l, i)
+            self.writer.add_scalar("offline/kl_divergence", k, i)
+        self.writer.close()
