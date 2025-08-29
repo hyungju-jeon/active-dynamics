@@ -107,7 +107,7 @@ class GymObservationWrapper(gym.Wrapper):
 
         # Only convert to numpy if env is not torch-native
         if not self._torch_native and isinstance(env_action, torch.Tensor):
-            env_action = env_action.cpu().numpy()
+            env_action = env_action.cpu().numpy()[0, 0]
 
         obs, reward, terminated, truncated, info = self.env.step(env_action)
 

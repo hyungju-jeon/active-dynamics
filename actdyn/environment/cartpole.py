@@ -2,7 +2,8 @@ import torch
 import gymnasium as gym
 import numpy as np
 import math
-from gym import spaces, logger
+from gymnasium import spaces, logger
+from typing import Optional
 from gym.utils import seeding
 import pygame
 import random
@@ -12,15 +13,15 @@ class ContinuousCartPoleEnv(gym.Env):
 
     metadata = {"render.modes": ["human", "rgb_array"], "video.frames_per_second": 50}
 
-    def __init__(self):
+    def __init__(self, dt=0.01, **kwargs):
         self.gravity = 9.8
         self.masscart = 1.0
         self.masspole = 0.1
         self.total_mass = self.masspole + self.masscart
-        self.length = 0.5  # half the pole's length
+        self.length = 1  # half the pole's length
         self.polemass_length = self.masspole * self.length
         self.force_mag = 30.0
-        self.tau = 0.02  # seconds between state updates
+        self.tau = dt  # seconds between state updates
         self.min_action = -1.0
         self.max_action = 1.0
 
@@ -37,13 +38,16 @@ class ContinuousCartPoleEnv(gym.Env):
         self.action_space = spaces.Box(
             low=self.min_action, high=self.max_action, shape=(1,), dtype=np.float32
         )
-        # phi unbounded, phi_dot, theta, theta_dot
+        # observation structure:
+        # [ sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot ]
         high = np.array(
             [
-                np.finfo(np.float32).max,
-                np.finfo(np.float32).max,
-                np.finfo(np.float32).max,
-                np.finfo(np.float32).max,
+                1.0,  # sin(phi)
+                1.0,  # cos(phi)
+                np.finfo(np.float32).max,  # phi_dot
+                1.0,  # sin(theta)
+                1.0,  # cos(theta)
+                np.finfo(np.float32).max,  # theta_dot
             ],
             dtype=np.float32,
         )
@@ -53,7 +57,6 @@ class ContinuousCartPoleEnv(gym.Env):
         self._pygame_inited = False
         self.viewer = None
 
-        # RNG
         self.seed()
         self.state = None
 
@@ -79,45 +82,64 @@ class ContinuousCartPoleEnv(gym.Env):
 
     def stepPhysics(self, force):
         phi, phi_dot, theta, theta_dot = self.state
-        # compute linear acceleration xacc from CartPole eqs
+
         costheta = math.cos(theta)
         sintheta = math.sin(theta)
-        temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
-        thetaacc = (self.gravity * sintheta - costheta * temp) / (
-            self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
+
+        # temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
+        # thetaacc = (self.gravity * sintheta - costheta * temp) / (
+        #     self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
+        # )
+        # xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
+        mass_sin = self.masscart + self.masspole * sintheta**2
+        temp = force + self.polemass_length * theta_dot**2 * sintheta
+
+        xacc = (temp + self.masspole * self.gravity * sintheta * costheta) / mass_sin
+        thetaacc = -(self.total_mass * self.gravity * sintheta + costheta * temp) / (
+            self.length * mass_sin
         )
-        xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
-        # convert linear accel to angular accel on circle
+
         phiacc = xacc / self.radius
 
-        # integrate
-        phi = phi + self.tau * phi_dot
         phi_dot = phi_dot + self.tau * phiacc
-        theta = theta + self.tau * theta_dot
+        phi = phi + self.tau * phi_dot + self.tau
         theta_dot = theta_dot + self.tau * thetaacc
+        theta = theta + self.tau * theta_dot
 
         return (phi, phi_dot, theta, theta_dot)
+
+    def _state_to_observation(self, state):
+        """
+        Convert internal true state (phi, phi_dot, theta, theta_dot)
+        to observation: [sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot]
+        """
+        phi, phi_dot, theta, theta_dot = state
+        # return np.array(
+        #     [math.sin(phi), math.cos(phi), phi_dot, math.sin(theta), math.cos(theta), theta_dot],
+        #     dtype=np.float32,
+        # )
+        return np.array(
+            [math.sin(phi), math.cos(phi), phi_dot, math.sin(theta), math.cos(theta), theta_dot],
+            dtype=np.float32,
+        )
 
     def step(self, action):
         assert self.action_space.contains(action), "%r (%s) invalid" % (action, type(action))
         force = self.force_mag * float(action[0])
         self.state = self.stepPhysics(force)
 
-        # # unpack for debug print
-        # phi, phi_dot, theta, theta_dot = self.state
-        # print(f"[DEBUG] phi={phi:.3f}, phi_dot={phi_dot:.3f}, theta={theta:.3f}, theta_dot={theta_dot:.3f}")
-
-        # never done in continuous setup
         reward = 0.0
         done = False
-        return np.array(self.state, dtype=np.float32), reward, done, {}
+        obs = self._state_to_observation(self.state)
+        return obs, reward, done, False, {}
 
-    def reset(self):
+    def reset(self, seed: Optional[int] = None, options=None):
+        super().reset(seed=seed)
         # start near phi=0, small velocities
         phi = 0.0
         phi_dot, theta, theta_dot = self.np_random.uniform(-0.05, 0.05, size=(3,))
         self.state = (phi, phi_dot, theta, theta_dot)
-        return np.array(self.state, dtype=np.float32)
+        return self._state_to_observation(self.state), {}
 
     def render(self, mode="human"):
         global RENDER
@@ -166,11 +188,9 @@ class ContinuousCartPoleEnv(gym.Env):
 if __name__ == "__main__":
     env = ContinuousCartPoleEnv()
     RENDER = True
-    for ep in range(5):
+    for ep in range(100):
         obs = env.reset()
         for t in range(200):
-            if RENDER:
-                env.render()
             action = env.action_space.sample()
             obs, reward, done, info = env.step(action)
             if done:
