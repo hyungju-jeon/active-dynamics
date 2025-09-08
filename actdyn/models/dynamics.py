@@ -7,6 +7,16 @@ from .base import BaseDynamics, BaseDynamicsEnsemble
 eps = 1e-6
 
 
+class _RBFNetwork(nn.Module):
+    def __init__(self, rbf_fn, weights):
+        super().__init__()
+        self.rbf = rbf_fn
+        self.weights = weights
+
+    def forward(self, state):
+        return torch.matmul(self.rbf(state), self.weights)
+
+
 class LinearDynamics(BaseDynamics):
     """
     Linear dynamics model using nn.Linear.
@@ -42,7 +52,7 @@ class RBFDynamics(BaseDynamics):
         alpha=0.1,
         gamma=1.0,
         centers=None,
-        range=5.0,
+        z_max=5.0,
         num_grid_pts=25,
         device="cpu",
         **kwargs
@@ -50,7 +60,7 @@ class RBFDynamics(BaseDynamics):
         super().__init__(state_dim=state_dim, dt=kwargs.get("dt", 1), device=device)
         self.alpha = alpha
         self.gamma = gamma
-        self.range = range
+        self.z_max = z_max
         self.num_grid_pts = num_grid_pts
         self.has_center = False
 
@@ -58,10 +68,12 @@ class RBFDynamics(BaseDynamics):
         if centers is not None:
             self.set_centers(centers)
         else:
-            rbf_grid_x = torch.linspace(-self.range, self.range, self.num_grid_pts)
-            rbf_grid_y = torch.linspace(-self.range, self.range, self.num_grid_pts)
-            rbf_xx, rbf_yy = torch.meshgrid(rbf_grid_x, rbf_grid_y, indexing="ij")  # [H, W]
-            self.centers = torch.stack([rbf_xx.flatten(), rbf_yy.flatten()], dim=1)
+            grid_coords = [
+                torch.linspace(-self.range, self.range, self.num_grid_pts)
+                for _ in range(self.state_dim)
+            ]
+            mesh = torch.meshgrid(*grid_coords, indexing="ij")
+            self.centers = torch.stack([m.flatten() for m in mesh], dim=1)
             self.has_center = True
 
         # Initialize weights with proper shape
@@ -70,8 +82,7 @@ class RBFDynamics(BaseDynamics):
             requires_grad=True,
         )
 
-        # Use a simple lambda function instead of a nested class to avoid circular references
-        self.network = lambda state: torch.matmul(self.rbf(state), self.weights)
+        self.network = _RBFNetwork(self.rbf, self.weights)
 
     def set_centers(self, centers):
         """Set the centers for the RBF."""
