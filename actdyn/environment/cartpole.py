@@ -1,4 +1,4 @@
-#%%
+# %%
 
 import torch
 import gymnasium as gym
@@ -8,14 +8,13 @@ from gymnasium import spaces, logger
 from typing import Optional
 from gym.utils import seeding
 import pygame
-import random
 
 
 class ContinuousCartPoleEnv(gym.Env):
 
     metadata = {"render.modes": ["human", "rgb_array"], "video.frames_per_second": 50}
 
-    def __init__(self, dt=0.01, **kwargs):
+    def __init__(self, dt=0.01, action_bounds=(-1.0, 1.0), **kwargs):
         self.gravity = 9.8
         self.masscart = 1.0
         self.masspole = 0.1
@@ -24,8 +23,8 @@ class ContinuousCartPoleEnv(gym.Env):
         self.polemass_length = self.masspole * self.length
         self.force_mag = 30.0
         self.tau = dt  # seconds between state updates
-        self.min_action = -1.0
-        self.max_action = 1.0
+        self.min_action = action_bounds[0]
+        self.max_action = action_bounds[1]
 
         # angle at which to fail the episode
         self.theta_threshold_radians = float("inf")  # no angle limit
@@ -35,8 +34,6 @@ class ContinuousCartPoleEnv(gym.Env):
         self.radius = self.track_length / (2 * math.pi)
 
         # action and observation spaces
-        self.min_action = -1.0
-        self.max_action = 1.0
         self.action_space = spaces.Box(
             low=self.min_action, high=self.max_action, shape=(1,), dtype=np.float32
         )
@@ -88,18 +85,11 @@ class ContinuousCartPoleEnv(gym.Env):
         costheta = math.cos(theta)
         sintheta = math.sin(theta)
 
-        # temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
-        # thetaacc = (self.gravity * sintheta - costheta * temp) / (
-        #     self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
-        # )
-        # xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
-        mass_sin = self.masscart + self.masspole * sintheta**2
-        temp = force + self.polemass_length * theta_dot**2 * sintheta
-
-        xacc = (temp + self.masspole * self.gravity * sintheta * costheta) / mass_sin
-        thetaacc = -(self.total_mass * self.gravity * sintheta + costheta * temp) / (
-            self.length * mass_sin
+        temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
+        thetaacc = (self.gravity * sintheta - costheta * temp) / (
+            self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
         )
+        xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
 
         phiacc = xacc / self.radius
 
@@ -199,4 +189,4 @@ if __name__ == "__main__":
                 break
     env.close()
 
-#%%
+# %%
