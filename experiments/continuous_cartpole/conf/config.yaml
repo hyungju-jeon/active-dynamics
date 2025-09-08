@@ -1,0 +1,107 @@
+# @package _global_
+# Base config for offline_debug hydra entry
+
+defaults:
+  - _self_
+
+hydra:
+  run:
+    dir: ./outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: ./multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: lr_${training.offline_lr}/batch_${training.offline_batch_size}/seed_${seed}
+
+seed: 11
+device: "cuda"
+results_dir: ${hydra:run.dir}
+action_dim: 1
+observation_dim: 6
+latent_dim: 10
+dt: 0.005
+
+# Environment
+environment:
+  environment_type: "continuous_cartpole"
+  env_noise_scale: 0.00
+  env_render_mode: null
+  env_action_bounds: [-0.5, 0.5]
+  env_state_bounds: [-1, 1]
+  env_n_grid: 25
+  env_w_attractor: 0.1
+  env_length_scale: 0.5
+  env_alpha: 0.1
+  observation_type: "identity"
+  obs_hidden_dims: [16]
+  obs_activation: "relu"
+  obs_noise_type: "gaussian"
+  obs_noise_scale: 0.1
+  action_type: "identity"
+  act_hidden_dims: [16]
+  act_activation: "relu"
+
+# Model
+model:
+  encoder_type: "rnn"
+  enc_hidden_dims: [16]
+  enc_hidden_dim: 16
+  enc_rnn_type: "gru"
+  enc_num_layers: 1
+  enc_activation: "relu"
+  mapping_type: "mlp"
+  map_hidden_dims: [8]
+  map_activation: "relu"
+  noise_type: "gaussian"
+  dynamics_type: "mlp"
+  is_ensemble: true
+  n_models: 1
+  dyn_hidden_dims: [8,8]
+  dyn_alpha: 0.1
+  dyn_gamma: 5
+  dyn_range: 2.0
+  dyn_num_grid: 100
+  action_type: "mlp"
+  act_hidden_dims: [16]
+  act_activation: "relu"
+  model_type: "seq-vae"
+
+# Policy (unused here but required by setup)
+policy:
+  policy_type: "random"
+
+# Metric (unused directly here)
+metric:
+  metric_type: ["D-optimality", "action"]
+  compute_type: "sum"
+  gamma: 0.99
+  composite_weights: [.1, 5]
+  met_use_diag: true
+  met_discount_factor: 0.99
+  met_goal: [2, 2]
+  met_sensitivity: true
+  met_covariance: "invariant"
+
+# Training (offline parameters are what we sweep)
+training:
+  total_steps: 10000
+  train_every: 1
+  rollout_horizon: 100
+  optimizer: "SGD"
+  learning_rate: 0.001
+  weight_decay: 0.001
+  beta: 1.0
+  n_epochs: 1
+  k_steps: 1
+  n_samples: 5
+  perturbation: 0.00
+  verbose: false
+  grad_clip_val: 1.0
+  offline_lr: 0.001
+  offline_n_epochs: 10000
+  offline_batch_size: 8
+  offline_chunk_size: 2500
+  offline_decay: 0.001
+
+# Logging
+logging:
+  save_every: 1000
+  plot_every: 1000
