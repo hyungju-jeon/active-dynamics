@@ -15,21 +15,65 @@ class BaseEncoder(nn.Module):
 
     network: nn.Module
 
-    def __init__(self, device="cpu"):
+    def __init__(self, obs_dim: int, action_dim: int, latent_dim: int, device="cpu"):
         super().__init__()
+
+        self.obs_dim = obs_dim
+        self.action_dim = action_dim
+        self.latent_dim = latent_dim
         self.device = torch.device(device)
         self.network = None
 
-    def compute_param(self, z):
+    def compute_param(
+        self, y: torch.Tensor, u: torch.Tensor | None = None, h: torch.Tensor | None = None
+    ):
         raise NotImplementedError
 
-    def forward(self, y, a, n_samples=1):
-        raise NotImplementedError
+    def forward(
+        self,
+        y: torch.Tensor,
+        u: torch.Tensor | None = None,
+        h: torch.Tensor | None = None,
+        n_samples=1,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        y, u = self.validate_input(y, u)
+        # Compute parameters and sample
+        if h is not None:
+            mu, var = self.compute_param(y=y, u=u, h=h)
+        else:
+            mu, var = self.compute_param(y=y, u=u)
+        samples = mu + torch.sqrt(var) * torch.randn(
+            [n_samples] + list(mu.shape), device=y.device
+        )  # [n_samples, batch, time, latent_dim]
+        if n_samples == 1:
+            samples = samples.squeeze(0)  # [batch, time, latent_dim]
+
+        return samples, mu, var
 
     def to(self, device):
         self.device = torch.device(device)
         self.network.to(device)
         return self
+
+    def validate_input(self, y, u):
+        assert y.dim() == 3, f"Input y must be of shape (batch, time, input_dim), got {y.shape}"
+        if u is not None:
+            assert u.dim() == 3
+            assert (
+                u.shape[0] == y.shape[0]
+            ), f"Batch size of a {u.shape[0]} must match y {y.shape[0]}"
+            assert (
+                u.shape[1] == y.shape[1]
+            ), f"Time dimension of a {u.shape[1]} must match y {y.shape[1]}"
+            assert (
+                u.shape[2] == self.action_dim
+            ), f"Action dimension of a {u.shape[2]} must match action_dim {self.action_dim}"
+        else:
+            u = torch.zeros(
+                (y.shape[0], y.shape[1], self.action_dim), device=y.device, dtype=y.dtype
+            )
+
+        return y.to(self.device), u.to(self.device)
 
 
 # Observation mappings
@@ -102,46 +146,58 @@ class BaseModel(nn.Module):
 class BaseDynamics(nn.Module):
     """Base class for all dynamics models with sampling utility."""
 
+    network: nn.Module
+
     def __init__(self, state_dim, dt=1, device: str = "cpu"):
         super().__init__()
         self.device = torch.device(device)
-        self.to(self.device)
         self.dt = dt
         self.log_var = nn.Parameter(
             -2 * torch.rand(1, state_dim, device=self.device), requires_grad=True
         )
         self.network = None
+        self.state_dim = state_dim
+
+    def to(self, device):
+        self.device = torch.device(device)
+        self.network.to(device)
 
     def compute_param(self, state):
         mu = self.network(state)
         var = softplus(self.log_var) + eps
-        return mu, var * self.dt**2
+        return mu, var
 
-    def sample_forward(self, state, action=None, k_step=1, return_traj=False):
+    def sample_forward(self, init_z, action=None, k_step=1, return_traj=False):
         """Generates samples from forward dynamics model."""
         if action is not None:
             if len(action.shape) == 2:
                 action = action.unsqueeze(0)
 
-        samples, mus = [state], []
+        samples, mus, vars = [init_z], [], []
         for k in range(k_step):
             mu, var = self.compute_param(samples[k])
-            next_state = samples[k] + mu * self.dt
-            if len(next_state.shape) == 2:
-                next_state = mu.unsqueeze(0)
+            z_pred = samples[k] + mu * self.dt
+
+            if len(z_pred.shape) == 2:
+                z_pred = z_pred.unsqueeze(0)
+
             if action is not None:
                 if k > 0:
-                    next_state[:, :-k, :] += action[:, k:, :] * self.dt
+                    z_pred[:, :-k, :] += action[:, k:, :] * self.dt
                 else:
-                    next_state += action * self.dt
+                    z_pred += action * self.dt
 
-            mus.append(next_state)
-            samples.append(mus[k] + torch.sqrt(var) * torch.randn_like(mus[k], device=self.device))
+            mus.append(z_pred)
+            vars.append(var * self.dt**2)
+
+            samples.append(
+                z_pred + torch.sqrt(var) * torch.randn_like(z_pred, device=self.device) * self.dt
+            )
 
         if return_traj:
-            return mus, var
+            return samples, mus, vars
         else:
-            return mus[-1], var
+            return samples[-1], mus[-1], vars[-1]
 
     def forward(self, state):
         return self.compute_param(state)[0]
@@ -154,6 +210,7 @@ class BaseDynamicsEnsemble(nn.Module):
 
     def __init__(
         self,
+        state_dim,
         dynamics_cls,
         n_models=5,
         dynamics_kwargs=None,
@@ -161,7 +218,9 @@ class BaseDynamicsEnsemble(nn.Module):
         super().__init__()
         if dynamics_kwargs is None:
             dynamics_kwargs = {}
-        self.models = nn.ModuleList([dynamics_cls(**dynamics_kwargs) for _ in range(n_models)])
+        self.models = nn.ModuleList(
+            [dynamics_cls(state_dim=state_dim, **dynamics_kwargs) for _ in range(n_models)]
+        )
         self.n_models = n_models
 
     def sample_forward(self, state, action=None, k_step=1, return_traj=False):
