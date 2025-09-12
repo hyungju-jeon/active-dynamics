@@ -23,6 +23,8 @@ class ContinuousCartPoleEnv(gym.Env):
         self.polemass_length = self.masspole * self.length
         self.force_mag = 30.0
         self.tau = dt  # seconds between state updates
+        self.cart_friction = 0.05  # Viscous friction coefficient for the cart
+        self.pole_friction = 0.01  # Viscous friction coefficient for the pole's pivot
         self.min_action = action_bounds[0]
         self.max_action = action_bounds[1]
 
@@ -85,16 +87,27 @@ class ContinuousCartPoleEnv(gym.Env):
         costheta = math.cos(theta)
         sintheta = math.sin(theta)
 
+        # Add friction
+        cart_friction_force = -self.cart_friction * phi_dot * self.radius
+        force += cart_friction_force
+
         temp = (force + self.polemass_length * theta_dot**2 * sintheta) / self.total_mass
-        thetaacc = (self.gravity * sintheta - costheta * temp) / (
-            self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass)
-        )
+
+        # Add pole friction to the numerator of thetaacc
+        pole_friction_torque = -self.pole_friction * theta_dot
+
+        thetaacc = (
+            self.gravity * sintheta
+            - costheta * temp
+            + pole_friction_torque / (self.masspole * self.length)
+        ) / (self.length * (4.0 / 3.0 - self.masspole * costheta**2 / self.total_mass))
+
         xacc = temp - self.polemass_length * thetaacc * costheta / self.total_mass
 
         phiacc = xacc / self.radius
 
         phi_dot = phi_dot + self.tau * phiacc
-        phi = phi + self.tau * phi_dot + self.tau
+        phi = phi + self.tau * phi_dot
         theta_dot = theta_dot + self.tau * thetaacc
         theta = theta + self.tau * theta_dot
 
