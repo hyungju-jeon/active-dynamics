@@ -13,7 +13,7 @@ torch.manual_seed(0)
 RENDER = False
 
 #%% environment / data collection params
-env = ContinuousCartPoleEnv()
+env = ContinuousCartPoleEnv(dt=0.001)
 N_steps = 1000          # total timesteps to collect
 window = 20             # chunk size for online updating
 
@@ -23,6 +23,9 @@ x_trues = []
 
 # reset env
 obs, _ = env.reset()
+env.phi = np.random.uniform(0, 2*np.pi) # random angle between 0 and 2pi
+env.theta = 0.0
+env.phi_dot, env.theta_dot = 0.0, 0.0
 for t in range(N_steps):
     action = env.action_space.sample()
     obs, reward, done, _, info = env.step(action)
@@ -42,9 +45,26 @@ x_trues = np.vstack(x_trues)  # shape (N_steps, xdim)
 
 env.close()
 
+#%% plot observation dimensions through time
+
+plt.figure(figsize=(10,6))
+for i in range(ys.shape[1]):
+    plt.subplot(3, 2, i+1)
+    plt.plot(ys[:, i], label=f"obs dim {i+1}")
+    plt.xlabel("Timestep")
+    plt.ylabel(f"Obs dim {i+1}")
+    plt.legend()
+    plt.grid(True)
+plt.tight_layout()
+plt.suptitle("CartPole observations over time")
+plt.subplots_adjust(top=0.92)
+plt.savefig('cartpole_observations.png')
+
+
 #%% VJF model setup
 ydim = ys.shape[1]       # 6 dim
-xdim = x_trues.shape[1]  # 4 (phi, phi_dot, theta, theta_dot)
+# xdim = x_trues.shape[1]  # 4 (phi, phi_dot, theta, theta_dot)
+xdim = 6
 udim = 0
 
 n_rbf = 50
@@ -68,9 +88,10 @@ for start in range(0, len(ys), window):
     # fit incrementally
     m, logvar, _ = model.fit(y_batch, max_iter=30)
 
-    # m likely shape (1, xdim) or (xdim,), ensure 1D numpy
-    m_np = m.detach().cpu().numpy().squeeze()
+    # m_np = m.detach().cpu().numpy().squeeze()
+    # posterior_means.append(m_np)
 
+    m_np = m.mean(dim=0).detach().cpu().numpy()
     posterior_means.append(m_np)
 
 # %%
@@ -96,9 +117,8 @@ full_time = np.arange(len(ys))
 plt.figure(figsize=(12, 6))
 
 # Plot each latent dimension (true sampled at batches vs posterior mean)
-for dim in range(xdim):
+for dim in range(4):
     plt.subplot(2, 2, dim+1)
-    # The arrays below should both have a length of 50
     plt.plot(time_batches, true_at_batches[:, dim], label=f"True dim {dim+1}", alpha=0.7)
     plt.plot(time_batches, posterior_means[:, dim], label=f"Posterior mean dim {dim+1}", linestyle='--')
     plt.xlabel("Timestep")
@@ -106,7 +126,7 @@ for dim in range(xdim):
     plt.legend()
     plt.grid(True)
 
-plt.suptitle("Online inference per latent dimension (sampled at batch cadence)")
+plt.suptitle("Online inference per latent dimension")
 plt.tight_layout(rect=[0, 0.03, 1, 0.95])
 plt.savefig('latent_dimensions_plot.png')
 

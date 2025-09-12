@@ -1,3 +1,5 @@
+#%%
+
 import torch
 import gymnasium as gym
 import numpy as np
@@ -192,7 +194,9 @@ if __name__ == "__main__":
         obs = env.reset()
         for t in range(200):
             action = env.action_space.sample()
-            obs, reward, done, info = env.step(action)
+            obs, reward, done, info, _ = env.step(action)
             if done:
                 break
     env.close()
+
+#%%
