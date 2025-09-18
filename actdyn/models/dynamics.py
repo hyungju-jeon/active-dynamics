@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from .base import BaseDynamics, BaseDynamicsEnsemble
+from actdyn.utils.torch_helper import activation_from_str
 
 
 # Small constant to prevent numerical instability
@@ -32,13 +33,24 @@ class MLPDynamics(BaseDynamics):
     MLP-based dynamics model.
     """
 
-    def __init__(self, state_dim, hidden_dim=16, device="cpu", **kwargs):
-        super().__init__(state_dim, device=device)
-        self.network = nn.Sequential(
-            nn.Linear(state_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, state_dim),
-        )
+    def __init__(
+        self, state_dim, hidden_dims: int | list = [16], activation="relu", device="cpu", **kwargs
+    ):
+        super().__init__(state_dim, dt=kwargs.get("dt", 1), device=device)
+        self.activation = activation_from_str(activation)
+
+        # Build encoder layers
+        layers = []
+        prev_dim = state_dim
+
+        if isinstance(hidden_dims, int):
+            hidden_dims = [hidden_dims]
+
+        for hidden_dim in hidden_dims:
+            layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
+            prev_dim = hidden_dim
+        layers.append(nn.Linear(prev_dim, state_dim))
+        self.network = nn.Sequential(*layers)
 
 
 class RBFDynamics(BaseDynamics):
@@ -69,7 +81,7 @@ class RBFDynamics(BaseDynamics):
             self.set_centers(centers)
         else:
             grid_coords = [
-                torch.linspace(-self.range, self.range, self.num_grid_pts)
+                torch.linspace(-self.z_max, self.z_max, self.num_grid_pts)
                 for _ in range(self.state_dim)
             ]
             mesh = torch.meshgrid(*grid_coords, indexing="ij")

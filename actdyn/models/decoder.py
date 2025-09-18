@@ -94,12 +94,16 @@ class MLPMapping(BaseMapping):
         self,
         latent_dim,
         obs_dim,
-        hidden_dims=[16],
+        hidden_dim: int | list = [16],
         activation="relu",
         device="cpu",
     ):
         super().__init__(device)
         self.activation = activation_from_str(activation)
+        if isinstance(hidden_dim, int):
+            hidden_dims = [hidden_dim]
+        else:
+            hidden_dims = hidden_dim
 
         layers = []
         prev_dim = latent_dim
@@ -113,11 +117,10 @@ class MLPMapping(BaseMapping):
 
 # --- Noise Models ---
 class GaussianNoise(BaseNoise):
-    def __init__(self, obs_dim, sigma=1.0, device="cpu"):
+    def __init__(self, obs_dim, sigma=0.01, device="cpu"):
         super().__init__(device)
         self.logvar = nn.Parameter(
-            torch.log(torch.ones(1, obs_dim, device=device) * sigma),
-            requires_grad=True,
+            -2 * torch.rand(1, obs_dim, device=self.device), requires_grad=True
         )
 
     def log_prob(self, mean, y):
@@ -126,7 +129,7 @@ class GaussianNoise(BaseNoise):
 
     def to(self, device):
         self.device = device
-        self.logvar = torch.nn.Parameter(self.logvar.data.to(device), requires_grad=True)
+        self.logvar = self.logvar.to(device)
         return self
 
 
@@ -155,8 +158,6 @@ class Decoder(nn.Module):
         return self.noise.log_prob(mean, x)
 
     def forward(self, z):
-        assert z.dim() == 3, "Input z must be of shape (batch_size, seq_length, latent_dim)"
-
         return self.mapping(z)
 
     def to(self, device):

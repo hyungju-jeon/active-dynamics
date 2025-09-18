@@ -27,7 +27,7 @@ class MlpActionEncoder(BaseAction):
         action_dim,
         latent_dim,
         action_bounds,
-        hidden_dims=[16],
+        hidden_dim=[16],
         activation="relu",
         device="cpu",
     ):
@@ -36,7 +36,7 @@ class MlpActionEncoder(BaseAction):
 
         layers = []
         prev_dim = action_dim
-        for h in hidden_dims:
+        for h in hidden_dim:
             layers.append(nn.Linear(prev_dim, h))
             layers.append(self.activation)
             prev_dim = h

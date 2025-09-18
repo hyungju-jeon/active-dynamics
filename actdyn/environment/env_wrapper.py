@@ -86,8 +86,11 @@ class GymObservationWrapper(gym.Wrapper):
         obs, info = self.env.reset(seed=seed, options=options)
 
         # Convert to tensor and apply observation model
-        latent_state = self._to_tensor(obs)
-        observed = self.obs_model.observe(latent_state)
+        if "latent_state" in info:
+            latent_state = self._to_tensor(info["latent_state"])
+        else:
+            latent_state = self._to_tensor(obs)
+        observed = self.obs_model.observe(self._to_tensor(obs))
 
         # Add observation info (all torch tensors)
         info.update(
@@ -112,8 +115,12 @@ class GymObservationWrapper(gym.Wrapper):
         obs, reward, terminated, truncated, info = self.env.step(env_action)
 
         # Convert to tensor and apply observation model
-        latent_state = self._to_tensor(obs)
-        observed = self.obs_model.observe(latent_state)
+        # if info has "latent_state", use it directly
+        if "latent_state" in info:
+            latent_state = self._to_tensor(info["latent_state"])
+        else:
+            latent_state = self._to_tensor(obs)
+        observed = self.obs_model.observe(self._to_tensor(obs))
 
         # Add observation info (all torch tensors)
         info.update(

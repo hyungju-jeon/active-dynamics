@@ -33,8 +33,8 @@ class IdentityObservation(BaseObservation):
             noise_scale=noise_scale,
         )
         self.network = nn.Identity().to(device)
-        if latent_dim != obs_dim:
-            raise ValueError("Identity observation requires latent_dim == obs_dim")
+        # if latent_dim != obs_dim:
+        #     raise ValueError("Identity observation requires latent_dim == obs_dim")
 
 
 class LinearObservation(BaseObservation):
