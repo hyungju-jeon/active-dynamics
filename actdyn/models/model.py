@@ -1,4 +1,5 @@
 from typing import Optional
+from matplotlib.pylab import f
 from sympy import cycle_length
 import torch
 from einops import rearrange, repeat
@@ -92,7 +93,7 @@ class SeqVae(BaseModel):
         u=None,  # (B,T,A) action sequence
         idx=None,
         k_steps=5,
-        decay_rate=0.9,
+        decay_rate=0.8,
         detach_posterior=True,
         mc_estimate=False,
     ):
@@ -108,9 +109,9 @@ class SeqVae(BaseModel):
         if u.dim() != 3:
             raise ValueError("Action tensor must have shape (B,T,A)")
         # Shift actions for time alignment
-        u = torch.cat([u, torch.zeros(B, 1, u.shape[-1], device=u.device)], dim=1)
-        u = u[:, 1:]
         u_s = repeat(u, "b t a -> s b t a", s=S)
+
+        z_samples = z_samples.detach()
 
         # KL weights
         if decay_rate is None:
@@ -121,7 +122,6 @@ class SeqVae(BaseModel):
         )
 
         kl_terms = []
-
         for k in range(1, k_steps + 1):
             if T - k <= 0:
                 kl_terms.append(torch.zeros(B, device=self.device))
@@ -144,12 +144,11 @@ class SeqVae(BaseModel):
                 kl_terms.append(kl_mc)
             else:
                 # Analytic KL
-                mu_p = mus_list[k - 1][:, :, :-k, :]
+                mu_p = mus_list[k - 1]
                 var_p = vars_list[k - 1]
 
                 mu_q_target_s = repeat(mu_q_target, "b t d -> s b t d", s=S)
                 var_q_target_s = repeat(var_q_target, "b t d -> s b t d", s=S)
-
                 kl_k = self._kl_div(mu_q_target_s, var_q_target_s, mu_p, var_p)  # (S,B)
                 kl_terms.append(kl_k.mean(0))  # average over particles S -> (B,)
 
@@ -168,8 +167,12 @@ class SeqVae(BaseModel):
         z_samples, mu_q_x, var_q_x = self.encoder(y=y, u=u, n_samples=n_samples)
         if z_samples.dim() == 3:  # (B,T,D) -> (S,B,T,D)
             z_samples = z_samples.unsqueeze(0)
+        S, B, T, D = z_samples.shape
+
         if self.action_encoder is not None and u is not None:
             u_encoded = self.action_encoder(u)
+            # Align a_t with y_{t+1}
+            u_encoded = u_encoded[:, 1:]
         else:
             u_encoded = u
 
@@ -208,7 +211,7 @@ class SeqVae(BaseModel):
         weight_decay,
         n_epochs,
         verbose,
-        grad_clip_val,
+        grad_clip_norm,
         n_samples,
         k_steps,
         beta,
@@ -283,8 +286,8 @@ class SeqVae(BaseModel):
                 loss.backward()
 
                 # Apply gradient clipping over full parameter list once
-                if grad_clip_val is not None and grad_clip_val > 0:
-                    torch.nn.utils.clip_grad_value_(param_list, grad_clip_val)
+                if grad_clip_norm is not None and grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(param_list, grad_clip_norm)
 
                 # Update parameters
                 opt.step()
@@ -330,7 +333,7 @@ class SeqVae(BaseModel):
         optimizer="SGD",
         verbose=True,
         perturbation=0.0,
-        grad_clip_val=1.0,
+        grad_clip_norm=1.0,
         n_samples=5,
         k_steps=1,
         **kwargs,
@@ -346,7 +349,7 @@ class SeqVae(BaseModel):
             "weight_decay": weight_decay,
             "n_epochs": n_epochs,
             "verbose": verbose,
-            "grad_clip_val": grad_clip_val,
+            "grad_clip_norm": grad_clip_norm,
             "n_samples": n_samples,
             "k_steps": k_steps,
             "beta": kwargs.get("beta", 1.0),
@@ -364,6 +367,7 @@ class SeqVae(BaseModel):
                         list(self.dynamics.models[i].parameters())
                         + list(self.encoder.parameters())
                         + list(self.decoder.parameters())
+                        + list(self.action_encoder.parameters())
                     )
                 else:
                     param_list = list(self.dynamics.models[i].parameters())
