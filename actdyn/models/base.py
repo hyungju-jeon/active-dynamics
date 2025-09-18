@@ -148,11 +148,11 @@ class BaseDynamics(nn.Module):
 
     network: nn.Module
 
-    def __init__(self, state_dim, dt=1, device: str = "cpu"):
+    def __init__(self, state_dim, dt, device: str = "cpu"):
         super().__init__()
         self.device = torch.device(device)
         self.dt = dt
-        self.log_var = nn.Parameter(
+        self.logvar = nn.Parameter(
             -2 * torch.rand(1, state_dim, device=self.device), requires_grad=True
         )
         self.network = None
@@ -164,35 +164,33 @@ class BaseDynamics(nn.Module):
 
     def compute_param(self, state):
         mu = self.network(state)
-        var = softplus(self.log_var) + eps
+        var = softplus(self.logvar) + eps
         return mu, var
 
     def sample_forward(self, init_z, action=None, k_step=1, return_traj=False):
         """Generates samples from forward dynamics model."""
+        T = init_z.shape[-2]
         if action is not None:
             if len(action.shape) == 2:
                 action = action.unsqueeze(0)
 
         samples, mus, vars = [init_z], [], []
-        for k in range(k_step):
-            mu, var = self.compute_param(samples[k])
-            z_pred = samples[k] + mu * self.dt
-
+        for k in range(1, k_step + 1):
+            mu, var = self.compute_param(samples[k - 1])
+            z_pred = samples[k - 1] + mu
             if len(z_pred.shape) == 2:
                 z_pred = z_pred.unsqueeze(0)
 
             if action is not None:
-                if k > 0:
-                    z_pred[:, :-k, :] += action[:, k:, :] * self.dt
-                else:
-                    z_pred += action * self.dt
+                valid_T = min(z_pred.shape[-2], action.shape[-2])
+                z_pred = z_pred[..., :valid_T, :]
+                z_pred += action[..., :valid_T, :]
+                action = action[..., 1:, :]
 
             mus.append(z_pred)
-            vars.append(var * self.dt**2)
+            vars.append(var)
 
-            samples.append(
-                z_pred + torch.sqrt(var) * torch.randn_like(z_pred, device=self.device) * self.dt
-            )
+            samples.append(z_pred + torch.sqrt(var) * torch.randn_like(z_pred, device=self.device))
 
         if return_traj:
             return samples, mus, vars
