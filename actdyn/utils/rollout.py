@@ -211,7 +211,7 @@ class Rollout:
         new_rollout.finalized = self.finalized
         return new_rollout
 
-    def __getitem__(self, key):
+    def __getitem__(self, key) -> Union[List[torch.Tensor], List[dict], torch.Tensor]:
         if isinstance(key, str):
             if key not in self._data:
                 raise KeyError(f"No {key} in rollout")
@@ -358,6 +358,8 @@ class Rollout:
         if chunk_size is None:
             chunk_size = batch_size
 
+        chunk_size = min(chunk_size, len(self))  # Ensure chunk_size at least length of rollout
+
         # Collect tensor data (ignore empty tensors)
         tensor_dict: dict[str, torch.Tensor] = {
             k: v for k, v in self._data.items() if isinstance(v, torch.Tensor) and v.numel() > 0
@@ -457,6 +459,15 @@ class RolloutBuffer:
                 self.add(sub_item)
         elif isinstance(item, dict):
             self.add_dict(item)
+
+    def copy(self):
+        new_buffer = RolloutBuffer(
+            max_size=len(self.buffer) if isinstance(self.buffer, deque) else None,
+            device=str(self.device),
+        )
+        for rollout in self.buffer:
+            new_buffer.add_rollout(rollout.copy())
+        return new_buffer
 
     def add_rollout(self, rollout_item: Rollout):
         if not rollout_item.finalized:
@@ -683,7 +694,6 @@ class RolloutBuffer:
             shuffle=shuffle,
             num_workers=num_workers,
             generator=generator,
-            **dataloader_kwargs,
         )
 
 

@@ -13,6 +13,25 @@ import os
 from actdyn.config import ExperimentConfig
 
 
+def list_to_str(lst):
+    """Convert a list to a string representation suitable for filenames."""
+    if isinstance(lst, list):
+        return "x".join([str(i) for i in lst])
+    elif isinstance(lst, str):
+        return "x".join([str(i) for i in eval(lst)])
+
+
+OmegaConf.register_new_resolver("list_str", lambda x: list_to_str(x))
+
+
+def str_to_list(s: str) -> list:
+    """Convert a string representation of a list back to a list."""
+    try:
+        return eval(s)
+    except Exception as e:
+        raise ValueError(f"Could not convert string to list: {s}") from e
+
+
 def register_actdyn_configs():
     """Register actdyn dataclass configs with Hydra's ConfigStore for better type safety."""
     cs = ConfigStore.instance()
@@ -71,6 +90,31 @@ class HydraExperimentConfig:
         if "environment" in config_dict and isinstance(config_dict["environment"], dict):
             config_dict["environment"] = EnvironmentConfig(**config_dict["environment"])
         if "model" in config_dict and isinstance(config_dict["model"], dict):
+            # Manually parse string-represented lists from Hydra sweeps
+            if "dyn_hidden_dim" in config_dict["model"] and isinstance(
+                config_dict["model"]["dyn_hidden_dim"], str
+            ):
+                config_dict["model"]["dyn_hidden_dim"] = str_to_list(
+                    config_dict["model"]["dyn_hidden_dim"]
+                )
+            if "enc_hidden_dim" in config_dict["model"] and isinstance(
+                config_dict["model"]["enc_hidden_dim"], str
+            ):
+                config_dict["model"]["enc_hidden_dim"] = str_to_list(
+                    config_dict["model"]["enc_hidden_dim"]
+                )
+            if "act_hidden_dim" in config_dict["model"] and isinstance(
+                config_dict["model"]["act_hidden_dim"], str
+            ):
+                config_dict["model"]["act_hidden_dim"] = str_to_list(
+                    config_dict["model"]["act_hidden_dim"]
+                )
+            if "map_hidden_dim" in config_dict["model"] and isinstance(
+                config_dict["model"]["map_hidden_dim"], str
+            ):
+                config_dict["model"]["map_hidden_dim"] = str_to_list(
+                    config_dict["model"]["map_hidden_dim"]
+                )
             config_dict["model"] = ModelConfig(**config_dict["model"])
         if "policy" in config_dict and isinstance(config_dict["policy"], dict):
             config_dict["policy"] = PolicyConfig(**config_dict["policy"])

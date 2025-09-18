@@ -2,15 +2,20 @@
 Helper functions for validating reconstruction results in Active Dynamics framework.
 """
 
+from actdyn.environment.base import BaseAction
 from actdyn.environment.observation import LinearObservation, LogLinearObservation
 import torch
 import numpy as np
 from typing import Dict, Tuple, Optional, Union
 import matplotlib.pyplot as plt
+from einops import repeat
 
 from actdyn.environment import action
+from actdyn.models.base import BaseDynamics, BaseModel, BaseMapping
 from actdyn.models.model import SeqVae
 from actdyn.utils.rollout import RolloutBuffer, Rollout
+from actdyn.utils.torch_helper import to_np
+from actdyn.utils.visualize import create_subplot
 
 
 def compare_kstep_observation(
@@ -293,6 +298,7 @@ def visualize_reconstruction_comparison(
     plt.show()
 
 
+#
 def compute_latent_alignment_metrics(
     latent1: torch.Tensor,
     latent2: torch.Tensor,
@@ -343,13 +349,141 @@ def compute_latent_alignment_metrics(
     }
 
 
-if __name__ == "__main__":
+def compute_kstep_r2(
+    model: BaseModel = None,
+    rollout: Union[Rollout, RolloutBuffer, Dict] = None,
+    z=None,
+    u=None,
+    y=None,
+    action_encoder=None,
+    dynamics=None,
+    k_max: int = 10,
+    n_idx: int = 20,
+    n_samples: int = 30,
+    pred_window: int = 100,
+    fig_path: Optional[str] = None,
+    show_fig: bool = False,
+) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Example usage of the helper functions.
+    Compute k-step R^2 prediction scores
+
+    Args:
+        model: SeqVae model with dynamics and action_encoder
+        rollout: Rollout data containing 'latent_state', 'action', and 'obs'
+        k_max: Maximum prediction steps
+        n_idx: Number of random starting indices to evaluate
+        n_samples: Number of samples for stochastic prediction
+        pred_window: Length of prediction window
+        fig_path: Optional path to save R^2 plot
+        show_fig: Whether to display the figure
     """
-    print("Active Dynamics Reconstruction Validation Helper Functions")
-    print("This script provides utilities for:")
-    print("1. compare_kstep_observation() - Compare k-step predictions with SeqVae")
-    print("2. rotate_latent() - Compute latent space transformations between models")
-    print("3. Additional utilities for visualization and metrics")
-    print("\nImport this module to use the functions in your experiments.")
+    # If model is provided, run full r2 computation
+    if model is not None:
+        dynamics = model.dynamics
+        action_encoder = model.action_encoder
+        decoder = model.decoder
+
+        z = model.encoder(rollout["next_obs"], rollout["action"])[1] if z is None else z
+        u = rollout["action"][:, 1:] if u is None else u
+        u_enc = action_encoder(u) if action_encoder is not None else u
+        y = rollout["next_obs"] if y is None else y
+
+    # If model is None, use provided dynamics and action_encoder and compute r2 for dynamics only
+    else:
+        assert dynamics is not None, "Dynamics model must be provided if model is None."
+        decoder = None
+        z = rollout["latent_state"] if z is None else z
+        u = rollout["action"][:, 1:] if u is None else u
+        u_enc = action_encoder(u) if action_encoder is not None else u
+        y = z if y is None else y
+
+    r2_mat, r2_std_mat = _kstep_r2(
+        dynamics, decoder, z, u_enc, y, k_max, n_idx, n_samples, pred_window
+    )
+    if fig_path is not None or show_fig:
+        fig, axs = create_subplot(r2_mat)
+        for i in range(r2_mat.shape[1]):
+            axs[i].plot(range(1, k_max + 1), r2_mat[:, i])
+            axs[i].fill_between(
+                range(1, k_max + 1),
+                r2_mat[:, i] - r2_std_mat[:, i],
+                r2_mat[:, i] + r2_std_mat[:, i],
+                alpha=0.3,
+            )
+            axs[i].set_title(f"Dimension {i+1}")
+            axs[i].set_xlabel("Prediction Steps")
+            axs[i].set_ylabel(r"$R^2$")
+            y_min = max(-10, min(-0.1, np.min(r2_mat[:, i])))
+            axs[i].set_ylim([y_min, 1.1])
+            axs[i].grid(True)
+        plt.tight_layout()
+        if fig_path is not None:
+            plt.savefig(fig_path)
+        if show_fig:
+            plt.show()
+        else:
+            plt.close(fig)
+
+    return r2_mat, r2_std_mat
+
+
+def _kstep_r2(
+    dynamics: BaseDynamics,
+    decoder: BaseMapping,
+    z: torch.Tensor,
+    u: torch.Tensor,
+    y: torch.Tensor,
+    k_max: int = 10,
+    n_idx: int = 20,
+    n_samples: int = 50,
+    pred_window: int = 100,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Compute k-step R^2 prediction scores for dynamics only.
+    """
+    torch.manual_seed(0)
+    B, T, D = z.shape
+
+    batch_idx = torch.randint(0, B, (n_idx,))
+    start_idx = torch.randint(0, T - k_max - 1 - pred_window, (n_idx,))
+
+    r2m, r2s = [], []
+    for k in range(1, k_max + 1):
+        # Set random seed for reproducibility
+        with torch.no_grad():
+            r2_n = []
+            # Random sampling of starting points
+            for b_idx, t_idx in zip(batch_idx, start_idx):
+                z_start = repeat(
+                    z[b_idx, t_idx : t_idx + pred_window, :],
+                    "T D -> S 1 T D",
+                    S=n_samples,
+                )  # (S, 1, T, D)
+
+                # Predict k-step ahead (final mean prediction)
+                u_start = u[b_idx, t_idx : t_idx + pred_window + k - 1, :].unsqueeze(0)
+                z_pred = dynamics.sample_forward(
+                    z_start, action=u_start, k_step=k, return_traj=False
+                )[1]
+
+                y_true = y[b_idx, t_idx + k : t_idx + k + pred_window, :].unsqueeze(0)  # (1, T, D)
+                if decoder is not None:
+                    y_pred = decoder(z_pred)
+                else:
+                    y_pred = z_pred
+                y_mean = y_true.mean(dim=-2, keepdim=True)  # (1, 1, D)
+
+                ss_res = ((y_true - y_pred) ** 2).sum(dim=-2).mean(dim=0)
+                ss_tot = ((y_true - y_mean) ** 2).sum(dim=-2)
+                r2 = 1 - ss_res / (ss_tot + 1e-6)
+                r2_n.append(r2.squeeze())
+
+            # Average over different starting points
+            r2_n = torch.stack(r2_n, dim=0)
+            r2m.append(torch.mean(r2_n, dim=0))
+            r2s.append(torch.std(r2_n, dim=0))
+
+    r2_mat = torch.stack(r2m, dim=0).cpu().numpy()
+    r2_std_mat = torch.stack(r2s, dim=0).cpu().numpy()
+
+    return r2_mat, r2_std_mat

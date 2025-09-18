@@ -4,8 +4,6 @@ import gymnasium
 
 from actdyn.metrics.uncertainty import EnsembleDisagreement
 from actdyn.config import ExperimentConfig
-from actdyn.core.agent import Agent
-from actdyn.core.experiment import Experiment
 from actdyn.environment import (
     environment_from_str,
     observation_from_str,
@@ -22,7 +20,7 @@ from actdyn.models import (
     BaseModel,
     VAEWrapper,
 )
-from actdyn.models.base import EnsembleDynamics
+from actdyn.models.base import BaseDynamicsEnsemble
 from actdyn.models.model import SeqVae
 from actdyn.policy import policy_from_str, BaseMPC
 from actdyn.metrics import metric_from_str, FisherInformationMetric, CompositeMetric
@@ -72,9 +70,6 @@ def setup_environment(config: ExperimentConfig):
 
     # Action model
     action_model_cls = action_from_str(config.environment.action_type)
-    if config.environment.action_type == "identity":
-        # For identity action, we can use the latent dimension as the action dimension
-        config.action_dim = config.latent_dim
 
     action_config = config.environment.get_action_cfg()
     action_model = action_model_cls(
@@ -151,9 +146,6 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
 
     # Action model
     action_model_cls = action_from_str(config.model.action_type)
-    if config.model.action_type == "identity":
-        # For identity action, we can use the latent dimension as the action dimension
-        config.action_dim = config.latent_dim
 
     action_config = config.model.get_action_cfg()
     action_model = action_model_cls(

@@ -2,7 +2,6 @@
 
 # Import commonly used utilities
 from .helpers import setup_experiment
-from .logger import Logger
 
 # Hydra integration utilities (optional import to avoid hydra dependency if not needed)
 try:

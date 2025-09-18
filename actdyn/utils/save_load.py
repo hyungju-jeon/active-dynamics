@@ -4,7 +4,7 @@ import pickle
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
-from actdyn.utils.rollout import Rollout
+from actdyn.utils.rollout import Rollout, RolloutBuffer
 
 
 def save_logger(logger, path="logs/log.json"):
@@ -27,8 +27,11 @@ def load_model(model, path="checkpoints/model"):
 
 def save_rollout(rollout, path="checkpoints/rollout.pkl"):
     """Save rollout buffer to disk."""
-    rollout_copy = rollout.copy()  # Ensure we don't modify the original
-    rollout_copy.finalize()  # Finalize the rollout before saving
+    if isinstance(rollout, Rollout):
+        rollout_copy = rollout.copy()  # Ensure we don't modify the original
+        rollout_copy.finalize()  # Finalize the rollout before saving
+    elif isinstance(rollout, RolloutBuffer):
+        rollout_copy = rollout.copy()  # Ensure we don't modify the originalg
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "wb") as f:
         pickle.dump(rollout_copy, f)
@@ -62,6 +65,8 @@ def load_and_concatenate_rollouts(
         rp = os.path.join(file_path, rf)
         _r = load_rollout(rp)
         rollout.add(**_r.to(device)._data)
+
+    rollout.finalize()
 
     return rollout
 

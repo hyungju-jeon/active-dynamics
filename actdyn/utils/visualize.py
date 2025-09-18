@@ -2,6 +2,8 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 
+from actdyn.utils.torch_helper import to_np
+
 
 def create_grid(x_range=2, n_grid=50, device="cpu"):
     """Create a grid of points in the specified range."""
@@ -13,9 +15,7 @@ def create_grid(x_range=2, n_grid=50, device="cpu"):
 
 
 @torch.no_grad()
-def compute_vector_field(
-    dynamics, x_range=2.5, n_grid=50, tform=(None, None), device="cpu"
-):
+def compute_vector_field(dynamics, x_range=2.5, n_grid=50, tform=(None, None), device="cpu"):
     """
     Produces a vector field for a given dynamical system
     :param queries: N by dx torch tensor of query points where each row is a query
@@ -100,3 +100,37 @@ def compute_fisher_map(
         plt.tight_layout()
 
     return fisher_map, X.cpu(), Y.cpu()
+
+
+def plot_per_dimension(x, ax=None, title=None, **kwargs):
+    """Plot each dimension of a 2D tensor x over time."""
+    fig, axs = create_subplot(x)
+
+    for i in range(x.shape[-1]):
+        axs[i].plot(to_np(x[:, i]), **kwargs)
+        axs[i].set_title(f"Dimension {i+1}")
+        axs[i].set_xlabel("Time Step")
+        axs[i].set_ylabel("Value")
+        axs[i].grid(True)
+
+    if title is not None:
+        fig.suptitle(title, fontsize=16)
+    plt.tight_layout()
+
+
+def create_subplot(x):
+    """Create a grid of subplots based on the dimension of x."""
+    d = x.shape[-1]
+    if d % 2 == 0:
+        if d % 3 == 0:
+            n_cols = 3
+        else:
+            n_cols = 2
+    else:
+        n_cols = min(3, d)
+    n_rows = (d + n_cols - 1) // n_cols
+
+    fig, axs = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+    axs = axs.flatten() if d > 1 else [axs]
+
+    return fig, axs
