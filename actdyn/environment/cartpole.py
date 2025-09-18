@@ -136,7 +136,7 @@ class ContinuousCartPoleEnv(gym.Env):
         reward = 0.0
         done = False
         obs = self._state_to_observation(self.state)
-        return obs, reward, done, False, {}
+        return obs, reward, done, False, {"latent_state": np.array(self.state, dtype=np.float32)}
 
     def reset(self, seed: Optional[int] = None, options=None):
         super().reset(seed=seed)
@@ -144,7 +144,9 @@ class ContinuousCartPoleEnv(gym.Env):
         phi = 0.0
         phi_dot, theta, theta_dot = self.np_random.uniform(-0.05, 0.05, size=(3,))
         self.state = (phi, phi_dot, theta, theta_dot)
-        return self._state_to_observation(self.state), {}
+        return self._state_to_observation(self.state), {
+            "latent_state": np.array(self.state, dtype=np.float32)
+        }
 
     def render(self, mode="human"):
         global RENDER
