@@ -29,7 +29,7 @@ class MLPEncoder(BaseEncoder):
 
         # Build encoder layers
         layers = []
-        prev_dim = obs_dim
+        prev_dim = self.obs_dim + self.action_dim
 
         if isinstance(hidden_dim, int):
             hidden_dims = [hidden_dim]
@@ -43,7 +43,10 @@ class MLPEncoder(BaseEncoder):
 
         # Output layers for mean and log variance
         self.fc_mu = nn.Linear(prev_dim, latent_dim)
-        self.fc_log_var = nn.Linear(prev_dim, latent_dim)
+        self.fc_logvar = nn.Linear(prev_dim, latent_dim)
+        # Initialize weights for fc_logvar to very small values to prevent large variances at the start. Note that the result will be log variance, so weight should return very negative values
+        nn.init.constant_(self.fc_logvar.weight, 0.0)
+        nn.init.constant_(self.fc_logvar.bias, -3.0)
 
     def compute_param(self, y: torch.Tensor, u: torch.Tensor | None = None):
         """Computes the mean and variance of the latent distribution for each time step."""
@@ -56,7 +59,7 @@ class MLPEncoder(BaseEncoder):
 
         # Split into mu and logvar
         mu = self.fc_mu(mlp_out)
-        log_var = self.fc_log_var(mlp_out)
+        log_var = self.fc_logvar(mlp_out)
         var = softplus(log_var) + eps
         return mu, var
 
@@ -81,10 +84,11 @@ class RNNEncoder(BaseEncoder):
         self,
         obs_dim: int,
         action_dim: int = 0,
-        hidden_dim: int = 32,
+        rnn_hidden_dim: int | list = 16,
+        hidden_dim: int | list = 32,
         latent_dim: int = 2,
+        activation: str = "relu",
         rnn_type: str = "gru",  # or "lstm"
-        num_layers: int = 1,
         device: str = "cpu",
         h_init: str = "reset",  # "reset", "carryover", "step"
         **kwargs,
@@ -92,33 +96,55 @@ class RNNEncoder(BaseEncoder):
         super().__init__(
             obs_dim=obs_dim, action_dim=action_dim, latent_dim=latent_dim, device=device
         )
+        self.activation = activation_from_str(activation)
         self.hidden_dim = hidden_dim
         self.rnn_type = rnn_type.lower()
-        self.num_layers = num_layers
         self.h_init = h_init.lower()
         self.h = None  # current hidden state
+
+        if isinstance(rnn_hidden_dim, list):
+            self.num_layers = len(rnn_hidden_dim)
+            self.rnn_hidden_dim = rnn_hidden_dim[0]
 
         if self.rnn_type == "gru":
             self.network = nn.GRU(
                 self.obs_dim + self.action_dim,
-                hidden_dim,
-                num_layers,
+                self.rnn_hidden_dim,
+                self.num_layers,
                 batch_first=True,
                 device=self.device,
             )
         elif self.rnn_type == "lstm":
             self.network = nn.LSTM(
                 self.obs_dim + self.action_dim,
-                hidden_dim,
-                num_layers,
+                self.rnn_hidden_dim,
+                self.num_layers,
                 batch_first=True,
                 device=self.device,
             )
         else:
             raise ValueError("rnn_type must be 'gru' or 'lstm'")
 
-        self.fc_mu = nn.Linear(hidden_dim, latent_dim, device=self.device)
-        self.fc_log_var = nn.Linear(hidden_dim, latent_dim, device=self.device)
+        if isinstance(hidden_dim, int):
+            hidden_dims = [hidden_dim]
+        else:
+            hidden_dims = hidden_dim
+
+        mu_layers = []
+        logvar_layers = []
+        prev_dim = self.rnn_hidden_dim
+        for hidden_dim in hidden_dims:
+            mu_layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
+            logvar_layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
+            prev_dim = hidden_dim
+
+        mu_layers.append(nn.Linear(prev_dim, self.latent_dim))
+        logvar_layers.append(nn.Linear(prev_dim, self.latent_dim))
+        logvar_layers[-1].weight.data.fill_(0.0)
+        logvar_layers[-1].bias.data.fill_(-3.0)
+
+        self.fc_mu = nn.Sequential(*mu_layers)
+        self.fc_logvar = nn.Sequential(*logvar_layers)
 
     def compute_param(
         self, y: torch.Tensor, u: torch.Tensor | None = None, h: torch.Tensor | None = None
@@ -137,17 +163,17 @@ class RNNEncoder(BaseEncoder):
                     h = h.detach()  # carry over state but not gradients
 
         # Compute Hidden state and output
-        rnn_out, h_next = self.network(y_u, h)
+        rnn_out, h_final = self.network(y_u, h)
 
         # Store the next hidden state for carry_over/hybrid strategies
-        if self.h_init == "carry_over":
-            self.h = h_next
+        if self.h_init == "carryover":
+            self.h = h_final
         elif self.h_init == "step":
             self.h = self.network(y_u[:, :1, :], h)[1]
 
         # Decode the output
         mu = self.fc_mu(rnn_out)
-        log_var = self.fc_log_var(rnn_out)
+        log_var = self.fc_logvar(rnn_out)
         var = softplus(log_var) + eps
         return mu, var
 
@@ -156,11 +182,7 @@ class RNNEncoder(BaseEncoder):
         mu, var = self.compute_param(y, u)
         samples = mu + torch.sqrt(var) * torch.randn([n_samples] + list(mu.shape), device=y.device)
 
-        # If n_samples is 1, remove the sample dimension
-        if n_samples == 1:
-            samples = samples.squeeze(0)
-
-        return samples, mu, var
+        return samples.squeeze(0), mu, var
 
     def forward(self, y: torch.Tensor, u: torch.Tensor | None = None, n_samples=1):
         """Computes samples, mean, variance, and log probability of the latent distribution."""
