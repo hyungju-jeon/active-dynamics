@@ -1,11 +1,9 @@
 from typing import Optional
-from matplotlib.pylab import f
-from sympy import cycle_length
 import torch
 from einops import rearrange, repeat
 
 from actdyn.environment.action import BaseAction
-from .base import BaseModel
+from .base import BaseDynamicsEnsemble, BaseModel
 from .decoder import Decoder
 from .dynamics import BaseDynamics
 from .encoder import BaseEncoder
@@ -16,7 +14,7 @@ class SeqVae(BaseModel):
 
     def __init__(
         self,
-        dynamics: BaseDynamics,
+        dynamics: BaseDynamics | BaseDynamicsEnsemble,
         encoder: BaseEncoder,
         decoder: Decoder,
         action_encoder: Optional[BaseAction] = None,
@@ -30,15 +28,15 @@ class SeqVae(BaseModel):
         self.input_dim = encoder.obs_dim
         self.latent_dim = getattr(encoder, "latent_dim", None)
         self.action_dim = getattr(action_encoder, "action_dim", 0)
-        self.is_ensemble = hasattr(dynamics, "models") and hasattr(dynamics, "n_models")
+        self.is_ensemble = hasattr(dynamics, "ensemble") and hasattr(dynamics, "n_models")
         self.step_count = 0
         self.beta = 0.0
 
     def _get_dynamics(self, idx=None):
-        if self.is_ensemble:
+        if self.is_ensemble:  # --- IGNORE ---
             if idx is None:
                 raise ValueError("Ensemble mode requires an idx argument.")
-            return self.dynamics.models[idx]
+            return self.dynamics.ensemble[idx]
         else:
             return self.dynamics
 
@@ -56,7 +54,7 @@ class SeqVae(BaseModel):
     def _kl_div(mu_q, var_q, mu_p, var_p):
         """Analytic KL divergence between two multivariate normal distributions."""
         kl_d = 0.5 * (torch.log(var_p / var_q) + ((mu_q - mu_p) ** 2) / var_p + (var_q / var_p) - 1)
-        return torch.sum(kl_d, (-2, -1))
+        return torch.sum(kl_d, (-1))
 
     @staticmethod
     def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
@@ -92,9 +90,10 @@ class SeqVae(BaseModel):
         z_samples,  # (S,B,T,D) posterior samples
         u=None,  # (B,T,A) action sequence
         idx=None,
+        t_mask=None,  # (T,1) temporal mask
         k_steps=5,
         decay_rate=0.8,
-        detach_posterior=True,
+        detach_posterior=False,
         mc_estimate=False,
     ):
         """Compute multi-step KL terms KL[q(z_{t+k}) || p_k(z_{t+k}|z_t, u_{t+1:t+k})]"""
@@ -111,14 +110,16 @@ class SeqVae(BaseModel):
         # Shift actions for time alignment
         u_s = repeat(u, "b t a -> s b t a", s=S)
 
-        z_samples = z_samples.detach()
+        z_init = z_samples  # (S,B,D)
+        if detach_posterior:
+            z_init = z_samples.detach()
 
         # KL weights
         if decay_rate is None:
             decay_rate = 1.0
 
         samples_list, mus_list, vars_list = dynamics.sample_forward(
-            init_z=z_samples, action=u_s, k_step=k_steps, return_traj=True  # (S,B,T,D)
+            init_z=z_init, action=u_s, k_step=k_steps, return_traj=True  # (S,B,T,D)
         )
 
         kl_terms = []
@@ -149,8 +150,13 @@ class SeqVae(BaseModel):
 
                 mu_q_target_s = repeat(mu_q_target, "b t d -> s b t d", s=S)
                 var_q_target_s = repeat(var_q_target, "b t d -> s b t d", s=S)
-                kl_k = self._kl_div(mu_q_target_s, var_q_target_s, mu_p, var_p)  # (S,B)
-                kl_terms.append(kl_k.mean(0))  # average over particles S -> (B,)
+                kl_k = self._kl_div(mu_q_target_s, var_q_target_s, mu_p, var_p)  # (S,B,T)
+                if t_mask is not None:
+                    kl_k = kl_k * t_mask[..., k:, :].T  # (S,B,T)
+
+                kl_terms.append(
+                    kl_k.mean(0).sum(-1)
+                )  # average over particles S and sum over T -> (B,)
 
         # Stack KL per horizon
         kl_per_k = torch.stack(kl_terms, dim=-1)  # (B,K)
@@ -162,12 +168,14 @@ class SeqVae(BaseModel):
 
         return kl_per_k, kl_weighted
 
-    def compute_elbo(self, y, u=None, n_samples=5, k_steps=5, beta=1.0, idx=None):
+    def compute_elbo(self, y, u=None, n_samples=5, k_steps=5, beta=1.0, p_mask=0.0, idx=None):
         """Compute ELBO with multi-step KL"""
-        z_samples, mu_q_x, var_q_x = self.encoder(y=y, u=u, n_samples=n_samples)
-        if z_samples.dim() == 3:  # (B,T,D) -> (S,B,T,D)
-            z_samples = z_samples.unsqueeze(0)
-        S, B, T, D = z_samples.shape
+
+        # Sample mesaurement posterior
+        z_me, mu_q_x, var_q_x = self.encoder(y=y, u=u, n_samples=n_samples)
+        if z_me.dim() == 3:  # (B,T,D) -> (S,B,T,D)
+            z_me = z_me.unsqueeze(0)
+        S, B, T, D = z_me.shape
 
         if self.action_encoder is not None and u is not None:
             u_encoded = self.action_encoder(u)
@@ -176,9 +184,17 @@ class SeqVae(BaseModel):
         else:
             u_encoded = u
 
+        # Apply temporal masking
+        t_mask = torch.bernoulli((1 - p_mask) * torch.ones((T, 1), device=mu_q_x.device))
+
+        z_tr = self.dynamics.sample_forward(init_z=z_me, action=u_encoded, k_step=1)[0]
+        z_tr = torch.cat([z_me[..., :1, :], z_tr], dim=-2)  # (S,B,T,D)
+
+        z_samples = t_mask * z_me + (1 - t_mask) * z_tr  # (S,B,T,D)
+
         # Multi-step KL: (B,K), (B)
         _, kl_w = self._compute_multistep_kl(
-            mu_q_x, var_q_x, z_samples, u=u_encoded, idx=idx, k_steps=k_steps
+            mu_q_x, var_q_x, z_samples, u=u_encoded, idx=idx, k_steps=k_steps, t_mask=t_mask
         )
 
         # Log-likelihood per sample (B,T,D)
@@ -190,11 +206,13 @@ class SeqVae(BaseModel):
 
         # Monte Carlo expectation over samples
         log_like_b = log_like_sb.mean(dim=0)  # (B)
-
         elbo_b = log_like_b - beta * kl_w
         elbo = elbo_b.mean()
 
-        return -elbo, log_like_b.mean(), kl_w.mean()
+        if idx is None or idx == 0:
+            return -elbo, log_like_b.mean(), kl_w.mean()
+        else:
+            return beta * kl_w, torch.zeros(1), kl_w.mean()
 
     def _add_param_perturbation(self, model, perturbation):
         if perturbation > 0:
@@ -215,6 +233,7 @@ class SeqVae(BaseModel):
         n_samples,
         k_steps,
         beta,
+        p_mask=0.0,
         warmup=1000,
         annealing_steps=1000,
         annealing_type="cyclic",  # "linear", "cyclic", "none"
@@ -238,7 +257,7 @@ class SeqVae(BaseModel):
 
         # Train for multiple epochs with DataLoader
         epoch_losses = []
-        for _ in epoch_iterator:
+        for i in epoch_iterator:
             batch_losses = []
             for batch in dataloader:
                 obs = batch["next_obs"].to(self.device)
@@ -260,17 +279,7 @@ class SeqVae(BaseModel):
                 opt.zero_grad()
 
                 self.beta = beta
-                if annealing_type == "linear":
-                    self.beta = min(beta, beta * (self.step_count - warmup) / annealing_steps)
-                elif annealing_type == "cyclic":
-                    cycle_length = 2 * annealing_steps
-                    cycle_pos = (self.step_count - warmup) % cycle_length
-                    if cycle_pos < annealing_steps:
-                        self.beta = min(beta, beta * cycle_pos / annealing_steps)
-                    else:
-                        self.beta = beta
-                elif annealing_type == "none":
-                    self.beta = beta
+                self.beta_schedule(beta, warmup, annealing_steps, annealing_type)
 
                 if self.step_count < warmup:
                     self.beta = 0.0
@@ -282,6 +291,7 @@ class SeqVae(BaseModel):
                     n_samples=n_samples,
                     beta=self.beta,
                     k_steps=k_steps,
+                    p_mask=p_mask,
                 )
                 loss.backward()
 
@@ -297,22 +307,28 @@ class SeqVae(BaseModel):
                     kl_d.detach().item(),
                 )
                 # Store normalized losses
-                batch_losses.append([loss / T, log_like / T, kl_d / T])
+                batch_losses.append(
+                    [loss / T, log_like / T / self.input_dim, kl_d / T / self.latent_dim]
+                )
 
                 # Explicit cleanup for gradient tensors
                 del batch, obs, loss, log_like, kl_d
+
                 if action is not None:
                     del action
-
+            if model_idx is not None:
+                self.step_count += 1 if model_idx == 0 else 0
+            else:
                 self.step_count += 1
 
             # Convert list to tensor and average across batch
             epoch_losses.append(torch.tensor(batch_losses).mean(dim=0))
 
             # Update epoch progress bar with average ELBO
-            if verbose and epoch_losses:
+            if verbose and epoch_losses and i % 10 == 0:
                 current_elbo = -epoch_losses[-1][0]
                 epoch_pbar.set_postfix(ELBO=f"{current_elbo:.6f}, beta={self.beta:.4f}")
+                epoch_pbar.update(10)
 
             # End of epoch cleanup
             if "cuda" in str(self.device):
@@ -352,25 +368,22 @@ class SeqVae(BaseModel):
             "grad_clip_norm": grad_clip_norm,
             "n_samples": n_samples,
             "k_steps": k_steps,
+            "p_mask": kwargs.get("p_mask", 0.0),
             "beta": kwargs.get("beta", 1.0),
             "warmup": kwargs.get("warmup", 1000),
             "annealing_steps": kwargs.get("annealing_steps", 1000),
             "annealing_type": kwargs.get("annealing_type", "cyclic"),
+            "param_list": kwargs.get("param_list", "all"),  # To be set per model
         }
+
+        param_lists = self.get_param_list(train_args["param_list"])
+        # print(f"Training with {param_lists} parameter groups.")
 
         if self.is_ensemble:
             # Train each ensemble member
             for i in range(self.dynamics.n_models):
                 # First model trains encoder/decoder, others only train dynamics
-                if i == 0:
-                    param_list = (
-                        list(self.dynamics.models[i].parameters())
-                        + list(self.encoder.parameters())
-                        + list(self.decoder.parameters())
-                        + list(self.action_encoder.parameters())
-                    )
-                else:
-                    param_list = list(self.dynamics.models[i].parameters())
+                param_list = param_lists[i]
 
                 model_name = f"Ensemble model {i+1}/{self.dynamics.n_models}"
                 train_args["model_idx"] = i
@@ -382,10 +395,10 @@ class SeqVae(BaseModel):
                 all_losses.extend(epoch_losses)
 
                 # Apply parameter perturbation for ensemble diversity
-                self._add_param_perturbation(self.dynamics.models[i], perturbation)
+                self._add_param_perturbation(self.dynamics.ensemble[i], perturbation)
         else:
             # Train single model
-            param_list = list(self.parameters())
+            param_list = param_lists[0]
             train_args["param_list"] = param_list
             train_args["model_idx"] = None
             train_args["model_name"] = "Model"
@@ -401,6 +414,39 @@ class SeqVae(BaseModel):
             torch.cuda.empty_cache()
 
         return all_losses
+
+    def get_param_list(self, param_list_type):
+        if param_list_type == "all":
+            return [list(self.parameters())]
+        else:
+            params = []
+            if "dynamics" in param_list_type:
+                if self.is_ensemble:
+                    for i in range(self.dynamics.n_models):
+                        params.append(list(self.dynamics.ensemble[i].parameters()))
+                else:
+                    params.append(list(self.dynamics.parameters()))
+            if "encoder" in param_list_type:
+                params.append(list(self.encoder.parameters()))
+            if "decoder" in param_list_type:
+                params.append(list(self.decoder.parameters()))
+            if "action" in param_list_type and self.action_encoder is not None:
+                params.append(list(self.action_encoder.parameters()))
+
+        return params
+
+    def beta_schedule(self, beta, warmup=1000, annealing_steps=1000, annealing_type="cyclic"):
+        if annealing_type == "linear":
+            self.beta = min(beta, beta * (self.step_count - warmup) / annealing_steps)
+        elif annealing_type == "cyclic":
+            cycle_length = 2 * annealing_steps
+            cycle_pos = (self.step_count - warmup) % cycle_length
+            if cycle_pos < annealing_steps:
+                self.beta = min(beta, beta * cycle_pos / annealing_steps)
+            else:
+                self.beta = beta
+        elif annealing_type == "none":
+            self.beta = beta
 
 
 class DeepVariationalBayesFilter(SeqVae):

@@ -83,6 +83,7 @@ def setup_environment(config: ExperimentConfig):
     # Wrap the environment with GymObservationWrapper
     env = GymObservationWrapper(
         env=base_env,
+        dt=config.environment.env_dt,
         obs_model=observation_model,
         action_model=action_model,
         device=config.device,
@@ -129,15 +130,13 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
         {
             "state_dim": config.latent_dim,
             "device": config.device,
-            "dt": config.dt,
         }
     )
-    if config.model.is_ensemble and ("ensemble_disagreement" in config.metric.metric_type):
+    if config.model.is_ensemble or ("ensemble_disagreement" in config.metric.metric_type):
         # If ensemble dynamics, we need to create multiple dynamics models
+        ensemble_config = config.model.get_ensemble_cfg()
         dynamics = BaseDynamicsEnsemble(
-            dynamics_cls=dynamics_cls,
-            n_models=config.model.n_models,
-            dynamics_kwargs=dyn_config,
+            dynamics_cls=dynamics_cls, **ensemble_config, dynamics_config=dyn_config
         )
     else:
         dynamics = dynamics_cls(
@@ -187,7 +186,7 @@ def setup_metric(config, model):
             elif issubclass(metric_cls, EnsembleDisagreement):
                 metrics.append(
                     metric_cls(
-                        ensemble=model.dynamics,
+                        ensemble_dynamics=model.dynamics,
                         device=config.device,
                         **metric_config,
                     )
@@ -217,7 +216,7 @@ def setup_metric(config, model):
             )
         elif issubclass(metric_cls, EnsembleDisagreement):
             metric = metric_cls(
-                ensemble=model.dynamics,
+                ensemble_dynamics=model.dynamics,
                 device=config.device,
                 **metric_config,
             )
@@ -257,7 +256,6 @@ def setup_experiment(config: ExperimentConfig):
     if not torch.cuda.is_available() and config.device == "cuda":
         print("CUDA is not available. Falling back to CPU.")
         config.device = "cpu"
-
     env = setup_environment(config)
     model = setup_model(config)
     # ------------------------------------------------------------------------

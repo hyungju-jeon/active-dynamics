@@ -106,6 +106,35 @@ class Rollout:
         except Exception:
             pass  # Ignore errors during cleanup
 
+    @property
+    def shape(self):
+        return self.length
+
+    def downsample(self, n=1):
+        """
+        Downsample the rollout by keeping every n-th transition.
+        """
+        if n <= 1:
+            return
+
+        if not self.finalized:
+            self.finalize()
+
+        for key, value in self._data.items():
+            if key == "action":
+                new_length = (value.shape[1]) // n
+                temp = torch.zeros(
+                    (value.shape[0], new_length, value.shape[-1]),
+                    device=self.device,
+                )
+                for i in range(new_length):
+                    temp[:, i, :] = value[:, i * n : (i + 1) * n, :].sum(dim=1)
+                self._data[key] = temp
+            else:
+                self._data[key] = self._data[key][:, ::n]
+
+        self.length = max([v.shape[1] for v in self._data.values()]) if self._data else 0
+
     def add_dict(self, **kwargs):
         """
         Add a dictionary of values to the rollout.
@@ -248,10 +277,10 @@ class Rollout:
 
             if self.finalized:
                 # Return a dict of sliced tensors
-                return {k: v[adj_slice] for k, v in self._data.items()}
+                return {k: v[:, adj_slice] for k, v in self._data.items()}
             else:
                 # Return a list of dicts (as before)
-                sliced_data = {k: v[adj_slice] for k, v in self._data.items()}
+                sliced_data = {k: v[:, adj_slice] for k, v in self._data.items()}
                 slice_len = 0
                 if sliced_data:
                     first_key = next(iter(sliced_data))
@@ -459,6 +488,8 @@ class RolloutBuffer:
                 self.add(sub_item)
         elif isinstance(item, dict):
             self.add_dict(item)
+        else:
+            raise ValueError(f"Unsupported item type: {type(item)}")
 
     def copy(self):
         new_buffer = RolloutBuffer(
@@ -490,7 +521,6 @@ class RolloutBuffer:
         """
         if not data:
             return
-
         # Get the shape information from the first data field
         first_key = next(iter(data.keys()))
         first_tensor = data[first_key]
@@ -563,6 +593,19 @@ class RolloutBuffer:
         # Force garbage collection of GPU memory if using CUDA
         if str(self.device).startswith("cuda"):
             torch.cuda.empty_cache()
+
+    def downsample(self, n=1):
+        for rollout in self.buffer:
+            rollout.downsample(n=n)
+        self._invalidate_cache()
+
+    @property
+    def is_empty(self):
+        return len(self.buffer) == 0
+
+    @property
+    def shape(self):
+        return (len(self), len(self.buffer[0])) if self.buffer else (0, 0)
 
     @property
     def flat(self):

@@ -36,7 +36,12 @@ class MLPDynamics(BaseDynamics):
     def __init__(
         self, state_dim, hidden_dims: int | list = [16], activation="relu", device="cpu", **kwargs
     ):
-        super().__init__(state_dim, dt=kwargs.get("dt", 1), device=device)
+        super().__init__(
+            state_dim,
+            dt=kwargs.get("dt", 1),
+            is_residual=kwargs.get("is_residual", False),
+            device=device,
+        )
         self.activation = activation_from_str(activation)
 
         # Build encoder layers
@@ -69,7 +74,12 @@ class RBFDynamics(BaseDynamics):
         device="cpu",
         **kwargs
     ):
-        super().__init__(state_dim=state_dim, dt=kwargs.get("dt", 1), device=device)
+        super().__init__(
+            state_dim=state_dim,
+            dt=kwargs.get("dt", 1),
+            is_residual=kwargs.get("is_residual", False),
+            device=device,
+        )
         self.alpha = alpha
         self.gamma = gamma
         self.z_max = z_max
@@ -120,7 +130,7 @@ class RBFDynamicsEnsemble(BaseDynamicsEnsemble):
             dynamics_cls=RBFDynamics,
             state_dim=state_dim,
             n_models=n_models,
-            dynamics_kwargs=kwargs,
+            dynamics_config=kwargs,
         )
 
 
@@ -134,5 +144,5 @@ class MLPDynamicsEnsemble(BaseDynamicsEnsemble):
             dynamics_class=MLPDynamics,
             state_dim=state_dim,
             n_models=n_models,
-            dynamics_kwargs=kwargs,
+            dynamics_config=kwargs,
         )
