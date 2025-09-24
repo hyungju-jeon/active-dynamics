@@ -105,6 +105,9 @@ class RNNEncoder(BaseEncoder):
         if isinstance(rnn_hidden_dim, list):
             self.num_layers = len(rnn_hidden_dim)
             self.rnn_hidden_dim = rnn_hidden_dim[0]
+        else:
+            self.num_layers = 1
+            self.rnn_hidden_dim = rnn_hidden_dim
 
         if self.rnn_type == "gru":
             self.network = nn.GRU(
@@ -134,9 +137,10 @@ class RNNEncoder(BaseEncoder):
         logvar_layers = []
         prev_dim = self.rnn_hidden_dim
         for hidden_dim in hidden_dims:
-            mu_layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
-            logvar_layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
-            prev_dim = hidden_dim
+            if hidden_dim > 0:
+                mu_layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
+                logvar_layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
+                prev_dim = hidden_dim
 
         mu_layers.append(nn.Linear(prev_dim, self.latent_dim))
         logvar_layers.append(nn.Linear(prev_dim, self.latent_dim))
@@ -148,7 +152,7 @@ class RNNEncoder(BaseEncoder):
 
     def compute_param(
         self, y: torch.Tensor, u: torch.Tensor | None = None, h: torch.Tensor | None = None
-    ):
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         y, u = self.validate_input(y, u)
         # Concatenate y and u along the last dimension
         y_u = torch.cat((y, u), dim=-1)
@@ -177,16 +181,17 @@ class RNNEncoder(BaseEncoder):
         var = softplus(log_var) + eps
         return mu, var
 
-    def sample(self, y, u, n_samples=1):
+    def sample(self, y, u, n_samples=1) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Samples from the latent distribution."""
         mu, var = self.compute_param(y, u)
         samples = mu + torch.sqrt(var) * torch.randn([n_samples] + list(mu.shape), device=y.device)
 
         return samples.squeeze(0), mu, var
 
-    def forward(self, y: torch.Tensor, u: torch.Tensor | None = None, n_samples=1):
+    def forward(
+        self, y: torch.Tensor, u: torch.Tensor | None = None, n_samples=1
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Computes samples, mean, variance, and log probability of the latent distribution."""
-
         # compute parameters and sample
-        samples, mu, var = self.sample(y, u, n_samples)
+        samples, mu, var = self.sample(y, u, n_samples)  # (n_samples, batch, time, latent_dim)
         return samples, mu, var

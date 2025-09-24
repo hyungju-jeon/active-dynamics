@@ -1,5 +1,6 @@
+import copy
 from dataclasses import dataclass, field
-from typing import List, Optional, Union
+from typing import Any, List, Optional, Union
 import yaml
 
 
@@ -9,7 +10,7 @@ class EnvironmentConfig:
     env_dynamics_type: Optional[str] = (
         "limit_cycle"  # Options: "limit_cycle", "double_limit_cycle", "multi_attractor"
     )
-    env_dt: float = 0.1  # Time step for environment dynamics
+    env_dt = 0.1
     env_noise_scale: float = 0.1
     env_render_mode: Optional[str] = None  # Options: "human", "rgb_array"
     env_action_bounds: List[float] = field(default_factory=lambda: [-0.1, 0.1])
@@ -75,6 +76,7 @@ class ModelConfig:
 
     dynamics_type: str = "mlp"  # Options: "mlp", "linear", "rbf"
     is_ensemble: bool = False
+    is_residual: bool = False
     n_models: Optional[int] = 1
     dyn_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
     dyn_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
@@ -83,6 +85,7 @@ class ModelConfig:
     dyn_centers: Optional[List[List[float]]] = None  # Will be converted to tensor when needed
     dyn_range: float = 2.0
     dyn_num_grid: int = 25
+    dyn_dt: float = 0.1
 
     action_type: str = "identity"  # Options: "identity", "linear", "mlp"
     act_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
@@ -114,12 +117,19 @@ class ModelConfig:
             "centers": self.dyn_centers,
             "z_max": self.dyn_range,
             "num_grid": self.dyn_num_grid,
+            "is_residual": self.is_residual,
+            "dt": self.dyn_dt,
         }
 
     def get_action_cfg(self):
         return {
             "hidden_dim": self.act_hidden_dim,
             "activation": self.act_activation,
+        }
+
+    def get_ensemble_cfg(self):
+        return {
+            "n_models": self.n_models,
         }
 
 
@@ -191,6 +201,7 @@ class TrainingConfig:
     total_steps: int = 10000
     train_every: int = 1
     rollout_horizon: int = 20
+    p_mask: float = 0.0
 
     # ELBO optimizier configuration
     beta: float = 1.0
@@ -206,6 +217,7 @@ class TrainingConfig:
     annealing_type: str = "none"  # Options: "linear", "cyclic", "none"
     annealing_steps: int = 1000
     warmup: int = 0
+    # Offline training parameters
     offline_lr: float = 1e-4
     offline_n_epochs: int = 5000
     offline_batch_size: int = 32
@@ -214,6 +226,7 @@ class TrainingConfig:
     offline_annealing_type: str = "none"
     offline_annealing_steps: int = 2000
     offline_warmup: int = 0
+    param_list: Any = "all"  # List of parameters to log
 
     def get_offline_optim_cfg(self):
         return {
@@ -233,6 +246,8 @@ class TrainingConfig:
             "beta": self.beta,
             "shuffle": False,
             "verbose": True,
+            "param_list": self.param_list,
+            "p_mask": self.p_mask,
         }
 
     def get_optim_cfg(self):
@@ -250,6 +265,8 @@ class TrainingConfig:
             "k_steps": self.k_steps,
             "verbose": self.verbose,
             "beta": self.beta,
+            "param_list": self.param_list,
+            "p_mask": self.p_mask,
         }
 
 
@@ -265,6 +282,7 @@ class ExperimentConfig:
     seed: int = 42
     device: str = "cpu"  # Options: "cpu", "cuda", "mps"
     results_dir: str = "results"
+    data_dir: str = "data"
     action_dim: int = 2
     observation_dim: int = 50
     latent_dim: int = 2
@@ -289,11 +307,10 @@ class ExperimentConfig:
         # Filter out Hydra-specific sections that aren't part of our dataclass
         hydra_keys = {"defaults", "hydra"}
         config_dict = {k: v for k, v in config_dict.items() if k not in hydra_keys}
-
         # Convert nested dictionaries to their respective config classes
         if "environment" in config_dict:
             config_dict["environment"] = EnvironmentConfig(**config_dict["environment"])
-            config_dict["environment"].env_dt = config_dict.get("dt", 0.1)
+            config_dict["environment"].env_dt = config_dict["dt"]
         if "model" in config_dict:
             config_dict["model"] = ModelConfig(**config_dict["model"])
         if "policy" in config_dict:
@@ -306,3 +323,7 @@ class ExperimentConfig:
             config_dict["logging"] = LoggingConfig(**config_dict["logging"])
 
         return cls(**config_dict)
+
+    def clone(self) -> "ExperimentConfig":
+        """Create a deep copy of the experiment configuration."""
+        return copy.deepcopy(self)

@@ -5,7 +5,6 @@ import gymnasium as gym
 
 from actdyn.models.base import BaseDynamicsEnsemble
 from actdyn.utils.visualize import plot_vector_field
-from actdyn.utils.rollout import RecentRollout, RolloutBuffer, Rollout
 from .model import SeqVae
 
 
@@ -58,8 +57,12 @@ class VAEWrapper(gym.Env):
         """Step the environment forward one timestep."""
 
         # Predict next latent state
+        env_action = (
+            self.model.action_encoder(action) if self.model.action_encoder is not None else action
+        )
+
         with torch.no_grad():
-            next_state = self.model.dynamics.sample_forward(self._state, action)[0]
+            next_state = self.model.dynamics.sample_forward(self._state, env_action)[0]
             # Decode next state
             next_observation = self.model.decoder(next_state)
         # Update states
@@ -70,9 +73,6 @@ class VAEWrapper(gym.Env):
         reward = torch.tensor(0.0, device=self.device)
         terminated = torch.tensor(False, device=self.device)
         truncated = torch.tensor(False, device=self.device)
-        env_action = (
-            self.model.action_encoder(action) if self.model.action_encoder is not None else action
-        )
         info = {
             "latent_state": next_state,
             "env_action": env_action,
@@ -82,7 +82,7 @@ class VAEWrapper(gym.Env):
 
     def render(self, ax=None):
         if isinstance(self.model.dynamics, BaseDynamicsEnsemble):
-            plot_vector_field(self.model.dynamics.models[0], ax=ax, x_range=1, device=self.device)
+            plot_vector_field(self.model.dynamics.ensemble[0], ax=ax, x_range=1, device=self.device)
         else:
             plot_vector_field(self.model.dynamics, ax=ax, x_range=1, device=self.device)
 
@@ -124,3 +124,7 @@ class VAEWrapper(gym.Env):
             )
 
         return self.model.train_model(dataloader=dataloader, **kwargs)
+
+    def save_model(self, path: str):
+        """Save model parameters to disk."""
+        self.model.save(path)

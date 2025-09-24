@@ -12,6 +12,9 @@ __all__ = [
 
 _environment_map = {
     "vectorfield": (".vectorfield", "VectorFieldEnv"),
+    "continuous_cartpole": (".cartpole", "ContinuousCartPoleEnv"),
+    "continuous_cartpole_partial": (".cartpole", "ContinuousCartPoleEnv_partial"),
+    "continuous_cartpole_angle": (".cartpole", "ContinuousCartPoleEnv_angle"),
 }
 
 _observation_map = {

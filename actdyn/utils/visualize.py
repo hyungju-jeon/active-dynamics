@@ -15,7 +15,9 @@ def create_grid(x_range=2, n_grid=50, device="cpu"):
 
 
 @torch.no_grad()
-def compute_vector_field(dynamics, x_range=2.5, n_grid=50, tform=(None, None), device="cpu"):
+def compute_vector_field(
+    dynamics, x_range=2.5, n_grid=50, tform=(None, None), is_residual=False, device="cpu"
+):
     """
     Produces a vector field for a given dynamical system
     :param queries: N by dx torch tensor of query points where each row is a query
@@ -33,6 +35,8 @@ def compute_vector_field(dynamics, x_range=2.5, n_grid=50, tform=(None, None), d
     with torch.no_grad():
         for n in range(xy.shape[0]):
             vel[n, :] = dynamics(xy[[n]])
+            if not is_residual:
+                vel[n, :] = vel[n, :] - xy[[n]].to(device)
 
     U = vel[:, 0].reshape(X.shape[0], X.shape[1])
     V = vel[:, 1].reshape(Y.shape[0], Y.shape[1])
