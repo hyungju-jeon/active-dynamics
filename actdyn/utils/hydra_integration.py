@@ -10,7 +10,15 @@ from omegaconf import DictConfig, OmegaConf
 from typing import Callable, Any
 import os
 
-from actdyn.config import ExperimentConfig
+from actdyn.config import (
+    ExperimentConfig,
+    EnvironmentConfig,
+    ModelConfig,
+    PolicyConfig,
+    MetricConfig,
+    TrainingConfig,
+    LoggingConfig,
+)
 
 
 def list_to_str(lst):
@@ -18,10 +26,12 @@ def list_to_str(lst):
     if isinstance(lst, list):
         return "x".join([str(i) for i in lst])
     elif isinstance(lst, str):
-        return "x".join([str(i) for i in eval(lst)])
-
-
-OmegaConf.register_new_resolver("list_str", lambda x: list_to_str(x))
+        try:
+            # Handle string representation of a list
+            return "x".join([str(i) for i in eval(lst)])
+        except (SyntaxError, NameError):
+            # Not a list-like string, return as is or handle appropriately
+            return lst
 
 
 def str_to_list(s: str) -> list:
@@ -32,6 +42,9 @@ def str_to_list(s: str) -> list:
         raise ValueError(f"Could not convert string to list: {s}") from e
 
 
+OmegaConf.register_new_resolver("list_str", list_to_str)
+
+
 def register_actdyn_configs():
     """Register actdyn dataclass configs with Hydra's ConfigStore for better type safety."""
     cs = ConfigStore.instance()
@@ -40,15 +53,6 @@ def register_actdyn_configs():
     cs.store(name="base_config", node=ExperimentConfig)
 
     # Register sub-configs for compositional configuration
-    from actdyn.config import (
-        EnvironmentConfig,
-        ModelConfig,
-        PolicyConfig,
-        MetricConfig,
-        TrainingConfig,
-        LoggingConfig,
-    )
-
     cs.store(group="environment", name="base", node=EnvironmentConfig)
     cs.store(group="model", name="base", node=ModelConfig)
     cs.store(group="policy", name="base", node=PolicyConfig)
@@ -76,56 +80,35 @@ class HydraExperimentConfig:
         hydra_keys = {"defaults", "hydra"}
         config_dict = {k: v for k, v in config_dict.items() if k not in hydra_keys}
 
-        # Use the same logic as ExperimentConfig.from_yaml but directly from dict
-        from actdyn.config import (
-            EnvironmentConfig,
-            ModelConfig,
-            PolicyConfig,
-            MetricConfig,
-            TrainingConfig,
-            LoggingConfig,
-        )
+        config_mapping = {
+            "environment": EnvironmentConfig,
+            "model": ModelConfig,
+            "policy": PolicyConfig,
+            "metric": MetricConfig,
+            "training": TrainingConfig,
+            "logging": LoggingConfig,
+        }
 
         # Convert nested dictionaries to their respective config classes
-        if "environment" in config_dict and isinstance(config_dict["environment"], dict):
-            config_dict["environment"] = EnvironmentConfig(**config_dict["environment"])
-        if "model" in config_dict and isinstance(config_dict["model"], dict):
-            # Manually parse string-represented lists from Hydra sweeps
-            if "dyn_hidden_dim" in config_dict["model"] and isinstance(
-                config_dict["model"]["dyn_hidden_dim"], str
-            ):
-                config_dict["model"]["dyn_hidden_dim"] = str_to_list(
-                    config_dict["model"]["dyn_hidden_dim"]
-                )
-            if "enc_hidden_dim" in config_dict["model"] and isinstance(
-                config_dict["model"]["enc_hidden_dim"], str
-            ):
-                config_dict["model"]["enc_hidden_dim"] = str_to_list(
-                    config_dict["model"]["enc_hidden_dim"]
-                )
-            if "act_hidden_dim" in config_dict["model"] and isinstance(
-                config_dict["model"]["act_hidden_dim"], str
-            ):
-                config_dict["model"]["act_hidden_dim"] = str_to_list(
-                    config_dict["model"]["act_hidden_dim"]
-                )
-            if "map_hidden_dim" in config_dict["model"] and isinstance(
-                config_dict["model"]["map_hidden_dim"], str
-            ):
-                config_dict["model"]["map_hidden_dim"] = str_to_list(
-                    config_dict["model"]["map_hidden_dim"]
-                )
-            config_dict["model"] = ModelConfig(**config_dict["model"])
-        if "policy" in config_dict and isinstance(config_dict["policy"], dict):
-            config_dict["policy"] = PolicyConfig(**config_dict["policy"])
-        if "metric" in config_dict and isinstance(config_dict["metric"], dict):
-            config_dict["metric"] = MetricConfig(**config_dict["metric"])
-        if "training" in config_dict and isinstance(config_dict["training"], dict):
-            config_dict["training"] = TrainingConfig(**config_dict["training"])
-        if "logging" in config_dict and isinstance(config_dict["logging"], dict):
-            config_dict["logging"] = LoggingConfig(**config_dict["logging"])
+        for key, config_class in config_mapping.items():
+            if key in config_dict and isinstance(config_dict[key], dict):
+                # Manually parse string-represented lists from Hydra sweeps
+                for field, value in config_dict[key].items():
+                    if isinstance(value, str) and value.startswith("[") and value.endswith("]"):
+                        try:
+                            config_dict[key][field] = str_to_list(value)
+                        except (ValueError, SyntaxError):
+                            # Not a list-like string, so we leave it as is
+                            pass
+                config_dict[key] = config_class(**config_dict[key])
 
-        return ExperimentConfig(**config_dict)  # type: ignore
+        exp_config = ExperimentConfig(**config_dict)  # type: ignore
+
+        # Set env_dt from top-level dt for consistency with from_yaml
+        if exp_config.environment:
+            exp_config.environment.env_dt = exp_config.dt
+
+        return exp_config
 
     @staticmethod
     def to_hydra_config(exp_config: ExperimentConfig) -> DictConfig:
@@ -166,4 +149,5 @@ def setup_hydra_experiment(cfg: DictConfig) -> ExperimentConfig:
     """
     exp_config = HydraExperimentConfig.from_hydra_dict(cfg)
     exp_config.results_dir = HydraConfig.get().runtime.output_dir
+    exp_config.data_dir = os.path.join(HydraConfig.get().sweep.dir, "..")
     return exp_config

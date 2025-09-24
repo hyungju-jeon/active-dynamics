@@ -9,6 +9,7 @@ import torch
 import numpy as np
 from actdyn.config import ExperimentConfig
 from actdyn.utils import hydra_experiment, setup_experiment
+from omegaconf import OmegaConf
 
 
 @hydra_experiment(config_path="conf")
