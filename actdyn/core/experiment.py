@@ -12,12 +12,13 @@ import matplotlib.pyplot as plt
 import torch
 import os
 import shutil
+import copy
 
 
 class Experiment:
     def __init__(self, agent: Agent, config: ExperimentConfig, resume=False):
         self.agent = agent
-        self.cfg = config
+        self.cfg = copy.deepcopy(config)
         self.env_step = 0
         self.prev_step = 0
         self.rollout = Rollout(device="cpu")
@@ -29,106 +30,6 @@ class Experiment:
             ## TODO : Implement resume functionality
             print("Resuming from previous experiment state...")
             # self.agent.model.load(self.cfg.logging.model_path)
-
-    def _setup_video_recording(self, video_path):
-        if video_path:
-            self.video_recorder = VideoRecorder(self.agent.env, video_path)
-            self.video_recorder.capture_frame()
-        else:
-            self.video_recorder = None
-
-    def _stop_video_recording(self):
-        if self.video_recorder:
-            self.video_recorder.save()
-            self.video_recorder = None
-
-    def run(self, reset=True):
-        os.makedirs(self.results_dir, exist_ok=True)
-        for subdir in ["rollouts", "logs", "model"]:
-            p = os.path.join(self.results_dir, subdir)
-            if os.path.exists(p):
-                shutil.rmtree(p, ignore_errors=True)
-            os.makedirs(p, exist_ok=True)
-
-        self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
-
-        # Initialize environment
-        if reset:
-            self.agent.reset(seed=int(self.cfg.seed))
-            self.env_step = 0
-            self.rollout.clear()
-        else:
-            print("Continueing from previous step:", self.env_step)
-            self.prev_step = self.env_step
-            self.rollout.clear()
-
-        # Setup progress bar
-        pbar = tqdm(total=self.cfg.training.total_steps, desc="Training")
-
-        while self.env_step < self.cfg.training.total_steps + self.prev_step:
-            self.env_step += 1
-
-            with torch.no_grad():
-                # 1. Plan
-                action = self.agent.plan()
-                # 2. Execute
-                transition, done = self.agent.step(action)
-
-            # Append transition to rollout
-            self.rollout.add(**transition)
-
-            if isinstance(self.training_loss, list):
-                self.writer.add_scalar("train/ELBO", -self.training_loss[0][0], self.env_step)
-                self.writer.add_scalar("train/log_like", self.training_loss[0][1], self.env_step)
-                self.writer.add_scalar("train/kl_d", self.training_loss[0][2], self.env_step)
-            else:
-                self.writer.add_scalar("train/ELBO", 0, -self.env_step)
-                self.writer.add_scalar("train/log_like", 0, self.env_step)
-                self.writer.add_scalar("train/kl_d", 0, self.env_step)
-
-            self.agent.update_policy(transition)
-
-            if self.env_step % 10 == 0:
-                if isinstance(self.training_loss, list) and len(self.training_loss) > 0:
-                    elbo_loss = -self.training_loss[0][0]
-                    pbar.set_postfix(
-                        {"ELBO": f"{elbo_loss:.4f}, beta: {self.agent.model_env.model.beta:.4f}"}
-                    )
-                else:
-                    pbar.set_postfix({"ELBO": "N/A"})
-                pbar.update(10)
-
-            # Train model periodically
-            if (
-                self.env_step % self.cfg.training.train_every == 0
-                and self.env_step > self.cfg.training.rollout_horizon
-            ):
-                self.training_loss = self.agent.train_model(**self.cfg.training.get_optim_cfg())
-
-            if self.cfg.logging.plot_every > 0:
-                if self.env_step % self.cfg.logging.plot_every == 0:
-                    pass
-
-            # Periodic rollout saving for crash recovery and memory management
-            if self.env_step % self.cfg.logging.save_every == 0:
-                save_load.save_rollout(
-                    self.rollout,
-                    os.path.join(self.results_dir, f"rollouts/rollout_{self.env_step}.pkl"),
-                )
-                if self.env_step < self.cfg.training.total_steps:
-                    self.rollout.clear()
-
-            # Clean up tensors to prevent memory accumulation
-            if "cuda" in str(self.agent.device):
-                del transition, action
-                torch.cuda.empty_cache()
-
-            if done:
-                break
-        pbar.close()
-        self.rollout.finalize()
-        self.writer.close()
-        self.agent.model_env.save_model(os.path.join(self.results_dir, f"model/model_final.pth"))
 
     def generate_rollout(self, num_episodes=20, episode_length=1000, rollout_dir=None):
         num_validate = num_episodes // 3
@@ -144,6 +45,7 @@ class Experiment:
                 ro.add(obs=state)
                 ro.add(env_state=latent_state)
                 action = self.agent.env.action_space.sample()
+                action = self.agent.env._to_tensor(action)
                 new_state, reward, _, done, info = self.agent.env.step(action)
                 ro.add(next_obs=new_state)
                 ro.add(action=action)
@@ -171,6 +73,108 @@ class Experiment:
         print(f"rollout saved to {validate_rollout_path} and {train_rollout_path}")
         return rb_train, rb_validate
 
+    # TODO: Add video recording functionality
+    def _setup_video_recording(self, video_path):
+        if video_path:
+            self.video_recorder = VideoRecorder(self.agent.env, video_path)
+            self.video_recorder.capture_frame()
+        else:
+            self.video_recorder = None
+
+    # TODO: Add video recording functionality
+    def _stop_video_recording(self):
+        if self.video_recorder:
+            self.video_recorder.save()
+            self.video_recorder = None
+
+    def run(self, reset=True):
+        os.makedirs(self.results_dir, exist_ok=True)
+        for subdir in ["rollouts", "logs", "model"]:
+            p = os.path.join(self.results_dir, subdir)
+            if os.path.exists(p):
+                shutil.rmtree(p, ignore_errors=True) if reset else None
+            os.makedirs(p, exist_ok=True)
+
+        self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
+        train_cfg = self.cfg.training
+        # Initialize environment
+        if reset:
+            self.agent.reset(seed=int(self.cfg.seed))
+            self.env_step = 0
+            self.rollout.clear()
+        else:
+            print("Continuing from previous step:", self.env_step)
+            self.rollout.clear()
+
+        # Setup progress bar
+        pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Training")
+        while self.env_step < train_cfg.total_steps:
+            self.env_step += 1
+
+            with torch.no_grad():
+                # 1. Plan
+                action = self.agent.plan()
+                # 2. Execute
+                transition, done = self.agent.step(action)
+
+            # Append transition to rollout
+            self.rollout.add(**transition)
+
+            if isinstance(self.training_loss, list):
+                self.writer.add_scalar("train/ELBO", -self.training_loss[0][0], self.env_step)
+                self.writer.add_scalar("train/log_like", self.training_loss[0][1], self.env_step)
+                self.writer.add_scalar("train/kl_d", self.training_loss[0][2], self.env_step)
+            else:
+                self.writer.add_scalar("train/ELBO", 0, -self.env_step)
+                self.writer.add_scalar("train/log_like", 0, self.env_step)
+                self.writer.add_scalar("train/kl_d", 0, self.env_step)
+
+            self.agent.update_policy(transition)
+
+            if self.env_step % 100 == 0:
+                if isinstance(self.training_loss, list) and len(self.training_loss) > 0:
+                    elbo_loss = -self.training_loss[0][0]
+                    pbar.set_postfix(
+                        {"ELBO": f"{elbo_loss:.4f}, beta: {self.agent.model_env.model.beta:.4f}"}
+                    )
+                else:
+                    pbar.set_postfix({"ELBO": "N/A"})
+                pbar.update(100)
+
+            # Train model periodically
+            if (
+                self.env_step % train_cfg.train_every == 0
+                and self.env_step > train_cfg.rollout_horizon
+            ):
+                sampling_ratio = self.agent.model_env.model.dynamics.dt / self.agent.env.dt
+                self.training_loss = self.agent.train_model(
+                    **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
+                )
+
+            if self.cfg.logging.plot_every > 0:
+                if self.env_step % self.cfg.logging.plot_every == 0:
+                    pass
+
+            # Periodic rollout saving for crash recovery and memory management
+            if self.env_step % self.cfg.logging.save_every == 0:
+                save_load.save_rollout(
+                    self.rollout,
+                    os.path.join(self.results_dir, f"rollouts/rollout_{self.env_step}.pkl"),
+                )
+                if self.env_step < train_cfg.total_steps:
+                    self.rollout.clear()
+
+            # Clean up tensors to prevent memory accumulation
+            if "cuda" in str(self.agent.device):
+                del transition, action
+                torch.cuda.empty_cache()
+
+            if done:
+                break
+        pbar.close()
+        self.rollout.finalize()
+        self.agent.model_env.save_model(os.path.join(self.results_dir, f"model/model_final.pth"))
+
     def post_run(self, data_dir=None):
         # Load data if exist
         if data_dir is None:
@@ -181,7 +185,7 @@ class Experiment:
             rb = save_load.load_rollout(data_path)
         else:
             _, rb = self.generate_rollout(num_episodes=50, episode_length=500, rollout_dir=data_dir)
-        #
+
         self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
 
         # ELBO on validation set
@@ -192,55 +196,78 @@ class Experiment:
 
         self.writer.close()
 
-    def offline_learning(self):
-        self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
-        self.rollout.clear()
-        # Check if rollout exists in the results directory
-        self.rollout = save_load.load_and_concatenate_rollouts(
-            os.path.join(self.results_dir, "rollouts")
-        )
-        offline_cfg = self.cfg.training.get_offline_optim_cfg()
+    def offline_learning(self, reset=True):
+        if reset:
+            if self.writer:
+                self.writer.close()
+            self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
+            self.rollout.clear()
+            # Check if rollout exists in the results directory
+            self.rollout = save_load.load_and_concatenate_rollouts(
+                os.path.join(self.results_dir, "rollouts")
+            )
+            offline_cfg = self.cfg.training.get_offline_optim_cfg()
+            print(f"Training params: {offline_cfg['param_list']}")
 
-        # Perform offline learning
-        self.training_loss = self.agent.model_env.train_model(self.rollout, **offline_cfg)
+            sampling_ratio = self.agent.model_env.model.dynamics.dt / self.agent.env.dt
+            self.rollout.downsample(n=int(sampling_ratio))
 
-        elbo_list, loglike_list, kl_list = [], [], []
-        for t in self.training_loss:
-            elbo_list.append(float(-t[0]))
-            loglike_list.append(float(t[1]))
-            kl_list.append(float(t[2]))
+            # Perform offline learning
+            self.training_loss = self.agent.model_env.train_model(self.rollout, **offline_cfg)
+            elbo_list, loglike_list, kl_list = [], [], []
+            for t in self.training_loss:
+                elbo_list.append(float(-t[0]))
+                loglike_list.append(float(t[1]))
+                kl_list.append(float(t[2]))
+
+        else:
+            self.env_step = self.prev_step
+            print("Continuing from previous step:", self.env_step)
+            offline_cfg = self.cfg.training.get_offline_optim_cfg()
+            # Perform offline learning
+            self.training_loss = self.agent.model_env.train_model(self.rollout, **offline_cfg)
+            elbo_list, loglike_list, kl_list = [], [], []
+            for t in self.training_loss:
+                elbo_list.append(float(-t[0]))
+                loglike_list.append(float(t[1]))
+                kl_list.append(float(t[2]))
 
         for i, (e, l, k) in enumerate(zip(elbo_list, loglike_list, kl_list), start=1):
-            self.writer.add_scalar("offline/train/ELBO", e, i)
-            self.writer.add_scalar("offline/train/log_like", l, i)
-            self.writer.add_scalar("offline/train/kl_d", k, i)
-        self.writer.close()
+            self.writer.add_scalar("offline/train/ELBO", e, i + self.env_step)
+            self.writer.add_scalar("offline/train/log_like", l, i + self.env_step)
+            self.writer.add_scalar("offline/train/kl_d", k, i + self.env_step)
+
+        self.prev_step += offline_cfg["n_epochs"]
+
+    def __del__(self):
+        if self.writer:
+            self.writer.close()
 
 
-def validate_elbo(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
-    B, T, D = rb["obs"].shape
-    loss, log_like, kl_d = experiment.agent.model_env.model.compute_elbo(
-        y=rb["next_obs"],
-        u=rb["action"],
-        idx=None,
-        n_samples=16,
-        beta=1,
-        k_steps=1,
-    )
-    writer.add_scalar("validation/ELBO", -loss.item() / T, 0)
-    writer.add_scalar("validation/log_like", log_like.item() / T, 0)
-    writer.add_scalar("validation/kl_d", kl_d.item() / T, 0)
+# def validate_elbo(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
+#     B, T, D = rb["obs"].shape
+#     loss, log_like, kl_d = experiment.agent.model_env.model.compute_elbo(
+#         y=rb["next_obs"],
+#         u=rb["action"],
+#         idx=None,
+#         n_samples=16,
+#         beta=1,
+#         k_steps=1,
+#     )
+#     writer.add_scalar("validation/ELBO", -loss.item() / T, 0)
+#     writer.add_scalar("validation/log_like", log_like.item() / T, 0)
+#     writer.add_scalar("validation/kl_d", kl_d.item() / T, 0)
 
 
-def validate_kstep_r2(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
-    r2_fig_path = os.path.join(experiment.results_dir, "validation_kstep.png")
-    r2m, _ = compute_kstep_r2(
-        model=experiment.agent.model_env.model,
-        rollout=rb,
-        k_max=10,
-        n_samples=50,
-        fig_path=r2_fig_path,
-    )
-    for i in range(r2m.shape[1]):
-        for k in range(r2m.shape[0]):
-            writer.add_scalar(f"validation/kstep/r2_mean_{i}", r2m[k, i], k + 1)
+# def validate_kstep_r2(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
+#     r2_fig_path = os.path.join(experiment.results_dir, "validation_kstep.png")
+#     r2m, _ = compute_kstep_r2(
+#         model=experiment.agent.model_env.model,
+#         rollout=rb,
+#         k_max=10,
+#         n_samples=50,
+#         fig_path=r2_fig_path,
+#     )
+#     for i in range(r2m.shape[1]):
+#         for k in range(r2m.shape[0]):
+#             writer.add_scalar(f"validation/kstep/r2_mean_{i}", r2m[k, i], k + 1)

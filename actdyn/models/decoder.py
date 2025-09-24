@@ -48,11 +48,6 @@ class LinearMapping(BaseMapping):
         else:
             raise ValueError("Bias must be a torch.Tensor")
 
-    def set_params(self, weights, bias):
-        """Set both weights and bias of the linear mapping."""
-        self.set_weights(weights)
-        self.set_bias(bias)
-
 
 class LogLinearMapping(BaseMapping):
     network: nn.Sequential
@@ -108,9 +103,10 @@ class MLPMapping(BaseMapping):
         layers = []
         prev_dim = latent_dim
         for h in hidden_dims:
-            layers.append(nn.Linear(prev_dim, h))
-            layers.append(self.activation)
-            prev_dim = h
+            if h > 0:
+                layers.append(nn.Linear(prev_dim, h))
+                layers.append(self.activation)
+                prev_dim = h
         layers.append(nn.Linear(prev_dim, obs_dim))
         self.network = nn.Sequential(*layers)
 

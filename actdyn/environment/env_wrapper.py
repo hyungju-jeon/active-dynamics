@@ -26,11 +26,13 @@ class GymObservationWrapper(gym.Wrapper):
         env: gym.Env,
         obs_model: BaseObservation,
         action_model: BaseAction,
+        dt: float,
         device: str = "cpu",
     ):
         super().__init__(env)
         self.obs_model = obs_model
         self.action_model = action_model
+        self.dt = dt
 
         # Auto-detect device from observation model if available
         if hasattr(obs_model, "network") and obs_model.network is not None:
