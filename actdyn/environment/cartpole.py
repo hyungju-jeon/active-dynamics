@@ -204,4 +204,56 @@ if __name__ == "__main__":
                 break
     env.close()
 
-# %%
+
+class ContinuousCartPoleEnv_partial(ContinuousCartPoleEnv):
+    """A Continuous CartPole environment with partial observations (no velocities)."""
+
+    def __init__(self, dt=0.01, action_bounds=(-1.0, 1.0), **kwargs):
+        super().__init__(dt=dt, action_bounds=action_bounds, **kwargs)
+
+        high = np.array(
+            [
+                1.0,  # sin(phi)
+                1.0,  # cos(phi)
+                1.0,  # sin(theta)
+                1.0,  # cos(theta)
+            ],
+            dtype=np.float32,
+        )
+        self.observation_space = spaces.Box(-high, high, dtype=np.float32)
+
+    def _state_to_observation(self, state):
+        """
+        Convert internal true state (phi, phi_dot, theta, theta_dot)
+        to observation: [sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot]
+        """
+        phi, phi_dot, theta, theta_dot = state
+
+        return np.array(
+            [math.sin(phi), math.cos(phi), math.sin(theta), math.cos(theta)],
+            dtype=np.float32,
+        )
+
+
+class ContinuousCartPoleEnv_angle(ContinuousCartPoleEnv):
+
+    def __init__(self, dt=0.01, action_bounds=(-1.0, 1.0), **kwargs):
+        super().__init__(dt=dt, action_bounds=action_bounds, **kwargs)
+
+        high = np.array(
+            [np.finfo(np.float32).max, np.finfo(np.float32).max],
+            dtype=np.float32,
+        )
+        self.observation_space = spaces.Box(-high, high, dtype=np.float32)
+
+    def _state_to_observation(self, state):
+        """
+        Convert internal true state (phi, phi_dot, theta, theta_dot)
+        to observation: [sin(phi), cos(phi), phi_dot, sin(theta), cos(theta), theta_dot]
+        """
+        phi, phi_dot, theta, theta_dot = state
+
+        return np.array(
+            [phi, theta],
+            dtype=np.float32,
+        )
