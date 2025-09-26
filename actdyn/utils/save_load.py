@@ -4,6 +4,7 @@ import pickle
 from typing import Dict, List, Any, Optional
 from pathlib import Path
 
+from actdyn.config import ExperimentConfig
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 
 
@@ -41,6 +42,14 @@ def load_rollout(path="checkpoints/rollout.pkl") -> Rollout:
     """Load rollout buffer from disk."""
     with open(path, "rb") as f:
         return pickle.load(f)
+
+
+def save_config(config: ExperimentConfig, path=None):
+    """Save experiment config to disk."""
+    if path is None:
+        path = config.results_dir
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    config.to_yaml(os.path.join(path, "config.yaml"))
 
 
 def load_and_concatenate_rollouts(
@@ -166,142 +175,3 @@ def concatenate_log_chunk(
         concatenated[key] = concatenated_data[key] + new_data[key]
 
     return concatenated
-
-
-# def get_numeric_columns(
-#     data: Dict[str, List[Any]], exclude_cols: Optional[List[str]] = None
-# ) -> List[str]:
-#     """Identify numeric columns in the data."""
-#     if exclude_cols is None:
-#         exclude_cols = ["seed", "model"]
-
-#     numeric_cols = []
-#     for key, values in data.items():
-#         if key in exclude_cols:
-#             continue
-
-#         # Check if all non-None values are numeric
-#         numeric_values = [v for v in values if v is not None]
-#         if numeric_values and all(isinstance(v, (int, float, np.number)) for v in numeric_values):
-#             numeric_cols.append(key)
-
-#     return numeric_cols
-
-
-# def compute_statistics_by_seed(
-#     data: Dict[str, List[Any]], numeric_cols: List[str]
-# ) -> Dict[str, Any]:
-#     """Compute statistics grouped by seed first, then across seeds."""
-#     if not numeric_cols or "seed" not in data:
-#         return {}
-
-#     # Group data by seed
-#     seed_data = {}
-#     for i, seed in enumerate(data["seed"]):
-#         if seed not in seed_data:
-#             seed_data[seed] = {col: [] for col in numeric_cols}
-
-#         for col in numeric_cols:
-#             if i < len(data[col]) and data[col][i] is not None:
-#                 seed_data[seed][col].append(data[col][i])
-
-#     # Compute mean for each seed and column
-#     seed_means = {}
-#     for seed, seed_values in seed_data.items():
-#         seed_means[seed] = {}
-#         for col in numeric_cols:
-#             if seed_values[col]:
-#                 seed_means[seed][col] = np.mean(seed_values[col])
-#             else:
-#                 seed_means[seed][col] = np.nan
-
-#     # Compute statistics across seeds
-#     stats = {}
-#     for col in numeric_cols:
-#         values = [
-#             seed_means[seed][col] for seed in seed_means if not np.isnan(seed_means[seed][col])
-#         ]
-
-#         if values:
-#             stats[f"{col}_mean"] = np.mean(values)
-#             stats[f"{col}_std"] = np.std(values, ddof=1) if len(values) > 1 else 0.0
-#             stats[f"{col}_min"] = np.min(values)
-#             stats[f"{col}_max"] = np.max(values)
-#             stats[f"{col}_count_seeds"] = len(values)
-#         else:
-#             stats[f"{col}_mean"] = np.nan
-#             stats[f"{col}_std"] = np.nan
-#             stats[f"{col}_min"] = np.nan
-#             stats[f"{col}_max"] = np.nan
-#             stats[f"{col}_count_seeds"] = 0
-
-#     return stats
-
-
-# def compute_statistics_direct(
-#     data: Dict[str, List[Any]], numeric_cols: List[str]
-# ) -> Dict[str, Any]:
-#     """Compute statistics directly on all data."""
-#     stats = {}
-
-#     for col in numeric_cols:
-#         values = [v for v in data[col] if v is not None and not np.isnan(v)]
-
-#         if values:
-#             stats[f"{col}_mean"] = np.mean(values)
-#             stats[f"{col}_std"] = np.std(values, ddof=1) if len(values) > 1 else 0.0
-#             stats[f"{col}_min"] = np.min(values)
-#             stats[f"{col}_max"] = np.max(values)
-#             stats[f"{col}_count"] = len(values)
-#         else:
-#             stats[f"{col}_mean"] = np.nan
-#             stats[f"{col}_std"] = np.nan
-#             stats[f"{col}_min"] = np.nan
-#             stats[f"{col}_max"] = np.nan
-#             stats[f"{col}_count"] = 0
-
-#     return stats
-
-
-# def compute_statistics(data: Dict[str, List[Any]], group_by_seed: bool = True) -> Dict[str, Any]:
-#     """Compute mean and std statistics for numeric columns."""
-#     numeric_cols = get_numeric_columns(data)
-
-#     if not numeric_cols:
-#         return {}
-
-#     if group_by_seed and "seed" in data:
-#         return compute_statistics_by_seed(data, numeric_cols)
-#     else:
-#         return compute_statistics_direct(data, numeric_cols)
-
-
-# def save_analysis_summary(
-#     results: Dict[str, Dict[str, Any]], output_file: str
-# ) -> Dict[str, List[Any]]:
-#     """Save summary statistics to a JSON file."""
-#     # Prepare data for JSON
-#     summary_data = []
-
-#     # Fill data
-#     for model_name, model_results in results.items():
-#         stats = model_results["statistics"]
-
-#         for file_key, file_stats in stats.items():
-#             row = {"model": model_name, "log_file": file_key, **file_stats}
-#             summary_data.append(row)
-
-#     # Write to JSON
-#     if summary_data:  # Only write if there's data
-#         try:
-#             with open(output_file, "w", encoding="utf-8") as jsonfile:
-#                 json.dump(summary_data, jsonfile, indent=2, default=str)
-
-#             print(f"\nSaved summary statistics to: {output_file}")
-#             return {"summary": summary_data}
-#         except Exception as e:
-#             print(f"Error saving summary: {e}")
-#             return {}
-#     else:
-#         print("No summary data to save")
-#         return {}

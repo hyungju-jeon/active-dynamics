@@ -58,12 +58,14 @@ def setup_environment(config: ExperimentConfig):
             device=config.device,
         )
 
+    env_obs_dim = base_env.observation_space.shape[0]
+
     # Observation model
     obs_model_cls = observation_from_str(config.environment.observation_type)
     obs_config = config.environment.get_observation_cfg()
     observation_model = obs_model_cls(
         obs_dim=config.observation_dim,
-        latent_dim=config.latent_dim,
+        latent_dim=env_obs_dim,
         device=config.device,
         **obs_config,
     )

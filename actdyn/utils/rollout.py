@@ -244,7 +244,7 @@ class Rollout:
         if isinstance(key, str):
             if key not in self._data:
                 raise KeyError(f"No {key} in rollout")
-            return self._data.get(key)
+            return self._data[key]
 
         elif isinstance(key, int):
             idx = key
@@ -608,7 +608,7 @@ class RolloutBuffer:
         return (len(self), len(self.buffer[0])) if self.buffer else (0, 0)
 
     @property
-    def flat(self):
+    def flat(self) -> dict[str, torch.Tensor]:
         """
         Stack all rollouts into a single tensor dictionary. (buffer, time, dim)
         """
@@ -690,7 +690,7 @@ class RolloutBuffer:
     def __len__(self):
         return len(self.buffer)
 
-    def __getitem__(self, index):
+    def __getitem__(self, index) -> Union[Rollout, List[Rollout], torch.Tensor]:
         if isinstance(index, slice):
             return list(self.buffer)[index]
         elif isinstance(index, int):

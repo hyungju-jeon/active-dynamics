@@ -1,3 +1,4 @@
+import os
 from typing import Tuple, Dict, Any
 import torch
 from torch.utils.data import DataLoader, Dataset
@@ -58,7 +59,9 @@ class VAEWrapper(gym.Env):
 
         # Predict next latent state
         env_action = (
-            self.model.action_encoder(action) if self.model.action_encoder is not None else action
+            self.model.action_encoder(action, self._state)
+            if self.model.action_encoder is not None
+            else action
         )
 
         with torch.no_grad():
@@ -126,5 +129,6 @@ class VAEWrapper(gym.Env):
         return self.model.train_model(dataloader=dataloader, **kwargs)
 
     def save_model(self, path: str):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         """Save model parameters to disk."""
         self.model.save(path)

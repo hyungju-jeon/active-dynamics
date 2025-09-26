@@ -18,7 +18,7 @@ def compute_model_r2(
     model: BaseModel = None,
     rollout: Union[Rollout, RolloutBuffer, Dict] = None,
     k_max: int = 10,
-    n_idx: int = 100,
+    n_idx: int = 200,
     n_samples: int = 100,
     fig_path: Optional[str] = None,
     show_fig: bool = False,
@@ -32,8 +32,7 @@ def compute_model_r2(
     decoder = model.decoder
 
     z = model.encoder(rollout["next_obs"], rollout["action"], n_samples=n_samples)[0]
-    u = rollout["action"][:, 1:]
-    u_enc = action_encoder(u) if action_encoder is not None else u
+    u = rollout["action"]
     y = rollout["next_obs"]
 
     B, T, D = y.shape
@@ -44,21 +43,23 @@ def compute_model_r2(
 
     y_true_list = []
     y_pred_list = []
-    for t_idx in start_idx:
-        y_true_i = y[:, t_idx : t_idx + k_max + 1, :]  # (B, k, D)
-        z_pred_list = dynamics.sample_forward(
-            z[..., t_idx : t_idx + 1, :],
-            action=u_enc[..., t_idx : t_idx + k_max + 1, :],
-            k_step=k_max,
-            return_traj=True,
-        )[
-            0
-        ]  # k+1 x (S, B, 1, D)
-        z_pred = torch.cat(z_pred_list, dim=-2)  # (S, B, k+1, D)
-        y_pred = decoder(z_pred) if decoder is not None else z_pred  # (S, B, k+1, D)
-        y_pred = y_pred.mean(dim=0)  # (B, k+1, D)
-        y_true_list.append(y_true_i)
-        y_pred_list.append(y_pred)
+    with torch.no_grad():
+        for t_idx in start_idx:
+            y_true_list.append(y[:, t_idx : t_idx + k_max + 1, :])  # (B, k, D)
+            z_pred_list = [z[..., t_idx : t_idx + 1, :]]
+            for k in range(k_max):
+                u_enc = action_encoder(u[..., t_idx + 1 + k, :].unsqueeze(-2), z_pred_list[-1])
+                z_pred_list.append(
+                    dynamics.sample_forward(
+                        z_pred_list[-1], action=u_enc, k_step=1, return_traj=False
+                    )[0]
+                )
+
+            z_pred = torch.cat(z_pred_list, dim=-2)  # (S, B, k+1, D)
+            y_pred = decoder(z_pred) if decoder is not None else z_pred  # (S, B, k+1, D)
+            y_pred = y_pred.mean(dim=0)  # (B, k+1, D)
+            y_pred_list.append(y_pred)
+            del z_pred, y_pred, z_pred_list, u_enc
 
     y_true = torch.stack(y_true_list, dim=0)  # (n_idx, B, k, D)
     y_pred = torch.stack(y_pred_list, dim=0)  # (n_idx, B, k, D)
@@ -95,8 +96,8 @@ def compute_model_r2(
 
     # cleanup
     if "cuda" in str(z.device):
+        del z, u, y, y_pred, y_true
         torch.cuda.empty_cache()
-        del z, u, y, y_pred, y_true, z_pred, z_pred_list
 
     return to_np(r2_mat), r2_mean_mat, r2_std_mat
 
