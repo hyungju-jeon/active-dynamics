@@ -28,14 +28,15 @@ class MlpActionEncoder(BaseAction):
         latent_dim,
         action_bounds,
         hidden_dim=[16],
+        state_dependent=False,
         activation="relu",
         device="cpu",
     ):
-        super().__init__(action_dim, latent_dim, action_bounds, device)
+        super().__init__(action_dim, latent_dim, action_bounds, state_dependent, device)
         self.activation = activation_from_str(activation)
 
         layers = []
-        prev_dim = action_dim
+        prev_dim = action_dim if not state_dependent else action_dim + latent_dim
         for h in hidden_dim:
             layers.append(nn.Linear(prev_dim, h))
             layers.append(self.activation)

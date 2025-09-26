@@ -90,7 +90,7 @@ class ModelConfig:
     action_type: str = "identity"  # Options: "identity", "linear", "mlp"
     act_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
     act_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
-
+    act_state_dependent: bool = False
     model_type: str = "seq-vae"  # Options: "seq-vae"
 
     def get_encoder_cfg(self):
@@ -125,6 +125,7 @@ class ModelConfig:
         return {
             "hidden_dim": self.act_hidden_dim,
             "activation": self.act_activation,
+            "state_dependent": self.act_state_dependent,
         }
 
     def get_ensemble_cfg(self):
@@ -327,3 +328,12 @@ class ExperimentConfig:
     def clone(self) -> "ExperimentConfig":
         """Create a deep copy of the experiment configuration."""
         return copy.deepcopy(self)
+
+    def to_yaml(self, yaml_path: str) -> None:
+        """Save the ExperimentConfig instance to a YAML file."""
+        with open(yaml_path, "w", encoding="utf-8") as f:
+            yaml.dump(self.to_dict(), f)
+
+    def to_dict(self) -> dict:
+        """Convert the ExperimentConfig instance to a dictionary."""
+        return self.__dict__

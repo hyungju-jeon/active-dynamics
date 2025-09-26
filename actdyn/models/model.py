@@ -105,14 +105,16 @@ class SeqVae(BaseModel):
         # Prepare action tensor
         if u is None:
             u = torch.zeros(B, T, getattr(self.action_encoder, "action_dim", 0), device=self.device)
-        if u.dim() != 3:
-            raise ValueError("Action tensor must have shape (B,T,A)")
+
         # Shift actions for time alignment
-        u_s = repeat(u, "b t a -> s b t a", s=S)
+        if u.ndim == 3:
+            u_s = repeat(u, "b t a -> s b t a", s=S)
+        elif u.ndim == 4:
+            u_s = u
 
         z_init = z_samples  # (S,B,D)
-        if detach_posterior:
-            z_init = z_samples.detach()
+        # if detach_posterior:
+        #     z_init = z_samples.detach()
 
         # KL weights
         if decay_rate is None:
@@ -178,16 +180,15 @@ class SeqVae(BaseModel):
         S, B, T, D = z_me.shape
 
         if self.action_encoder is not None and u is not None:
-            u_encoded = self.action_encoder(u)
+            u_encoded = self.action_encoder(u[..., 1:, :], z_me[..., :-1, :])
             # Align a_t with y_{t+1}
-            u_encoded = u_encoded[:, 1:]
         else:
             u_encoded = u
 
         # Apply temporal masking
         t_mask = torch.bernoulli((1 - p_mask) * torch.ones((T, 1), device=mu_q_x.device))
 
-        z_tr = self.dynamics.sample_forward(init_z=z_me, action=u_encoded, k_step=1)[0]
+        z_tr = self.dynamics.sample_forward(init_z=z_me, action=u_encoded, k_step=1)[1]
         z_tr = torch.cat([z_me[..., :1, :], z_tr], dim=-2)  # (S,B,T,D)
 
         z_samples = t_mask * z_me + (1 - t_mask) * z_tr  # (S,B,T,D)
@@ -283,6 +284,7 @@ class SeqVae(BaseModel):
 
                 if self.step_count < warmup:
                     self.beta = 0.0
+                    self.p_mask = 0
 
                 loss, log_like, kl_d = self.compute_elbo(
                     obs,

@@ -110,7 +110,7 @@ class BaseDynamics(nn.Module):
         self.dt = dt
         self.is_residual = is_residual
         self.logvar = nn.Parameter(
-            torch.randn(1, state_dim, device=self.device), requires_grad=True
+            -2 * torch.rand(1, state_dim, device=self.device), requires_grad=True
         )
         self.network = None
         self.state_dim = state_dim
@@ -144,11 +144,7 @@ class BaseDynamics(nn.Module):
             if action is not None:
                 valid_T = min(z_pred.shape[-2], action.shape[-2])
                 z_pred = z_pred[..., :valid_T, :]
-                z_pred += (
-                    action[..., :valid_T, :] * self.dt
-                    if self.is_residual
-                    else action[..., :valid_T, :]
-                )
+                z_pred += action[..., :valid_T, :] * self.dt
                 action = action[..., 1:, :]  # Shift action for next step
 
             mus.append(z_pred)

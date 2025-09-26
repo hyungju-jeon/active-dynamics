@@ -1,5 +1,6 @@
 """Base environment classes for the active dynamics package."""
 
+from einops import repeat
 import gymnasium as gym
 from gymnasium import spaces
 import torch
@@ -32,7 +33,9 @@ class BaseDynamicsEnv(gym.Env, ABC):
         # Initialize spaces with configurable bounds
         # Create action bounds arrays of shape (state_dim,)
         if not (isinstance(action_bounds, (tuple, list)) and len(action_bounds) == 2):
-            raise ValueError(f"action_bounds must be a tuple or list of (low, high), got {action_bounds}")
+            raise ValueError(
+                f"action_bounds must be a tuple or list of (low, high), got {action_bounds}"
+            )
         action_low = np.full((state_dim,), action_bounds[0], dtype=np.float32)
         action_high = np.full((state_dim,), action_bounds[1], dtype=np.float32)
 
@@ -43,10 +46,14 @@ class BaseDynamicsEnv(gym.Env, ABC):
         )
 
         if state_bounds is None:
-            self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32)
+            self.observation_space = spaces.Box(
+                low=-np.inf, high=np.inf, shape=(state_dim,), dtype=np.float32
+            )
         else:
             if not (isinstance(state_bounds, (tuple, list)) and len(state_bounds) == 2):
-                raise ValueError(f"state_bounds must be a tuple or list of (low, high), got {state_bounds}")
+                raise ValueError(
+                    f"state_bounds must be a tuple or list of (low, high), got {state_bounds}"
+                )
             state_low = np.full((state_dim,), state_bounds[0], dtype=np.float32)
             state_high = np.full((state_dim,), state_bounds[1], dtype=np.float32)
 
@@ -95,7 +102,7 @@ class BaseDynamicsEnv(gym.Env, ABC):
 class BaseAction(nn.Module):
     """Base class for deterministic action encoder."""
 
-    def __init__(self, action_dim, latent_dim, action_bounds, device="cpu"):
+    def __init__(self, action_dim, latent_dim, action_bounds, state_dependent=False, device="cpu"):
         super().__init__()
         self.action_dim = action_dim
         self.latent_dim = latent_dim
@@ -105,11 +112,19 @@ class BaseAction(nn.Module):
             shape=(action_dim,),
             dtype=np.float32,
         )
+        self.state_dependent = state_dependent
         self.device = torch.device(device)
         self.network = None
 
-    def forward(self, action):
+    def forward(self, action, state=None):
         if self.network is not None:
+            if self.state_dependent and state is not None:
+                if state.ndim == 4:
+                    action = repeat(action, "b t d-> s b t d", s=state.shape[0])
+                z_u = torch.cat([action, state], dim=-1)
+                return self.network(z_u)
+            else:
+                self.network(action)
             return self.network(action)
         raise NotImplementedError("Network is not defined in BaseAction.")
 
