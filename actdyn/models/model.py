@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union, List, Tuple, Any, Dict
 import torch
 from einops import rearrange, repeat
 
@@ -10,11 +10,22 @@ from .encoder import BaseEncoder
 
 
 class SeqVae(BaseModel):
-    """Sequential Variational Autoencoder (SeqVAE) with dynamics."""
+    """Sequential Variational Autoencoder (SeqVAE) with dynamics.
+    
+    A generative model for sequential data that combines a variational autoencoder
+    with learned dynamics for modeling temporal dependencies.
+    
+    Args:
+        dynamics: Dynamics model for temporal evolution
+        encoder: Encoder network for mapping observations to latent space
+        decoder: Decoder network for reconstructing observations
+        action_encoder: Optional action encoder for processing actions
+        device: Device to run computations on
+    """
 
     def __init__(
         self,
-        dynamics: BaseDynamics | BaseDynamicsEnsemble,
+        dynamics: Union[BaseDynamics, BaseDynamicsEnsemble],
         encoder: BaseEncoder,
         decoder: Decoder,
         action_encoder: Optional[BaseAction] = None,

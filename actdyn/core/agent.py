@@ -1,3 +1,4 @@
+from typing import Optional, Dict, Any, Tuple, Union
 import torch
 from actdyn.utils.rollout import RecentRollout
 from actdyn.environment.env_wrapper import GymObservationWrapper
@@ -23,9 +24,9 @@ class Agent:
         self,
         env: GymObservationWrapper,
         model_env: VAEWrapper,
-        policy: BasePolicy | BaseMPC,
+        policy: Union[BasePolicy, BaseMPC],
         buffer_length: int = 20,
-        device="cuda",
+        device: str = "cuda",
     ):
         self.env = env
         self.model_env = model_env
@@ -38,15 +39,18 @@ class Agent:
         self.recent = RecentRollout(max_len=self.buffer_length, device=str(self.device))
 
         # State tracking
-        self._observation = None  # Current observation from the environment
-        self._env_state = None  # Current environment state
-        self._model_state = None  # Agent's internal state estimate
+        self._observation: Optional[torch.Tensor] = None  # Current observation from the environment
+        self._env_state: Optional[torch.Tensor] = None  # Current environment state
+        self._model_state: Optional[torch.Tensor] = None  # Agent's internal state estimate
 
-    def reset(self, seed: int | None = None):
+    def reset(self, seed: Optional[int] = None) -> torch.Tensor:
         """Reset the agent and environment.
 
+        Args:
+            seed: Random seed for reproducibility
+
         Returns:
-            torch.Tensor: Initial observation
+            Initial observation tensor
         """
         # Get initial observation from environment
         with torch.no_grad():
@@ -68,7 +72,7 @@ class Agent:
 
         return self._observation
 
-    def step(self, action):
+    def step(self, action: torch.Tensor) -> Tuple[Dict[str, torch.Tensor], bool]:
         """Take a step in the environment.
 
         Args:
@@ -76,10 +80,8 @@ class Agent:
 
         Returns:
             Tuple containing:
-                - obs: Next observation
-                - reward: Reward received
+                - transition: Dictionary with transition data
                 - done: Whether episode is done
-                - info: Additional information
         """
         # Step both environments with the encoded action
         obs, reward, terminated, truncated, env_info = self.env.step(action)
@@ -115,18 +117,22 @@ class Agent:
 
         return transition, done
 
-    def plan(self):
+    def plan(self) -> torch.Tensor:
         """Plan next action using the policy.
 
         Returns:
-            torch.Tensor: Selected action
+            Selected action tensor
         """
         # Use policy to plan and get action
         action = self.policy(self._model_state)
         return action
 
-    def update_policy(self, transition):
-        """Update the policy based on the latest transition."""
+    def update_policy(self, transition: Dict[str, torch.Tensor]) -> None:
+        """Update the policy based on the latest transition.
+        
+        Args:
+            transition: Dictionary containing transition data
+        """
         # Update policy if necessary
         if isinstance(self.policy, BaseMPC):
             if isinstance(self.policy.metric, CompositeMetric):
@@ -136,8 +142,16 @@ class Agent:
             if isinstance(self.policy.metric, FisherInformationMetric):
                 self.policy.metric.update_fim(transition)
 
-    def train_model(self, sampling_ratio=1, **kwargs):
-        """Train the model using recent transitions."""
+    def train_model(self, sampling_ratio: float = 1, **kwargs) -> list:
+        """Train the model using recent transitions.
+        
+        Args:
+            sampling_ratio: Ratio for downsampling the data
+            **kwargs: Additional training parameters
+            
+        Returns:
+            List of training losses [elbo, log_likelihood, kl_divergence]
+        """
         data = self.recent.copy()
         data.downsample(n=int(sampling_ratio))
 

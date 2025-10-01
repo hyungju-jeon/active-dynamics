@@ -1,5 +1,11 @@
-# %%
-from typing import List, Union
+"""
+Rollout and buffer classes for storing and managing trajectory data.
+
+This module provides efficient data structures for collecting, storing, and 
+processing trajectory data from environment interactions.
+"""
+
+from typing import List, Union, Optional, Dict, Any, Tuple
 import torch
 from tensordict.tensordict import TensorDict
 from collections import deque
@@ -8,7 +14,7 @@ import einops
 from torch.utils.data import Dataset
 
 
-def collate_dict_batch(batch):
+def collate_dict_batch(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Custom collate function for DataLoader that handles dict batches efficiently.
     This is more memory-efficient than the default collate function.
@@ -40,7 +46,7 @@ def collate_dict_batch(batch):
     return result
 
 
-def collate_timestep_batch(batch):
+def collate_timestep_batch(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
     Custom collate function for batching time steps from a single rollout.
 
@@ -76,11 +82,18 @@ def collate_timestep_batch(batch):
 class Rollout:
     """
     A class to store a single rollout of an agent in an environment.
+    
+    This class efficiently manages trajectory data with proper memory handling
+    and supports both list-based (during collection) and tensor-based (after finalization)
+    storage modes for optimal performance.
+    
+    Args:
+        device: Device to store tensors on
     """
 
     allowed_fields = {
         "obs",
-        "next_obs",
+        "next_obs", 
         "action",
         "env_action",  # encoded action
         "reward",
@@ -92,11 +105,11 @@ class Rollout:
         "model_action",  # action of the model
     }
 
-    def __init__(self, device="cpu"):
-        self._data = {}
-        self.length = 0
+    def __init__(self, device: str = "cpu"):
+        self._data: Dict[str, Union[List[torch.Tensor], torch.Tensor]] = {}
+        self.length: int = 0
         self.device = torch.device(device)
-        self.finalized = False
+        self.finalized: bool = False
 
     def __del__(self):
         """Destructor to ensure proper cleanup of GPU tensors"""
@@ -107,12 +120,16 @@ class Rollout:
             pass  # Ignore errors during cleanup
 
     @property
-    def shape(self):
+    def shape(self) -> int:
+        """Get the current length of the rollout."""
         return self.length
 
-    def downsample(self, n=1):
+    def downsample(self, n: int = 1) -> None:
         """
         Downsample the rollout by keeping every n-th transition.
+        
+        Args:
+            n: Downsampling factor. For actions, sums over n steps.
         """
         if n <= 1:
             return
@@ -297,30 +314,34 @@ class Rollout:
     def __len__(self):
         return self.length
 
-    def clear(self, keep_last=0):
+    def clear(self, keep_last: int = 0) -> None:
         """
         Clear old rollout data to manage memory, keeping only the last `keep_last` transitions.
+        
+        This method efficiently manages GPU memory by explicitly deleting tensor references
+        and calling garbage collection when appropriate.
+        
+        Args:
+            keep_last: Number of recent transitions to keep
         """
         if not self._data:
             return
 
         if not self.finalized:
             # If not finalized, work with lists
-            for key in list(
-                self._data.keys()
-            ):  # Create list copy to avoid dict change during iteration
+            for key in list(self._data.keys()):
                 if keep_last == 0:
-                    # Clear list and delete tensor references
+                    # Clear list and delete tensor references explicitly
                     for item in self._data[key]:
-                        if isinstance(item, torch.Tensor):
+                        if isinstance(item, torch.Tensor) and hasattr(item, '__del__'):
                             del item
                     self._data[key].clear()
                 else:
                     if len(self._data[key]) > keep_last:
-                        # Delete old tensor references explicitly
+                        # Delete old tensor references explicitly for memory efficiency
                         old_items = self._data[key][:-keep_last]
                         for item in old_items:
-                            if isinstance(item, torch.Tensor):
+                            if isinstance(item, torch.Tensor) and hasattr(item, '__del__'):
                                 del item
                         # Keep only the last keep_last items
                         self._data[key] = self._data[key][-keep_last:]
@@ -334,15 +355,14 @@ class Rollout:
                     self._data[key] = []
                 elif (
                     isinstance(self._data[key], torch.Tensor)
-                    and self._data[key].shape[0] > keep_last
+                    and self._data[key].shape[1] > keep_last
                 ):
                     # Keep only the last keep_last elements
                     old_tensor = self._data[key]
-                    self._data[key] = self._data[key][-keep_last:].clone()
+                    self._data[key] = self._data[key][:, -keep_last:].clone()
                     del old_tensor  # Explicitly delete old tensor
 
         self.finalized = False  # Reset finalized state to allow re-adding data
-
         self.length = min(self.length, keep_last)
 
         # Force garbage collection of GPU memory if using CUDA

@@ -1,5 +1,6 @@
 """Base model classes for the active dynamics package."""
 
+from typing import Optional, Union, List, Tuple
 import torch
 import torch.nn as nn
 from torch.nn.functional import softplus
@@ -13,31 +14,58 @@ eps = 1e-6
 
 # Encoder models
 class BaseEncoder(nn.Module):
-    """Base class for encoder models."""
+    """Base class for encoder models.
+    
+    Args:
+        obs_dim: Dimension of observations
+        action_dim: Dimension of actions
+        latent_dim: Dimension of latent space
+        device: Device to run computations on
+    """
 
-    network: nn.Module
+    network: Optional[nn.Module]
 
-    def __init__(self, obs_dim: int, action_dim: int, latent_dim: int, device="cpu"):
+    def __init__(self, obs_dim: int, action_dim: int, latent_dim: int, device: str = "cpu"):
         super().__init__()
 
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.latent_dim = latent_dim
         self.device = torch.device(device)
-        self.network = None
+        self.network: Optional[nn.Module] = None
 
-    def compute_param(self):
+    def compute_param(self) -> None:
+        """Compute encoder parameters. To be implemented by subclasses."""
         raise NotImplementedError
 
-    def forward(self):
+    def forward(self) -> torch.Tensor:
+        """Forward pass through encoder. To be implemented by subclasses."""
         raise NotImplementedError
 
-    def to(self, device):
+    def to(self, device: str) -> "BaseEncoder":
+        """Move encoder to specified device.
+        
+        Args:
+            device: Target device
+            
+        Returns:
+            Self for method chaining
+        """
         self.device = torch.device(device)
-        self.network.to(device)
+        if self.network is not None:
+            self.network.to(device)
         return self
 
-    def validate_input(self, y, u):
+    def validate_input(self, y: torch.Tensor, u: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Validate and prepare input tensors.
+        
+        Args:
+            y: Observation tensor of shape (batch, time, obs_dim)
+            u: Optional action tensor of shape (batch, time, action_dim)
+            
+        Returns:
+            Tuple of validated (y, u) tensors on correct device
+        """
         assert y.dim() == 3, f"Input y must be of shape (batch, time, input_dim), got {y.shape}"
         if u is not None:
             assert u.dim() == 3

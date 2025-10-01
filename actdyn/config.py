@@ -10,7 +10,7 @@ class EnvironmentConfig:
     env_dynamics_type: Optional[str] = (
         "limit_cycle"  # Options: "limit_cycle", "double_limit_cycle", "multi_attractor"
     )
-    env_dt = 0.1
+    env_dt: float = 0.1
     env_noise_scale: float = 0.1
     env_render_mode: Optional[str] = None  # Options: "human", "rgb_array"
     env_action_bounds: List[float] = field(default_factory=lambda: [-0.1, 0.1])
