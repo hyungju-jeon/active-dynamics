@@ -1,3 +1,6 @@
 [submodule "docs/active-dynamics-writing"]
 	path = docs/active-dynamics-writing
-	url = https://github.com/hyungju-jeon/active-dynamics-writing
+	url = git@github.com:hyungju-jeon/active-dynamics-writing
+[submodule "external/integrative-inference"]
+	path = external/integrative-inference
+	url = git@github.com:ayeshav/integrative-inference.git
