@@ -66,7 +66,8 @@ class MpcICem(BaseMPC):
         super().beginning_of_rollout(state=state)
         self.mean = self.get_init_mean()
         self.std = self.get_init_std()
-        self.elite_samples = RolloutBuffer(device=self.device)
+        self.elite_actions = None
+        self.elite_costs_traj = None
         self.was_reset = True
 
         self.model_evals_per_timestep = (
@@ -143,10 +144,11 @@ class MpcICem(BaseMPC):
         )  # (num_samples, horizon + 1, state_dim)
         simulated_paths[:, 0, :] = initial_state[:, 0, :].repeat(actions.shape[0], 1)
 
+        # Simulated trajectories using mean prediction
         for step in range(self.horizon):
             simulated_paths[:, step + 1] = self.model.dynamics.sample_forward(
                 simulated_paths[:, step], self.model.action_encoder(actions[:, step])
-            )[0]
+            )[1]
         rollout = RolloutBuffer(device=self.device)
         rollout.add_dict(
             {
@@ -182,13 +184,14 @@ class MpcICem(BaseMPC):
                 actions[0] = self.mean
 
             # Shifting elites over time
-            if iter == 0 and self.shift_elites and self.elite_samples:
-                elites_actions = self.elite_samples.as_array("action")
+            has_elite = self.elite_actions is not None and len(self.elite_actions) > 0
+            if iter == 0 and self.shift_elites and has_elite:
+                elites_actions = self.elite_actions
                 reused_actions = elites_actions[:, 1:]
                 num_elites = int(reused_actions.shape[0] * self.frac_elites_reused)
                 reused_actions = reused_actions[:num_elites]
                 last_actions = self.sample_action_sequences(num_elites)[:, -1:]
-                elites_actions = torch.cat([reused_actions, last_actions], dim=1)
+                elites_actions = torch.cat([reused_actions, last_actions], dim=-2)
                 actions = torch.cat([actions, elites_actions], dim=0)
 
             # Simulate and Compute Cost
@@ -197,10 +200,10 @@ class MpcICem(BaseMPC):
 
             # Keep elites from previous iteration
             if iter > 0 and self.keep_elites:
-                num_elites_to_keep = int(len(self.elite_samples) * self.frac_elites_reused)
+                num_elites_to_keep = int(len(self.elite_actions) * self.frac_elites_reused)
                 if num_elites_to_keep > 0:
-                    prev_elites_actions = self.elite_samples.as_array("action")
-                    prev_elite_costs = self.elite_samples.as_array("cost")
+                    prev_elites_actions = self.elite_actions
+                    prev_elite_costs = self.elite_costs_traj
                     # Ensure prev_elites_actions has the same shape as actions except for the batch dimension
                     assert (
                         actions.shape[1:] == prev_elites_actions.shape[1:]
@@ -215,14 +218,8 @@ class MpcICem(BaseMPC):
 
             # Get elite samples
             elite_idxs = torch.topk(-costs, self.num_elites, dim=0)[1]
-            elite_actions = actions[elite_idxs]
-            elite_costs_traj = costs[elite_idxs]
-            self.elite_samples.add_dict(
-                {
-                    "action": elite_actions,
-                    "cost": elite_costs_traj,
-                }
-            )
+            self.elite_actions = actions[elite_idxs]
+            self.elite_costs_traj = costs[elite_idxs]
 
             # Update best first action if we found better solution
             min_cost_idx = elite_idxs[0]
@@ -231,8 +228,8 @@ class MpcICem(BaseMPC):
                 best_first_action = actions[min_cost_idx, 0]
 
             # Update mean and std
-            new_mean = elite_actions.mean(dim=0)
-            new_std = elite_actions.std(dim=0)
+            new_mean = torch.tensor(self.elite_actions).mean(dim=0)
+            new_std = torch.tensor(self.elite_actions).std(dim=0)
 
             self.mean = (1 - self.alpha) * new_mean + self.alpha * self.mean
             self.std = (1 - self.alpha) * new_std + self.alpha * self.std

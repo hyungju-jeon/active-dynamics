@@ -192,19 +192,6 @@ class ContinuousCartPoleEnv(gym.Env):
             pygame.quit()
 
 
-if __name__ == "__main__":
-    env = ContinuousCartPoleEnv()
-    RENDER = True
-    for ep in range(100):
-        obs = env.reset()
-        for t in range(200):
-            action = env.action_space.sample()
-            obs, reward, done, info, _ = env.step(action)
-            if done:
-                break
-    env.close()
-
-
 class ContinuousCartPoleEnv_partial(ContinuousCartPoleEnv):
     """A Continuous CartPole environment with partial observations (no velocities)."""
 

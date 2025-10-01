@@ -67,7 +67,7 @@ class FisherInformationMetric(BaseMetric):
         super().__init__(compute_type, device)
         self.dynamics = model.dynamics
         if isinstance(self.dynamics, BaseDynamicsEnsemble):
-            self.dynamics = self.dynamics.models[0]  # Use the first model for FIM
+            self.dynamics = self.dynamics.ensemble[0]  # Use the first model for FIM
         else:
             self.dynamics = self.dynamics
         self.decoder = model.decoder

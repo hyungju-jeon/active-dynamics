@@ -19,7 +19,6 @@ data/
 dev/
 develop-eggs/
 dist/
-docs/
 reference/
 downloads/
 tests/
