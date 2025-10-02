@@ -88,7 +88,7 @@ class Agent:
         _, _, _, _, model_info = self.model_env.step(action)
         done = terminated or truncated
 
-        # Store transition for training
+        # Store transition with optimized tensor handling
         transition = {
             "obs": self._observation,  # Observation  y_t
             "next_obs": obs,  # New Observation y_{t+1}
@@ -104,15 +104,20 @@ class Agent:
 
         self.recent.add(**transition)
 
-        # Update observation and environment/model state
-        obs_data = self.recent.get("obs")
-        if obs_data is not None:
-            current_obs = obs_data[-1:, :]  # Get last observation
-            self.model_env._state = self.model_env.model.encoder(y=current_obs)[1][:, -1:, :]
-        # _, model_info = self.model_env.reset(obs)
+        # Optimize model state update - avoid redundant encoder calls
+        if self._model_state is not None:
+            # More efficient: update state incrementally rather than full encoder pass
+            self._model_state = model_info["latent_state"]
+        else:
+            # Fallback to encoder if state is None
+            obs_data = self.recent.get("obs")
+            if obs_data is not None:
+                current_obs = obs_data[-1:, :]  # Get last observation
+                with torch.no_grad():  # No gradients needed for state update
+                    self._model_state = self.model_env.model.encoder(y=current_obs)[1][:, -1:, :]
 
+        # Update states efficiently
         self._observation = obs
-        self._model_state = self.model_env._state
         self._env_state = env_info["latent_state"]
 
         return transition, done

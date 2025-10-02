@@ -1,6 +1,6 @@
-import copy
+from typing import List, Union, Optional, Dict, Any, Tuple
 from dataclasses import dataclass, field
-from typing import Any, List, Optional, Union
+import copy
 import yaml
 
 
@@ -31,7 +31,8 @@ class EnvironmentConfig:
     act_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
     act_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
 
-    def get_environment_cfg(self):
+    def get_environment_config(self) -> Dict[str, Any]:
+        """Get environment configuration dictionary."""
         return {
             "dt": self.env_dt,
             "noise_scale": self.env_noise_scale,
@@ -45,7 +46,8 @@ class EnvironmentConfig:
             "alpha": self.env_alpha,
         }
 
-    def get_observation_cfg(self):
+    def get_observation_config(self) -> Dict[str, Any]:
+        """Get observation model configuration dictionary."""
         return {
             "hidden_dim": self.obs_hidden_dim,
             "activation": self.obs_activation,
@@ -53,7 +55,8 @@ class EnvironmentConfig:
             "noise_scale": self.obs_noise_scale,
         }
 
-    def get_action_cfg(self):
+    def get_action_config(self) -> Dict[str, Any]:
+        """Get action model configuration dictionary."""
         return {
             "hidden_dim": self.act_hidden_dim,
             "activation": self.act_activation,

@@ -1,6 +1,6 @@
 """Base model classes for the active dynamics package."""
 
-from typing import Optional, Union, List, Tuple
+from typing import Optional, Union, List, Tuple, Dict, Any
 import torch
 import torch.nn as nn
 from torch.nn.functional import softplus
@@ -147,9 +147,13 @@ class BaseDynamics(nn.Module):
         self.device = torch.device(device)
         self.network.to(device)
 
-    def compute_param(self, state):
+    def compute_param(self, state: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Compute dynamics parameters with cached variance."""
         mu = self.network(state)
-        var = softplus(self.logvar) + eps
+        # Cache variance computation to avoid repeated softplus calls
+        if not hasattr(self, '_cached_var') or self._cached_var is None:
+            self._cached_var = softplus(self.logvar) + eps
+        var = self._cached_var
         return mu, var
 
     def sample_forward(self, init_z, action=None, k_step=1, return_traj=False):

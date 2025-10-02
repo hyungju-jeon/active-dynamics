@@ -137,7 +137,8 @@ class Experiment:
             print("Continuing from previous step:", self.env_step)
             self.rollout.clear()
 
-        # Setup progress bar
+        # Cache device check for efficiency
+        self._is_cuda = "cuda" in str(self.agent.device)
         pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Training")
         while self.env_step < train_cfg.total_steps:
             self.env_step += 1
@@ -195,8 +196,8 @@ class Experiment:
                 if self.env_step < train_cfg.total_steps:
                     self.rollout.clear()
 
-            # Clean up tensors to prevent memory accumulation
-            if "cuda" in str(self.agent.device):
+            # Optimized cleanup - cache device check
+            if self._is_cuda:
                 del transition, action
                 torch.cuda.empty_cache()
 

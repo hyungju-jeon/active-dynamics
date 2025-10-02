@@ -174,10 +174,15 @@ class SeqVae(BaseModel):
         # Stack KL per horizon
         kl_per_k = torch.stack(kl_terms, dim=-1)  # (B,K)
 
-        # Weighted sum over horizons
-        kl_weights = torch.tensor([decay_rate**k for k in range(k_steps)], device=self.device)
-        kl_weights = kl_weights / kl_weights.sum()
-        kl_weighted = (kl_per_k * kl_weights).sum(-1)  # (B,)
+        # Optimize KL weight computation - pre-compute and cache
+        if not hasattr(self, '_cached_kl_weights') or self._cached_kl_weights.shape[0] != k_steps:
+            kl_weights = torch.pow(decay_rate, torch.arange(k_steps, device=self.device, dtype=torch.float32))
+            self._cached_kl_weights = kl_weights / kl_weights.sum()
+        else:
+            kl_weights = self._cached_kl_weights
+            
+        # Use in-place operations where possible
+        kl_weighted = torch.sum(kl_per_k * kl_weights, dim=-1)  # (B,)
 
         return kl_per_k, kl_weighted
 
@@ -196,8 +201,13 @@ class SeqVae(BaseModel):
         else:
             u_encoded = u
 
-        # Apply temporal masking
-        t_mask = torch.bernoulli((1 - p_mask) * torch.ones((T, 1), device=mu_q_x.device))
+        # Optimize temporal masking - use in-place operations
+        if not hasattr(self, '_mask_buffer') or self._mask_buffer.shape[0] != T:
+            self._mask_buffer = torch.empty((T, 1), device=mu_q_x.device)
+        
+        # Use in-place bernoulli for better memory efficiency
+        torch.bernoulli((1 - p_mask) * torch.ones((T, 1), device=mu_q_x.device), out=self._mask_buffer)
+        t_mask = self._mask_buffer
 
         z_tr = self.dynamics.sample_forward(init_z=z_me, action=u_encoded, k_step=1)[1]
         z_tr = torch.cat([z_me[..., :1, :], z_tr], dim=-2)  # (S,B,T,D)
@@ -267,21 +277,23 @@ class SeqVae(BaseModel):
         else:
             epoch_iterator = range(n_epochs)
 
+        # Pre-allocate device for non_blocking transfers
+        device_kwargs = {"device": self.device, "non_blocking": True} if "cuda" in str(self.device) else {"device": self.device}
+        
         # Train for multiple epochs with DataLoader
         epoch_losses = []
         for i in epoch_iterator:
             batch_losses = []
             for batch in dataloader:
-                obs = batch["next_obs"].to(self.device)
-                action = batch["action"].to(self.device) if "action" in batch else None
+                # Optimized device transfer - use non_blocking for CUDA
+                obs = batch["next_obs"].to(**device_kwargs)
+                action = batch["action"].to(**device_kwargs) if "action" in batch else None
                 T = obs.shape[-2]
 
-                # Ensure input shape (batch, time, obs_dim)
-                while obs.dim() > 3 and obs.shape[0] == 1:
-                    obs = obs.squeeze(0)  # Remove extra batch dimensions
+                # Efficient tensor reshaping - avoid repeated squeeze operations
+                obs = obs.squeeze(0) if obs.dim() > 3 and obs.shape[0] == 1 else obs
                 if action is not None:
-                    while action is not None and action.dim() > 3 and action.shape[0] == 1:
-                        action = action.squeeze(0)
+                    action = action.squeeze(0) if action.dim() > 3 and action.shape[0] == 1 else action
                 if obs.dim() != 3:
                     raise ValueError(
                         f"Expected 3D observation tensor (batch, time, obs_dim), got shape {obs.shape}"

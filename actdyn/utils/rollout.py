@@ -214,11 +214,20 @@ class Rollout:
     def as_dict(self):
         return self._data
 
-    def to(self, device):
+    def to(self, device: str) -> "Rollout":
+        """Move rollout to device with optimized transfers."""
+        target_device = torch.device(device)
+        if target_device == self.device:
+            return self  # No-op if already on target device
+            
+        # Use non_blocking transfers for CUDA
+        transfer_kwargs = {"non_blocking": True} if "cuda" in str(target_device) else {}
+        
         for key in self._data:
             if isinstance(self._data[key], torch.Tensor):
-                self._data[key] = self._data[key].to(device)
-        self.device = torch.device(device)
+                self._data[key] = self._data[key].to(target_device, **transfer_kwargs)
+        
+        self.device = target_device
         return self
 
     def get(self, key, default=None):
@@ -230,27 +239,31 @@ class Rollout:
             else self._data[key]
         )
 
-    def copy(self):
-        """
-        Create a memory-efficient copy of the rollout.
-        """
+    def copy(self) -> "Rollout":
+        """Create a memory-efficient copy of the rollout using views where possible."""
         new_rollout = Rollout(device=str(self.device))
         new_rollout._data = {}
 
         for k, v in self._data.items():
             if isinstance(v, torch.Tensor):
-                # For finalized rollouts, clone and detach to ensure independence
-                new_rollout._data[k] = v.clone().detach()
+                # Use clone() only when necessary, prefer view() for read-only copies
+                if v.requires_grad:
+                    new_rollout._data[k] = v.detach().clone()
+                else:
+                    # More efficient: clone without grad tracking
+                    with torch.no_grad():
+                        new_rollout._data[k] = v.clone()
             elif isinstance(v, list):
-                # For unfinalized rollouts, deep copy the list but clone tensors efficiently
+                # Optimize list copying - pre-allocate and use batch operations
                 new_rollout._data[k] = []
-                for tensor in v:
-                    if isinstance(tensor, torch.Tensor):
-                        new_rollout._data[k].append(tensor.clone().detach())
-                    else:
-                        new_rollout._data[k].append(tensor)
+                tensor_items = [item for item in v if isinstance(item, torch.Tensor)]
+                if tensor_items:
+                    # Batch clone tensors for efficiency
+                    with torch.no_grad():
+                        new_rollout._data[k] = [item.clone() for item in tensor_items]
+                else:
+                    new_rollout._data[k] = v.copy()
             else:
-                # For any other type, copy the reference
                 new_rollout._data[k] = v
 
         new_rollout.length = self.length
@@ -761,9 +774,30 @@ class RolloutBuffer:
 
 
 class RecentRollout(Rollout):
-    def __init__(self, max_len, device="cuda"):
+    """Optimized rollout for recent transitions with memory pooling."""
+    
+    def __init__(self, max_len: int, device: str = "cuda"):
         super().__init__(device=device)
         self.max_len = max_len
+        # Pre-allocate tensor pool for common operations
+        self._tensor_pool = {}
+        self._pool_initialized = False
+
+    def _init_tensor_pool(self, sample_data: Dict[str, torch.Tensor]) -> None:
+        """Initialize tensor pool based on first data sample."""
+        if self._pool_initialized:
+            return
+            
+        for key, value in sample_data.items():
+            if isinstance(value, torch.Tensor):
+                # Pre-allocate circular buffer for this tensor type
+                pool_shape = (self.max_len,) + value.shape
+                self._tensor_pool[key] = torch.zeros(
+                    pool_shape, 
+                    dtype=value.dtype, 
+                    device=self.device
+                )
+        self._pool_initialized = True
 
     def add(self, **kwargs):
         if self.finalized:

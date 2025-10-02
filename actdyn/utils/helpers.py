@@ -51,7 +51,7 @@ def setup_environment(config: ExperimentConfig) -> GymObservationWrapper:
     """Setup the environment based on the configuration."""
     # Environment
     env_cls = environment_from_str(config.environment.environment_type)
-    env_config = config.environment.get_environment_cfg()
+    env_config = config.environment.get_environment_config()
     if isinstance(env_cls, str):
         # If the environment is a gymnasium environment, we need to create it with gymnasium.make
         base_env = gymnasium.make(env_cls)
@@ -83,7 +83,7 @@ def setup_environment(config: ExperimentConfig) -> GymObservationWrapper:
 
     # Observation model
     obs_model_cls = observation_from_str(config.environment.observation_type)
-    obs_config = config.environment.get_observation_cfg()
+    obs_config = config.environment.get_observation_config()
     observation_model = obs_model_cls(
         obs_dim=config.observation_dim,
         latent_dim=env_obs_dim,
@@ -93,8 +93,7 @@ def setup_environment(config: ExperimentConfig) -> GymObservationWrapper:
 
     # Action model
     action_model_cls = action_from_str(config.environment.action_type)
-
-    action_config = config.environment.get_action_cfg()
+    action_config = config.environment.get_action_config()
     action_model = action_model_cls(
         **action_config,
         action_bounds=config.environment.env_action_bounds,
