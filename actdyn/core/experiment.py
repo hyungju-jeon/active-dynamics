@@ -1,3 +1,4 @@
+from typing import Optional, Dict, Any, Union
 from tqdm import tqdm
 from actdyn.core.agent import Agent
 
@@ -16,22 +17,43 @@ import copy
 
 
 class Experiment:
-    def __init__(self, agent: Agent, config: ExperimentConfig, resume=False):
+    """Manages the complete experimental workflow for active learning in dynamical systems.
+    
+    This class coordinates the interaction between an agent, environment, and various 
+    logging/analysis components to conduct active learning experiments.
+    
+    Args:
+        agent: The agent that will interact with the environment
+        config: Configuration object containing all experimental parameters
+        resume: Whether to resume from a previous experiment state
+    """
+    
+    def __init__(self, agent: Agent, config: ExperimentConfig, resume: bool = False):
         self.agent = agent
         self.cfg = copy.deepcopy(config)
-        self.env_step = 0
-        self.prev_step = 0
+        self.env_step: int = 0
+        self.prev_step: int = 0
         self.rollout = Rollout(device="cpu")
-        self.writer = None
-        self.video_recorder = None
-        self.training_loss = 0
+        self.writer: Optional[SummaryWriter] = None
+        self.video_recorder: Optional[VideoRecorder] = None
+        self.training_loss: Union[float, list] = 0
         self.results_dir = os.path.join(os.path.dirname(__file__), config.results_dir)
         if resume:
             ## TODO : Implement resume functionality
             print("Resuming from previous experiment state...")
             # self.agent.model.load(self.cfg.logging.model_path)
 
-    def generate_rollout(self, num_episodes=20, episode_length=1000, rollout_dir=None):
+    def generate_rollout(self, num_episodes: int = 20, episode_length: int = 1000, rollout_dir: Optional[str] = None) -> tuple[RolloutBuffer, RolloutBuffer]:
+        """Generate rollout data for training and validation.
+        
+        Args:
+            num_episodes: Total number of episodes to generate
+            episode_length: Length of each episode in timesteps
+            rollout_dir: Directory to save rollouts (uses results_dir if None)
+            
+        Returns:
+            Tuple of (train_rollout_buffer, validation_rollout_buffer)
+        """
         num_validate = num_episodes // 3
         num_train = num_episodes - num_validate
 
@@ -73,21 +95,30 @@ class Experiment:
         print(f"rollout saved to {validate_rollout_path} and {train_rollout_path}")
         return rb_train, rb_validate
 
-    # TODO: Add video recording functionality
-    def _setup_video_recording(self, video_path):
+    def _setup_video_recording(self, video_path: Optional[str]) -> None:
+        """Setup video recording for the experiment.
+        
+        Args:
+            video_path: Path where video should be saved, None to disable recording
+        """
         if video_path:
             self.video_recorder = VideoRecorder(self.agent.env, video_path)
             self.video_recorder.capture_frame()
         else:
             self.video_recorder = None
 
-    # TODO: Add video recording functionality
-    def _stop_video_recording(self):
+    def _stop_video_recording(self) -> None:
+        """Stop and save video recording."""
         if self.video_recorder:
             self.video_recorder.save()
             self.video_recorder = None
 
-    def run(self, reset=True):
+    def run(self, reset: bool = True) -> None:
+        """Run the main training loop.
+        
+        Args:
+            reset: Whether to reset the agent and clear previous data
+        """
         os.makedirs(self.results_dir, exist_ok=True)
         for subdir in ["rollouts", "logs", "model"]:
             p = os.path.join(self.results_dir, subdir)
@@ -106,7 +137,8 @@ class Experiment:
             print("Continuing from previous step:", self.env_step)
             self.rollout.clear()
 
-        # Setup progress bar
+        # Cache device check for efficiency
+        self._is_cuda = "cuda" in str(self.agent.device)
         pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Training")
         while self.env_step < train_cfg.total_steps:
             self.env_step += 1
@@ -164,8 +196,8 @@ class Experiment:
                 if self.env_step < train_cfg.total_steps:
                     self.rollout.clear()
 
-            # Clean up tensors to prevent memory accumulation
-            if "cuda" in str(self.agent.device):
+            # Optimized cleanup - cache device check
+            if self._is_cuda:
                 del transition, action
                 torch.cuda.empty_cache()
 
@@ -175,7 +207,12 @@ class Experiment:
         self.rollout.finalize()
         self.agent.model_env.save_model(os.path.join(self.results_dir, f"model/model_final.pth"))
 
-    def post_run(self, data_dir=None):
+    def post_run(self, data_dir: Optional[str] = None) -> None:
+        """Run post-experiment analysis and validation.
+        
+        Args:
+            data_dir: Directory containing validation data (uses results_dir if None)
+        """
         # Load data if exist
         if data_dir is None:
             data_dir = os.path.join(self.results_dir)
@@ -196,7 +233,12 @@ class Experiment:
 
         self.writer.close()
 
-    def offline_learning(self, reset=True):
+    def offline_learning(self, reset: bool = True) -> None:
+        """Perform offline learning using collected rollout data.
+        
+        Args:
+            reset: Whether to reset the writer and reload rollout data
+        """
         if reset:
             if self.writer:
                 self.writer.close()
@@ -244,30 +286,57 @@ class Experiment:
             self.writer.close()
 
 
-# def validate_elbo(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
-#     B, T, D = rb["obs"].shape
-#     loss, log_like, kl_d = experiment.agent.model_env.model.compute_elbo(
-#         y=rb["next_obs"],
-#         u=rb["action"],
-#         idx=None,
-#         n_samples=16,
-#         beta=1,
-#         k_steps=1,
-#     )
-#     writer.add_scalar("validation/ELBO", -loss.item() / T, 0)
-#     writer.add_scalar("validation/log_like", log_like.item() / T, 0)
-#     writer.add_scalar("validation/kl_d", kl_d.item() / T, 0)
+def validate_elbo(experiment: Experiment, rb: Union[Rollout, RolloutBuffer], writer: SummaryWriter) -> None:
+    """Validate model performance using ELBO on a validation dataset.
+    
+    Args:
+        experiment: The experiment object containing the trained model
+        rb: Rollout or RolloutBuffer containing validation data
+        writer: TensorBoard writer for logging metrics
+    """
+    if isinstance(rb, RolloutBuffer):
+        # Use flat representation for buffer
+        data = rb.flat
+        obs = data["next_obs"]
+        action = data.get("action", None)
+    else:
+        # Single rollout
+        if not rb.finalized:
+            rb.finalize()
+        data = rb.as_dict()
+        obs = data["next_obs"]
+        action = data.get("action", None)
+    
+    B, T, D = obs.shape
+    loss, log_like, kl_d = experiment.agent.model_env.model.compute_elbo(
+        y=obs,
+        u=action,
+        idx=None,
+        n_samples=16,
+        beta=1,
+        k_steps=1,
+    )
+    writer.add_scalar("validation/ELBO", -loss.item() / T, 0)
+    writer.add_scalar("validation/log_like", log_like.item() / T, 0)
+    writer.add_scalar("validation/kl_d", kl_d.item() / T, 0)
 
 
-# def validate_kstep_r2(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
-#     r2_fig_path = os.path.join(experiment.results_dir, "validation_kstep.png")
-#     r2m, _ = compute_kstep_r2(
-#         model=experiment.agent.model_env.model,
-#         rollout=rb,
-#         k_max=10,
-#         n_samples=50,
-#         fig_path=r2_fig_path,
-#     )
-#     for i in range(r2m.shape[1]):
-#         for k in range(r2m.shape[0]):
-#             writer.add_scalar(f"validation/kstep/r2_mean_{i}", r2m[k, i], k + 1)
+def validate_kstep_r2(experiment: Experiment, rb: Union[Rollout, RolloutBuffer], writer: SummaryWriter) -> None:
+    """Validate model performance using k-step R² metrics.
+    
+    Args:
+        experiment: The experiment object containing the trained model
+        rb: Rollout or RolloutBuffer containing validation data
+        writer: TensorBoard writer for logging metrics
+    """
+    r2_fig_path = os.path.join(experiment.results_dir, "validation_kstep.png")
+    r2m, _ = compute_kstep_r2(
+        model=experiment.agent.model_env.model,
+        rollout=rb,
+        k_max=10,
+        n_samples=50,
+        fig_path=r2_fig_path,
+    )
+    for i in range(r2m.shape[1]):
+        for k in range(r2m.shape[0]):
+            writer.add_scalar(f"validation/kstep/r2_mean_{i}", r2m[k, i], k + 1)
