@@ -267,7 +267,91 @@ class MultiAttractor(VectorField):
         return torch.tensor(result, device=device, dtype=torch.float32)
 
 
+class VanDerPol(VectorField):
+    """Van der Pol oscillator"""
+
+    def __init__(
+        self,
+        x_range: float = 2,
+        n_grid: int = 40,
+        mu: float = 1.0,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
+        self.mu = mu
+        if kwargs.get("alpha") is not None:
+            self.alpha = kwargs.get("alpha")
+        else:
+            self.scaling = self.get_scaling()
+            self.alpha = 2 / self.scaling
+
+    def get_scaling(self):
+        if self.xy is None:
+            self.create_grid(self.x_range, self.n_grid)
+        U, V = self.generate_vector_field()
+        speed = torch.sqrt(U**2 + V**2)
+        speed = speed.max()
+        return speed
+
+    def compute(self, x: ArrayType) -> ArrayType:
+        U = x[..., 1]
+        V = self.mu * (1 - x[..., 0] ** 2) * x[..., 1] - x[..., 0]
+
+        U = self.alpha * U
+        V = self.alpha * V
+
+        return torch.stack([U, V], dim=-1)
+
+    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
+        if self.xy is None:
+            self.create_grid(self.x_range, self.n_grid)
+        grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
+        UV = self.compute(self.xy)
+        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(grid_size, grid_size)
+
+
+class Duffing(VectorField):
+    """Duffing oscillator"""
+
+    def __init__(
+        self,
+        x_range: float = 2,
+        n_grid: int = 40,
+        a: float = 0.1,
+        b: float = -0.1,
+        c: float = 0.1,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
+        self.a = a
+        self.b = b
+        self.c = c
+
+    def get_scaling(self):
+        if self.xy is None:
+            self.create_grid(self.x_range, self.n_grid)
+        U, V = self.generate_vector_field()
+        speed = torch.sqrt(U**2 + V**2)
+        speed = speed.max()
+        return speed
+
+    def compute(self, x: ArrayType) -> ArrayType:
+        U = x[..., 1]
+        V = self.a * x[..., 1] - x[..., 0] * (self.b + self.c * x[..., 0] ** 2)
+
+        return torch.stack([U, V], dim=-1)
+
+    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
+        if self.xy is None:
+            self.create_grid(self.x_range, self.n_grid)
+        grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
+        UV = self.compute(self.xy)
+        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(grid_size, grid_size)
+
+
 if __name__ == "__main__":
     # Example usage with smaller grid size
-    vf = VectorField(x_range=2.5, n_grid=50)
-    vf.generate_vector_field(random_seed=10)
+    vf = VanDerPol(x_range=2.5, n_grid=50)
+    vf.generate_vector_field()

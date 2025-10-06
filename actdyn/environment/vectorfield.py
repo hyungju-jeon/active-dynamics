@@ -6,6 +6,8 @@ from actdyn.utils.vectorfield_definition import (
     LimitCycle,
     MultiAttractor,
     DoubleLimitCycle,
+    VanDerPol,
+    Duffing,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence
 from actdyn.utils.visualize import plot_vector_field
@@ -16,6 +18,8 @@ vf_from_string = {
     "limit_cycle": LimitCycle,
     "double_limit_cycle": DoubleLimitCycle,
     "multi_attractor": MultiAttractor,
+    "van_der_pol": VanDerPol,
+    "duffing": Duffing,
 }
 
 
@@ -80,12 +84,8 @@ class VectorFieldEnv(BaseDynamicsEnv):
         for i in range(n_steps):
             traj.append(
                 traj[i]
-                + (
-                    self._get_dynamics(traj[i])
-                    + action[:, i].unsqueeze(1)
-                    + torch.randn_like(traj[i]) * torch.sqrt(torch.tensor(self.noise_scale))
-                )
-                * self.dt
+                + (self._get_dynamics(traj[i]) + action[:, i].unsqueeze(-1)) * self.dt
+                + torch.randn_like(traj[i]) * torch.sqrt(torch.tensor(self.noise_scale * self.dt))
             )
         return torch.cat(traj, dim=1)
 
