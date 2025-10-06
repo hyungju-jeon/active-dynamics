@@ -56,7 +56,7 @@ def create_grid(x_range=2, n_grid=50, device="cpu"):
 
 @torch.no_grad()
 def compute_vector_field(
-    dynamics, x_range=2.5, n_grid=50, tform=(None, None), is_residual=False, device="cpu"
+    dynamics, x_range=2.5, n_grid=50, tform=(None, None), is_residual=True, device="cpu"
 ):
     """
     Produces a vector field for a given dynamical system
