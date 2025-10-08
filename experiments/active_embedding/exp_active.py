@@ -11,6 +11,7 @@ from torch.utils.data import Dataset
 import actdyn.environment
 import actdyn.environment.action
 import actdyn.environment.observation
+import actdyn.models
 from actdyn.utils.torch_helper import to_np
 import external.integrative_inference.src.modules as metadyn
 from external.integrative_inference.experiments.model_utils import build_hypernetwork
@@ -215,7 +216,40 @@ for i in range(10):
     plt.show()
 
 
-# %% Train Amortized Embedding Gradient Network
+# %% Train Amortized Embedding Jacobian (Fe) Network
+def curvature_penalty(model: nn.Module, z: torch.Tensor, e: torch.Tensor, eps: float = 1e-2):
+    """Finite-difference smoothness of F̂_e w.r.t. (z,e)."""
+    B = z.size(0)
+    # random unit perturbations
+    dz = F.normalize(torch.randn_like(z), dim=-1) * eps
+    de = F.normalize(torch.randn_like(e), dim=-1) * eps
+    J = model(z, e)
+    J_e = model(z + dz, e + de)
+    return ((J_e - J) ** 2).mean()
+
+
+def jacobian_wrt_z(f_psi: Callable, z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
+    """
+    Compute F_z = ∂f_psi/∂z at batch of points.
+    Returns: [B, nz, nz]
+    """
+    B, d_latent, ne = z.shape[0], z.shape[-1], e.shape[-1]
+    z = z.detach().requires_grad_(True)
+    e = e.detach().requires_grad_(True)
+    y = f_psi(z, e)  # [B, nz]
+    Fz = []
+    # Compute row-wise grads: for each output dim, grad wrt z
+    for i in range(d_latent):
+        grad_outputs = torch.zeros_like(y)
+        grad_outputs[:, i] = 1.0
+        (gi,) = torch.autograd.grad(
+            y, z, grad_outputs=grad_outputs, retain_graph=True, create_graph=False
+        )
+        Fz.append(gi.unsqueeze(1))  # [B,1,nz]
+    Fz = torch.cat(Fz, dim=1)  # [B, nz, nz]
+    return Fz.detach()
+
+
 def jacobian_wrt_e(f_psi: Callable, z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
     """
     Compute F_e = ∂f_psi/∂e at batch of points.
@@ -283,6 +317,31 @@ class FeDataset(Dataset):
         return z.squeeze(0), e.squeeze(0), Fe.squeeze(0)
 
 
+class FzDataset(Dataset):
+    def __init__(
+        self,
+        fn: Callable,
+        N: int,
+        z_sampler: Callable[[int], torch.Tensor],
+        e_sampler: Callable[[int], torch.Tensor],
+        device: torch.device = torch.device("cpu"),
+    ):
+        super().__init__()
+        self.N = N
+        self.zs = z_sampler(N).to(device)
+        self.es = e_sampler(N).to(device)
+        self.fn = fn
+
+    def __len__(self):
+        return self.N
+
+    def __getitem__(self, idx):
+        z = self.zs[idx : idx + 1]
+        e = self.es[idx : idx + 1]
+        Fz = jacobian_wrt_z(self.fn, z, e)  # [1, nz, nz]
+        return z.squeeze(0), e.squeeze(0), Fz.squeeze(0)
+
+
 z_sampler = make_uniform_sampler(-5.0, 5.0, 2)
 e_sampler = make_uniform_sampler([-2.0, -1.0], [-0.1, 1.0], 2)
 
@@ -290,30 +349,72 @@ ds = FeDataset(meta_dynamics_fn, 10000, z_sampler, e_sampler, device)
 dl = DataLoader(ds, batch_size=500, shuffle=True, num_workers=0, pin_memory=False, drop_last=True)
 
 Fe = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=32, n_hidden=2, device=device)
-opt = torch.optim.AdamW(Fe.parameters(), lr=1e-3, weight_decay=1e-4)
-n_epochs = 500
-sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=n_epochs)
-pbar = tqdm(range(n_epochs))
-for ep in pbar:
-    Fe.train()
-    total, n = 0.0, 0
-    for z, e, Fe_star in dl:
-        z, e, Fe_star = z.to(device), e.to(device), Fe_star.to(device)
-        Fe_hat = Fe(z, e)
-        loss_fit = F.mse_loss(Fe_hat, Fe_star)  # Frobenius MSE
-        loss = loss_fit
-        opt.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(Fe.parameters(), max_norm=5.0)
-        opt.step()
-        total += loss.item() * z.size(0)
-        n += z.size(0)
-    sched.step()
-    pbar.set_postfix(loss=total / n)
-    # print(f"[Epoch {ep:02d}] loss={total/n:.6f}")
 
+Fe_model_path = os.path.join(os.path.dirname(__file__), "models", "amortized_Fe.pth")
+if os.path.exists(Fe_model_path):
+    Fe.load_state_dict(torch.load(Fe_model_path, map_location=device))
+    print("Loaded pretrained Fe model from", Fe_model_path)
+else:
+    opt = torch.optim.AdamW(Fe.parameters(), lr=1e-3, weight_decay=1e-4)
+    n_epochs = 500
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=n_epochs)
+    pbar = tqdm(range(n_epochs))
+    for ep in pbar:
+        Fe.train()
+        total, n = 0.0, 0
+        for z, e, Fe_star in dl:
+            z, e, Fe_star = z.to(device), e.to(device), Fe_star.to(device)
+            Fe_hat = Fe(z, e)
+            loss_fit = F.mse_loss(Fe_hat, Fe_star)  # Frobenius MSE
+            loss_curv = curvature_penalty(Fe, z, e)
+            loss = loss_fit  # + 0.1 * loss_curv
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(Fe.parameters(), max_norm=5.0)
+            opt.step()
+            total += loss.item() * z.size(0)
+            n += z.size(0)
+        sched.step()
+        pbar.set_postfix(loss=total / n)
+        # print(f"[Epoch {ep:02d}] loss={total/n:.6f}")
 Fe.eval()
+# %% Train Amortized State Jacobian (Fz) Network
+z_sampler = make_uniform_sampler(-5.0, 5.0, 2)
+e_sampler = make_uniform_sampler([-2.0, -1.0], [-0.1, 1.0], 2)
 
+ds = FzDataset(meta_dynamics_fn, 10000, z_sampler, e_sampler, device)
+dl = DataLoader(ds, batch_size=500, shuffle=True, num_workers=0, pin_memory=False, drop_last=True)
+
+Fz = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=32, n_hidden=2, device=device)
+
+Fz_model_path = os.path.join(os.path.dirname(__file__), "models", "amortized_Fz.pth")
+if os.path.exists(Fz_model_path):
+    Fz.load_state_dict(torch.load(Fz_model_path, map_location=device))
+    print("Loaded pretrained Fz model from", Fz_model_path)
+else:
+    opt = torch.optim.AdamW(Fz.parameters(), lr=1e-3, weight_decay=1e-4)
+    n_epochs = 500
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=n_epochs)
+    pbar = tqdm(range(n_epochs))
+    for ep in pbar:
+        Fz.train()
+        total, n = 0.0, 0
+        for z, e, Fz_star in dl:
+            z, e, Fz_star = z.to(device), e.to(device), Fz_star.to(device)
+            Fz_hat = Fz(z, e)
+            loss_fit = F.mse_loss(Fz_hat, Fz_star)  # Frobenius MSE
+            loss_curv = curvature_penalty(Fz, z, e)
+            loss = loss_fit  # + 0.1 * loss_curv
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(Fz.parameters(), max_norm=5.0)
+            opt.step()
+            total += loss.item() * z.size(0)
+            n += z.size(0)
+        sched.step()
+        pbar.set_postfix(loss=total / n)
+        # print(f"[Epoch {ep:02d}] loss={total/n:.6f}")
+Fz.eval()
 # %% Test Amortized Jacobian Network (Tested)
 for i in range(10):
     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
@@ -344,9 +445,14 @@ if not os.path.exists(save_path):
     os.makedirs(save_path)
 torch.save(hypernet_dynamics.state_dict(), os.path.join(save_path, "hypernet_dynamics.pth"))
 torch.save(mean_dynamics.state_dict(), os.path.join(save_path, "mean_dynamics.pth"))
-torch.save(Fe.state_dict(), os.path.join(save_path, "amortized_jacobian.pth"))
+torch.save(Fe.state_dict(), os.path.join(save_path, "amortized_Fe.pth"))
+torch.save(Fz.state_dict(), os.path.join(save_path, "amortized_Fz.pth"))
 
 # %% Create Amortized State Inference model, likelihood network
+mapping = actdyn.models.decoder.LinearMapping(latent_dim=2, obs_dim=observation_dim, device=device)
+noise = actdyn.models.decoder.GaussianNoise(obs_dim=observation_dim, device=device)
+decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
+
 
 # %% Create an environment for active learning
 vec_env = actdyn.VectorFieldEnv("duffing", x_range=5, dt=0.1, noise_scale=0.0, device=device)
