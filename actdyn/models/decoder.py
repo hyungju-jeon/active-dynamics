@@ -20,6 +20,16 @@ class IdentityMapping(BaseMapping):
         super().__init__(device)
         self.network = nn.Identity()
 
+    @property
+    def jacobian(self):
+        def _jac(z=None):
+            if z is None:
+                raise ValueError("z must be provided to compute the Jacobian for IdentityMapping")
+            dim = z.shape[-1]
+            return torch.eye(dim, device=self.device)
+
+        return _jac
+
 
 class LinearMapping(BaseMapping):
     def __init__(self, latent_dim, obs_dim, device="cpu", **kwargs):
@@ -47,6 +57,10 @@ class LinearMapping(BaseMapping):
             self.network.bias.data = bias
         else:
             raise ValueError("Bias must be a torch.Tensor")
+
+    @property
+    def jacobian(self):
+        return lambda z=None: self.network.weight
 
 
 class LogLinearMapping(BaseMapping):
@@ -81,6 +95,18 @@ class LogLinearMapping(BaseMapping):
         else:
             raise ValueError("Bias must be a torch.Tensor")
 
+    @property
+    def jacobian(self):
+        def _jac(z):
+            if z is None:
+                raise ValueError("z must be provided to compute the Jacobian for LogLinearMapping")
+            mean = self.network(z)  # this is exp(W z + b)
+            # mean: (..., obs_dim), weight: (obs_dim, latent_dim)
+            # diag(mean) @ W can be implemented via broadcasting
+            return mean.unsqueeze(-1) * self.network[0].weight
+
+        return _jac
+
 
 class MLPMapping(BaseMapping):
     network: nn.Sequential
@@ -109,6 +135,15 @@ class MLPMapping(BaseMapping):
                 prev_dim = h
         layers.append(nn.Linear(prev_dim, obs_dim))
         self.network = nn.Sequential(*layers)
+
+    @property
+    def jacobian(self):
+        # Jacobian for a general MLP is not implemented. Return a callable
+        # that explicitly raises to make the API consistent.
+        def _jac(z=None):
+            raise NotImplementedError("Jacobian is not implemented for MLPMapping")
+
+        return _jac
 
 
 # --- Noise Models ---
@@ -155,6 +190,17 @@ class Decoder(nn.Module):
 
     def forward(self, z):
         return self.mapping(z)
+
+    @property
+    def jacobian(self):
+        return self.mapping.jacobian
+
+    @property
+    def logvar(self):
+        if isinstance(self.noise, GaussianNoise):
+            return self.noise.logvar
+        else:
+            raise NotImplementedError("Log-variance is only implemented for Gaussian noise.")
 
     def to(self, device):
         self.device = torch.device(device)

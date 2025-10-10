@@ -87,6 +87,10 @@ class BaseMapping(nn.Module):
         self.set_weights(weights)
         self.set_bias(bias)
 
+    @property
+    def jacobian(self):
+        raise NotImplementedError
+
 
 # Noise models
 class BaseNoise(nn.Module):
