@@ -12,12 +12,14 @@ import actdyn.environment
 import actdyn.environment.action
 import actdyn.environment.observation
 import actdyn.models
+import actdyn.models.encoder
 from actdyn.utils.torch_helper import to_np
 import external.integrative_inference.src.modules as metadyn
 from external.integrative_inference.experiments.model_utils import build_hypernetwork
 from actdyn.utils.visualize import plot_vector_field, set_matplotlib_style
 
 from torch.utils.data import Dataset, DataLoader
+from torch.nn.functional import softplus
 
 # from external.integrative_inference.src.utils import save_model, load_model
 import actdyn
@@ -116,7 +118,7 @@ def make_uniform_sampler(low: list[float] | float, high: list[float] | float, di
     return _sampler
 
 
-z_sampler = make_uniform_sampler(-10.0, 10.0, 2)
+z_sampler = make_uniform_sampler(-5.0, 5.0, 2)
 e_sampler = make_uniform_sampler([-3.0, -2.0], [-0.1, 2.0], 2)
 ds = zeDataset(100000, z_sampler, e_sampler, device)
 
@@ -153,31 +155,42 @@ mean_dynamics = metadyn.HyperMlpDynamics(
     device=device,
 )
 
+hypernet_model_path = os.path.join(os.path.dirname(__file__), "models", "hypernet_dynamics.pth")
+mean_dynamics_model_path = os.path.join(os.path.dirname(__file__), "models", "mean_dynamics.pth")
+if os.path.exists(hypernet_model_path):
+    hypernet_dynamics.load_state_dict(
+        torch.load(hypernet_model_path, map_location=device, weights_only=True)
+    )
+    mean_dynamics.load_state_dict(
+        torch.load(mean_dynamics_model_path, map_location=device, weights_only=True)
+    )
+    print("Loaded pretrained meta-dynamics model")
 
-# Train with True embedding value and  RMSE loss
-optimizer = torch.optim.Adam(
-    list(hypernet_dynamics.parameters()) + list(mean_dynamics.parameters()), lr=1e-3
-)
-n_epochs = 500
-batch_size = 1000
-dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=False)
-pbar = tqdm(range(n_epochs))
-for epoch in pbar:
-    for z, e in dl:
-        vec_env.dynamics.a = e[:, 0]
-        vec_env.dynamics.b = e[:, 1]
-        fx_true = vec_env._get_dynamics(z).to(device)
+else:
+    # Train with True embedding value and  RMSE loss
+    optimizer = torch.optim.Adam(
+        list(hypernet_dynamics.parameters()) + list(mean_dynamics.parameters()), lr=1e-3
+    )
+    n_epochs = 500
+    batch_size = 10000
+    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=False)
+    pbar = tqdm(range(n_epochs))
+    for epoch in pbar:
+        for z, e in dl:
+            vec_env.dynamics.a = e[:, 0]
+            vec_env.dynamics.b = e[:, 1]
+            fx_true = vec_env._get_dynamics(z).to(device)
 
-        out, _ = hypernet_dynamics(e)
-        fx_pred = mean_dynamics.compute_param(z, out)
+            out, _ = hypernet_dynamics(e)
+            fx_pred = mean_dynamics.compute_param(z, out)
 
-        loss = F.mse_loss(fx_pred, fx_true)
+            loss = F.mse_loss(fx_pred, fx_true)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-    pbar.set_postfix(loss=f"{loss.item():.4f}")
+        pbar.set_postfix(loss=f"{loss.item():.4f}")
 
 
 def meta_dynamics_fn(x, e):
@@ -186,6 +199,7 @@ def meta_dynamics_fn(x, e):
 
 
 # %% Check learned meta-dynamical model (Checked)
+
 for i in range(10):
     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
     axs = axs.flatten()
@@ -195,7 +209,7 @@ for i in range(10):
             "duffing", x_range=5, a=data["e"][i][0], b=data["e"][i][1], dt=0.1, noise_scale=0.0
         ).dynamics,
         ax=axs[0],
-        x_range=10,
+        x_range=5,
         is_residual=True,
     )
     axs[0].set_title(
@@ -209,7 +223,7 @@ for i in range(10):
             torch.tensor(data["e"][i], device=device, dtype=torch.float32).unsqueeze(0),
         ),
         ax=axs[1],
-        x_range=10,
+        x_range=5,
         is_residual=True,
     )
     axs[1].set_title("Meta Learned Vector Field")
@@ -348,36 +362,36 @@ e_sampler = make_uniform_sampler([-2.0, -1.0], [-0.1, 1.0], 2)
 ds = FeDataset(meta_dynamics_fn, 10000, z_sampler, e_sampler, device)
 dl = DataLoader(ds, batch_size=500, shuffle=True, num_workers=0, pin_memory=False, drop_last=True)
 
-Fe = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=32, n_hidden=2, device=device)
+Fe_net = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, device=device)
 
 Fe_model_path = os.path.join(os.path.dirname(__file__), "models", "amortized_Fe.pth")
 if os.path.exists(Fe_model_path):
-    Fe.load_state_dict(torch.load(Fe_model_path, map_location=device))
+    Fe_net.load_state_dict(torch.load(Fe_model_path, map_location=device))
     print("Loaded pretrained Fe model from", Fe_model_path)
 else:
-    opt = torch.optim.AdamW(Fe.parameters(), lr=1e-3, weight_decay=1e-4)
+    opt = torch.optim.AdamW(Fe_net.parameters(), lr=1e-3, weight_decay=1e-4)
     n_epochs = 500
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=n_epochs)
     pbar = tqdm(range(n_epochs))
     for ep in pbar:
-        Fe.train()
+        Fe_net.train()
         total, n = 0.0, 0
         for z, e, Fe_star in dl:
             z, e, Fe_star = z.to(device), e.to(device), Fe_star.to(device)
-            Fe_hat = Fe(z, e)
+            Fe_hat = Fe_net(z, e)
             loss_fit = F.mse_loss(Fe_hat, Fe_star)  # Frobenius MSE
-            loss_curv = curvature_penalty(Fe, z, e)
+            # loss_curv = curvature_penalty(Fe, z, e)
             loss = loss_fit  # + 0.1 * loss_curv
             opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(Fe.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(Fe_net.parameters(), max_norm=5.0)
             opt.step()
             total += loss.item() * z.size(0)
             n += z.size(0)
         sched.step()
         pbar.set_postfix(loss=total / n)
         # print(f"[Epoch {ep:02d}] loss={total/n:.6f}")
-Fe.eval()
+Fe_net.eval()
 # %% Train Amortized State Jacobian (Fz) Network
 z_sampler = make_uniform_sampler(-5.0, 5.0, 2)
 e_sampler = make_uniform_sampler([-2.0, -1.0], [-0.1, 1.0], 2)
@@ -385,36 +399,36 @@ e_sampler = make_uniform_sampler([-2.0, -1.0], [-0.1, 1.0], 2)
 ds = FzDataset(meta_dynamics_fn, 10000, z_sampler, e_sampler, device)
 dl = DataLoader(ds, batch_size=500, shuffle=True, num_workers=0, pin_memory=False, drop_last=True)
 
-Fz = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=32, n_hidden=2, device=device)
+Fz_net = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, device=device)
 
 Fz_model_path = os.path.join(os.path.dirname(__file__), "models", "amortized_Fz.pth")
 if os.path.exists(Fz_model_path):
-    Fz.load_state_dict(torch.load(Fz_model_path, map_location=device))
+    Fz_net.load_state_dict(torch.load(Fz_model_path, map_location=device))
     print("Loaded pretrained Fz model from", Fz_model_path)
 else:
-    opt = torch.optim.AdamW(Fz.parameters(), lr=1e-3, weight_decay=1e-4)
+    opt = torch.optim.AdamW(Fz_net.parameters(), lr=1e-3, weight_decay=1e-4)
     n_epochs = 500
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=n_epochs)
     pbar = tqdm(range(n_epochs))
     for ep in pbar:
-        Fz.train()
+        Fz_net.train()
         total, n = 0.0, 0
         for z, e, Fz_star in dl:
             z, e, Fz_star = z.to(device), e.to(device), Fz_star.to(device)
-            Fz_hat = Fz(z, e)
+            Fz_hat = Fz_net(z, e)
             loss_fit = F.mse_loss(Fz_hat, Fz_star)  # Frobenius MSE
-            loss_curv = curvature_penalty(Fz, z, e)
+            # loss_curv = curvature_penalty(Fz, z, e)
             loss = loss_fit  # + 0.1 * loss_curv
             opt.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(Fz.parameters(), max_norm=5.0)
+            torch.nn.utils.clip_grad_norm_(Fz_net.parameters(), max_norm=5.0)
             opt.step()
             total += loss.item() * z.size(0)
             n += z.size(0)
         sched.step()
         pbar.set_postfix(loss=total / n)
         # print(f"[Epoch {ep:02d}] loss={total/n:.6f}")
-Fz.eval()
+Fz_net.eval()
 # %% Test Amortized Jacobian Network (Tested)
 for i in range(10):
     fig, axs = plt.subplots(1, 2, figsize=(10, 5))
@@ -424,7 +438,7 @@ for i in range(10):
     e = torch.tensor(data["e"][i], device=device, dtype=torch.float32).unsqueeze(0)
     e = e.repeat(z.shape[0], 1)
     Fe_star = jacobian_wrt_e(meta_dynamics_fn, z, e).squeeze(0).cpu()
-    Fe_hat = Fe(z, e).squeeze(0).cpu()
+    Fe_hat = Fe_net(z, e).squeeze(0).cpu()
 
     vmax = max(torch.abs(Fe_star).max(), torch.abs(Fe_hat).max())
     im = axs[0].imshow(
@@ -445,27 +459,236 @@ if not os.path.exists(save_path):
     os.makedirs(save_path)
 torch.save(hypernet_dynamics.state_dict(), os.path.join(save_path, "hypernet_dynamics.pth"))
 torch.save(mean_dynamics.state_dict(), os.path.join(save_path, "mean_dynamics.pth"))
-torch.save(Fe.state_dict(), os.path.join(save_path, "amortized_Fe.pth"))
-torch.save(Fz.state_dict(), os.path.join(save_path, "amortized_Fz.pth"))
+torch.save(Fe_net.state_dict(), os.path.join(save_path, "amortized_Fe.pth"))
+torch.save(Fz_net.state_dict(), os.path.join(save_path, "amortized_Fz.pth"))
 
 # %% Create Amortized State Inference model, likelihood network
-mapping = actdyn.models.decoder.LinearMapping(latent_dim=2, obs_dim=observation_dim, device=device)
-noise = actdyn.models.decoder.GaussianNoise(obs_dim=observation_dim, device=device)
-decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
+latent_dim = 2
+embedding_dim = 2
+action_dim = 2
 
+mapping = actdyn.models.decoder.LinearMapping(
+    latent_dim=latent_dim, obs_dim=observation_dim, device=device
+)
+noise = actdyn.models.decoder.GaussianNoise(obs_dim=observation_dim, sigma=0.01, device=device)
+decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
+encoder = actdyn.models.encoder.HybridEncoder(
+    latent_dim=latent_dim,
+    obs_dim=observation_dim,
+    embedding_dim=embedding_dim,
+    action_dim=action_dim,
+    hidden_dim=0,
+    activation="relu",
+    device=device,
+)
+
+params = list(decoder.parameters())
+
+# def meta_dynamics_fn(x, e):
+#     out, _ = hypernet_dynamics(e)
+#     return mean_dynamics(x, out)
 
 # %% Create an environment for active learning
-vec_env = actdyn.VectorFieldEnv("duffing", x_range=5, dt=0.1, noise_scale=0.0, device=device)
+data_idx = 15
+a, b = data["e"][data_idx]
+vec_env = actdyn.VectorFieldEnv(
+    "duffing", x_range=5, a=a, b=b, dt=0.1, noise_scale=0.0, device=device
+)
 action_model = actdyn.environment.action.IdentityActionEncoder(
-    action_dim=2, latent_dim=2, action_bounds=[-1.0, 1.0], device=device
+    action_dim=action_dim, latent_dim=latent_dim, action_bounds=[-1.0, 1.0], device=device
 )
 obs_model = actdyn.environment.observation.LinearObservation(
-    obs_dim=observation_dim, latent_dim=2, noise_scale=0.1, noise_type="gaussian", device=device
+    obs_dim=observation_dim,
+    latent_dim=latent_dim,
+    noise_scale=0.01,
+    noise_type="gaussian",
+    device=device,
 )
 env = actdyn.environment.GymObservationWrapper(
     vec_env, obs_model, action_model, dt=0.1, device=device
 )
 
-# %% 1. Train with random actions
+
+def safe_cholesky(M, jitter=1e-6, max_tries=5, growth=10.0):
+    I = torch.eye(M.size(-1), device=M.device).expand_as(M)
+    j = 0.0
+    for _ in range(max_tries):
+        try:
+            return torch.linalg.cholesky(M + j * I)
+        except RuntimeError:
+            j = jitter if j == 0.0 else j * growth
+    return torch.linalg.cholesky(M + j * I)
+
+
+def symmetrize(M):
+    return 0.5 * (M + M.transpose(-1, -2))
+
+
+# %% 1-1. Train with random actions (EKF/EKF + Laplace)
+plt.close("all")
+z_bel = {
+    "m": torch.zeros(1, latent_dim, device=device),
+    "P": torch.eye(latent_dim, device=device).unsqueeze(0),
+}
+
+sigma_0 = 0.01
+e_bel = {
+    "m": torch.zeros(1, embedding_dim, device=device),
+    # "m": torch.tensor([[-0.8, -1]], device=device),
+    "P": sigma_0 * torch.eye(embedding_dim, device=device).unsqueeze(0),
+    "Prec": 1 / sigma_0 * torch.eye(embedding_dim, device=device).unsqueeze(0),
+}
+
+opt = torch.optim.SGD(params, lr=1e-3, weight_decay=1e-4)
+rows = []
+env.reset()
+z = []
+z_hat = []
+
+pbar = tqdm(range(100000))
+for t in pbar:
+    # 1) Random action sampling
+    u_t = env.action_space.sample() * 10 if t % 10 == 0 else env.action_space.sample()
+    u_t = torch.tensor(u_t, device=device, dtype=torch.float32)
+
+    # 2-1) Predict latent
+    dfdz = Fz_net(z_bel["m"], e_bel["m"]) * env.dt
+    # Jz = jacobian_wrt_z(meta_dynamics_fn, z_bel["m"], e_bel["m"]) * env.dt
+    dfdz = dfdz + torch.eye(latent_dim, device=device).unsqueeze(0)
+    # f_true = env.env._get_dynamics(z_bel["m"]).to(device) # For debug
+
+    z_pred = {
+        "m": z_bel["m"] + meta_dynamics_fn(z_bel["m"], e_bel["m"]) * env.dt + u_t * env.dt,
+        # "m": z_bel["m"] + f_true * env.dt + u_t * env.dt,
+        "P": dfdz @ z_bel["P"] @ dfdz.transpose(-1, -2),
+    }
+    # 2-2) Predict observation
+    R = softplus(decoder.noise.logvar).diag_embed() + eps
+    y_pred = {
+        "m": decoder(z_pred["m"]),
+        "P": R,
+    }
+
+    # 3) Get true observation from env
+    obs, reward, _, _, info = env.step(u_t)
+    y_true = obs.squeeze(0)  # (1, Do)
+    r = y_true - y_pred["m"]
+
+    dhdz = decoder.jacobian.unsqueeze(0)  # (1, Do, Dz)
+    R = y_pred["P"]
+
+    # 4) Embedding update (Laplace)
+    Prec = e_bel["Prec"]
+    eta = Prec @ e_bel["m"].unsqueeze(-1)
+    for _ in range(5):
+        y_hat = decoder(z_pred["m"])
+        r_t = y_true - y_hat
+
+        # predictive covariance and Cholesky solve (as fixed earlier)
+        S = dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R
+        S = 0.5 * (S + S.transpose(-1, -2))
+
+        dfde = Fe_net(z_bel["m"], e_bel["m"]) * env.dt
+        HzFe = torch.einsum("byz,bzd->byd", dhdz, dfde)
+
+        chol_S = torch.linalg.cholesky(S)
+        invS_r = torch.cholesky_solve(r_t.unsqueeze(-1), chol_S)
+        # inv_S = torch.inverse(S)
+        # invS_r = inv_S @ r_t.unsqueeze(-1)
+        grad_ll = torch.einsum("byd,byk->bd", HzFe, invS_r)
+        X = torch.cholesky_solve(HzFe, chol_S)
+        # X = inv_S @ HzFe
+        curv_ll = torch.einsum("byd,bye->bde", HzFe, X)
+        curv_ll = symmetrize(curv_ll)  # ensure symmetry
+
+        Prec_old = e_bel["Prec"]
+        Prec_new = Prec_old + curv_ll
+        eta_old = Prec_old @ e_bel["m"].unsqueeze(-1)
+        eta_new = eta_old + grad_ll.unsqueeze(-1)
+
+        chol_Prec_new = safe_cholesky(Prec_new)
+        Sigma_e = torch.cholesky_inverse(chol_Prec_new)  # (1, De, De)
+        mu_e = (Sigma_e @ eta_new).squeeze(-1)  # (1, De)
+
+        # Update belief for next refinement
+        e_bel = {"m": mu_e, "P": Sigma_e, "Prec": Prec_new}
+        Prec, eta = Prec_new, eta_new
+
+    # Detach after all refinements
+    e_bel = {k: v.detach() for k, v in e_bel.items()}
+
+    # 5) EKF Update Posterior
+    # z_post = encoder(r=r, H=dhdz, R=R, z_pred=z_pred, e_mu=e_bel["m"])
+    K = torch.cholesky_solve(dhdz @ z_pred["P"].transpose(-1, -2), chol_S).transpose(-1, -2)
+    I = torch.eye(latent_dim, device=device).unsqueeze(0)
+    KH = K @ dhdz
+
+    P_upd = (I - KH) @ z_pred["P"] @ (I - KH).transpose(-1, -2) + K @ R @ K.transpose(-1, -2)
+    z_post = {
+        "m": z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1),
+        "P": 0.5 * (P_upd + P_upd.transpose(-1, -2)),
+    }
+
+    # 6) Roll updated z posterior as new prior
+    e_bel = {"m": mu_e.detach(), "P": Sigma_e.detach(), "Prec": Prec_new.detach()}
+    z_bel = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
+
+    # 7) Optimize Likelihood
+    opt.zero_grad(set_to_none=True)
+
+    # Single-sample NLL
+    ll = decoder.compute_log_prob(z_bel["m"], y_true)
+    loss = -ll
+    loss.backward()
+
+    # torch.nn.utils.clip_grad_norm_(list(decoder.parameters()), 5.0)
+    opt.step()
+
+    # 7) Log (optional)
+    if (t % 1000000) == 0 and t > 0:
+        print(f"[t={t}] LL={ll.item():.3f}")
+        print(f"Residual: {r_t.norm().item():.3f}")
+        print(f"estimated e: {to_np(mu_e.squeeze())}, true e: {data['e'][data_idx]}")
+
+        plot_vector_field(
+            lambda x: meta_dynamics_fn(
+                x.to(device),
+                e_bel["m"],
+            ),
+            x_range=5,
+            is_residual=True,
+        )
+        z_np = np.stack(z)
+        z_hat_np = np.stack(z_hat)
+        plt.plot(z_np[:, 0, 0], z_np[:, 0, 1], label="true", alpha=0.5)
+        plt.plot(z_hat_np[:, 0], z_hat_np[:, 1], label="inferred", alpha=0.5)
+        plt.legend()
+        plt.xlim(-5, 5)
+        plt.ylim(-5, 5)
+        plt.show()
+        z, z_hat = [], []
+    rows.append(
+        {
+            "t": t,
+            "e_norm": float(e_bel["m"].norm()),
+            "z_norm": float(z_bel["m"].norm()),
+            "r_norm": float(r.norm()),
+        }
+    )
+    z.append(info["latent_state"].squeeze(0).cpu())
+    z_hat.append(z_bel["m"].squeeze(0).cpu())
+
+    if t % 100 == 0:
+        pbar.set_postfix(
+            LL=f"{ll.item():.3f}",
+            e_hat=f"({mu_e[..., 0].item():.2f},{mu_e[..., 1].item():.2f})",
+            e_true=f"({data['e'][data_idx][0]:.2f},{data['e'][data_idx][1]:.2f})",
+        )
+        pbar.update(100)
+
+
+# %% 1-2. Train with random action (EKF/AmortizedGain + Laplace)
+# %% 1-3. Train with random action (MC Sample + Laplace)
+# %% 1-4. Train with random action (Fully Amortized + Laplace)
 # %% 2. Train with active learning (myopic)
 # %% 3. Train with active learning + planning
