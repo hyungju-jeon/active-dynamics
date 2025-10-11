@@ -1,7 +1,14 @@
-# %%
+"""
+Experiment setup utilities for the active dynamics package.
+
+This module provides high-level setup functions for creating complete experimental
+setups including environments, models, policies, and metrics.
+"""
+
 import torch
 import gymnasium
 
+from typing import Tuple, Union
 from actdyn.metrics.uncertainty import EnsembleDisagreement
 from actdyn.config import ExperimentConfig
 from actdyn.environment import (
@@ -26,11 +33,25 @@ from actdyn.policy import policy_from_str, BaseMPC
 from actdyn.metrics import metric_from_str, FisherInformationMetric, CompositeMetric
 
 
-def setup_environment(config: ExperimentConfig):
+def setup_environment(config: ExperimentConfig) -> GymObservationWrapper:
+    """Setup the environment based on the configuration.
+    
+    Creates a complete environment setup including the base environment,
+    observation model, and action model, wrapped in a GymObservationWrapper.
+    
+    Args:
+        config: Experiment configuration containing environment parameters
+        
+    Returns:
+        Configured and wrapped environment ready for use
+        
+    Raises:
+        ValueError: If action_space is not a Box space or if environment setup fails
+    """
     """Setup the environment based on the configuration."""
     # Environment
     env_cls = environment_from_str(config.environment.environment_type)
-    env_config = config.environment.get_environment_cfg()
+    env_config = config.environment.get_environment_config()
     if isinstance(env_cls, str):
         # If the environment is a gymnasium environment, we need to create it with gymnasium.make
         base_env = gymnasium.make(env_cls)
@@ -62,7 +83,7 @@ def setup_environment(config: ExperimentConfig):
 
     # Observation model
     obs_model_cls = observation_from_str(config.environment.observation_type)
-    obs_config = config.environment.get_observation_cfg()
+    obs_config = config.environment.get_observation_config()
     observation_model = obs_model_cls(
         obs_dim=config.observation_dim,
         latent_dim=env_obs_dim,
@@ -72,8 +93,7 @@ def setup_environment(config: ExperimentConfig):
 
     # Action model
     action_model_cls = action_from_str(config.environment.action_type)
-
-    action_config = config.environment.get_action_cfg()
+    action_config = config.environment.get_action_config()
     action_model = action_model_cls(
         **action_config,
         action_bounds=config.environment.env_action_bounds,
@@ -98,7 +118,18 @@ def setup_environment(config: ExperimentConfig):
     return env
 
 
-def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
+def setup_model(config: ExperimentConfig) -> Union[SeqVae, BaseModel]:
+    """Setup the model based on the configuration.
+    
+    Creates a complete model including encoder, decoder, dynamics, and action encoder
+    components based on the configuration specifications.
+    
+    Args:
+        config: Experiment configuration containing model parameters
+        
+    Returns:
+        Configured model ready for training
+    """
     """Setup the model based on the configuration."""
     # Model components
     # Encoder module
@@ -170,7 +201,19 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
     return model
 
 
-def setup_metric(config, model):
+def setup_metric(config: ExperimentConfig, model: BaseModel) -> Union[CompositeMetric, FisherInformationMetric, EnsembleDisagreement]:
+    """Setup metrics based on configuration.
+    
+    Creates appropriate metrics for active learning, which can be individual
+    metrics or composite metrics combining multiple objectives.
+    
+    Args:
+        config: Experiment configuration containing metric parameters
+        model: The model for which metrics will be computed
+        
+    Returns:
+        Configured metric(s) ready for use in active learning
+    """
     # Metric
     if isinstance(config.metric.metric_type, list):
         metric_config = config.metric.get_metric_cfg()
@@ -230,7 +273,21 @@ def setup_metric(config, model):
     return metric
 
 
-def setup_policy(config, env, model, metric):
+def setup_policy(config: ExperimentConfig, env: GymObservationWrapper, model: BaseModel, metric) -> Union[BaseMPC, 'BasePolicy']:
+    """Setup policy based on configuration.
+    
+    Creates the appropriate policy for action selection, which can be either
+    a model predictive control (MPC) policy or a simpler baseline policy.
+    
+    Args:
+        config: Experiment configuration containing policy parameters
+        env: Environment for action space information
+        model: Model for MPC planning
+        metric: Metric for evaluating action sequences in MPC
+        
+    Returns:
+        Configured policy ready for action selection
+    """
     # Policy
     policy_cls = policy_from_str(config.policy.policy_type)
     # check type of policy_cls, BasePolicy or BaseMPC
@@ -250,7 +307,26 @@ def setup_policy(config, env, model, metric):
     return policy
 
 
-def setup_experiment(config: ExperimentConfig):
+def setup_experiment(config: ExperimentConfig) -> Tuple['Experiment', 'Agent', GymObservationWrapper, 'VAEWrapper']:
+    """Setup a complete experiment with all components.
+    
+    This is the main entry point for creating a complete experimental setup.
+    It orchestrates the creation of all components (environment, model, policy, etc.)
+    and returns them properly configured and connected.
+    
+    Args:
+        config: Complete experiment configuration
+        
+    Returns:
+        Tuple containing:
+            - experiment: Complete experiment object ready to run
+            - agent: Agent for environment interaction
+            - env: Configured environment
+            - model_env: Model wrapper for the environment
+            
+    Raises:
+        RuntimeError: If CUDA is requested but not available
+    """
     # Import here to avoid circular import
     from actdyn.core.agent import Agent
     from actdyn.core.experiment import Experiment

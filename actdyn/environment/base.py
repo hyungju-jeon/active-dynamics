@@ -100,9 +100,24 @@ class BaseDynamicsEnv(gym.Env, ABC):
 
 
 class BaseAction(nn.Module):
-    """Base class for deterministic action encoder."""
+    """Base class for deterministic action encoder.
+    
+    Args:
+        action_dim: Dimension of the action space
+        latent_dim: Dimension of the latent state space
+        action_bounds: Tuple of (low, high) bounds for actions
+        state_dependent: Whether the action encoding depends on state
+        device: Device to run computations on
+    """
 
-    def __init__(self, action_dim, latent_dim, action_bounds, state_dependent=False, device="cpu"):
+    def __init__(
+        self, 
+        action_dim: int, 
+        latent_dim: int, 
+        action_bounds: Tuple[float, float], 
+        state_dependent: bool = False, 
+        device: str = "cpu"
+    ):
         super().__init__()
         self.action_dim = action_dim
         self.latent_dim = latent_dim
@@ -114,9 +129,21 @@ class BaseAction(nn.Module):
         )
         self.state_dependent = state_dependent
         self.device = torch.device(device)
-        self.network = None
+        self.network: Optional[nn.Module] = None
 
-    def forward(self, action, state=None):
+    def forward(self, action: torch.Tensor, state: Optional[torch.Tensor] = None) -> torch.Tensor:
+        """Forward pass through the action encoder network.
+        
+        Args:
+            action: Action tensor to encode
+            state: Optional state tensor for state-dependent encoding
+            
+        Returns:
+            Encoded action tensor
+            
+        Raises:
+            NotImplementedError: If network is not defined
+        """
         if self.network is not None:
             if self.state_dependent and state is not None:
                 if state.ndim == 4:
@@ -124,11 +151,18 @@ class BaseAction(nn.Module):
                 z_u = torch.cat([action, state], dim=-1)
                 return self.network(z_u)
             else:
-                self.network(action)
-            return self.network(action)
+                return self.network(action)
         raise NotImplementedError("Network is not defined in BaseAction.")
 
-    def to(self, device):
+    def to(self, device: str) -> "BaseAction":
+        """Move the action encoder to the specified device.
+        
+        Args:
+            device: Target device
+            
+        Returns:
+            Self for method chaining
+        """
         if self.network is not None:
             self.network.to(device)
         return self
