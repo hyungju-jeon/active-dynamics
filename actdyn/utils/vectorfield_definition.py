@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Literal
+from typing import Any, Dict, Tuple, Optional, Literal
 import torch
 import gpytorch
 from gpytorch.kernels import RBFKernel, ScaleKernel
@@ -97,6 +97,7 @@ class VectorField:
 class LimitCycle(VectorField):
     def __init__(
         self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
         x_range: float = 2,
         n_grid: int = 40,
         w: float = 1,
@@ -104,11 +105,21 @@ class LimitCycle(VectorField):
         **kwargs,
     ):
         super().__init__(x_range=x_range, n_grid=n_grid, device=device)
-        self.w = w
-        self.d = x_range / 2
+        if dyn_param is None:
+            self.w = 1
+            self.d = x_range / 2
+        else:
+            self.set_params(dyn_param)
+
         self.alpha = 1
         self.scaling = self.get_scaling()
         self.alpha = 2 / self.scaling
+
+    def set_params(self, dyn_param):
+        if isinstance(dyn_param, list):
+            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
+        self.w = dyn_param[..., 0]
+        self.d = dyn_param[..., 1]
 
     def get_scaling(self):
         if self.xy is None:
@@ -139,18 +150,28 @@ class LimitCycle(VectorField):
 class DoubleLimitCycle(VectorField):
     def __init__(
         self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
         x_range: float = 2,
         n_grid: int = 40,
-        w: float = 1,
         device: str = "cpu",
         **kwargs,
     ):
         super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
-        self.w = w
-        self.d = x_range / 2
+        if dyn_param is None:
+            self.w = 1
+            self.d = x_range / 2
+        else:
+            self.set_params(dyn_param)
+
         self.alpha = 1
         self.scaling = self.get_scaling()
         self.alpha = 1 / self.scaling
+
+    def set_params(self, dyn_param):
+        if isinstance(dyn_param, list):
+            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
+        self.w = dyn_param[..., 0]
+        self.d = dyn_param[..., 1]
 
     def get_scaling(self):
         if self.xy is None:
@@ -183,17 +204,26 @@ class MultiAttractor(VectorField):
         self,
         x_range: float = 2,
         n_grid: int = 40,
-        w_attractor: float = 0.1,
-        length_scale: float = 0.5,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
         alpha: float = 0.25,
         device: str = "cpu",
         **kwargs,
     ):
         super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
-        self.w_attractor = w_attractor
-        self.length_scale = length_scale
+        if dyn_param is None:
+            self.w_attractor = 1.0
+            self.length_scale = 0.5
+        else:
+            self.set_params(dyn_param)
+
         self.alpha = alpha
         self.U, self.V = self.generate_vector_field()
+
+    def set_params(self, dyn_param):
+        if isinstance(dyn_param, list):
+            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
+        self.w_attractor = dyn_param[..., 0]
+        self.length_scale = dyn_param[..., 1]
 
     @torch.no_grad()
     def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
@@ -274,17 +304,29 @@ class VanDerPol(VectorField):
         self,
         x_range: float = 2,
         n_grid: int = 40,
-        mu: float = 1.0,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
         device: str = "cpu",
         **kwargs,
     ):
         super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
-        self.mu = mu
+        if dyn_param is None:
+            self.mu = 1.0
+            self.w = 1.0
+        else:
+            self.set_params(dyn_param)
+
+        self.alpha = 1
         if kwargs.get("alpha") is not None:
             self.alpha = kwargs.get("alpha")
         else:
             self.scaling = self.get_scaling()
             self.alpha = 2 / self.scaling
+
+    def set_params(self, dyn_param):
+        if isinstance(dyn_param, list):
+            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
+        self.mu = dyn_param[..., 0]
+        self.w = dyn_param[..., 1]
 
     def get_scaling(self):
         if self.xy is None:
@@ -296,7 +338,7 @@ class VanDerPol(VectorField):
 
     def compute(self, x: ArrayType) -> ArrayType:
         U = x[..., 1]
-        V = self.mu * (1 - x[..., 0] ** 2) * x[..., 1] - x[..., 0]
+        V = self.mu * (1 - x[..., 0] ** 2) * x[..., 1] - self.w * x[..., 0]
 
         U = self.alpha * U
         V = self.alpha * V
@@ -318,16 +360,24 @@ class Duffing(VectorField):
         self,
         x_range: float = 2,
         n_grid: int = 40,
-        a: float = 0.1,
-        b: float = -0.1,
-        c: float = 0.1,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
         device: str = "cpu",
         **kwargs,
     ):
         super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
-        self.a = a
-        self.b = b
-        self.c = c
+        if dyn_param is None:
+            self.a = 0.1
+            self.b = -0.1
+            self.c = 0.1
+        else:
+            self.set_params(dyn_param)
+
+    def set_params(self, dyn_param):
+        if isinstance(dyn_param, list):
+            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
+        self.a = dyn_param[..., 0]
+        self.b = dyn_param[..., 1]
+        self.c = dyn_param[..., 2]
 
     def get_scaling(self):
         if self.xy is None:

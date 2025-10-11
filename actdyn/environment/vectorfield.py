@@ -33,6 +33,7 @@ class VectorFieldEnv(BaseDynamicsEnv):
         noise_scale: float = 0.1,
         dt: float = 0.1,
         device: str = "cpu",
+        dyn_param: Optional[list[float]] | torch.Tensor = None,  #
         render_mode: Optional[str] = None,
         action_bounds: Sequence[float] = (-1.0, 1.0),
         state_bounds: Optional[Sequence[float]] = None,
@@ -48,6 +49,7 @@ class VectorFieldEnv(BaseDynamicsEnv):
             action_bounds=action_bounds,
             state_bounds=state_bounds,
         )
+        self.dyn_param = dyn_param if dyn_param is not None else {}
         self.dynamics_type = dynamics_type
 
         # Initialize dynamics
@@ -64,7 +66,18 @@ class VectorFieldEnv(BaseDynamicsEnv):
                 "Either 'x_range' must be provided in kwargs or 'state_bounds' must be set"
             )
 
-        self.dynamics = vf_from_string[dynamics_type](device=self.device, x_range=x_range, **kwargs)
+        self.dynamics = vf_from_string[dynamics_type](
+            dyn_param=dyn_param, device=self.device, x_range=x_range, **kwargs
+        )
+
+    def _rk4_step(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """Perform a single RK4 integration step."""
+        dt = self.dt
+        k1 = self._get_dynamics(state) + action
+        k2 = self._get_dynamics(state + dt / 2 * k1) + action
+        k3 = self._get_dynamics(state + dt / 2 * k2) + action
+        k4 = self._get_dynamics(state + dt * k3) + action
+        return state + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
 
     def _get_dynamics(self, state: torch.Tensor) -> torch.Tensor:
         """Compute vector field at given state."""
@@ -82,11 +95,13 @@ class VectorFieldEnv(BaseDynamicsEnv):
             action = torch.zeros(B, n_steps, D, device=self.device)
         traj = [x0]
         for i in range(n_steps):
-            traj.append(
-                traj[i]
-                + (self._get_dynamics(traj[i]) + action[:, i].unsqueeze(-1)) * self.dt
-                + torch.randn_like(traj[i]) * torch.sqrt(torch.tensor(self.noise_scale * self.dt))
+            current_state = traj[i]
+            current_action = action[:, i].unsqueeze(1)  # Shape: [B, 1, D]
+            next_state = self._rk4_step(current_state, current_action)
+            next_state += torch.randn_like(next_state) * torch.sqrt(
+                torch.tensor(self.noise_scale * self.dt)
             )
+            traj.append(next_state)
         return torch.cat(traj, dim=1)
 
     def reset(
@@ -99,15 +114,12 @@ class VectorFieldEnv(BaseDynamicsEnv):
 
     def step(self, action: torch.Tensor) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
         """Step the environment."""
-        # Compute dynamics
-        dynamics = self._get_dynamics(self.state)
-
-        # Update state
-        self.state = self.state + (dynamics + action) * self.dt
+        # Update state with RK4
+        self.state = self._rk4_step(self.state, action)
 
         # Add noise
-        self.state += (
-            torch.randn_like(self.state) * torch.sqrt(torch.tensor(self.noise_scale)) * self.dt
+        self.state += torch.randn_like(self.state) * torch.sqrt(
+            torch.tensor(self.noise_scale * self.dt)
         )
 
         # Compute reward
