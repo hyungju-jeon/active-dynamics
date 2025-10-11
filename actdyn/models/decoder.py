@@ -60,7 +60,7 @@ class LinearMapping(BaseMapping):
 
     @property
     def jacobian(self):
-        return lambda z=None: self.network.weight
+        return self.network.weight
 
 
 class LogLinearMapping(BaseMapping):
