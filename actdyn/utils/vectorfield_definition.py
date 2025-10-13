@@ -372,6 +372,13 @@ class Duffing(VectorField):
         else:
             self.set_params(dyn_param)
 
+        self.alpha = 1
+        if kwargs.get("alpha") is not None:
+            self.alpha = kwargs.get("alpha")
+        else:
+            self.scaling = self.get_scaling()
+            self.alpha = 2 / self.scaling
+
     def set_params(self, dyn_param):
         if isinstance(dyn_param, list):
             dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
@@ -390,6 +397,8 @@ class Duffing(VectorField):
     def compute(self, x: ArrayType) -> ArrayType:
         U = x[..., 1]
         V = self.a * x[..., 1] - x[..., 0] * (self.b + self.c * x[..., 0] ** 2)
+        U = self.alpha * U
+        V = self.alpha * V
 
         return torch.stack([U, V], dim=-1)
 
