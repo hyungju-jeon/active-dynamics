@@ -70,15 +70,6 @@ class VectorFieldEnv(BaseDynamicsEnv):
             dyn_param=dyn_param, device=self.device, x_range=x_range, **kwargs
         )
 
-    def _rk4_step(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
-        """Perform a single RK4 integration step."""
-        dt = self.dt
-        k1 = self._get_dynamics(state) + action
-        k2 = self._get_dynamics(state + dt / 2 * k1) + action
-        k3 = self._get_dynamics(state + dt / 2 * k2) + action
-        k4 = self._get_dynamics(state + dt * k3) + action
-        return state + dt / 6 * (k1 + 2 * k2 + 2 * k3 + k4)
-
     def _get_dynamics(self, state: torch.Tensor) -> torch.Tensor:
         """Compute vector field at given state."""
         return self.dynamics(state)
@@ -95,13 +86,11 @@ class VectorFieldEnv(BaseDynamicsEnv):
             action = torch.zeros(B, n_steps, D, device=self.device)
         traj = [x0]
         for i in range(n_steps):
-            current_state = traj[i]
-            current_action = action[:, i].unsqueeze(1)  # Shape: [B, 1, D]
-            next_state = self._rk4_step(current_state, current_action)
-            next_state += torch.randn_like(next_state) * torch.sqrt(
-                torch.tensor(self.noise_scale * self.dt)
+            traj.append(
+                traj[i]
+                + (self._get_dynamics(traj[i]) + action[:, i].unsqueeze(1)) * self.dt
+                + torch.randn_like(traj[i]) * torch.sqrt(torch.tensor(self.noise_scale * self.dt))
             )
-            traj.append(next_state)
         return torch.cat(traj, dim=1)
 
     def reset(
@@ -114,12 +103,15 @@ class VectorFieldEnv(BaseDynamicsEnv):
 
     def step(self, action: torch.Tensor) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
         """Step the environment."""
-        # Update state with RK4
-        self.state = self._rk4_step(self.state, action)
+        # Compute dynamics
+        dynamics = self._get_dynamics(self.state)
+
+        # Update state
+        self.state = self.state + (dynamics + action) * self.dt
 
         # Add noise
         self.state += torch.randn_like(self.state) * torch.sqrt(
-            torch.tensor(self.noise_scale * self.dt)
+            torch.tensor(self.noise_scale) * self.dt
         )
 
         # Compute reward
