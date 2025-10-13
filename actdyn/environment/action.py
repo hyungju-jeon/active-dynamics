@@ -7,7 +7,14 @@ class IdentityActionEncoder(BaseAction):
     """Identity action encoder."""
 
     def __init__(self, action_dim, latent_dim, action_bounds, device="cpu", **kwargs):
-        super().__init__(action_dim, latent_dim, action_bounds, device)
+        self.state_dependent = kwargs.get("state_dependent", False)
+        super().__init__(
+            action_dim,
+            latent_dim,
+            action_bounds,
+            state_dependent=self.state_dependent,
+            device=device,
+        )
         self.network = nn.Identity()
 
 
@@ -15,7 +22,14 @@ class LinearActionEncoder(BaseAction):
     """Simpler action encoder: just a single linear layer."""
 
     def __init__(self, action_dim, latent_dim, action_bounds, device="cpu", **kwargs):
-        super().__init__(action_dim, latent_dim, action_bounds, device)
+        self.state_dependent = kwargs.get("state_dependent", False)
+        super().__init__(
+            action_dim,
+            latent_dim,
+            action_bounds,
+            state_dependent=self.state_dependent,
+            device=device,
+        )
         self.network = nn.Linear(action_dim, latent_dim).to(device)
 
 
