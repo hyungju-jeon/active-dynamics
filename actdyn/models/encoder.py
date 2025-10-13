@@ -233,7 +233,7 @@ class RNNEmbeddingEncoder(BaseEncoder):
 
         if self.rnn_type == "gru":
             self.network = nn.GRU(
-                self.obs_dim + self.action_dim + self.embedding_dim,
+                self.obs_dim + self.action_dim,
                 self.rnn_hidden_dim,
                 self.num_layers,
                 batch_first=True,
@@ -241,7 +241,7 @@ class RNNEmbeddingEncoder(BaseEncoder):
             )
         elif self.rnn_type == "lstm":
             self.network = nn.LSTM(
-                self.obs_dim + self.action_dim + self.embedding_dim,
+                self.obs_dim + self.action_dim,
                 self.rnn_hidden_dim,
                 self.num_layers,
                 batch_first=True,
@@ -249,6 +249,9 @@ class RNNEmbeddingEncoder(BaseEncoder):
             )
         else:
             raise ValueError("rnn_type must be 'gru' or 'lstm'")
+
+        self.e_gamma = nn.Linear(self.embedding_dim, self.rnn_hidden_dim)
+        self.e_beta = nn.Linear(self.embedding_dim, self.rnn_hidden_dim)
 
         if isinstance(hidden_dim, int):
             hidden_dims = [hidden_dim]
@@ -278,6 +281,8 @@ class RNNEmbeddingEncoder(BaseEncoder):
         e: torch.Tensor,
         u: torch.Tensor | None = None,
         h: torch.Tensor | None = None,
+        gamma: float | None = None,
+        beta: float | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         y, u = self.validate_input(y, u)
         # Concatenate y and u along the last dimension
@@ -301,6 +306,11 @@ class RNNEmbeddingEncoder(BaseEncoder):
             self.h = h_final.detach()
         elif self.h_init == "step":
             self.h = self.network(y_u[:, :1, :], h)[1]
+
+        # Apply FiLM conditioning
+        gamma = self.e_gamma(e) if gamma is None else gamma
+        beta = self.e_beta(e) if beta is None else beta
+        rnn_out = gamma * rnn_out + beta
 
         # Decode the output
         mu = self.fc_mu(rnn_out)
