@@ -25,7 +25,7 @@ class LinearDynamics(BaseDynamics):
 
     def __init__(self, state_dim, device="cpu", **kwargs):
         super().__init__(state_dim, device=device)
-        self.network = nn.Linear(state_dim, state_dim)
+        self.network = nn.Linear(state_dim, state_dim).to(device)
 
 
 class MLPDynamics(BaseDynamics):
@@ -55,7 +55,7 @@ class MLPDynamics(BaseDynamics):
             layers.extend([nn.Linear(prev_dim, hidden_dim), self.activation])
             prev_dim = hidden_dim
         layers.append(nn.Linear(prev_dim, state_dim))
-        self.network = nn.Sequential(*layers)
+        self.network = nn.Sequential(*layers).to(device)
 
 
 class RBFDynamics(BaseDynamics):

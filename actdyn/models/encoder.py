@@ -147,8 +147,8 @@ class RNNEncoder(BaseEncoder):
         logvar_layers[-1].weight.data.fill_(0.0)
         logvar_layers[-1].bias.data.fill_(-3.0)
 
-        self.fc_mu = nn.Sequential(*mu_layers)
-        self.fc_logvar = nn.Sequential(*logvar_layers)
+        self.fc_mu = nn.Sequential(*mu_layers).to(self.device)
+        self.fc_logvar = nn.Sequential(*logvar_layers).to(self.device)
 
     def compute_param(
         self, y: torch.Tensor, u: torch.Tensor | None = None, h: torch.Tensor | None = None
@@ -298,7 +298,7 @@ class RNNEmbeddingEncoder(BaseEncoder):
 
         # Store the next hidden state for carry_over/hybrid strategies
         if self.h_init == "carryover":
-            self.h = h_final
+            self.h = h_final.detach()
         elif self.h_init == "step":
             self.h = self.network(y_u[:, :1, :], h)[1]
 
