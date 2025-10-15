@@ -208,29 +208,47 @@ else:
 
             loss = F.mse_loss(fx_pred, fx_true)
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # optimizer.zero_grad()
+            # loss.backward()
+            # optimizer.step()
 
         pbar.set_postfix(loss=f"{loss.item():.4f}")
 
 
-def meta_dynamics_fn(x, e):
-    out, _ = hypernet_dynamics(e)
-    return mean_dynamics(x, out)
+class MetaDynamics:
+    def __init__(self, hypernet, mean_dynamics):
+        self.hypernet = hypernet
+        self.mean_dynamics = mean_dynamics
+        self.e = None
+        self.out = None
+
+    def set_embedding(self, e):
+        self.e = e
+        self.out, _ = self.hypernet(self.e)
+
+    def __call__(self, x, e=None):
+        if e is None:
+            if self.e is None or self.out is None:
+                raise ValueError("Embedding e is not set. Please set e using set_embedding method.")
+            out = self.out
+        else:
+            out, _ = self.hypernet(e)
+        return self.mean_dynamics(x, out)
 
 
+meta_dynamics_fn = MetaDynamics(hypernet_dynamics, mean_dynamics)
 # %% (Pretrain) Check learned meta-dynamical model (Checked)
 if False:
     for i in range(10):
         fig, axs = plt.subplots(1, 2, figsize=(10, 5))
         axs = axs.flatten()
         i = torch.randint(0, 100, (1,))
+        e = e_sampler(1).squeeze(0)
         plot_vector_field(
             actdyn.VectorFieldEnv(
                 "duffing",
                 x_range=5,
-                dyn_param=[data["e"][i][0], data["e"][i][1], 0.1],
+                dyn_param=[e[0], e[1], 0.1],
                 dt=0.1,
                 noise_scale=0.0,
             ).dynamics,
@@ -239,14 +257,12 @@ if False:
             is_residual=True,
         )
         axs[0].set_title(
-            "True Vector Field of Duffing System for a={:.2f}, b={:.2f}".format(
-                data["e"][i][0], data["e"][i][1]
-            )
+            "True Vector Field of Duffing System for a={:.2f}, b={:.2f}".format(e[0], e[1])
         )
         plot_vector_field(
             lambda x: meta_dynamics_fn(
                 x.to(device),
-                torch.tensor(data["e"][i], device=device, dtype=torch.float32).unsqueeze(0),
+                torch.tensor(e, device=device, dtype=torch.float32).unsqueeze(0),
             ),
             ax=axs[1],
             x_range=5,
@@ -512,14 +528,14 @@ data_idx = 55
 a, b = e_sampler(1).squeeze(0)
 
 action_model = actdyn.environment.action.IdentityActionEncoder(
-    action_dim=action_dim, latent_dim=latent_dim, action_bounds=[-2.0, 2.0], device=device
+    action_dim=action_dim, latent_dim=latent_dim, action_bounds=[-10.0, 10.0], device=device
 )
 vec_env = actdyn.VectorFieldEnv(
     "duffing",
     x_range=5,
     dyn_param=torch.tensor([a, b, 0.1]),
     dt=0.01,
-    alpha=1,
+    alpha=10,
     noise_scale=0.01,
     action_bounds=[action_model.action_space.low, action_model.action_space.high],
     device=device,
@@ -567,20 +583,26 @@ def rk4_step(
 
 
 def Fe_true(z, e):
-    B = z.size(0)
-    Fe = torch.zeros(B, 2, 2, device=z.device)
-    Fe[:, 1, 0] = z[..., 1].squeeze(0)
-    Fe[:, 1, 1] = -z[..., 0].squeeze(0)
+    if z.ndim == 2:
+        z = z.unsqueeze(0)
+    B, T, d = z.shape
+    Fe = torch.zeros(B, T, 2, 2, device=z.device)
+    Fe[..., 1, 0] = z[..., 1]
+    Fe[..., 1, 1] = -z[..., 0]
     return Fe
 
 
 def Fz_true(z, e):
-    B = z.size(0)
-    Fz = torch.zeros(B, 2, 2, device=z.device)
-    Fz[:, 0, 0] = 0
-    Fz[:, 0, 1] = 1
-    Fz[:, 1, 0] = -e[..., 1].squeeze(0) - 0.3 * z[..., 0].squeeze(0) ** 2
-    Fz[:, 1, 1] = e[..., 0].squeeze(0)
+    if e.ndim == 2:
+        e = e.unsqueeze(0)
+    if z.ndim == 2:
+        z = z.unsqueeze(0)
+    B, T, d = e.shape
+    Fz = torch.zeros(B, T, 2, 2, device=z.device)
+    Fz[..., 0, 0] = 0
+    Fz[..., 0, 1] = 1
+    Fz[..., 1, 0] = -e[..., 1] - 0.3 * z[..., 0] ** 2
+    Fz[..., 1, 1] = e[..., 0]
     return Fz
 
 
@@ -772,6 +794,8 @@ for env_step in pbar:
 
 
 # %% 1-2. ✅ (Debug) EKF/EKF + Laplace
+meta_dynamics = MetaDynamics(hypernet_dynamics, mean_dynamics)
+
 torch.manual_seed(1)
 mapping = actdyn.models.decoder.LinearMapping(
     latent_dim=latent_dim, obs_dim=observation_dim, device=device
@@ -784,27 +808,49 @@ warmup_step = 0
 
 plt.close("all")
 z_bel = {
-    "m": torch.zeros(1, latent_dim, device=device),
+    "m": torch.ones(1, latent_dim, device=device),
     "P": torch.eye(latent_dim, device=device).unsqueeze(0),
 }
 
 sigma_0 = 0.01
 e_bel = {
-    "m": torch.zeros(1, embedding_dim, device=device),
-    # "m": torch.tensor([[-0.8, -1]], device=device),
+    "m": torch.ones(1, embedding_dim, device=device),
     "P": sigma_0 * torch.eye(embedding_dim, device=device).unsqueeze(0),
     "Prec": 1 / sigma_0 * torch.eye(embedding_dim, device=device).unsqueeze(0),
 }
-
+meta_dynamics.set_embedding(e_bel["m"])
+emb_metric = actdyn.metrics.information.EmbeddingFisherMetric(
+    Fe_net=Fe_true, Fz_net=Fz_true, decoder=decoder
+)
 sim_vec_env = actdyn.VectorFieldEnv(
     "duffing",
     x_range=5,
     dyn_param=torch.tensor([0, 0, 0.1]),
     dt=0.01,
-    alpha=1,
+    alpha=10,
     noise_scale=0.01,
     device=device,
 )
+dynamics = actdyn.models.dynamics.FunctionDynamics(
+    state_dim=latent_dim, dt=env.dt, dynamics_fn=sim_vec_env.dynamics, device=device
+)
+
+model = actdyn.models.BaseModel(
+    action_encoder=action_model,
+    dynamics=dynamics,
+    device=device,
+)
+mpc_policy = actdyn.policy.mpc.MpcICem(
+    metric=emb_metric,
+    model=model,
+    device=device,
+    horizon=10,
+    num_iterations=5,
+    num_samples=20,
+    num_elite=5,
+    verbose=False,
+)
+step_policy = actdyn.policy.StepPolicy(action_space=env.action_space, step_size=100, device=device)
 
 opt = torch.optim.SGD(params, lr=1e-3, weight_decay=1e-4)
 rows = []
@@ -812,14 +858,21 @@ env.reset()
 z = []
 z_hat = []
 prev_action = torch.zeros(action_dim, device=device)
+results_dir = os.path.join(base_dir, "debug_active_ekf_laplace_amortized")
+writer = SummaryWriter(log_dir=os.path.join(results_dir, "logs"))
 
-pbar = tqdm(range(100000))
+pbar = tqdm(range(3000))
 for env_step in pbar:
+    # Q = softplus(dynamics.logvar).diag_embed()  # (1, Dz, Dz)
+    Q = 1e-2 * torch.eye(latent_dim, device=device).unsqueeze(0)
     # 1) Random action sampling
-    if env_step % 50 == 0:
-        u_t = torch.tensor(env.action_space.sample(), device=device, dtype=torch.float32)
-        prev_action = u_t
-    u_t = prev_action
+    meta_dynamics.set_embedding(e_bel["m"])
+    sim_vec_env.dynamics.set_params([e_bel["m"][0, 0], e_bel["m"][0, 1], 0.1])
+    model.dynamics.set_params([e_bel["m"][0, 0], e_bel["m"][0, 1], 0.1])
+
+    u_t = mpc_policy(z_bel["m"].unsqueeze(0), e_bel=e_bel, z_bel=z_bel, Q=Q).detach()
+
+    # u_t = step_policy(z_bel["m"].unsqueeze(0)).detach()
 
     # 2-1) Predict latent
     dfde = Fe_true(z_bel["m"], e_bel["m"]) * env.dt
@@ -854,18 +907,18 @@ for env_step in pbar:
 
     chol_S = torch.linalg.cholesky(S)
     X = torch.cholesky_solve(HzFe, chol_S)
-    curb_ll = einsum(HzFe, X, "b y d, b y e->b d e")  # (1, De, De)
+    curv_ll = einsum(HzFe, X, "b t y d, b t y e->b t d e")  # (1, De, De)
     curv_ll = symmetrize(curv_ll)  # ensure symmetry
     if env_step > warmup_step:
         # predictive covariance and Cholesky solve (as fixed earlier)
         Prec = e_bel["Prec"]
         eta = Prec @ e_bel["m"].unsqueeze(-1)
-        for _ in range(1):
+        for _ in range(5):
             y_hat = decoder(z_pred["m"])
             r_t = y_true - y_hat
 
-            invS_r = torch.cholesky_solve(r_t.unsqueeze(-1), chol_S)
-            grad_ll = einsum(HzFe, invS_r, "b y d, b y k->b d")  # (1, De)
+            invS_r = torch.cholesky_solve(r_t.mT, chol_S)
+            grad_ll = einsum(HzFe, invS_r, "b t y d, b t y k->b t d")  # (1, De)
 
             Prec_old = e_bel["Prec"]
             Prec_new = Prec_old + curv_ll
@@ -877,7 +930,7 @@ for env_step in pbar:
             mu_e = (Sigma_e @ eta_new).squeeze(-1)  # (1, De)
 
             # Update belief for next refinement
-            e_bel = {"m": mu_e, "P": Sigma_e, "Prec": Prec_new}
+            e_bel = {"m": mu_e.squeeze(0), "P": Sigma_e.squeeze(0), "Prec": Prec_new.squeeze(0)}
             Prec, eta = Prec_new, eta_new
 
     # Detach after all refinements
@@ -908,26 +961,27 @@ for env_step in pbar:
 
     # torch.nn.utils.clip_grad_norm_(list(decoder.parameters()), 5.0)
     opt.step()
-
+    writer.add_scalar("train/e1", e_bel["m"][0, 0].item(), env_step)
+    writer.add_scalar("train/e2", e_bel["m"][0, 1].item(), env_step)
+    writer.add_scalar("train/e1_true", env.env.dynamics.a.item(), env_step)
+    writer.add_scalar("train/e2_true", env.env.dynamics.b.item(), env_step)
     # 7) Log (optional)
-    if (env_step % 1000) == 0 and env_step > 0:
-        plot_vector_field(
-            lambda x: meta_dynamics_fn(
-                x.to(device),
-                e_bel["m"],
-            ),
-            x_range=5,
-            is_residual=True,
-        )
-        z_np = np.stack(z)
-        z_hat_np = np.stack(z_hat)
-        plt.plot(z_np[:, 0, 0], z_np[:, 0, 1], label="true", alpha=0.5)
-        plt.plot(z_hat_np[:, 0], z_hat_np[:, 1], label="inferred", alpha=0.5)
-        plt.legend()
-        plt.xlim(-5, 5)
-        plt.ylim(-5, 5)
-        plt.show()
-        z, z_hat = [], []
+    # if (env_step % 1000) == 0 and env_step > 0:
+    #     sim_vec_env.dynamics.set_params([e_bel["m"][0, 0], e_bel["m"][0, 1], 0.1])
+    #     plot_vector_field(
+    #         sim_vec_env.dynamics,
+    #         x_range=5,
+    #         is_residual=True,
+    #     )
+    #     z_np = np.stack(z)
+    #     z_hat_np = np.stack(z_hat, axis=0).reshape(-1, 2)
+    #     plt.plot(z_np[:, 0, 0], z_np[:, 0, 1], label="true", alpha=0.5)
+    #     plt.plot(z_hat_np[:, 0], z_hat_np[:, 1], label="inferred", alpha=0.5)
+    #     plt.legend()
+    #     plt.xlim(-5, 5)
+    #     plt.ylim(-5, 5)
+    #     plt.show()
+    #     z, z_hat = [], []
     rows.append(
         {
             "t": env_step,
@@ -946,6 +1000,7 @@ for env_step in pbar:
             e_true=f"({a:.2f},{b:.2f})",
         )
         pbar.update(100)
+writer.close()
 
 
 # %% 1-2. ✅✅ Amortized Latent with window + EKF/Laplace (with Embedding)
@@ -972,7 +1027,7 @@ dynamics = actdyn.models.dynamics.FunctionDynamics(
 )
 policy = actdyn.policy.StepPolicy(action_space=env.action_space, step_size=100, device=device)
 params = list(decoder.parameters()) + list(encoder.parameters()) + list(dynamics.parameters())
-
+# debug_fix_decoder(decoder=decoder, obs_model=obs_model)
 # debug_fix_decoder(decoder, obs_model)
 frames = []
 plt.close("all")
@@ -998,7 +1053,7 @@ pbar = tqdm(range(1, total_steps))
 windows_length = 1000
 warmup_step = 1000
 n_samples = 5
-rb = RecentRollout(max_len=windows_length, device=device)
+rb = RecentRollout(max_len=1000, device=device)
 plot_rollout = RecentRollout(max_len=500, device=device)
 rb.add(
     **{
@@ -1064,7 +1119,7 @@ for env_step in pbar:
     # 4) Compute Predictive latent distribution
     Fz = Fz_net(z_bel["m"], e_bel["m"]).detach().squeeze(0)  # (1, Dz, Dz)
     dfdz = Fz * env.dt + torch.eye(latent_dim, device=device).unsqueeze(0)
-    Fe = Fe_net(z_bel["m"], e_bel["m"]).detach().squeeze(0)   # (1, Dz, De)
+    Fe = Fe_net(z_bel["m"], e_bel["m"]).detach().squeeze(0)  # (1, Dz, De)
     dfde = Fe * env.dt
 
     dhdz = decoder.jacobian.unsqueeze(0)  # (1, Do, Dz)
@@ -1103,7 +1158,7 @@ for env_step in pbar:
                 curv_ll = symmetrize(curv_ll)  # ensure symmetry
 
                 Prec_new = Prec_old + curv_ll
-                eta_old = Prec_old @ e_bel["m"].unsqueeze(-1)
+                eta_old = Prec_old @ mu_e.unsqueeze(-1)
                 eta_new = eta_old + grad_ll.unsqueeze(-1)
                 Prec_old = Prec_new
 
@@ -1250,7 +1305,7 @@ writer.close()
 imageio.mimsave(video_path, frames, fps=5)
 
 
-# %% 1-2. ✅ (Debug) Amortized Latent with window + EKF/Laplace (with Embedding)
+# %% 1-2. ✅✅ (Debug) Amortized Latent with window + EKF/Laplace (with Embedding)
 # Use amortized latent encoder with small trailing window to infer latent posterior
 # Use EKF to get predictive latent covariance
 # Use Laplace to refine embedding posterior
@@ -1287,6 +1342,7 @@ sim_vec_env = actdyn.VectorFieldEnv(
     device=device,
 )
 
+frames = []
 plt.close("all")
 z_bel = {
     "m": torch.zeros(1, latent_dim, device=device),
@@ -1305,13 +1361,40 @@ rows = []
 obs, info = env.reset()
 z, z_hat = [], []  # For debugging purpose
 
-pbar = tqdm(range(1, 100000))
-windows_length = 100
-warmup_step = 100
+total_steps = 10000
+pbar = tqdm(range(1, total_steps))
+windows_length = 1000
+warmup_step = 1000
 n_samples = 5
-rb = RecentRollout(max_len=windows_length, device=device)
-rb.add(**{"obs": obs, "next_obs": obs, "action": torch.zeros(1, action_dim, device=device)})
+rb = RecentRollout(max_len=1000, device=device)
+plot_rollout = RecentRollout(max_len=500, device=device)
+rb.add(
+    **{
+        "obs": obs,
+        "next_obs": obs,
+        "action": torch.zeros(1, action_dim, device=device),
+        "next_env_state": info["latent_state"],
+        "next_model_state": z_bel["m"],
+    }
+)
+plot_rollout.add(
+    **{
+        "next_env_state": info["latent_state"],
+        "next_model_state": z_bel["m"],
+    }
+)
 prev_action = torch.zeros(1, action_dim, device=device)
+
+results_dir = os.path.join(base_dir, "debug_ekf_laplace_amortized")
+for subdir in ["rollouts", "logs", "model", "video", "video/images"]:
+    p = os.path.join(results_dir, subdir)
+    # Clean up previous results
+    if os.path.exists(p):
+        shutil.rmtree(p)
+    os.makedirs(p, exist_ok=True)
+writer = SummaryWriter(log_dir=os.path.join(results_dir, "logs"))
+video_path = os.path.join(results_dir, f"video/vecfield.mp4")
+
 
 for env_step in pbar:
     # 1) Random action sampling
@@ -1463,36 +1546,82 @@ for env_step in pbar:
     loss.backward()
     torch.nn.utils.clip_grad_norm_(params, 5.0)
     opt.step()
-    # 7) Log (optional)
-    if (env_step % 1000) == 0 and env_step > 0:
-        sim_vec_env.dynamics.set_params([e_bel["m"][0, 0], e_bel["m"][0, 1], 0.1])
+    # Predictive loss
+    z_env = rb["next_env_state"][:, -1:]
+    z_mod = rb["next_model_state"][:, -1:]
+    z_future = env.env.generate_trajectory(z_env, 50)
+    y_future = obs_model(z_future)
+    sim_vec_env.dynamics.set_params([e_bel["m"][0, 0], e_bel["m"][0, 1], 0.1])
+    z_pred = sim_vec_env.generate_trajectory(z_mod, 50)
+    y_pred = decoder(z_pred)
+
+    ss_res = ((y_future - y_pred) ** 2).squeeze()
+    ss_tot = ((y_future - y_future.mean(dim=1)) ** 2).squeeze()
+
+    r2_mean = []
+    r2_mean.append((1 - ss_res[:10].sum(dim=0) / (ss_tot[:10].sum(dim=0) + 1e-6)).mean())
+    r2_mean.append((1 - ss_res[:25].sum(dim=0) / (ss_tot[:25].sum(dim=0) + 1e-6)).mean())
+    r2_mean.append((1 - ss_res[:50].sum(dim=0) / (ss_tot[:50].sum(dim=0) + 1e-6)).mean())
+
+    # Plotting
+    if env_step % 50 == 0:
+        fig, axs = plt.subplots(1, 1, figsize=(10, 8))
         plot_vector_field(
             sim_vec_env.dynamics,
             x_range=5,
+            ax=axs,
             is_residual=True,
         )
-        z_np = np.stack(z)
-        z_hat_np = np.stack(z_hat)
-        plt.plot(z_np[:, 0, 0], z_np[:, 0, 1], label="true", alpha=0.5)
-        plt.plot(z_hat_np[:, 0], z_hat_np[:, 1], label="inferred", alpha=0.5)
-        plt.legend()
-        plt.xlim(-5, 5)
-        plt.ylim(-5, 5)
-        plt.show()
-        z, z_hat = [], []
+        data = to_np(plot_rollout["next_env_state"])
+        create_gradient_line(axs, data, "royalblue", label="Env Traj")
+        data = to_np(z_future)[0]
+        axs.plot(data[:, 0], data[:, 1], "--", color="royalblue", lw=1, label="Env Future")
 
-    z.append(info["latent_state"].detach().squeeze(0).cpu())
-    z_hat.append(mu_q[:, -2].detach().squeeze(0).cpu())
+        data = to_np(plot_rollout["next_model_state"])
+        create_gradient_line(axs, data, "crimson", label="Model Traj")
+        data = to_np(z_pred)[0]
+        axs.plot(data[:, 0], data[:, 1], "--", color="crimson", lw=1, label="Model Pred")
+        plt.legend(loc="upper right")
+        axs.set_title(f"Step {env_step}")
+        plt.colorbar(label="Speed", aspect=20)
+        fig.tight_layout()
+        fig.savefig(os.path.join(results_dir, f"video/images/vecfield_{env_step:05d}.png"))
+        # Write video
+        frames.append(fig.canvas.renderer.buffer_rgba())
+        plt.close(fig)
+
+    writer.add_scalar("train/ELBO", elbo / windows_length, env_step)
+    writer.add_scalar(
+        "train/log_like", ll_b.mean().item() / windows_length / observation_dim, env_step
+    )
+    writer.add_scalar("train/kl_d", kl_b.mean().item() / windows_length / latent_dim, env_step)
+    writer.add_scalar("train/r2_10", r2_mean[0], env_step)
+    writer.add_scalar("train/r2_25", r2_mean[1], env_step)
+    writer.add_scalar("train/r2_50", r2_mean[2], env_step)
+    writer.add_scalar("train/e1", e_bel["m"][0, 0].item(), env_step)
+    writer.add_scalar("train/e2", e_bel["m"][0, 1].item(), env_step)
+    writer.add_scalar("train/e1_true", env.env.dynamics.a.item(), env_step)
+    writer.add_scalar("train/e2_true", env.env.dynamics.b.item(), env_step)
 
     if env_step % 100 == 0:
-        pbar.set_postfix(
-            LL=f"{ll_b.mean().item()/windows_length:.3f}",
-            KL=f"{kl_b.mean().item()/windows_length:.3f}",
-            e_hat=f"({e_bel['m'][..., 0].item():.2f},{e_bel['m'][..., 1].item():.2f})",
-            e_true=f"({a:.2f},{b:.2f})",
-        )
+        pbar.set_postfix({"ELBO": f"{elbo/windows_length:.4f}"})
         pbar.update(100)
 
+    if env_step % 1000 == 0:
+        save_load.save_rollout(
+            rb,
+            os.path.join(results_dir, f"rollouts/rollout_{env_step}.pkl"),
+        )
+
+    rb.add(
+        **{"next_model_state": z_bel["m"].detach(), "next_env_state": info["latent_state"].detach()}
+    )
+    plot_rollout.add(
+        **{"next_model_state": z_bel["m"].detach(), "next_env_state": info["latent_state"].detach()}
+    )
+pbar.close()
+writer.close()
+imageio.mimsave(video_path, frames, fps=5)
 # %% 1-3. ✅✅ DKF (without Embedding)
 torch.manual_seed(1)
 mapping = actdyn.models.decoder.LinearMapping(
@@ -1680,6 +1809,7 @@ experiment.agent.model_env.save_model(
     os.path.join(experiment.results_dir, f"model/model_final.pth")
 )
 imageio.mimsave(video_path, frames, fps=5)
+writer.close()
 
 
 # %% 1-3. ✅ (Debug) DKF (without Embedding)
@@ -1738,7 +1868,7 @@ experiment.run()
 # %% 1-5. (TODO) DVBF (embedding as variational parameter)
 # %% 1-5. (TODO) Amortized Gain + Laplace embedding Inference
 # %% 2-1. Train with active learning (myopic)
-# %% 1-2. Active Planning Amortized Latent with window + EKF/Laplace (with Embedding)
+# %% 2-2. Active Planning Amortized Latent with window + EKF/Laplace (with Embedding)
 # Use amortized latent encoder with small trailing window to infer latent posterior
 # Use EKF to get predictive latent covariance
 # Use Laplace to refine embedding posterior
@@ -1761,8 +1891,7 @@ dynamics = actdyn.models.dynamics.FunctionDynamics(
     state_dim=latent_dim, dt=env.dt, dynamics_fn=meta_dynamics_fn, device=device
 )
 params = list(decoder.parameters()) + list(encoder.parameters()) + list(dynamics.parameters())
-
-
+emb_metric = actdyn.metrics.information.EmbeddingFisherMetric(
     Fe_net=Fe_net, Fz_net=Fz_net, decoder=decoder
 )
 model = actdyn.models.BaseModel(
@@ -1771,11 +1900,12 @@ model = actdyn.models.BaseModel(
     device=device,
 )
 
-policy = actdyn.policy.mpc.MpcICem(
+mpc_policy = actdyn.policy.mpc.MpcICem(
+    metric=emb_metric,
     model=model,
     device=device,
-    horizon=2,
-    num_iterations=10,
+    horizon=20,
+    num_iterations=5,
     num_samples=16,
     num_elite=8,
     verbose=False,
@@ -1802,11 +1932,12 @@ rows = []
 obs, info = env.reset()
 z, z_hat = [], []  # For debugging purpose
 
-pbar = tqdm(range(1, 100000))
+total_steps = 100000
+pbar = tqdm(range(1, total_steps))
 windows_length = 100
 warmup_step = 1000
 n_samples = 5
-rb = RecentRollout(max_len=windows_length, device=device)
+rb = RecentRollout(max_len=1000, device=device)
 plot_rollout = RecentRollout(max_len=500, device=device)
 rb.add(
     **{
@@ -1825,7 +1956,7 @@ plot_rollout.add(
 )
 prev_action = torch.zeros(1, action_dim, device=device)
 
-results_dir = os.path.join(base_dir, "active_planning_ekf_laplace_amortized")
+results_dir = os.path.join(base_dir, "n_active_planning_ekf_laplace_amortized")
 for subdir in ["rollouts", "logs", "model", "video", "video/images"]:
     p = os.path.join(results_dir, subdir)
     # Clean up previous results
@@ -1837,9 +1968,9 @@ video_path = os.path.join(results_dir, f"video/vecfield.mp4")
 
 
 for env_step in pbar:
-    Q = softplus(dynamics.logvar).diag_embed() * env.dt
+    Q = softplus(dynamics.logvar).diag_embed().squeeze(0) * env.dt
     # 1) Random action sampling
-    u_t = policy(z_bel["m"].unsqueeze(0), e_bel=e_bel, z_bel=z_bel, Q=Q.squeeze(0)).detach()
+    u_t = mpc_policy(z_bel["m"].unsqueeze(0), e_bel=e_bel, z_bel=z_bel, Q=Q).detach()
     # -----------------------------------
     # 2) Get true observation from env
     obs, reward, _, _, info = env.step(u_t)
@@ -1864,7 +1995,6 @@ for env_step in pbar:
     R = softplus(decoder.noise.logvar).diag_embed() + eps
     if env_step < warmup_step:
         R = R.detach()
-    Q = softplus(dynamics.logvar).diag_embed() * env.dt + eps
 
     z_bel = {"m": mu_q[:, -2].detach(), "P": var_q[0, -2].diag_embed().detach()}
 
@@ -1942,7 +2072,7 @@ for env_step in pbar:
     if env_step > warmup_step:
         z_p = (z_flat + meta_dynamics_fn(z_flat, e_bel["m"]) * env.dt)[..., :-1, :]
         z_p += rb["action"][..., 1:, :] * env.dt
-        z_p += torch.randn_like(z_p) * (Q[0].diag()).sqrt()
+        z_p += torch.randn_like(z_p) * (Q.diag()).sqrt()
         z_p = torch.cat([z_flat[..., :1, :], z_p], dim=-2)  # ((S B),T,D)
         mu_p = (mu_q + meta_dynamics_fn(mu_q, e_bel["m"]) * env.dt)[..., :-1, :]
         mu_p += rb["action"][..., 1:, :] * env.dt
@@ -1962,10 +2092,7 @@ for env_step in pbar:
     kl_b = torch.zeros(1, device=device)
     if env_step > warmup_step:
         kl_d = 0.5 * (
-            torch.log(Q[0].diag() / var_q)
-            + ((mu_q - mu_p) ** 2) / Q[0].diag()
-            + (var_q / Q[0].diag())
-            - 1
+            torch.log(Q.diag() / var_q) + ((mu_q - mu_p) ** 2) / Q.diag() + (var_q / Q.diag()) - 1
         )
         kl_sb = kl_d.sum(dim=-1)  # (S*B, T)
         if t_mask is not None:
@@ -1985,9 +2112,9 @@ for env_step in pbar:
     # Predictive loss
     z_env = rb["next_env_state"][:, -1:]
     z_mod = rb["next_model_state"][:, -1:]
-    z_future = env.env.generate_trajectory(z_env, 100)
+    z_future = env.env.generate_trajectory(z_env, 50)
     y_future = obs_model(z_future)
-    z_pred = dynamics.sample_forward(z_mod, e_bel["m"], k_step=100, return_traj=True)[1]
+    z_pred = dynamics.sample_forward(z_mod, e_bel["m"], k_step=50, return_traj=True)[1]
     z_pred = [z_mod] + z_pred
     z_pred = torch.cat(z_pred, -2)
     y_pred = decoder(z_pred)
@@ -1997,8 +2124,8 @@ for env_step in pbar:
 
     r2_mean = []
     r2_mean.append((1 - ss_res[:10].sum(dim=0) / (ss_tot[:10].sum(dim=0) + 1e-6)).mean())
+    r2_mean.append((1 - ss_res[:25].sum(dim=0) / (ss_tot[:25].sum(dim=0) + 1e-6)).mean())
     r2_mean.append((1 - ss_res[:50].sum(dim=0) / (ss_tot[:50].sum(dim=0) + 1e-6)).mean())
-    r2_mean.append((1 - ss_res[:100].sum(dim=0) / (ss_tot[:100].sum(dim=0) + 1e-6)).mean())
 
     # Plotting
     if env_step % 50 == 0:
@@ -2033,15 +2160,23 @@ for env_step in pbar:
     )
     writer.add_scalar("train/kl_d", kl_b.mean().item() / windows_length / latent_dim, env_step)
     writer.add_scalar("train/r2_10", r2_mean[0], env_step)
-    writer.add_scalar("train/r2_50", r2_mean[1], env_step)
-    writer.add_scalar("train/r2_100", r2_mean[2], env_step)
+    writer.add_scalar("train/r2_25", r2_mean[1], env_step)
+    writer.add_scalar("train/r2_50", r2_mean[2], env_step)
+    writer.add_scalar("train/e1", e_bel["m"][0, 0].item(), env_step)
+    writer.add_scalar("train/e2", e_bel["m"][0, 1].item(), env_step)
+    writer.add_scalar("train/e1_true", env.env.dynamics.a.item(), env_step)
+    writer.add_scalar("train/e2_true", env.env.dynamics.b.item(), env_step)
 
     if env_step % 100 == 0:
         pbar.set_postfix({"ELBO": f"{elbo / windows_length:.4f}"})
         pbar.update(100)
 
-    z.append(info["latent_state"].detach().squeeze(0).cpu())
-    z_hat.append(z_bel["m"].detach().squeeze(0).cpu())
+    if env_step % 1000 == 0:
+        save_load.save_rollout(
+            rb,
+            os.path.join(results_dir, f"rollouts/rollout_{env_step}.pkl"),
+        )
+
     rb.add(
         **{"next_model_state": z_bel["m"].detach(), "next_env_state": info["latent_state"].detach()}
     )
@@ -2049,6 +2184,7 @@ for env_step in pbar:
         **{"next_model_state": z_bel["m"].detach(), "next_env_state": info["latent_state"].detach()}
     )
 pbar.close()
+writer.close()
 imageio.mimsave(video_path, frames, fps=5)
 
 
