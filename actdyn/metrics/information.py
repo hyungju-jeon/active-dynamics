@@ -1,3 +1,6 @@
+from zmq import FD
+import actdyn
+import actdyn.models
 from actdyn.models.base import BaseDynamicsEnsemble
 import torch
 from typing import Dict, Union
@@ -6,6 +9,7 @@ from actdyn.models.decoder import LinearMapping, LogLinearMapping
 from actdyn.models.dynamics import RBFDynamics
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from .base import BaseMetric
+from torch.nn.functional import softplus
 
 eps = 1e-12
 
@@ -233,3 +237,210 @@ class DOptimality(FisherInformationMetric):
         else:
             # TODO: implement non-diagonal A-optimality
             pass
+
+
+class EmbeddingFisherMetric(BaseMetric):
+    """Metric that computes information gain in the embedding space."""
+
+    def __init__(
+        self,
+        compute_type: str = "sum",
+        device: str = "cuda",
+        Fe_net: callable = None,
+        Fz_net: callable = None,
+        decoder: actdyn.models.Decoder = None,
+        **kwargs,
+    ):
+        super().__init__(compute_type, device)
+        self.I = None
+        self.Fe_net = Fe_net
+        self.Fz_net = Fz_net
+        self.decoder = decoder
+
+    def compute(
+        self, rollout: Union[Rollout, RolloutBuffer, Dict], e_bel, z_bel, Q
+    ) -> torch.Tensor:
+        with torch.no_grad():
+            z = rollout["next_model_state"].to(self.device)
+            if len(z.shape) != 3:
+                z = z.unsqueeze(0)  # Ensure z is (batch, T, d_latent)
+            assert len(z.shape) == 3, "z must be a tensor of shape (batch, T, d_latent)"
+            batch, T, d_latent = z.shape
+            d_embedding = e_bel["m"].shape[-1]
+
+            e_m = e_bel["m"].to(self.device)
+            z_m = z_bel["m"].to(self.device)
+            if z_m.shape[0] == 1 and batch > 1:
+                z_m = z_m.expand(batch, -1, -1)
+
+            P = z_bel["P"].to(self.device)
+            # If P has an extra leading singleton, broadcast to batch
+            if P.dim() == 4 and P.shape[0] == 1:
+                P = P.expand(batch, -1, -1, -1).squeeze(1)
+            P = P.squeeze(0) if P.dim() == 3 and P.shape[0] == 1 else P
+            # Ensure P is (batch, d_latent, d_latent)
+            if P.dim() == 2:
+                P = P.unsqueeze(0).expand(batch, -1, -1)
+
+            Qb = Q.to(self.device)
+            if Qb.dim() == 2:
+                Qb = Qb.unsqueeze(0).expand(batch, -1, -1)
+            elif Qb.dim() == 3 and Qb.shape[0] == 1:
+                Qb = Qb.expand(batch, -1, -1)
+
+            R = softplus(self.decoder.logvar).diag_embed().to(self.device)
+            if R.dim() == 3 and R.shape[0] == 1:
+                R = R.expand(batch, -1, -1)
+            # Ensure the embedding mean is on the same device and expand appropriately
+            e_rep = e_m.unsqueeze(0).expand(batch, -1) if e_m.dim() == 1 else e_m
+            e_rep = e_rep.unsqueeze(1).expand(batch, T, -1)
+
+            # Compute Fe and Fz without tracking gradients (already in no_grad scope)
+            Fe = self.Fe_net(z, e_rep).detach()  # (batch, T, d_latent, d_emb)
+            Fz = self.Fz_net(z, e_rep).detach()  # (batch, T, d_latent, d_latent)
+
+            # Compute initial sensitivity Gt at belief mean for t=0: shape (batch, d_latent, d_emb)
+            Fe_bel = self.Fe_net(z_m, e_rep[:, :1, :]).detach()
+            Gt = Fe_bel[:, 0]  # (batch, d_latent, d_emb)
+
+            # Cache decoder jacobian on device (broadcasting handles batch dim)
+            H = self.decoder.jacobian.to(self.device)
+            H = H.unsqueeze(0).expand(batch, -1, -1)
+
+            # Accumulator for embedding-space Fisher information (batch, d_emb, d_emb)
+            J = torch.zeros(batch, d_embedding, d_embedding, device=self.device)
+
+            for i in range(T):
+                # dy/de = H @ Gt  -> (batch, d_obs, d_emb)
+                dyde = torch.einsum("bod,bdp->bop", H, Gt)
+
+                # Innovation covariance S = H P H^T + R  -> (batch, d_obs, d_obs)
+                S = H @ P @ H.mT + R
+
+                # Cholesky and solve: solve S x = dyde for x
+                chol_S = torch.linalg.cholesky(S)
+                sol = torch.cholesky_solve(dyde, chol_S)
+
+                # Update J: sum over observations -> (batch, d_emb, d_emb)
+                # dyde^T @ sol  => (batch, d_emb, d_emb)
+                J += torch.einsum("bop,boq->bpq", dyde, sol)
+
+                # Propagate Gt and P to next step
+                Fi = Fz[:, i]
+                Gi = Fe[:, i]
+                # Gt <- Fz_i @ Gt + Fe_i
+                Gt = Fi @ Gt + Gi
+
+                # P <- Fz_i @ P @ Fz_i^T + Q
+                P = Fi @ P @ Fi.mT + Qb
+
+            # Use slogdet for numerical stability and to avoid accidental graph retention
+            mat = e_bel["P"].to(self.device) @ J + torch.eye(d_embedding, device=self.device)
+            sign, logabsdet = torch.linalg.slogdet(mat)
+            # if sign <= 0, logabsdet may be -inf or NaN; keep current behaviour but avoid crash
+            EIG = logabsdet
+
+            # Explicitly delete large temporaries (helps long-running processes)
+            del Fe, Fz, Fe_bel, sol, mat, chol_S, H, dyde, S
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            return -EIG  # (batch, )
+
+        # with torch.no_grad():
+        #     # Basic validation
+        #     if self.Fe_net is None or self.Fz_net is None or self.decoder is None:
+        #         raise ValueError(
+        #             "EmbeddingFisherMetric requires Fe_net, Fz_net, and decoder to be set"
+        #         )
+
+        #     # Accept numpy/sequence or tensor; as_tensor will handle both and place on device
+        #     z = torch.as_tensor(rollout["model_state"], device=self.device)
+        #     if len(z.shape) != 3:
+        #         z = z.unsqueeze(0)  # Ensure z is (batch, T, d_latent)
+        #     assert len(z.shape) == 3, "z must be a tensor of shape (batch, T, d_latent)"
+        #     batch, T, d_latent = z.shape
+        #     d_embedding = e_bel["m"].shape[-1]
+
+        #     # Move beliefs/covariances to device once
+        #     e_m = e_bel["m"].to(self.device)
+        #     # Ensure z_bel['m'] and z_bel['P'] have batch dim consistent with z
+        #     z_bel_m = z_bel["m"].to(self.device)
+        #     if z_bel_m.shape[0] == 1 and batch > 1:
+        #         z_bel_m = z_bel_m.expand(batch, -1, -1)
+
+        #     P = z_bel["P"].to(self.device)
+        #     # If P has an extra leading singleton, broadcast to batch
+        #     if P.dim() == 4 and P.shape[0] == 1:
+        #         P = P.expand(batch, -1, -1, -1).squeeze(1)
+        #     P = P.squeeze(0) if P.dim() == 3 and P.shape[0] == 1 else P
+        #     # Ensure P is (batch, d_latent, d_latent)
+        #     if P.dim() == 2:
+        #         P = P.unsqueeze(0).expand(batch, -1, -1)
+
+        #     Qb = Q.to(self.device)
+        #     if Qb.dim() == 2:
+        #         Qb = Qb.unsqueeze(0).expand(batch, -1, -1)
+        #     elif Qb.dim() == 3 and Qb.shape[0] == 1:
+        #         Qb = Qb.expand(batch, -1, -1)
+
+        #     R = softplus(self.decoder.logvar).diag_embed().to(self.device)
+        #     if R.dim() == 3 and R.shape[0] == 1:
+        #         R = R.expand(batch, -1, -1)
+
+        #     # Prepare repeated embedding means for Fe/Fz calls
+        #     e_rep = e_m.unsqueeze(0).expand(batch, -1) if e_m.dim() == 1 else e_m
+        #     e_rep = e_rep.unsqueeze(1).expand(batch, T, -1)
+
+        #     # Compute Fe and Fz for trajectory once (shapes: Fe (batch,T,d_latent,d_emb),
+        #     # Fz (batch,T,d_latent,d_latent)) and detach for safety
+        #     Fe = self.Fe_net(z, e_rep).detach()
+        #     Fz = self.Fz_net(z, e_rep).detach()
+
+        #     # Compute initial sensitivity Gt at belief mean for t=0: shape (batch, d_latent, d_emb)
+        #     Fe_bel = self.Fe_net(z_bel_m, e_rep[:, :1, :]).detach()
+        #     Gt = Fe_bel[:, 0]  # (batch, d_latent, d_emb)
+
+        #     # Cache decoder jacobian and make batch-aware: H (batch, d_obs, d_latent)
+        #     H = self.decoder.jacobian.to(self.device)
+        #     H = H.unsqueeze(0).expand(batch, -1, -1)
+
+        #     # Accumulator for embedding-space Fisher information (batch, d_emb, d_emb)
+        #     J = torch.zeros(batch, d_embedding, d_embedding, device=self.device)
+
+        #     # Time loop (sequential because P depends on previous step)
+        #     for i in range(T):
+        #         # dy/de = H @ Gt  -> (batch, d_obs, d_emb)
+        #         dyde = torch.einsum("bod,bdp->bop", H, Gt)
+
+        #         # Innovation covariance S = H P H^T + R  -> (batch, d_obs, d_obs)
+        #         S = H @ P @ H.mT + R
+
+        #         # Cholesky and solve: solve S x = dyde for x
+        #         chol_S = torch.linalg.cholesky(S)
+        #         sol = torch.cholesky_solve(dyde, chol_S)
+
+        #         # Update J: sum over observations -> (batch, d_emb, d_emb)
+        #         # dyde^T @ sol  => (batch, d_emb, d_emb)
+        #         J += torch.einsum("bop,boq->bpq", dyde, sol)
+
+        #         # Propagate Gt and P to next step
+        #         Fi = Fz[:, i]
+        #         Gi = Fe[:, i]
+        #         # Gt <- Fz_i @ Gt + Fe_i
+        #         Gt = Fi @ Gt + Gi
+
+        #         # P <- Fz_i @ P @ Fz_i^T + Q
+        #         P = Fi @ P @ Fi.mT + Qb
+
+        #     # Compute log-determinant term safely
+        #     mat = e_bel["P"].to(self.device) @ J + torch.eye(d_embedding, device=self.device)
+        #     sign, logabsdet = torch.linalg.slogdet(mat)
+        #     EIG = logabsdet
+
+        #     # Cleanup temporaries
+        #     del Fe, Fz, Fe_bel, sol, mat, chol_S, H, dyde, S
+        #     if torch.cuda.is_available():
+        #         torch.cuda.empty_cache()
+
+        #     return -EIG
