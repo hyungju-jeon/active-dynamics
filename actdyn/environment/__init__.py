@@ -67,8 +67,67 @@ def observation_from_str(obs_str: str) -> type[BaseObservation]:
 
 def action_from_str(act_str: str) -> type[BaseAction]:
     """Dynamically import and return the observation model class based on the string key."""
-    if act_str not in _action_map:
-        raise ImportError(f"Unknown action model: {act_str}. Available: {list(_action_map.keys())}")
-    module_name, class_name = _action_map[act_str]
-    module = importlib.import_module(module_name, __package__)
-    return getattr(module, class_name)
+    """Environment helpers and factory functions.
+
+    Provide lightweight factory functions to resolve environment, observation and
+    action classes from short string keys. The functions perform dynamic imports
+    so that importing :mod:`actdyn.environment` stays cheap.
+    """
+
+    from .env_wrapper import GymObservationWrapper
+
+    __all__ = [
+        "environment_from_str",
+        "observation_from_str",
+        "action_from_str",
+        "GymObservationWrapper",
+    ]
+
+    # Keep mapping tables local to the module. The factory functions are defined
+    # in separate file to keep this __init__ small, but for convenience they are
+    # implemented here.
+    import importlib
+    from typing import Type, Union
+    from .base import BaseDynamicsEnv, BaseObservation, BaseAction
+
+    _environment_map = {
+        "vectorfield": (".vectorfield", "VectorFieldEnv"),
+        "continuous_cartpole": (".cartpole", "ContinuousCartPoleEnv"),
+        "continuous_cartpole_partial": (".cartpole", "ContinuousCartPoleEnv_partial"),
+        "continuous_cartpole_angle": (".cartpole", "ContinuousCartPoleEnv_angle"),
+    }
+
+    _observation_map = {
+        "identity": (".observation", "IdentityObservation"),
+        "linear": (".observation", "LinearObservation"),
+        "loglinear": (".observation", "LogLinearObservation"),
+        "nonlinear": (".observation", "NonlinearObservation"),
+    }
+
+    _action_map = {
+        "identity": (".action", "IdentityActionEncoder"),
+        "linear": (".action", "LinearActionEncoder"),
+        "mlp": (".action", "MlpActionEncoder"),
+    }
+
+    def environment_from_str(env_str: str) -> Union[Type[BaseDynamicsEnv], str]:
+        if env_str not in _environment_map:
+            # Fall back to gymnasium environment string
+            return env_str
+        module_name, class_name = _environment_map[env_str]
+        module = importlib.import_module(module_name, __package__)
+        return getattr(module, class_name)
+
+    def observation_from_str(obs_str: str) -> Type[BaseObservation]:
+        if obs_str not in _observation_map:
+            raise ImportError(f"Unknown observation model: {obs_str}")
+        module_name, class_name = _observation_map[obs_str]
+        module = importlib.import_module(module_name, __package__)
+        return getattr(module, class_name)
+
+    def action_from_str(act_str: str) -> Type[BaseAction]:
+        if act_str not in _action_map:
+            raise ImportError(f"Unknown action model: {act_str}")
+        module_name, class_name = _action_map[act_str]
+        module = importlib.import_module(module_name, __package__)
+        return getattr(module, class_name)

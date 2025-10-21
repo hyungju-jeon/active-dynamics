@@ -1,9 +1,27 @@
-# Utils package for actdyn
+"""Utilities for actdyn experiments.
 
-# Import commonly used utilities
-from .helpers import setup_experiment
+Expose a small set of commonly used helpers. Hydra integration utilities are
+re-exported when Hydra is available; otherwise they are skipped so importing
+the package does not require Hydra.
+"""
 
-# Hydra integration utilities (optional import to avoid hydra dependency if not needed)
+from .save_load import save_model, load_model, save_rollout, load_rollout
+
+__all__ = ["setup_experiment", "save_model", "load_model", "save_rollout", "load_rollout"]
+
+
+def setup_experiment(*args, **kwargs):
+    """Lazy import wrapper for setup_experiment from actdyn.utils.helpers.
+
+    This avoids importing heavy dependencies (torch, gym) at package import
+    time. The real function will be imported on first call.
+    """
+    from .helpers import setup_experiment as _setup
+
+    return _setup(*args, **kwargs)
+
+
+# Optional hydra integration helpers
 try:
     from .hydra_integration import (
         hydra_experiment,
@@ -12,14 +30,14 @@ try:
         setup_hydra_experiment,
     )
 
-    __all__ = [
-        "setup_experiment",
-        "Logger",
-        "hydra_experiment",
-        "HydraExperimentConfig",
-        "register_actdyn_configs",
-        "setup_hydra_experiment",
-    ]
-except ImportError:
-    # Hydra not available - skip hydra utilities
-    __all__ = ["setup_experiment", "Logger"]
+    __all__.extend(
+        [
+            "hydra_experiment",
+            "HydraExperimentConfig",
+            "register_actdyn_configs",
+            "setup_hydra_experiment",
+        ]
+    )
+except Exception:
+    # Missing hydra or optional imports - keep package importable
+    pass

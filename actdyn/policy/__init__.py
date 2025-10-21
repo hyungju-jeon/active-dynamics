@@ -1,21 +1,24 @@
-from .base import BasePolicy, BaseMPC
-import importlib
+"""Policy package exports.
 
-__all__ = ["policy_from_str", "BasePolicy", "BaseMPC"]
+Expose policy base classes and a few built-in policies. Use :func:`policy_from_str`
+to resolve policies by short names.
+"""
+
+from .base import BasePolicy, BaseMPC
+from .policy import OffPolicy, RandomPolicy, StepPolicy
+
+__all__ = ["policy_from_str", "BasePolicy", "BaseMPC", "RandomPolicy", "StepPolicy", "OffPolicy"]
+
+import importlib
 
 _policy_map = {
     "mpc-icem": (".mpc", "MpcICem"),
     "random": (".policy", "RandomPolicy"),
     "off-policy": (".policy", "OffPolicy"),
-    # Add more mappings as needed
 }
 
 
 def policy_from_str(policy_str: str) -> type[BasePolicy]:
-    """
-    Dynamically import and return the policy class based on the string key.
-    Example: policy_from_string('mpc-icem')
-    """
     if policy_str not in _policy_map:
         raise ImportError(f"Unknown policy: {policy_str}. Available: {list(_policy_map.keys())}")
     module_name, class_name = _policy_map[policy_str]

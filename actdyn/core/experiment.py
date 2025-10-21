@@ -87,6 +87,28 @@ class Experiment:
             self.video_recorder.save()
             self.video_recorder = None
 
+    def update_pbar(self, pbar, interval=100, postfix={}, vars=[]):
+        if "ELBO" in vars:
+            elbo_loss = -self.training_loss[0][0]
+            postfix.update({"ELBO": f"{elbo_loss:.4f}"})
+        elif "beta" in vars:
+            postfix.update({"beta": f"{self.agent.model_env.model.beta:.4f}"})
+
+        if self.env_step % interval == 0 and self.env_step > 0:
+            pbar.set_postfix(postfix)
+            pbar.update(interval)
+
+    @property
+    def is_training_step(self):
+        train_cfg = self.cfg.training
+        return (
+            self.env_step % train_cfg.train_every == 0 and self.env_step > train_cfg.rollout_horizon
+        )
+
+    @property
+    def is_logging_step(self):
+        return self.env_step % self.cfg.logging.plot_every == 0
+
     def run(self, reset=True):
         os.makedirs(self.results_dir, exist_ok=True)
         for subdir in ["rollouts", "logs", "model"]:
@@ -131,32 +153,17 @@ class Experiment:
 
             self.agent.update_policy(transition)
 
-            if self.env_step % 100 == 0:
-                if isinstance(self.training_loss, list) and len(self.training_loss) > 0:
-                    elbo_loss = -self.training_loss[0][0]
-                    pbar.set_postfix(
-                        {"ELBO": f"{elbo_loss:.4f}, beta: {self.agent.model_env.model.beta:.4f}"}
-                    )
-                else:
-                    pbar.set_postfix({"ELBO": "N/A"})
-                pbar.update(100)
+            self.update_pbar(pbar, vars=["ELBO", "beta"])
 
             # Train model periodically
-            if (
-                self.env_step % train_cfg.train_every == 0
-                and self.env_step > train_cfg.rollout_horizon
-            ):
+            if self.is_training_step:
                 sampling_ratio = self.agent.model_env.model.dynamics.dt / self.agent.env.dt
                 self.training_loss = self.agent.train_model(
                     **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
                 )
 
-            if self.cfg.logging.plot_every > 0:
-                if self.env_step % self.cfg.logging.plot_every == 0:
-                    pass
-
             # Periodic rollout saving for crash recovery and memory management
-            if self.env_step % self.cfg.logging.save_every == 0:
+            if self.is_logging_step:
                 save_load.save_rollout(
                     self.rollout,
                     os.path.join(self.results_dir, f"rollouts/rollout_{self.env_step}.pkl"),
@@ -188,11 +195,11 @@ class Experiment:
 
         self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
 
-        # ELBO on validation set
-        validate_elbo(self, rb, self.writer)
+        # # ELBO on validation set
+        # validate_elbo(self, rb, self.writer)
 
-        # K-step prediction R2
-        validate_kstep_r2(self, rb, self.writer)
+        # # K-step prediction R2
+        # validate_kstep_r2(self, rb, self.writer)
 
         self.writer.close()
 
@@ -271,3 +278,97 @@ class Experiment:
 #     for i in range(r2m.shape[1]):
 #         for k in range(r2m.shape[0]):
 #             writer.add_scalar(f"validation/kstep/r2_mean_{i}", r2m[k, i], k + 1)
+
+
+class MetaEmbeddingExperiment(Experiment):
+    def __init__(self, agent: Agent, config: ExperimentConfig, resume=False):
+        super().__init__(agent, config, resume=resume)
+
+    def run(self, reset=True):
+        os.makedirs(self.results_dir, exist_ok=True)
+        for subdir in ["rollouts", "logs", "model"]:
+            p = os.path.join(self.results_dir, subdir)
+            if os.path.exists(p):
+                shutil.rmtree(p, ignore_errors=True) if reset else None
+            os.makedirs(p, exist_ok=True)
+
+        self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
+        train_cfg = self.cfg.training
+        # Initialize environment
+        if reset:
+            self.agent.reset(seed=int(self.cfg.seed))
+            self.env_step = 0
+            self.rollout.clear()
+        else:
+            print("Continuing from previous step:", self.env_step)
+            self.rollout.clear()
+
+        # Setup progress bar
+        pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Training")
+        while self.env_step < train_cfg.total_steps:
+            self.env_step += 1
+
+            with torch.no_grad():
+                # 1. Plan
+                action = self.agent.plan()
+                # 2. Execute
+                transition, done = self.agent.step(action)
+
+            # Append transition to rollout
+            self.rollout.add(**transition)
+
+            # Update policy
+            self.agent.update_policy(transition)
+
+            if isinstance(self.training_loss, list):
+                self.writer.add_scalar("train/ELBO", -self.training_loss[0][0], self.env_step)
+                self.writer.add_scalar("train/log_like", self.training_loss[0][1], self.env_step)
+                self.writer.add_scalar("train/kl_d", self.training_loss[0][2], self.env_step)
+            else:
+                self.writer.add_scalar("train/ELBO", 0, -self.env_step)
+                self.writer.add_scalar("train/log_like", 0, self.env_step)
+                self.writer.add_scalar("train/kl_d", 0, self.env_step)
+
+            if self.env_step % 100 == 0:
+                if isinstance(self.training_loss, list) and len(self.training_loss) > 0:
+                    elbo_loss = -self.training_loss[0][0]
+                    pbar.set_postfix(
+                        {"ELBO": f"{elbo_loss:.4f}, beta: {self.agent.model_env.model.beta:.4f}"}
+                    )
+                else:
+                    pbar.set_postfix({"ELBO": "N/A"})
+                pbar.update(100)
+
+            # Train model periodically
+            if (
+                self.env_step % train_cfg.train_every == 0
+                and self.env_step > train_cfg.rollout_horizon
+            ):
+                sampling_ratio = self.agent.model_env.model.dynamics.dt / self.agent.env.dt
+                self.training_loss = self.agent.train_model(
+                    **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
+                )
+
+            if self.cfg.logging.plot_every > 0:
+                if self.env_step % self.cfg.logging.plot_every == 0:
+                    pass
+
+            # Periodic rollout saving for crash recovery and memory management
+            if self.env_step % self.cfg.logging.save_every == 0:
+                save_load.save_rollout(
+                    self.rollout,
+                    os.path.join(self.results_dir, f"rollouts/rollout_{self.env_step}.pkl"),
+                )
+                if self.env_step < train_cfg.total_steps:
+                    self.rollout.clear()
+
+            # Clean up tensors to prevent memory accumulation
+            if "cuda" in str(self.agent.device):
+                del transition, action
+                torch.cuda.empty_cache()
+
+            if done:
+                break
+        pbar.close()
+        self.rollout.finalize()
+        self.agent.model_env.save_model(os.path.join(self.results_dir, f"model/model_final.pth"))
