@@ -24,12 +24,17 @@ class Experiment:
         self.rollout = Rollout(device="cpu")
         self.writer = None
         self.video_recorder = None
-        self.training_loss = 0
+        self.training_loss = [0.0, 0.0, 0.0]
         self.results_dir = os.path.join(os.path.dirname(__file__), config.results_dir)
         if resume:
             ## TODO : Implement resume functionality
             print("Resuming from previous experiment state...")
+
             # self.agent.model.load(self.cfg.logging.model_path)
+
+    def format_list(self, x):
+        fstr = ", ".join([f"{val:.3f}" for val in x.reshape(-1).tolist()])
+        return "(" + fstr + ")"
 
     def generate_rollout(self, num_episodes=20, episode_length=1000, rollout_dir=None):
         num_validate = num_episodes // 3
@@ -92,7 +97,7 @@ class Experiment:
             elbo_loss = -self.training_loss[0][0]
             postfix.update({"ELBO": f"{elbo_loss:.4f}"})
         elif "beta" in vars:
-            postfix.update({"beta": f"{self.agent.model_env.model.beta:.4f}"})
+            postfix.update({"beta": f"{self.agent.model.model.beta:.4f}"})
 
         if self.env_step % interval == 0 and self.env_step > 0:
             pbar.set_postfix(postfix)
@@ -142,25 +147,22 @@ class Experiment:
             # Append transition to rollout
             self.rollout.add(**transition)
 
-            if isinstance(self.training_loss, list):
-                self.writer.add_scalar("train/ELBO", -self.training_loss[0][0], self.env_step)
-                self.writer.add_scalar("train/log_like", self.training_loss[0][1], self.env_step)
-                self.writer.add_scalar("train/kl_d", self.training_loss[0][2], self.env_step)
-            else:
-                self.writer.add_scalar("train/ELBO", 0, -self.env_step)
-                self.writer.add_scalar("train/log_like", 0, self.env_step)
-                self.writer.add_scalar("train/kl_d", 0, self.env_step)
-
+            # Update policy
             self.agent.update_policy(transition)
+
+            # Update logs
+            self.writer.add_scalar("ELBO", -self.training_loss[0], self.env_step)
+            self.writer.add_scalar("log_like", self.training_loss[1], self.env_step)
+            self.writer.add_scalar("kl_d", self.training_loss[2], self.env_step)
 
             self.update_pbar(pbar, vars=["ELBO", "beta"])
 
             # Train model periodically
             if self.is_training_step:
-                sampling_ratio = self.agent.model_env.model.dynamics.dt / self.agent.env.dt
+                sampling_ratio = self.agent.model.model.dynamics.dt / self.agent.env.dt
                 self.training_loss = self.agent.train_model(
                     **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
-                )
+                )[0]
 
             # Periodic rollout saving for crash recovery and memory management
             if self.is_logging_step:
@@ -180,7 +182,7 @@ class Experiment:
                 break
         pbar.close()
         self.rollout.finalize()
-        self.agent.model_env.save_model(os.path.join(self.results_dir, f"model/model_final.pth"))
+        self.agent.model.save_model(os.path.join(self.results_dir, f"model/model_final.pth"))
 
     def post_run(self, data_dir=None):
         # Load data if exist
@@ -216,11 +218,11 @@ class Experiment:
             offline_cfg = self.cfg.training.get_offline_optim_cfg()
             print(f"Training params: {offline_cfg['param_list']}")
 
-            sampling_ratio = self.agent.model_env.model.dynamics.dt / self.agent.env.dt
+            sampling_ratio = self.agent.model.model.dynamics.dt / self.agent.env.dt
             self.rollout.downsample(n=int(sampling_ratio))
 
             # Perform offline learning
-            self.training_loss = self.agent.model_env.train_model(self.rollout, **offline_cfg)
+            self.training_loss = self.agent.model.train_model(self.rollout, **offline_cfg)
             elbo_list, loglike_list, kl_list = [], [], []
             for t in self.training_loss:
                 elbo_list.append(float(-t[0]))
@@ -232,7 +234,7 @@ class Experiment:
             print("Continuing from previous step:", self.env_step)
             offline_cfg = self.cfg.training.get_offline_optim_cfg()
             # Perform offline learning
-            self.training_loss = self.agent.model_env.train_model(self.rollout, **offline_cfg)
+            self.training_loss = self.agent.model.train_model(self.rollout, **offline_cfg)
             elbo_list, loglike_list, kl_list = [], [], []
             for t in self.training_loss:
                 elbo_list.append(float(-t[0]))
@@ -240,9 +242,9 @@ class Experiment:
                 kl_list.append(float(t[2]))
 
         for i, (e, l, k) in enumerate(zip(elbo_list, loglike_list, kl_list), start=1):
-            self.writer.add_scalar("offline/train/ELBO", e, i + self.env_step)
-            self.writer.add_scalar("offline/train/log_like", l, i + self.env_step)
-            self.writer.add_scalar("offline/train/kl_d", k, i + self.env_step)
+            self.writer.add_scalar("offline/ELBO", e, i + self.env_step)
+            self.writer.add_scalar("offline/log_like", l, i + self.env_step)
+            self.writer.add_scalar("offline/kl_d", k, i + self.env_step)
 
         self.prev_step += offline_cfg["n_epochs"]
 
@@ -313,6 +315,7 @@ class MetaEmbeddingExperiment(Experiment):
                 action = self.agent.plan()
                 # 2. Execute
                 transition, done = self.agent.step(action)
+                e_bel = self.agent.model.get_embedding()
 
             # Append transition to rollout
             self.rollout.add(**transition)
@@ -320,47 +323,30 @@ class MetaEmbeddingExperiment(Experiment):
             # Update policy
             self.agent.update_policy(transition)
 
-            if isinstance(self.training_loss, list):
-                self.writer.add_scalar("train/ELBO", -self.training_loss[0][0], self.env_step)
-                self.writer.add_scalar("train/log_like", self.training_loss[0][1], self.env_step)
-                self.writer.add_scalar("train/kl_d", self.training_loss[0][2], self.env_step)
-            else:
-                self.writer.add_scalar("train/ELBO", 0, -self.env_step)
-                self.writer.add_scalar("train/log_like", 0, self.env_step)
-                self.writer.add_scalar("train/kl_d", 0, self.env_step)
+            # Update logs
+            self.writer.add_scalar("log_like", self.training_loss[0], self.env_step)
+            self.writer.add_scalar("kl_d", self.training_loss[2], self.env_step)
+            self.writer.add_scalar("e", e_bel, self.env_step)
 
-            if self.env_step % 100 == 0:
-                if isinstance(self.training_loss, list) and len(self.training_loss) > 0:
-                    elbo_loss = -self.training_loss[0][0]
-                    pbar.set_postfix(
-                        {"ELBO": f"{elbo_loss:.4f}, beta: {self.agent.model_env.model.beta:.4f}"}
-                    )
-                else:
-                    pbar.set_postfix({"ELBO": "N/A"})
-                pbar.update(100)
+            self.update_pbar(
+                pbar,
+                postfix={"log_like": f"{self.training_loss[0]:.3f}", "e": self.format_list(e_bel)},
+            )
 
             # Train model periodically
-            if (
-                self.env_step % train_cfg.train_every == 0
-                and self.env_step > train_cfg.rollout_horizon
-            ):
-                sampling_ratio = self.agent.model_env.model.dynamics.dt / self.agent.env.dt
+            if self.is_training_step:
+                sampling_ratio = self.agent.model.model.dynamics.dt / self.agent.env.dt
                 self.training_loss = self.agent.train_model(
                     **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
-                )
-
-            if self.cfg.logging.plot_every > 0:
-                if self.env_step % self.cfg.logging.plot_every == 0:
-                    pass
+                )[0]
 
             # Periodic rollout saving for crash recovery and memory management
-            if self.env_step % self.cfg.logging.save_every == 0:
+            if self.is_logging_step:
                 save_load.save_rollout(
                     self.rollout,
                     os.path.join(self.results_dir, f"rollouts/rollout_{self.env_step}.pkl"),
                 )
-                if self.env_step < train_cfg.total_steps:
-                    self.rollout.clear()
+                self.rollout.clear()
 
             # Clean up tensors to prevent memory accumulation
             if "cuda" in str(self.agent.device):
@@ -369,6 +355,6 @@ class MetaEmbeddingExperiment(Experiment):
 
             if done:
                 break
+
         pbar.close()
-        self.rollout.finalize()
-        self.agent.model_env.save_model(os.path.join(self.results_dir, f"model/model_final.pth"))
+        self.agent.model.save_model(os.path.join(self.results_dir, f"model/model_final.pth"))
