@@ -6,10 +6,10 @@ import gymnasium as gym
 
 from actdyn.models.base import BaseDynamicsEnsemble
 from actdyn.utils.visualize import plot_vector_field
-from .model import SeqVae
+from .base import BaseModel
 
 
-class VAEWrapper(gym.Env):
+class ModelWrapper(gym.Env):
     """A wrapper class that converts a VAE model into a gym-like environment.
 
     This wrapper allows the VAE model to be used as a simulated environment for model-based RL.
@@ -24,7 +24,7 @@ class VAEWrapper(gym.Env):
 
     def __init__(
         self,
-        model: SeqVae,
+        model: BaseModel,
         observation_space: gym.Space,
         action_space: gym.Space,
         device: str = "cpu",
@@ -96,6 +96,7 @@ class VAEWrapper(gym.Env):
     def train_model(
         self, data, batch_size=32, chunk_size=1000, shuffle=False, num_workers=0, **kwargs
     ):
+        dataloader = self.prepare_dataloader(data, batch_size, chunk_size, shuffle, num_workers)
         # Handle different input types and convert to DataLoader
         if hasattr(data, "get_dataloader"):
             # This is a RolloutBuffer
@@ -126,7 +127,7 @@ class VAEWrapper(gym.Env):
                 f"Expected RolloutBuffer, Rollout, RecentRollout, or dict."
             )
 
-        return self.model.train_model(dataloader=dataloader, **kwargs)
+        return self.train_model(dataloader=dataloader, **kwargs)
 
     def save_model(self, path: str):
         os.makedirs(os.path.dirname(path), exist_ok=True)

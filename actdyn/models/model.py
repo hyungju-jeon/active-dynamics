@@ -1,4 +1,5 @@
 from typing import Optional
+from sympy import per
 import torch
 from einops import rearrange, repeat
 
@@ -31,30 +32,6 @@ class SeqVae(BaseModel):
         self.is_ensemble = hasattr(dynamics, "ensemble") and hasattr(dynamics, "n_models")
         self.step_count = 0
         self.beta = 0.0
-
-    def _get_dynamics(self, idx=None):
-        if self.is_ensemble:  # --- IGNORE ---
-            if idx is None:
-                raise ValueError("Ensemble mode requires an idx argument.")
-            return self.dynamics.ensemble[idx]
-        else:
-            return self.dynamics
-
-    def _get_optimizer(self, optimizer, param_list, lr, weight_decay):
-        if optimizer == "SGD":
-            return torch.optim.SGD(params=param_list, lr=lr)
-        elif optimizer == "Adam":
-            return torch.optim.Adam(params=param_list, lr=lr, weight_decay=weight_decay)
-        elif optimizer == "AdamW":
-            return torch.optim.AdamW(params=param_list, lr=lr, weight_decay=weight_decay)
-        else:
-            raise ValueError(f"Unknown optimizer: {optimizer}")
-
-    @staticmethod
-    def _kl_div(mu_q, var_q, mu_p, var_p):
-        """Analytic KL divergence between two multivariate normal distributions."""
-        kl_d = 0.5 * (torch.log(var_p / var_q) + ((mu_q - mu_p) ** 2) / var_p + (var_q / var_p) - 1)
-        return torch.sum(kl_d, (-1))
 
     @staticmethod
     def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
@@ -344,32 +321,28 @@ class SeqVae(BaseModel):
 
     def train_model(
         self,
-        dataloader=None,
-        lr=1e-4,
-        weight_decay=1e-3,
-        n_epochs=1,
-        optimizer="SGD",
-        verbose=True,
-        perturbation=0.0,
-        grad_clip_norm=1.0,
-        n_samples=5,
-        k_steps=1,
+        data,
+        batch_size=32,
+        chunk_size=1000,
+        shuffle=False,
+        num_workers=0,
         **kwargs,
     ):
         """
         Train model using PyTorch DataLoader.
         """
+        dataloader = self.prepare_dataloader(data, batch_size, chunk_size, shuffle, num_workers)
         all_losses = []
         train_args = {
             "dataloader": dataloader,
-            "optimizer": optimizer,
-            "lr": lr,
-            "weight_decay": weight_decay,
-            "n_epochs": n_epochs,
-            "verbose": verbose,
-            "grad_clip_norm": grad_clip_norm,
-            "n_samples": n_samples,
-            "k_steps": k_steps,
+            "optimizer": kwargs.get("optimizer", "SGD"),
+            "lr": kwargs.get("lr", 1e-4),
+            "weight_decay": kwargs.get("weight_decay", 1e-3),
+            "n_epochs": kwargs.get("n_epochs", 1),
+            "verbose": kwargs.get("verbose", True),
+            "grad_clip_norm": kwargs.get("grad_clip_norm", 1.0),
+            "n_samples": kwargs.get("n_samples", 5),
+            "k_steps": kwargs.get("k_steps", 1),
             "p_mask": kwargs.get("p_mask", 0.0),
             "beta": kwargs.get("beta", 1.0),
             "warmup": kwargs.get("warmup", 1000),
@@ -377,6 +350,7 @@ class SeqVae(BaseModel):
             "annealing_type": kwargs.get("annealing_type", "cyclic"),
             "param_list": kwargs.get("param_list", "all"),  # To be set per model
         }
+        perturbation = kwargs.get("perturbation", 0.0)
 
         param_lists = self.get_param_list(train_args["param_list"])
         # print(f"Training with {param_lists} parameter groups.")
@@ -417,38 +391,12 @@ class SeqVae(BaseModel):
 
         return all_losses
 
-    def get_param_list(self, param_list_type):
-        if param_list_type == "all":
-            return [list(self.parameters())]
-        else:
-            params = []
-            if "dynamics" in param_list_type:
-                if self.is_ensemble:
-                    for i in range(self.dynamics.n_models):
-                        params.append(list(self.dynamics.ensemble[i].parameters()))
-                else:
-                    params.append(list(self.dynamics.parameters()))
-            if "encoder" in param_list_type:
-                params.append(list(self.encoder.parameters()))
-            if "decoder" in param_list_type:
-                params.append(list(self.decoder.parameters()))
-            if "action" in param_list_type and self.action_encoder is not None:
-                params.append(list(self.action_encoder.parameters()))
-
-        return params
-
-    def beta_schedule(self, beta, warmup=1000, annealing_steps=1000, annealing_type="cyclic"):
-        if annealing_type == "linear":
-            self.beta = min(beta, beta * (self.step_count - warmup) / annealing_steps)
-        elif annealing_type == "cyclic":
-            cycle_length = 2 * annealing_steps
-            cycle_pos = (self.step_count - warmup) % cycle_length
-            if cycle_pos < annealing_steps:
-                self.beta = min(beta, beta * cycle_pos / annealing_steps)
-            else:
-                self.beta = beta
-        elif annealing_type == "none":
-            self.beta = beta
+    def update_posterior(self, y, u=None):
+        """Update the posterior state given new observation and action."""
+        with torch.no_grad():
+            _, z_post, _ = self.encoder(y=y, u=u, n_samples=1)
+            self._state = z_post[:, -1, :].unsqueeze(1)  # Use last time step
+        return self._state
 
 
 class DeepVariationalBayesFilter(SeqVae):
@@ -469,3 +417,24 @@ class DeepVariationalBayesFilter(SeqVae):
             action_encoder=action_encoder,
             device=device,
         )
+
+
+class FilteringPosterior(BaseModel):
+    """Filtering posterior model."""
+
+    def __init__(
+        self,
+        dynamics: BaseDynamics | BaseDynamicsEnsemble,
+        decoder: Decoder,
+        action_encoder: Optional[BaseAction] = None,
+        device: str = "cpu",
+    ):
+        super().__init__(device=device)
+        self.dynamics = dynamics
+        self.decoder = decoder
+        self.action_encoder = action_encoder
+        self.input_dim = decoder.mapping.obs_dim
+        self.latent_dim = getattr(decoder.mapping.latent_dim, "latent_dim", None)
+        self.action_dim = getattr(action_encoder, "action_dim", 0)
+        self.step_count = 0
+        self.beta = 0.0
