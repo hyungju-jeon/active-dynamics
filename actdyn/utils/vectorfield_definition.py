@@ -109,17 +109,15 @@ class LimitCycle(VectorField):
             self.w = 1
             self.d = x_range / 2
         else:
-            self.set_params(dyn_param)
+            self.set_params(*dyn_param)
 
         self.alpha = 1
         self.scaling = self.get_scaling()
         self.alpha = 2 / self.scaling
 
-    def set_params(self, dyn_param):
-        if isinstance(dyn_param, list):
-            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
-        self.w = dyn_param[..., 0]
-        self.d = dyn_param[..., 1]
+    def set_params(self, w=1.0, d=1.0):
+        self.w = w
+        self.d = d
 
     def get_scaling(self):
         if self.xy is None:
@@ -161,17 +159,15 @@ class DoubleLimitCycle(VectorField):
             self.w = 1
             self.d = x_range / 2
         else:
-            self.set_params(dyn_param)
+            self.set_params(*dyn_param)
 
         self.alpha = 1
         self.scaling = self.get_scaling()
         self.alpha = 1 / self.scaling
 
-    def set_params(self, dyn_param):
-        if isinstance(dyn_param, list):
-            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
-        self.w = dyn_param[..., 0]
-        self.d = dyn_param[..., 1]
+    def set_params(self, w=1.0, d=1.0):
+        self.w = w
+        self.d = d
 
     def get_scaling(self):
         if self.xy is None:
@@ -214,16 +210,14 @@ class MultiAttractor(VectorField):
             self.w_attractor = 1.0
             self.length_scale = 0.5
         else:
-            self.set_params(dyn_param)
+            self.set_params(*dyn_param)
 
         self.alpha = alpha
         self.U, self.V = self.generate_vector_field()
 
-    def set_params(self, dyn_param):
-        if isinstance(dyn_param, list):
-            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
-        self.w_attractor = dyn_param[..., 0]
-        self.length_scale = dyn_param[..., 1]
+    def set_params(self, w_attractor=1.0, length_scale=0.5):
+        self.w_attractor = w_attractor
+        self.length_scale = length_scale
 
     @torch.no_grad()
     def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
@@ -313,7 +307,7 @@ class VanDerPol(VectorField):
             self.mu = 1.0
             self.w = 1.0
         else:
-            self.set_params(dyn_param)
+            self.set_params(*dyn_param)
 
         self.alpha = 1
         if kwargs.get("alpha") is not None:
@@ -322,11 +316,9 @@ class VanDerPol(VectorField):
             self.scaling = self.get_scaling()
             self.alpha = 2 / self.scaling
 
-    def set_params(self, dyn_param):
-        if isinstance(dyn_param, list):
-            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
-        self.mu = dyn_param[..., 0]
-        self.w = dyn_param[..., 1]
+    def set_params(self, mu, w):
+        self.mu = mu
+        self.w = w
 
     def get_scaling(self):
         if self.xy is None:
@@ -370,7 +362,7 @@ class Duffing(VectorField):
             self.b = -0.1
             self.c = 0.1
         else:
-            self.set_params(dyn_param)
+            self.set_params(*dyn_param)
 
         self.alpha = 1
         if kwargs.get("alpha") is not None:
@@ -379,12 +371,10 @@ class Duffing(VectorField):
             self.scaling = self.get_scaling()
             self.alpha = 2 / self.scaling
 
-    def set_params(self, dyn_param):
-        if isinstance(dyn_param, list):
-            dyn_param = torch.tensor(dyn_param, device=self.device, dtype=torch.float32)
-        self.a = dyn_param[..., 0]
-        self.b = dyn_param[..., 1]
-        self.c = dyn_param[..., 2]
+    def set_params(self, a=0.1, b=-0.1, c=0.1):
+        self.a = a
+        self.b = b
+        self.c = c
 
     def get_scaling(self):
         if self.xy is None:
