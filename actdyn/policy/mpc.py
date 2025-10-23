@@ -3,8 +3,6 @@ from actdyn.environment import action
 import torch
 import colorednoise
 
-from actdyn.metrics.base import BaseMetric
-from actdyn.models.base import BaseModel
 
 from .base import BaseMPC
 from actdyn.utils.rollout import RolloutBuffer
@@ -18,12 +16,9 @@ class MpcICem(BaseMPC):
 
     def __init__(
         self,
-        metric: BaseMetric,
-        model: BaseModel,
-        horizon: int = 10,
         num_samples: int = 32,
         num_iterations: int = 10,
-        num_elite: int = 100,
+        num_elite: int = 10,
         alpha: float = 0.1,
         init_std: float = 0.5,
         noise_beta: float = 1.0,
@@ -33,19 +28,11 @@ class MpcICem(BaseMPC):
         use_mean_actions: bool = True,
         shift_elites: bool = True,
         keep_elites: bool = True,
-        verbose: bool = False,
-        device: str = "cpu",
+        **kwargs,
     ):
 
         # Call parent constructor with correct arguments
-        super().__init__(
-            metric=metric,
-            model=model,
-            horizon=horizon,
-            num_samples=num_samples,
-            verbose=verbose,
-            device=device,
-        )
+        super().__init__(num_samples=num_samples, **kwargs)
 
         # Set ICEM-specific parameters
         self.alpha = alpha
@@ -136,19 +123,19 @@ class MpcICem(BaseMPC):
         return actions
 
     def simulate(self, initial_state: torch.Tensor, actions: torch.Tensor):
-        simulated_paths = torch.zeros(
-            actions.shape[0],
-            self.horizon + 1,
-            initial_state.shape[-1],
-            device=self.device,
-        )  # (num_samples, horizon + 1, state_dim)
-        simulated_paths[:, 0, :] = initial_state[:, 0, :].repeat(actions.shape[0], 1)
-
-        # Simulated trajectories using mean prediction
-        for step in range(self.horizon):
-            simulated_paths[:, step + 1] = self.model.dynamics.sample_forward(
-                simulated_paths[:, step], self.model.action_encoder(actions[:, step])
-            )[1]
+        # Simulated trajectories using mean prediction. Use no_grad to avoid
+        # accumulating autograd history for planning.
+        with torch.no_grad():
+            if torch.cuda.is_available():
+                with torch.amp.autocast("cuda"):
+                    a_enc = self.model.action_encoder(actions)
+                    simulated_paths = self.model.predict(a_enc)
+            else:
+                a_enc = self.model.action_encoder(actions)
+                simulated_paths = self.model.predict(a_enc)
+            simulated_paths = torch.cat(
+                [self.model._state.repeat(simulated_paths.shape[0], 1, 1), simulated_paths], dim=-2
+            )
         rollout = RolloutBuffer(device=self.device)
         rollout.add_dict(
             {
@@ -159,7 +146,7 @@ class MpcICem(BaseMPC):
         )
         return rollout
 
-    def get_action(self, state, debug=False):
+    def get_action(self, state, debug=False, **kwargs):
         if not self.was_reset:
             self.beginning_of_rollout(state)
 
@@ -194,9 +181,10 @@ class MpcICem(BaseMPC):
                 elites_actions = torch.cat([reused_actions, last_actions], dim=-2)
                 actions = torch.cat([actions, elites_actions], dim=0)
 
-            # Simulate and Compute Cost
+            # Simulate and Compute Cost (no_grad to avoid retaining graphs)
             rollout = self.simulate(state, actions)
-            costs = self.metric(rollout).squeeze(-1)
+            with torch.no_grad():
+                costs = self.metric(rollout, **kwargs).reshape(-1)
 
             # Keep elites from previous iteration
             if iter > 0 and self.keep_elites:
@@ -228,8 +216,8 @@ class MpcICem(BaseMPC):
                 best_first_action = actions[min_cost_idx, 0]
 
             # Update mean and std
-            new_mean = torch.tensor(self.elite_actions).mean(dim=0)
-            new_std = torch.tensor(self.elite_actions).std(dim=0)
+            new_mean = self.elite_actions.mean(dim=0).to(self.device)
+            new_std = self.elite_actions.std(dim=0).to(self.device)
 
             self.mean = (1 - self.alpha) * new_mean + self.alpha * self.mean
             self.std = (1 - self.alpha) * new_std + self.alpha * self.std
@@ -250,4 +238,4 @@ class MpcICem(BaseMPC):
         self.mean = shifted_mean
         self.std = self.get_init_std()
 
-        return best_first_action.unsqueeze(0).unsqueeze(0)  # Return as (1, 1, action_dim)
+        return (actions[min_cost_idx].unsqueeze(0), costs[min_cost_idx].unsqueeze(0).detach())
