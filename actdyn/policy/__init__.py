@@ -7,7 +7,7 @@ to resolve policies by short names.
 from .base import BasePolicy, BaseMPC
 from .policy import OffPolicy, RandomPolicy, StepPolicy
 
-__all__ = ["policy_from_str", "BasePolicy", "BaseMPC", "RandomPolicy", "StepPolicy", "OffPolicy"]
+__all__ = ["policy_from_str", "RandomPolicy", "StepPolicy", "OffPolicy"]
 
 import importlib
 

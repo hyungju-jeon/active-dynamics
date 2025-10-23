@@ -16,8 +16,8 @@ from .base import (
     BaseDynamicsEnsemble,
 )
 from .decoder import Decoder
-from .model_wrapper import VAEWrapper
-from .model import SeqVae
+from .model_wrapper import ModelWrapper
+from .model import *
 
 __all__ = [
     # Base classes
@@ -29,8 +29,9 @@ __all__ = [
     "BaseDynamicsEnsemble",
     # Concrete implementations
     "Decoder",
-    "VAEWrapper",
+    "ModelWrapper",
     "SeqVae",
+    "FilteringEmbedding",
     # Factory functions
     "mapping_from_str",
     "noise_from_str",
@@ -42,7 +43,10 @@ __all__ = [
 import importlib
 
 # Factory tables
-_model_map = {"seq-vae": (".model", "SeqVae")}
+_model_map = {
+    "seq-vae": (".model", "SeqVae"),
+    "filtering-posterior": (".model", "FilteringPosterior"),
+}
 _encoder_map = {"mlp": (".encoder", "MLPEncoder"), "rnn": (".encoder", "RNNEncoder")}
 _mapping_map = {
     "identity": (".decoder", "IdentityMapping"),

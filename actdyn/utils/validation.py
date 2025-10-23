@@ -10,7 +10,7 @@ from einops import repeat, rearrange
 
 from actdyn.models.base import BaseModel
 from actdyn.utils.rollout import RolloutBuffer, Rollout
-from actdyn.utils.torch_helper import to_np
+from actdyn.utils.helper import to_np
 from actdyn.utils.visualize import create_subplot
 
 

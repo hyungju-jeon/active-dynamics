@@ -1,17 +1,20 @@
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import seaborn as sns
+from cycler import cycler
 
-from actdyn.utils.torch_helper import to_np
+from actdyn.utils.helper import to_np
 
 
 def set_matplotlib_style():
     plt.rcParams.update(
         {
-            "font.family": "times",
+            "font.family": "helvetica",
             "font.size": 14.0,
             "lines.linewidth": 2,
             "lines.antialiased": True,
+            "axes.prop_cycle": cycler(color=sns.color_palette("husl", 8)),
             "axes.facecolor": "fdfdfd",
             "axes.edgecolor": "777777",
             "axes.linewidth": 1,

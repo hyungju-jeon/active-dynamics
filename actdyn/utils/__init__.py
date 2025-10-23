@@ -16,7 +16,7 @@ def setup_experiment(*args, **kwargs):
     This avoids importing heavy dependencies (torch, gym) at package import
     time. The real function will be imported on first call.
     """
-    from .helpers import setup_experiment as _setup
+    from .experiment_helpers import setup_experiment as _setup
 
     return _setup(*args, **kwargs)
 

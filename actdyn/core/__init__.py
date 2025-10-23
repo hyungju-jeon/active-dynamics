@@ -5,6 +5,6 @@ Experiment). Importing :mod:`actdyn.core` is intentionally lightweight.
 """
 
 from .agent import Agent
-from .experiment import Experiment
+from .experiment import Experiment, MetaEmbeddingExperiment
 
-__all__ = ["Agent", "Experiment"]
+__all__ = ["Agent", "Experiment", "MetaEmbeddingExperiment"]

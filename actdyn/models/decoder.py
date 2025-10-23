@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-from actdyn.utils.torch_helper import activation_from_str
+from actdyn.utils.helper import activation_from_str
 from .base import BaseMapping, BaseNoise
 from torch.nn.functional import softplus
 
@@ -16,8 +16,8 @@ class Exp(nn.Module):
 
 
 class IdentityMapping(BaseMapping):
-    def __init__(self, device="cpu", **kwargs):
-        super().__init__(device)
+    def __init__(self, latent_dim: int, obs_dim: int, device="cpu", **kwargs):
+        super().__init__(latent_dim, obs_dim, device)
         self.network = nn.Identity()
 
     @property
@@ -33,7 +33,7 @@ class IdentityMapping(BaseMapping):
 
 class LinearMapping(BaseMapping):
     def __init__(self, latent_dim, obs_dim, device="cpu", **kwargs):
-        super().__init__(device)
+        super().__init__(latent_dim, obs_dim, device)
         self.network = nn.Linear(latent_dim, obs_dim).to(device)
 
     def set_weights(self, weights):
@@ -67,7 +67,7 @@ class LogLinearMapping(BaseMapping):
     network: nn.Sequential
 
     def __init__(self, latent_dim, obs_dim, device="cpu", **kwargs):
-        super().__init__(device)
+        super().__init__(latent_dim, obs_dim, device)
         self.network = nn.Sequential(
             nn.Linear(latent_dim, obs_dim),
             Exp(),
@@ -119,7 +119,7 @@ class MLPMapping(BaseMapping):
         activation="relu",
         device="cpu",
     ):
-        super().__init__(device)
+        super().__init__(latent_dim, obs_dim, device)
         self.activation = activation_from_str(activation)
         if isinstance(hidden_dim, int):
             hidden_dims = [hidden_dim]
@@ -183,6 +183,8 @@ class Decoder(nn.Module):
         self.mapping = mapping.to(device)
         self.noise = noise.to(device)
         self.device = torch.device(device)
+        self.obs_dim = mapping.obs_dim
+        self.latent_dim = mapping.latent_dim
 
     def compute_log_prob(self, z, x):
         mean = self.mapping(z)

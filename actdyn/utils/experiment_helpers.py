@@ -18,7 +18,7 @@ from actdyn.models import (
     model_from_str,
     Decoder,
     BaseModel,
-    VAEWrapper,
+    ModelWrapper,
 )
 from actdyn.models.base import BaseDynamicsEnsemble
 from actdyn.models.model import SeqVae
@@ -267,7 +267,7 @@ def setup_experiment(config: ExperimentConfig):
     # ------------------------------------------------------------------------
     # Wrapper for the model environment
     # Model environment
-    model_env = VAEWrapper(model, env.observation_space, env.action_space, device=config.device)
+    model_env = ModelWrapper(model, env.observation_space, env.action_space, device=config.device)
 
     # Agent
     agent = Agent(

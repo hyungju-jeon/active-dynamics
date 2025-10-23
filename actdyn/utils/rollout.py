@@ -92,11 +92,12 @@ class Rollout:
         "model_action",  # action of the model
     }
 
-    def __init__(self, device="cpu"):
+    def __init__(self, verbose=False, device="cpu"):
         self._data = {}
         self.length = 0
         self.device = torch.device(device)
         self.finalized = False
+        self.verbose = verbose
 
     def __del__(self):
         """Destructor to ensure proper cleanup of GPU tensors"""
@@ -141,7 +142,9 @@ class Rollout:
         """
         for key, value in kwargs.items():
             if key not in self.allowed_fields:
-                raise KeyError(f"Key {key} is not allowed. Allowed keys are: {self.allowed_fields}")
+                if self.verbose:
+                    print(f"Key {key} is not allowed. Allowed keys are: {self.allowed_fields}")
+                continue
             value = torch.as_tensor(value) if not isinstance(value, torch.Tensor) else value
             if isinstance(value, torch.Tensor):
                 if value.requires_grad:
@@ -208,7 +211,7 @@ class Rollout:
         if key not in self._data:
             return default
         return (
-            torch.stack(self._data[key], dim=0)
+            torch.stack(self._data[key], dim=1)
             if isinstance(self._data[key], list)
             else self._data[key]
         )
@@ -244,7 +247,11 @@ class Rollout:
         if isinstance(key, str):
             if key not in self._data:
                 raise KeyError(f"No {key} in rollout")
-            return self._data[key]
+            return (
+                torch.stack(self._data[key], dim=1)
+                if isinstance(self._data[key], list)
+                else self._data[key]
+            )
 
         elif isinstance(key, int):
             idx = key

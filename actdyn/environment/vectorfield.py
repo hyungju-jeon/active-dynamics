@@ -1,6 +1,5 @@
 """Vector field environment implementation."""
 
-from math import sqrt
 import torch
 from actdyn.utils.vectorfield_definition import (
     LimitCycle,
@@ -73,6 +72,24 @@ class VectorFieldEnv(BaseDynamicsEnv):
     def _get_dynamics(self, state: torch.Tensor) -> torch.Tensor:
         """Compute vector field at given state."""
         return self.dynamics(state)
+
+    def set_params(self, dyn_param: torch.Tensor | list[float] | Dict[str, float]):
+        """Set dynamics parameters."""
+        if isinstance(dyn_param, dict):
+            self.dyn_param = torch.tensor(
+                [v for k, v in dyn_param.items()], device=self.device, dtype=torch.float32
+            ).unsqueeze(0)
+        elif isinstance(dyn_param, list):
+            self.dyn_param = torch.tensor(
+                dyn_param, device=self.device, dtype=torch.float32
+            ).unsqueeze(0)
+        else:
+            if dyn_param.ndim == 1:
+                dyn_param = dyn_param.unsqueeze(0)
+            self.dyn_param = dyn_param
+
+        if hasattr(self.dynamics, "set_params"):
+            self.dynamics.set_params(*dyn_param.mT.to(self.device))
 
     @torch.no_grad()
     def generate_trajectory(self, x0, n_steps, action=None):

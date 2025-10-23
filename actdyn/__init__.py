@@ -16,11 +16,11 @@ from actdyn.core.experiment import Experiment
 from actdyn.config import ExperimentConfig
 
 # Utilities
-from actdyn.utils.helpers import setup_experiment
+from actdyn.utils.experiment_helpers import setup_experiment
 
 # Main model types
 from actdyn.models.model import SeqVae
-from actdyn.models.model_wrapper import VAEWrapper
+from actdyn.models.model_wrapper import ModelWrapper
 
 # Common environments
 from actdyn.environment.vectorfield import VectorFieldEnv
@@ -40,7 +40,7 @@ __all__ = [
     "setup_experiment",
     # Models
     "SeqVae",
-    "VAEWrapper",
+    "ModelWrapper",
     # Environments
     "VectorFieldEnv",
     "GymObservationWrapper",

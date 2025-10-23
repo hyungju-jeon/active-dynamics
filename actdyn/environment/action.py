@@ -1,6 +1,6 @@
 import torch.nn as nn
 from .base import BaseAction
-from actdyn.utils.torch_helper import activation_from_str
+from actdyn.utils.helper import activation_from_str
 
 
 class IdentityActionEncoder(BaseAction):
