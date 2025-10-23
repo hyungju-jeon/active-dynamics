@@ -5,8 +5,9 @@ from torch.utils.tensorboard.writer import SummaryWriter
 from actdyn.utils import save_load
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from actdyn.utils.video import VideoRecorder
+from actdyn.utils.helper import format_list
 from actdyn.config import ExperimentConfig
-from actdyn.utils.validation_helpers import compute_kstep_r2
+from actdyn.utils.validation import compute_kstep_r2
 import matplotlib.pyplot as plt
 
 import torch
@@ -31,10 +32,6 @@ class Experiment:
             print("Resuming from previous experiment state...")
 
             # self.agent.model.load(self.cfg.logging.model_path)
-
-    def format_list(self, x):
-        fstr = ", ".join([f"{val:.3f}" for val in x.reshape(-1).tolist()])
-        return "(" + fstr + ")"
 
     def generate_rollout(self, num_episodes=20, episode_length=1000, rollout_dir=None):
         num_validate = num_episodes // 3
@@ -315,7 +312,7 @@ class MetaEmbeddingExperiment(Experiment):
                 action = self.agent.plan()
                 # 2. Execute
                 transition, done = self.agent.step(action)
-                e_bel = self.agent.model.get_embedding()
+                e_bel = self.agent.model.embedding
 
             # Append transition to rollout
             self.rollout.add(**transition)
@@ -330,7 +327,7 @@ class MetaEmbeddingExperiment(Experiment):
 
             self.update_pbar(
                 pbar,
-                postfix={"log_like": f"{self.training_loss[0]:.3f}", "e": self.format_list(e_bel)},
+                postfix={"log_like": f"{self.training_loss[0]:.3f}", "e": format_list(e_bel)},
             )
 
             # Train model periodically

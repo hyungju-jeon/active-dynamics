@@ -1,13 +1,19 @@
-from typing import Optional
-from sympy import per
+from typing import Any, Callable, Dict, Optional, Tuple
+
 import torch
-from einops import rearrange, repeat
+from einops import rearrange, repeat, einsum
+from torch.nn.functional import softplus
 
 from actdyn.environment.action import BaseAction
+from actdyn.utils.helper import safe_cholesky, symmetrize
+
 from .base import BaseDynamicsEnsemble, BaseModel
 from .decoder import Decoder
-from .dynamics import BaseDynamics
+from .dynamics import BaseDynamics, FunctionDynamics
 from .encoder import BaseEncoder
+
+Belief = Dict[str, torch.Tensor]
+eps = 1e-6
 
 
 class SeqVae(BaseModel):
@@ -15,50 +21,41 @@ class SeqVae(BaseModel):
 
     def __init__(
         self,
-        dynamics: BaseDynamics | BaseDynamicsEnsemble,
-        encoder: BaseEncoder,
-        decoder: Decoder,
-        action_encoder: Optional[BaseAction] = None,
-        device: str = "cpu",
+        **kwargs,
     ):
-        super().__init__(device=device)
-        self.dynamics = dynamics
-        self.encoder = encoder
-        self.decoder = decoder
-        self.action_encoder = action_encoder
-        self.input_dim = encoder.obs_dim
-        self.latent_dim = getattr(encoder, "latent_dim", None)
-        self.action_dim = getattr(action_encoder, "action_dim", 0)
-        self.is_ensemble = hasattr(dynamics, "ensemble") and hasattr(dynamics, "n_models")
-        self.step_count = 0
+        super().__init__(**kwargs)
+
         self.beta = 0.0
 
     @staticmethod
     def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
         """Monte Carlo KL"""
-        # TODO : FIX this part
-        S, B, T, D = z_prior.shape
+        if z_prior.dim() == 3:
+            z_prior = z_prior.unsqueeze(0)
 
-        # Expand posterior to match particles
-        mu_q_exp = repeat(mu_q, "b t d -> s b t d", s=S)
-        var_q_exp = repeat(var_q, "b t d -> s b t d", s=S)
+        target_ndim = z_prior.dim()
 
-        # Posterior log-density at prior samples
-        log_q = -0.5 * (
-            (torch.log(2 * torch.pi * var_q_exp) + (z_prior - mu_q_exp) ** 2 / var_q_exp).sum(
-                dim=(-2, -1)
-            )
+        def _unsqueeze_to(tensor: torch.Tensor, ndim: int) -> torch.Tensor:
+            while tensor.dim() < ndim:
+                tensor = tensor.unsqueeze(0)
+            return tensor
+
+        mu_q = _unsqueeze_to(mu_q, target_ndim)
+        var_q = _unsqueeze_to(var_q, target_ndim)
+        mu_p = _unsqueeze_to(mu_p, target_ndim)
+        var_p = _unsqueeze_to(var_p, target_ndim)
+
+        var_q = var_q.clamp_min(eps)
+        var_p = var_p.clamp_min(eps)
+
+        log_q = -0.5 * (torch.log(2 * torch.pi * var_q) + (z_prior - mu_q) ** 2 / var_q).sum(
+            dim=(-2, -1)
+        )
+        log_p = -0.5 * (torch.log(2 * torch.pi * var_p) + (z_prior - mu_p) ** 2 / var_p).sum(
+            dim=(-2, -1)
         )
 
-        # Prior log-density using dynamics mean and variance
-        log_p = -0.5 * (
-            (torch.log(2 * torch.pi * var_p) + (z_prior - mu_p) ** 2 / var_p).sum(dim=(-2, -1))
-        )
-
-        # Monte Carlo KL estimate: mean over particles
-        kl_est = (log_q - log_p).mean(dim=0)  # (B,)
-
-        return kl_est
+        return (log_q - log_p).mean(dim=0)
 
     def _compute_multistep_kl(
         self,
@@ -192,12 +189,6 @@ class SeqVae(BaseModel):
         else:
             return beta * kl_w, torch.zeros(1), kl_w.mean()
 
-    def _add_param_perturbation(self, model, perturbation):
-        if perturbation > 0:
-            for param in model.parameters():
-                if param.grad is not None:
-                    param.data += perturbation * torch.randn_like(param.data)
-
     def _train_single_model(
         self,
         dataloader,
@@ -319,84 +310,42 @@ class SeqVae(BaseModel):
 
         return epoch_losses
 
-    def train_model(
-        self,
-        data,
-        batch_size=32,
-        chunk_size=1000,
-        shuffle=False,
-        num_workers=0,
-        **kwargs,
-    ):
-        """
-        Train model using PyTorch DataLoader.
-        """
-        dataloader = self.prepare_dataloader(data, batch_size, chunk_size, shuffle, num_workers)
-        all_losses = []
-        train_args = {
-            "dataloader": dataloader,
-            "optimizer": kwargs.get("optimizer", "SGD"),
-            "lr": kwargs.get("lr", 1e-4),
-            "weight_decay": kwargs.get("weight_decay", 1e-3),
-            "n_epochs": kwargs.get("n_epochs", 1),
-            "verbose": kwargs.get("verbose", True),
-            "grad_clip_norm": kwargs.get("grad_clip_norm", 1.0),
-            "n_samples": kwargs.get("n_samples", 5),
-            "k_steps": kwargs.get("k_steps", 1),
-            "p_mask": kwargs.get("p_mask", 0.0),
-            "beta": kwargs.get("beta", 1.0),
-            "warmup": kwargs.get("warmup", 1000),
-            "annealing_steps": kwargs.get("annealing_steps", 1000),
-            "annealing_type": kwargs.get("annealing_type", "cyclic"),
-            "param_list": kwargs.get("param_list", "all"),  # To be set per model
-        }
-        perturbation = kwargs.get("perturbation", 0.0)
-
-        param_lists = self.get_param_list(train_args["param_list"])
-        # print(f"Training with {param_lists} parameter groups.")
-
-        if self.is_ensemble:
-            # Train each ensemble member
-            for i in range(self.dynamics.n_models):
-                # First model trains encoder/decoder, others only train dynamics
-                param_list = param_lists[i]
-
-                model_name = f"Ensemble model {i+1}/{self.dynamics.n_models}"
-                train_args["model_idx"] = i
-                train_args["model_name"] = model_name
-                train_args["param_list"] = param_list
-
-                # Train this ensemble member
-                epoch_losses = self._train_single_model(**train_args)
-                all_losses.extend(epoch_losses)
-
-                # Apply parameter perturbation for ensemble diversity
-                self._add_param_perturbation(self.dynamics.ensemble[i], perturbation)
-        else:
-            # Train single model
-            param_list = param_lists[0]
-            train_args["param_list"] = param_list
-            train_args["model_idx"] = None
-            train_args["model_name"] = "Model"
-
-            epoch_losses = self._train_single_model(**train_args)
-            all_losses.extend(epoch_losses)
-
-            # Apply parameter perturbation
-            self._add_param_perturbation(self.dynamics, perturbation)
-
-        # Final cleanup
-        if "cuda" in str(self.device):
-            torch.cuda.empty_cache()
-
-        return all_losses
+    # DESIGN NOTE: Missing save/load methods
+    # =======================================
+    # Issue: experiment.py expects model.save_model(path) method
+    # Impact: Experiment tests fail - cannot save checkpoints
+    #
+    # Recommended implementation:
+    #
+    # def save_model(self, filepath):
+    #     """Save model state dict to file."""
+    #     torch.save({
+    #         'encoder': self.encoder.state_dict(),
+    #         'decoder': self.decoder.state_dict(),
+    #         'dynamics': self.dynamics.state_dict(),
+    #         'action_encoder': self.action_encoder.state_dict() if self.action_encoder else None,
+    #         'step_count': self.step_count,
+    #         'beta': self.beta,
+    #     }, filepath)
+    #
+    # def load_model(self, filepath):
+    #     """Load model state dict from file."""
+    #     checkpoint = torch.load(filepath, map_location=self.device)
+    #     self.encoder.load_state_dict(checkpoint['encoder'])
+    #     self.decoder.load_state_dict(checkpoint['decoder'])
+    #     self.dynamics.load_state_dict(checkpoint['dynamics'])
+    #     if self.action_encoder and checkpoint['action_encoder']:
+    #         self.action_encoder.load_state_dict(checkpoint['action_encoder'])
+    #     self.step_count = checkpoint.get('step_count', 0)
+    #     self.beta = checkpoint.get('beta', 0.0)
+    #
+    # Usage: experiments/run_experiment.py saves checkpoints during training
 
     def update_posterior(self, y, u=None):
         """Update the posterior state given new observation and action."""
         with torch.no_grad():
             _, z_post, _ = self.encoder(y=y, u=u, n_samples=1)
-            self._state = z_post[:, -1, :].unsqueeze(1)  # Use last time step
-        return self._state
+        return z_post[:, -1, :].unsqueeze(1)
 
 
 class DeepVariationalBayesFilter(SeqVae):
@@ -419,22 +368,243 @@ class DeepVariationalBayesFilter(SeqVae):
         )
 
 
-class FilteringPosterior(BaseModel):
-    """Filtering posterior model."""
+class FilteringEmbedding(BaseModel):
+    """Filtering embedding model."""
 
     def __init__(
         self,
-        dynamics: BaseDynamics | BaseDynamicsEnsemble,
-        decoder: Decoder,
-        action_encoder: Optional[BaseAction] = None,
-        device: str = "cpu",
+        e: Belief,
+        Fe: Callable = None,
+        Fz: Callable = None,
+        **kwargs,
     ):
-        super().__init__(device=device)
-        self.dynamics = dynamics
-        self.decoder = decoder
-        self.action_encoder = action_encoder
-        self.input_dim = decoder.mapping.obs_dim
-        self.latent_dim = getattr(decoder.mapping.latent_dim, "latent_dim", None)
-        self.action_dim = getattr(action_encoder, "action_dim", 0)
-        self.step_count = 0
+        super().__init__(**kwargs)
         self.beta = 0.0
+        self.e: Belief = e
+        self.z: Belief = {
+            "m": torch.zeros(1, 1, self.latent_dim, device=self.device),
+            "P": torch.eye(self.latent_dim, device=self.device),
+        }
+        self.Fe = Fe
+        self.Fz = Fz
+        self._state = torch.zeros(1, 1, self.latent_dim, device=self.device)
+        self.gn_iter = 10
+
+    def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        """Reset the environment to initial state."""
+        observation, info = super().reset(observation)
+        self.e = {
+            "m": torch.zeros_like(self.e["m"]),
+            "P": torch.eye(self.e["m"].shape[-1], device=self.device),
+            "L": torch.eye(self.e["m"].shape[-1], device=self.device),
+        }
+        self.z = {
+            "m": self._state,
+            "P": torch.eye(self.latent_dim, device=self.device),
+        }
+        self.dynamics.set_params(self.e["m"])
+
+        return observation, info
+
+    @property
+    def embedding(self):
+        return self.e["m"]
+
+    def update_posterior(self, y, u=None):
+        """Update the posterior state given new observation and action."""
+
+        y = y[:, -1:, :]
+        u = u[:, -1:, :] if u is not None else None
+
+        with torch.no_grad():
+            I = torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
+            # Compute Predictive mean and variance of P(z_t|z_{t-1}, u_{t-1})
+            Fz = self.Fz(self.z["m"], self.e["m"])
+            dfdz = Fz * self.dt + I
+
+            if u is not None and self.action_encoder is not None:
+                u_enc = self.action_encoder(u, self.z["m"])
+            else:
+                u_enc = u
+
+            z_pred = {
+                "m": self.predict(action=u_enc),
+                "P": dfdz @ self.z["P"] @ dfdz.transpose(-1, -2)
+                + 1e-4 * torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
+            }
+
+            dfde = self.Fe(self.z["m"], self.e["m"]) * self.dt
+            dhdz = self.decoder.jacobian.unsqueeze(0)
+            HzFe = dhdz @ dfde
+
+            R = softplus(self.decoder.noise.logvar).diag_embed() + eps
+            S = dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R
+            S = symmetrize(S)
+            chol_S = torch.linalg.cholesky(S)
+            X = torch.cholesky_solve(HzFe, chol_S)
+            curv_ll = einsum(HzFe, X, "b t y d, b t y e->b t d e")
+            curv_ll = symmetrize(curv_ll)  # ensure symmetry
+
+        # Predict observation and compute residual
+        with torch.no_grad():
+            y_pred = self.decoder(z_pred["m"])
+            r = y - y_pred
+
+        # Update embedding
+        self.update_embedding(r, chol_S, HzFe, curv_ll)
+
+        # Final GN update for latent state
+        with torch.no_grad():
+            Fz = self.Fz(self.z["m"], self.e["m"])
+            dfdz = Fz * self.dt + I
+
+            z_pred = {
+                "m": self.predict(action=u_enc),
+                "P": dfdz @ self.z["P"] @ dfdz.transpose(-1, -2)
+                + 1e-4 * torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
+            }
+            S = dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R
+            S = symmetrize(S)
+            chol_S = torch.linalg.cholesky(S)
+
+        # Compute Kalman Gain and update posterior with observation y_t
+        with torch.no_grad():
+            K = torch.cholesky_solve(dhdz @ z_pred["P"].transpose(-1, -2), chol_S).transpose(-1, -2)
+            KH = K @ dhdz
+            P_upd = (I - KH) @ z_pred["P"] @ (I - KH).transpose(-1, -2) + K @ R @ K.transpose(
+                -1, -2
+            )
+            z_post = {
+                "m": z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1),
+                "P": symmetrize(P_upd),
+            }
+
+        self.z = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
+        self._state = z_post["m"].detach()
+        self.dynamics.set_params(self.e["m"].detach())
+
+        return self._state
+
+    def update_embedding(self, r, chol_S, HzFe, curv_ll):
+        # predictive covariance and Cholesky solve (as fixed earlier)
+        L = self.e["L"]
+        eta = L @ self.e["m"].unsqueeze(-1)
+        for _ in range(self.gn_iter):
+            invS_r = torch.cholesky_solve(r.mT, chol_S)
+            grad_ll = einsum(HzFe, invS_r, "b t y d, b t y k->b t d")  # (1, De)
+
+            L_new = L + curv_ll
+            eta_new = eta + grad_ll.unsqueeze(-1)
+
+            chol_L_new = safe_cholesky(L_new)
+            Sigma_e = torch.cholesky_inverse(chol_L_new)  # (1, De, De)
+            mu_e = (Sigma_e @ eta_new).squeeze(-1)  # (1, De)
+
+            # Update belief for next refinement
+            e_bel = {
+                "m": mu_e.squeeze(0),
+                "P": Sigma_e.squeeze(0),
+                "L": L_new.squeeze(0),
+            }
+            L, eta = L_new, eta_new
+
+        # Detach after all refinements
+        self.e = {"m": mu_e.detach(), "P": Sigma_e.detach(), "L": L_new.detach()}
+
+    def _train_single_model(
+        self,
+        dataloader,
+        optimizer,
+        param_list,
+        lr,
+        weight_decay,
+        n_epochs,
+        verbose,
+        grad_clip_norm,
+        n_samples,
+        k_steps,
+        beta,
+        p_mask=0.0,
+        warmup=1000,
+        annealing_steps=1000,
+        annealing_type="cyclic",  # "linear", "cyclic", "none"
+        model_idx=None,
+        model_name="Model",
+    ):
+        """
+        Train a single model (or ensemble member) with the given parameters.
+        """
+        opt = self._get_optimizer(optimizer, param_list, lr, weight_decay)
+        T = 0
+
+        # Initialize epoch progress bar
+        if verbose:
+            from tqdm import tqdm
+
+            epoch_pbar = tqdm(range(n_epochs), desc=f"{model_name}")
+            epoch_iterator = epoch_pbar
+        else:
+            epoch_iterator = range(n_epochs)
+
+        # Train for multiple epochs with DataLoader
+        epoch_info = []
+        for i in epoch_iterator:
+            batch_info = []
+            for batch in dataloader:
+                # Zero gradients, compute loss, backprop, and step optimizer
+                opt.zero_grad()
+
+                loss, info = self(batch)
+                loss.backward()
+                # Apply gradient clipping over full parameter list once
+                if grad_clip_norm is not None and grad_clip_norm > 0:
+                    torch.nn.utils.clip_grad_norm_(param_list, grad_clip_norm)
+
+                # Update parameters
+                opt.step()
+
+                # Store normalized losses
+                batch_info.append(info)  # Assuming info contains the relevant metrics
+
+                # Explicit cleanup for gradient tensors
+                del batch, loss
+
+            if model_idx is not None:
+                self.step_count += 1 if model_idx == 0 else 0
+            else:
+                self.step_count += 1
+
+            # Convert list of dict to dict of tensor
+            batch_info = {
+                key: torch.tensor([b[key] for b in batch_info]).mean(dim=0) for key in batch_info[0]
+            }
+            epoch_info.append(batch_info)
+
+            # Update epoch progress bar with average ELBO
+            if verbose and epoch_info and i % 10 == 0:
+                current_info = epoch_info[-1]
+                epoch_pbar.set_postfix({k: f"{v:.4f}" for k, v in current_info.items()})
+                epoch_pbar.update(10)
+
+            # End of epoch cleanup
+            if "cuda" in str(self.device):
+                torch.cuda.empty_cache()
+
+        # Close progress bar
+        if verbose:
+            epoch_pbar.close()
+
+        epoch_info = {
+            key: torch.tensor([e[key] for e in epoch_info]).mean(dim=0).item()
+            for key in epoch_info[0]
+        }
+        return epoch_info
+
+    def forward(self, batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, Any]]:
+        z = batch["next_model_state"].to(self.device)
+        y = batch["next_obs"].to(self.device)
+
+        ll = self.decoder.compute_log_prob(z, y)
+        loss = -ll.mean()
+        info = {"log_L": ll.mean().detach()}
+        return loss, info

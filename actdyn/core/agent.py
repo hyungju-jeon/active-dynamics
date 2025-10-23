@@ -1,11 +1,15 @@
+from typing import Dict
 import torch
 from actdyn.utils.rollout import RecentRollout
 from actdyn.environment.env_wrapper import GymObservationWrapper
-from actdyn.models.model_wrapper import VAEWrapper
+from actdyn.models.base import BaseModel
 from actdyn.policy.base import BasePolicy
 from actdyn.policy.mpc import BaseMPC
 from actdyn.metrics.base import CompositeMetric
 from actdyn.metrics.information import FisherInformationMetric
+from einops import rearrange
+
+Belief = Dict[str, torch.Tensor]
 
 
 class Agent:
@@ -22,13 +26,13 @@ class Agent:
     def __init__(
         self,
         env: GymObservationWrapper,
-        model_env: VAEWrapper,
+        model: BaseModel,
         policy: BasePolicy | BaseMPC,
         buffer_length: int = 20,
         device="cuda",
     ):
         self.env = env
-        self.model_env = model_env
+        self.model = model
         self.policy = policy
 
         self.device = torch.device(device)
@@ -58,7 +62,7 @@ class Agent:
             except Exception:
                 pass
             self._observation = obs
-            _, model_info = self.model_env.reset(self._observation)
+            _, model_info = self.model.reset(self._observation)
 
         # Initialize internal states
         self._env_state = info["latent_state"]
@@ -81,37 +85,40 @@ class Agent:
                 - done: Whether episode is done
                 - info: Additional information
         """
-        # Step both environments with the encoded action
+        # Update the policy
+        # self.update_policy(self.recent)
+
+        # Step environment with the encoded action
         obs, reward, terminated, truncated, env_info = self.env.step(action)
-        _, _, _, _, model_info = self.model_env.step(action)
         done = terminated or truncated
 
         # Store transition for training
-        transition = {
+        env_transition = {
             "obs": self._observation,  # Observation  y_t
             "next_obs": obs,  # New Observation y_{t+1}
             "action": action,  # Action a_t
             "env_action": env_info["env_action"],  # Env encoded action g(a_t)
-            "model_action": model_info["env_action"],  # Model encoded action g'(a_t)
             "reward": reward,  # Env Reward
             "env_state": self._env_state,  # Environment state z_t
             "next_env_state": env_info["latent_state"],  # Next environment state z_{t+1}
+        }
+        self.recent.add(**env_transition)
+
+        # Update model with the action taken
+        model_info = self.model.update(self.recent["next_obs"], self.recent["action"])
+        model_transition = {
+            "model_action": model_info["env_action"],  # Model encoded action g'(a_t)
             "model_state": self._model_state,  # Current belief state z'_t
             "next_model_state": model_info["latent_state"],  # Next belief state z'_{t+1}
         }
+        self.recent.add(**model_transition)
 
-        self.recent.add(**transition)
+        transition = {**env_transition, **model_transition}
 
         # Update observation and environment/model state
-        obs_data = self.recent.get("obs")
-        if obs_data is not None:
-            current_obs = obs_data[-1:, :]  # Get last observation
-            self.model_env._state = self.model_env.model.encoder(y=current_obs)[1][:, -1:, :]
-        # _, model_info = self.model_env.reset(obs)
-
         self._observation = obs
-        self._model_state = self.model_env._state
         self._env_state = env_info["latent_state"]
+        self._model_state = self.model._state
 
         return transition, done
 
@@ -141,5 +148,5 @@ class Agent:
         data = self.recent.copy()
         data.downsample(n=int(sampling_ratio))
 
-        elbo = self.model_env.train_model(data, batch_size=len(data), **kwargs)
+        elbo = self.model.train_model(data, batch_size=len(data), **kwargs)
         return elbo
