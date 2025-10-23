@@ -10,6 +10,6 @@ class ActionCost(BaseMetric):
     def __init__(self, compute_type="sum", device: str = "cpu", **kwargs):
         super().__init__(compute_type, device)
 
-    def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
+    def compute(self, rollout: Union[Rollout, RolloutBuffer], **kwargs) -> torch.Tensor:
         self.metric = (rollout["action"] ** 2).sum(dim=-1).sum(dim=-1).unsqueeze(-1)
         return self.metric

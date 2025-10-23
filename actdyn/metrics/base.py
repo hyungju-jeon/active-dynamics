@@ -28,8 +28,8 @@ class BaseMetric:
         else:
             raise ValueError(f"Invalid compute type: {self.compute_type}")
 
-    def __call__(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        return self.compute(rollout)
+    def __call__(self, rollout: Union[Rollout, RolloutBuffer], **kwargs) -> torch.Tensor:
+        return self.compute(rollout, **kwargs)
 
 
 class DiscountedMetric(BaseMetric):
@@ -74,10 +74,10 @@ class CompositeMetric(BaseMetric):
             self.metrics
         ), "Number of weights must match number of cost functions"
 
-    def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
+    def compute(self, rollout: Union[Rollout, RolloutBuffer], **kwargs) -> torch.Tensor:
         total_cost = torch.zeros(1, device=self.device).to(self.device)
         for metric, weight in zip(self.metrics, self.weights):
-            val = metric.compute(rollout)
+            val = metric.compute(rollout, **kwargs).squeeze()
             # print(f"Metric {metric.__class__.__name__} computed value: {val.mean()}")
             total_cost = total_cost.to(self.device) + weight * val
         return total_cost
