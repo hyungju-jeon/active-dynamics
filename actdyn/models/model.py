@@ -1,5 +1,6 @@
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from pygame import K_7
 import torch
 from einops import rearrange, repeat, einsum
 from torch.nn.functional import softplus
@@ -383,28 +384,38 @@ class FilteringEmbedding(BaseModel):
         self.e: Belief = e
         self.z: Belief = {
             "m": torch.zeros(1, 1, self.latent_dim, device=self.device),
-            "P": torch.eye(self.latent_dim, device=self.device),
+            "P": torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
         }
         self.Fe = Fe
         self.Fz = Fz
         self._state = torch.zeros(1, 1, self.latent_dim, device=self.device)
         self.gn_iter = 10
+        self.set_params(e["m"])
+
+    def set_params(self, e: torch.Tensor):
+        self.e["m"] = e.to(self.device)
+        self.dynamics.set_params(e)
 
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
         observation, info = super().reset(observation)
-        self.e = {
-            "m": torch.zeros_like(self.e["m"]),
-            "P": torch.eye(self.e["m"].shape[-1], device=self.device),
-            "L": torch.eye(self.e["m"].shape[-1], device=self.device),
-        }
+        self.e.update(
+            {
+                "P": torch.eye(self.e["m"].shape[-1], device=self.device),
+                "L": torch.eye(self.e["m"].shape[-1], device=self.device),
+            }
+        )
         self.z = {
             "m": self._state,
             "P": torch.eye(self.latent_dim, device=self.device),
         }
-        self.dynamics.set_params(self.e["m"])
+        self.set_params(self.e["m"])
 
         return observation, info
+
+    def set_state(self, state: torch.Tensor):
+        self.z["m"] = state
+        super().set_state(state)
 
     @property
     def embedding(self):
@@ -415,10 +426,10 @@ class FilteringEmbedding(BaseModel):
 
         y = y[:, -1:, :]
         u = u[:, -1:, :] if u is not None else None
-
+        Q = softplus(self.dynamics.logvar).diag_embed().unsqueeze(0) * self.dt
+        I = torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
         with torch.no_grad():
-            I = torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
-            # Compute Predictive mean and variance of P(z_t|z_{t-1}, u_{t-1})
+            # Transition linearization at current posterior mean
             Fz = self.Fz(self.z["m"], self.e["m"])
             dfdz = Fz * self.dt + I
 
@@ -427,22 +438,27 @@ class FilteringEmbedding(BaseModel):
             else:
                 u_enc = u
 
+            # Predict
             z_pred = {
                 "m": self.predict(action=u_enc),
-                "P": dfdz @ self.z["P"] @ dfdz.transpose(-1, -2)
-                + 1e-4 * torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
+                "P": dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q,
             }
 
-            dfde = self.Fe(self.z["m"], self.e["m"]) * self.dt
-            dhdz = self.decoder.jacobian.unsqueeze(0)
-            HzFe = dhdz @ dfde
+            # Observation linearization
+            dhdz = self.decoder.jacobian(z_pred["m"])
+            R = self.decoder.var(z_pred["m"]).diag_embed()
 
-            R = softplus(self.decoder.noise.logvar).diag_embed() + eps
-            S = dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R
-            S = symmetrize(S)
-            chol_S = torch.linalg.cholesky(S)
-            X = torch.cholesky_solve(HzFe, chol_S)
-            curv_ll = einsum(HzFe, X, "b t y d, b t y e->b t d e")
+            # Sensitivity wrt embedding via dynamics (ignore Fz dependence)
+            Gt = self.Fe(self.z["m"], self.e["m"]) * self.dt
+            HzGt = dhdz @ Gt
+
+            # Predictive covariance S
+            S = symmetrize(dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2)) + R
+            chol_S = safe_cholesky(S)
+
+            # GN curvature
+            X = torch.cholesky_solve(HzGt, chol_S)
+            curv_ll = einsum(HzGt, X, "b t y d, b t y e->b t d e")
             curv_ll = symmetrize(curv_ll)  # ensure symmetry
 
         # Predict observation and compute residual
@@ -451,29 +467,37 @@ class FilteringEmbedding(BaseModel):
             r = y - y_pred
 
         # Update embedding
-        self.update_embedding(r, chol_S, HzFe, curv_ll)
+        self.update_embedding(r, chol_S, HzGt, curv_ll)
 
         # Final GN update for latent state
         with torch.no_grad():
+            # Re-propagate dynamics with updated e
             Fz = self.Fz(self.z["m"], self.e["m"])
             dfdz = Fz * self.dt + I
 
             z_pred = {
                 "m": self.predict(action=u_enc),
-                "P": dfdz @ self.z["P"] @ dfdz.transpose(-1, -2)
-                + 1e-4 * torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
+                "P": dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q,
             }
-            S = dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R
-            S = symmetrize(S)
-            chol_S = torch.linalg.cholesky(S)
 
-        # Compute Kalman Gain and update posterior with observation y_t
-        with torch.no_grad():
-            K = torch.cholesky_solve(dhdz @ z_pred["P"].transpose(-1, -2), chol_S).transpose(-1, -2)
+            # Re-linearize observation and variance at new z_pred
+            dhdz = self.decoder.jacobian(z_pred["m"])
+            R = self.decoder.var(z_pred["m"]).diag_embed()
+            S = symmetrize(dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R)
+            chol_S = safe_cholesky(S)
+
+            # Compute Kalman Gain and update posterior with observation y_t
+            HPt = dhdz @ z_pred["P"]
+            K = torch.cholesky_solve(HPt, chol_S).transpose(-1, -2)
             KH = K @ dhdz
             P_upd = (I - KH) @ z_pred["P"] @ (I - KH).transpose(-1, -2) + K @ R @ K.transpose(
                 -1, -2
             )
+
+            # innovation uses current y_pred; recompute for consistency
+            y_pred = self.decoder(z_pred["m"])
+            r = y - y_pred
+
             z_post = {
                 "m": z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1),
                 "P": symmetrize(P_upd),
@@ -481,33 +505,27 @@ class FilteringEmbedding(BaseModel):
 
         self.z = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
         self._state = z_post["m"].detach()
-        self.dynamics.set_params(self.e["m"].detach())
+        self.set_params(self.e["m"].detach())
 
         return self._state
 
-    def update_embedding(self, r, chol_S, HzFe, curv_ll):
+    def update_embedding(self, r, chol_S, HzGt, curv_ll):
         # predictive covariance and Cholesky solve (as fixed earlier)
         L = self.e["L"]
         eta = L @ self.e["m"].unsqueeze(-1)
+        beta = 1
         for _ in range(self.gn_iter):
             invS_r = torch.cholesky_solve(r.mT, chol_S)
-            grad_ll = einsum(HzFe, invS_r, "b t y d, b t y k->b t d")  # (1, De)
+            grad_ll = einsum(HzGt, invS_r, "b t y d, b t y k->b t d")  # (1, De)
 
-            L_new = L + curv_ll
-            eta_new = eta + grad_ll.unsqueeze(-1)
+            L_new = L + beta * curv_ll
+            eta_new = eta + beta * grad_ll.unsqueeze(-1)
 
             chol_L_new = safe_cholesky(L_new)
             Sigma_e = torch.cholesky_inverse(chol_L_new)  # (1, De, De)
             mu_e = (Sigma_e @ eta_new).squeeze(-1)  # (1, De)
 
-            # Update belief for next refinement
-            e_bel = {
-                "m": mu_e.squeeze(0),
-                "P": Sigma_e.squeeze(0),
-                "L": L_new.squeeze(0),
-            }
             L, eta = L_new, eta_new
-
         # Detach after all refinements
         self.e = {"m": mu_e.detach(), "P": Sigma_e.detach(), "L": L_new.detach()}
 

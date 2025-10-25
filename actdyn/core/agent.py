@@ -143,10 +143,10 @@ class Agent:
             if isinstance(self.policy.metric, FisherInformationMetric):
                 self.policy.metric.update_fim(transition)
 
-    def train_model(self, sampling_ratio=1, **kwargs):
+    def train_model(self, sampling_ratio=1, **kwargs) -> Dict[str, float]:
         """Train the model using recent transitions."""
         data = self.recent.copy()
         data.downsample(n=int(sampling_ratio))
 
-        elbo = self.model.train_model(data, batch_size=len(data), **kwargs)
-        return elbo
+        train_info = self.model.train_model(data, batch_size=len(data), **kwargs)
+        return train_info
