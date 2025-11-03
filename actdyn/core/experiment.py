@@ -1,25 +1,26 @@
-from tqdm import tqdm
-from actdyn.core.agent import Agent
+import copy
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import Callable
 
+from matplotlib.figure import Figure
+import torch
 from torch.utils.tensorboard.writer import SummaryWriter
+from tqdm import tqdm
+
+from actdyn.config import ExperimentConfig
+from actdyn.core.agent import Agent
 from actdyn.utils import save_load
+from actdyn.utils.helper import format_list, to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from actdyn.utils.video import VideoRecorder
-from actdyn.utils.helper import format_list, to_np
-from actdyn.config import ExperimentConfig
-from actdyn.utils.validation import compute_kstep_r2
-import matplotlib.pyplot as plt
 
-import torch
-import os
-import shutil
-import copy
-
-from actdyn.utils.visualize import plot_vector_field
+SESSION_DIR_PATTERN = re.compile(r"\d{8}_\d{4}_session\d{2}")
 
 
 class Experiment:
-    def __init__(self, agent: Agent, config: ExperimentConfig, resume=False):
+    def __init__(self, agent: Agent, config: ExperimentConfig, resume: bool = False):
         self.agent = agent
         self.cfg = copy.deepcopy(config)
         self.env_step = 0
@@ -28,22 +29,172 @@ class Experiment:
         self.writer = None
         self.video_recorder = None
         self.training_info = {}
-        self.results_dir = os.path.join(os.path.dirname(__file__), config.results_dir)
-        if resume:
-            ## TODO : Implement resume functionality
-            print("Resuming from previous experiment state...")
 
-            # self.agent.model.load(self.cfg.logging.model_path)
+        # Setup results directory
+        config_results = Path(config.results_dir).expanduser()
+        if config_results.is_absolute():
+            base_results_path = config_results
+        else:
+            base_results_path = Path(__file__).resolve().parent / config_results
+        self.base_results_path = base_results_path
+        self.results_path = self._create_session_dir()
+        self.cfg.results_dir = str(self.results_path)
+
+        # Resume from previous experiment
+        if resume:
+            print("Resuming from previous experiment state...")
+            try:
+                self._resume_from_checkpoint()
+                latest_session = self._find_latest_session_dir()
+                if latest_session is not None:
+                    self.results_path = latest_session
+            except FileNotFoundError as exc:
+                print(f"Resume skipped: {exc}")
+            except Exception as exc:
+                print(f"Resume encountered an issue: {exc}")
+
+    def _create_session_dir(self) -> Path:
+        # Create a new session directory
+        base_dir = self.base_results_path
+        base_dir.mkdir(parents=True, exist_ok=True)
+
+        def next_session_dir() -> Path:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M")
+            index = 1
+            while True:
+                candidate = base_dir / f"{timestamp}_session{index:02d}"
+                try:
+                    candidate.mkdir(parents=True, exist_ok=False)
+                    return candidate
+                except FileExistsError:
+                    index += 1
+
+        return next_session_dir()
+
+    def _find_latest_session_dir(self) -> Path | None:
+        # Find the latest session directory
+        base_dir = getattr(self, "base_results_dir", None)
+        if base_dir is None or not base_dir.is_dir():
+            return None
+        session_dirs = [
+            path
+            for path in base_dir.iterdir()
+            if path.is_dir() and SESSION_DIR_PATTERN.fullmatch(path.name)
+        ]
+        if not session_dirs:
+            return None
+        session_dirs.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        return session_dirs[0]
+
+    def _resume_from_checkpoint(self):
+        # Resume from previous experiment
+        results_path = self.results_path.expanduser().resolve()
+        if not results_path.exists():
+            raise FileNotFoundError(f"Results directory not found at {results_path}")
+
+        rollout_step = self._find_latest_rollout_step(results_path / "rollouts")
+        if rollout_step is not None:
+            self.env_step = rollout_step
+            self.prev_step = rollout_step
+            print(f"Restored training step to {self.env_step}")
+
+        model_path = self._find_latest_model_checkpoint(results_path / "model")
+        if model_path is not None:
+            self.agent.model.load(model_path)
+            print(f"Loaded model checkpoint from {model_path}")
+        else:
+            print("No model checkpoint found; using current model parameters.")
+
+        try:
+            self.agent.reset(seed=int(self.cfg.seed))
+        except Exception as exc:  # pragma: no cover - environment specific
+            print(f"Warning: could not reset agent during resume ({exc})")
+
+    def _find_latest_rollout_step(self, rollout_dir: Path) -> int | None:
+        # Find the latest rollout step from saved rollouts
+        if not rollout_dir.is_dir():
+            return None
+        rollout_files = list(rollout_dir.glob("*.pkl"))
+        if not rollout_files:
+            return None
+
+        def extract_step(path: Path) -> int | None:
+            matches = re.findall(r"\d+", path.stem)
+            return int(matches[-1]) if matches else None
+
+        candidates: list[tuple[int, Path]] = []
+        for path in rollout_files:
+            step = extract_step(path)
+            if step is not None:
+                candidates.append((step, path))
+
+        if not candidates:
+            return None
+
+        candidates.sort(key=lambda item: item[0])
+        return candidates[-1][0]
+
+    def _find_latest_model_checkpoint(self, model_dir: Path) -> str | None:
+        # Find the latest model checkpoint file
+        if not model_dir.is_dir():
+            return None
+
+        checkpoint_files = list(model_dir.glob("*.pth")) + list(model_dir.glob("*.pt"))
+        if not checkpoint_files:
+            return None
+
+        def extract_step(path: Path) -> int | None:
+            matches = re.findall(r"\d+", path.stem)
+            return int(matches[-1]) if matches else None
+
+        numeric_candidates: list[tuple[int, Path]] = []
+        for path in checkpoint_files:
+            step = extract_step(path)
+            if step is not None:
+                numeric_candidates.append((step, path))
+
+        if numeric_candidates:
+            numeric_candidates.sort(key=lambda item: item[0])
+            return str(numeric_candidates[-1][1])
+
+        final_candidates = [path for path in checkpoint_files if "final" in path.stem.lower()]
+        if final_candidates:
+            final_candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+            return str(final_candidates[0])
+
+        checkpoint_files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        return str(checkpoint_files[0])
+
+    def _setup_video_recording(self, fps=30):
+        # Setup video recording
+        video_filename = self.cfg.logging.video_filename
+        if video_filename:
+            video_path = self.results_path / "video" / video_filename
+            self.video_recorder = VideoRecorder(self.agent.env, video_path, fps=fps)
+            self.video_recorder.capture_frame()
+        else:
+            self.video_recorder = None
+
+    def _finalize_experiment(self):
+        # Finalize experiment
+        if self.writer:
+            self.writer.close()
+            self.writer = None
+        if self.video_recorder:
+            self.video_recorder.close()
+            self.video_recorder = None
+        if self.pbar:
+            self.pbar.close()
+            self.pbar = None
+
+        self.rollout.finalize()
+        self.agent.model.save(self.results_path / "model" / "model_final.pth")
 
     def init_experiment(self, reset=True):
-        os.makedirs(self.results_dir, exist_ok=True)
-        for subdir in ["rollouts", "logs", "model"]:
-            p = os.path.join(self.results_dir, subdir)
-            if os.path.exists(p):
-                shutil.rmtree(p, ignore_errors=True) if reset else None
-            os.makedirs(p, exist_ok=True)
-
-        self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
+        # Create necessary directories
+        for subdir in ["rollouts", "logs", "model", "video"]:
+            (self.results_path / subdir).mkdir(parents=True, exist_ok=True)
+        self.writer = SummaryWriter(log_dir=self.results_path / "logs")
 
         # Initialize environment
         if reset:
@@ -54,40 +205,29 @@ class Experiment:
             print("Continuing from previous step:", self.env_step)
             self.rollout.clear()
 
-    # TODO: Add video recording functionality
-    def _setup_video_recording(self, video_path, fps=30):
-        if video_path:
-            self.video_recorder = VideoRecorder(self.agent.env, video_path, fps=fps)
-            self.video_recorder.capture_frame()
-        else:
-            self.video_recorder = None
-
-    # TODO: Add video recording functionality
-    def _stop_video_recording(self):
-        if self.video_recorder:
-            self.video_recorder.save()
-            self.video_recorder = None
-
-    def generate_rollout(self, num_episodes=20, episode_length=1000, rollout_dir=None):
+    def generate_rollout(
+        self, num_episodes: int = 20, episode_length: int = 1000, rollout_dir: str = None
+    ):
+        # Generate random action rollouts for validation and offline training
         num_validate = num_episodes // 3
         num_train = num_episodes - num_validate
 
         rb = RolloutBuffer(max_size=num_episodes, device="cpu")
         pbar = tqdm(total=num_episodes, desc="Validation Episodes")
-        for ep in range(num_episodes):
+        for _ in range(num_episodes):
             ro = Rollout(device="cpu")
-            state, info = self.agent.env.reset()
+            obs, info = self.agent.env.reset()
             latent_state = info["latent_state"]
-            for t in range(episode_length):
-                ro.add(obs=state)
+            for _ in range(episode_length):
+                ro.add(obs=obs)
                 ro.add(env_state=latent_state)
                 action = self.agent.env.action_space.sample()
                 action = self.agent.env._to_tensor(action)
-                new_state, reward, _, done, info = self.agent.env.step(action)
-                ro.add(next_obs=new_state)
+                next_obs, reward, _, done, info = self.agent.env.step(action)
+                ro.add(next_obs=next_obs)
                 ro.add(action=action)
                 ro.add(next_env_state=info["latent_state"])
-                state = new_state
+                obs = next_obs
                 latent_state = info["latent_state"]
             rb.add(ro)
             pbar.update(1)
@@ -98,20 +238,19 @@ class Experiment:
         rb_validate = RolloutBuffer(max_size=num_validate, device="cpu")
         rb_validate.add(rb[num_train:])
 
-        if rollout_dir is None:
-            validate_rollout_path = os.path.join(self.results_dir, "validation.pkl")
-            train_rollout_path = os.path.join(self.results_dir, "train.pkl")
-        else:
-            validate_rollout_path = os.path.join(rollout_dir, "validation.pkl")
-            train_rollout_path = os.path.join(rollout_dir, "train.pkl")
+        target_dir = self.results_path if rollout_dir is None else Path(rollout_dir)
+        validate_rollout_path = target_dir / "validation.pkl"
+        train_rollout_path = target_dir / "train.pkl"
 
-        save_load.save_rollout(rb_train, train_rollout_path)
-        save_load.save_rollout(rb_validate, validate_rollout_path)
+        save_load.save_rollout(rb_train, str(train_rollout_path))
+        save_load.save_rollout(rb_validate, str(validate_rollout_path))
         print(f"rollout saved to {validate_rollout_path} and {train_rollout_path}")
         return rb_train, rb_validate
 
     def update_writer(self, info: dict, prefix=""):
-        # Update logs
+        # Update TensorBoard writer with info dictionary
+        if self.writer is None:
+            return
         for key, value in info.items():
             # if there is multiple values (e.g., list or tensor), log them using add_scalars
             if isinstance(value, (list, torch.Tensor)) and len(value) > 1:
@@ -123,78 +262,75 @@ class Experiment:
                 self.writer.add_scalar(prefix + key, value, self.env_step)
 
     def update_pbar(self, pbar: tqdm, interval: int = 100, postfix: dict = {}):
+        # Update progress bar with training info
         if self.env_step % interval == 0 and self.env_step > 0:
             pbar.set_postfix(
                 {k: f"{format_list(v)}" for k, v in self.training_info.items()} | postfix
             )
             pbar.update(interval)
 
-    @property
-    def is_training_step(self):
-        train_cfg = self.cfg.training
-        return (
-            self.env_step % train_cfg.train_every == 0 and self.env_step > train_cfg.rollout_horizon
-        )
+    def check_step(self, step_type: str) -> bool:
+        # Check if it's time to train the model
+        if step_type == "train":
+            return (
+                self.env_step % self.cfg.training.train_every == 0
+                and self.env_step > self.cfg.training.rollout_horizon
+            )
+        elif step_type == "save":
+            return self.env_step % self.cfg.logging.save_every == 0 and self.env_step > 0
+        elif step_type == "plot":
+            return self.env_step % self.cfg.logging.plot_every == 0 and self.env_step > 0
+        return False
 
-    @property
-    def is_save_step(self):
-        return self.env_step % self.cfg.logging.save_every == 0
-
-    def run(self, reset=True):
+    def run(
+        self,
+        plot_fcn: Callable[[Agent], Figure] | None = None,
+        reset: bool = True,
+    ):
         train_cfg = self.cfg.training
 
         # Initialize environment
         self.init_experiment(reset=reset)
-        self._setup_video_recording(os.path.join(self.results_dir, "dynamics.mp4"))
+        self._setup_video_recording()
+
         # Setup progress bar
-        pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Training")
+        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Online")
         while self.env_step < train_cfg.total_steps:
             self.env_step += 1
-            print("hi")
+
             # 1. Plan
             action = self.agent.plan()
             # 2. Execute
             transition, done = self.agent.step(action)
-
-            # Append transition to rollout
             self.rollout.add(**transition)
 
-            # Update policy
+            # 3-1. Update policy
             self.agent.update_policy(transition)
 
-            # Update logs
-            self.update_writer(self.training_info)
-            self.update_pbar(pbar)
-
-            # Train model periodically
-            if self.is_training_step:
+            # 3-2. Train model
+            if self.check_step("train"):
                 sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
                 self.training_info = self.agent.train_model(
                     **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
                 )
 
+            # 3-3. Update logs and plot
+            self.update_writer(self.training_info)
+            self.update_pbar(self.pbar)
+
             # Periodic rollout saving for crash recovery and memory management
-            if self.is_save_step:
+            if self.check_step("save"):
                 save_load.save_rollout(
                     self.rollout,
-                    os.path.join(self.results_dir, f"rollouts/rollout_{self.env_step}.pkl"),
+                    str(self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"),
                 )
                 if self.env_step < train_cfg.total_steps:
-                    self.rollout.clear()
-                # for param in self.agent.policy.metric.metrics[0].predictor_network.parameters():
-                #     param.data += 1e-3 * torch.randn_like(param.data)
+                    self.rollout.clear(keep_last=100)
 
-            if self.env_step % self.cfg.logging.plot_every == 0 and self.env_step > 0:
-                # Save intermediate model
-                z = self.agent.recent["env_state"]
-                z_hat = self.agent.recent["model_state"]
-
-                plot_vector_field(self.agent.model.dynamics, x_range=5)
-                # plot_vector_field(duffing_env.dynamics, x_range=3)
-                plt.plot(to_np(z[0])[:, 0], to_np(z[0])[:, 1], alpha=0.7, label="true")
-                plt.plot(to_np(z_hat[0])[:, 0], to_np(z_hat[0])[:, 1], alpha=0.7, label="model")
-                plt.legend()
-                plt.show()
+            if self.check_step("plot"):
+                if plot_fcn:
+                    fig = plot_fcn(self.agent)
+                    self.video_recorder.capture_frame(fig=fig)
 
             # Clean up tensors to prevent memory accumulation
             if "cuda" in str(self.agent.device):
@@ -203,40 +339,20 @@ class Experiment:
 
             if done:
                 break
-        pbar.close()
-        self.rollout.finalize()
-        self.agent.model.save(os.path.join(self.results_dir, f"model/model_final.pth"))
 
-    def post_run(self, data_dir=None):
-        # Load data if exist
-        if data_dir is None:
-            data_dir = os.path.join(self.results_dir)
-        data_path = os.path.join(data_dir, "validation.pkl")
+        # Close progress bar and finalize experiment
+        self._finalize_experiment()
 
-        if os.path.exists(data_path):
-            rb = save_load.load_rollout(data_path)
-        else:
-            _, rb = self.generate_rollout(num_episodes=50, episode_length=500, rollout_dir=data_dir)
-
-        self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
-
-        # # ELBO on validation set
-        # validate_elbo(self, rb, self.writer)
-
-        # # K-step prediction R2
-        # validate_kstep_r2(self, rb, self.writer)
-
-        self.writer.close()
-
-    def offline_learning(self, reset=True):
+    # TODO Update offline_run to match new experiment structure
+    def offline_run(self, reset=True):
         if reset:
             if self.writer:
                 self.writer.close()
-            self.writer = SummaryWriter(log_dir=os.path.join(self.results_dir, "logs"))
+            self.writer = SummaryWriter(log_dir=str(self.results_path / "logs"))
             self.rollout.clear()
             # Check if rollout exists in the results directory
             self.rollout = save_load.load_and_concatenate_rollouts(
-                os.path.join(self.results_dir, "rollouts")
+                str(self.results_path / "rollouts")
             )
             offline_cfg = self.cfg.training.get_offline_optim_cfg()
             print(f"Training params: {offline_cfg['param_list']}")
@@ -272,51 +388,25 @@ class Experiment:
         self.prev_step += offline_cfg["n_epochs"]
 
     def __del__(self):
-        if self.writer:
-            self.writer.close()
-
-
-# def validate_elbo(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
-#     B, T, D = rb["obs"].shape
-#     loss, log_like, kl_d = experiment.agent.model_env.model.compute_elbo(
-#         y=rb["next_obs"],
-#         u=rb["action"],
-#         idx=None,
-#         n_samples=16,
-#         beta=1,
-#         k_steps=1,
-#     )
-#     writer.add_scalar("validation/ELBO", -loss.item() / T, 0)
-#     writer.add_scalar("validation/log_like", log_like.item() / T, 0)
-#     writer.add_scalar("validation/kl_d", kl_d.item() / T, 0)
-
-
-# def validate_kstep_r2(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
-#     r2_fig_path = os.path.join(experiment.results_dir, "validation_kstep.png")
-#     r2m, _ = compute_kstep_r2(
-#         model=experiment.agent.model_env.model,
-#         rollout=rb,
-#         k_max=10,
-#         n_samples=50,
-#         fig_path=r2_fig_path,
-#     )
-#     for i in range(r2m.shape[1]):
-#         for k in range(r2m.shape[0]):
-#             writer.add_scalar(f"validation/kstep/r2_mean_{i}", r2m[k, i], k + 1)
+        self._finalize_experiment()
+        if "cuda" in str(self.agent.device):
+            torch.cuda.empty_cache()
 
 
 class MetaEmbeddingExperiment(Experiment):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
 
-    def run(self, reset=True):
+    def run(self, plot_fcn: Callable[[Agent], Figure] | None = None, reset: bool = True):
+        self.e_norm = []
         train_cfg = self.cfg.training
-        self._setup_video_recording(os.path.join(self.results_dir, "dynamics.mp4"), fps=60)
+
         # Initialize environment
         self.init_experiment(reset=reset)
+        self._setup_video_recording()
 
         # Setup progress bar
-        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Training")
+        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Embedding")
         while self.env_step < train_cfg.total_steps:
             self.env_step += 1
 
@@ -324,55 +414,47 @@ class MetaEmbeddingExperiment(Experiment):
             action = self.agent.plan()
             # 2. Execute
             transition, done = self.agent.step(action)
+            self.rollout.add(**transition)
             e_bel = self.agent.model.embedding.reshape(-1)
 
-            # Append transition to rollout
-            self.rollout.add(**transition)
-
-            # Update policy
+            # 3-1. Update policy
             self.agent.update_policy(transition)
 
-            # Update logs
+            # 3-2. Train model
+            if self.check_step("train"):
+                sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
+                self.training_info = self.agent.train_model(
+                    **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
+                )
+
+            # 3-3. Update logs and plot
             self.training_info["e"] = e_bel
-            self.update_writer(self.training_info)
+            e = self.agent.env.env.get_params()
             self.writer.add_scalars(
                 "e",
-                {
-                    "true_0": self.agent.env.env.dyn_param[0],
-                    "true_1": self.agent.env.env.dyn_param[1],
-                },
+                {f"true_{i}": v for i, v in enumerate(to_np(e).tolist())},
                 self.env_step,
             )
+            self.e_norm.append(
+                torch.norm(e_bel.cpu() - self.agent.env.env.get_params().cpu()).item()
+            )
+            self.training_info["e_norm"] = self.e_norm[-1]
+            self.update_writer(self.training_info)
             self.update_pbar(self.pbar)
 
-            # Train model periodically
-            if self.is_training_step:
-                sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
-                # self.training_info = self.agent.train_model(
-                #     **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
-                # )
-
             # Periodic rollout saving for crash recovery and memory management
-            if self.is_save_step:
+            if self.check_step("save"):
                 save_load.save_rollout(
                     self.rollout,
-                    os.path.join(self.results_dir, f"rollouts/rollout_{self.env_step}.pkl"),
+                    str(self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"),
                 )
-                self.rollout.clear()
+                if self.env_step < train_cfg.total_steps:
+                    self.rollout.clear(keep_last=100)
 
-            if self.env_step % self.cfg.logging.plot_every == 0 and self.env_step > 0:
-                # Save intermediate model
-                fig, ax = plt.subplots(1, 1, figsize=(8, 8))
-                plot_vector_field(
-                    self.agent.model.dynamics, title="Learned Dynnimics", ax=ax, x_range=5
-                )
-                self.video_recorder.capture_frame(fig=fig)
-                plt.close(fig)
-                # plot_vector_field(duffing_env.dynamics, x_range=3)
-                # plt.plot(to_np(z[0])[:, 0], to_np(z[0])[:, 1], alpha=0.7, label="true")
-                # plt.plot(to_np(z_hat[0])[:, 0], to_np(z_hat[0])[:, 1], alpha=0.7, label="model")
-                # plt.legend()
-                # plt.show()
+            if self.check_step("plot"):
+                if plot_fcn:
+                    fig = plot_fcn(self.agent)
+                    self.video_recorder.capture_frame(fig=fig)
 
             # Clean up tensors to prevent memory accumulation
             if "cuda" in str(self.agent.device):
@@ -382,13 +464,5 @@ class MetaEmbeddingExperiment(Experiment):
             if done:
                 break
 
-        self.pbar.close()
-        self.agent.model.save(os.path.join(self.results_dir, f"model/model_final.pth"))
-        self.video_recorder.close()
-
-    # When closed or deleted
-    def __del__(self):
-        if self.writer:
-            self.writer.close()
-        if hasattr(self, "pbar") and self.pbar is not None:
-            self.pbar.close()
+        # Close progress bar and finalize experiment
+        self._finalize_experiment()
