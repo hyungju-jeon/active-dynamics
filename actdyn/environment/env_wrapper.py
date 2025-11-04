@@ -4,26 +4,18 @@ from gymnasium import spaces
 from typing import Optional, Dict, Any, Tuple, SupportsFloat
 import numpy as np
 
+from actdyn.environment.vectorfield import VectorFieldEnv
+
 from .observation import BaseObservation
 from .action import BaseAction
 
 
-class GymObservationWrapper(gym.Wrapper):
-    """A wrapper that adds observation models to any gym environment.
-
-    This wrapper allows you to use any observation model with any gym environment,
-    while maintaining the original environment's interface and adding observation
-    information to the info dictionary.
-
-    Args:
-        env: The gym environment to wrap
-        obs_model: The observation model to use
-        device: The device to use for tensors (default: "cpu")
-    """
+class EnvWrapper(gym.Wrapper):
+    """A wrapper that adds observation models and convert data type to torch.Tensor for any gym-like environment."""
 
     def __init__(
         self,
-        env: gym.Env,
+        env: VectorFieldEnv | gym.Env,
         obs_model: BaseObservation,
         action_model: BaseAction,
         dt: float,
@@ -33,6 +25,7 @@ class GymObservationWrapper(gym.Wrapper):
         self.obs_model = obs_model
         self.action_model = action_model
         self.dt = dt
+        self.state_dim = env.observation_space.shape[0]
 
         # Auto-detect device from observation model if available
         if hasattr(obs_model, "network") and obs_model.network is not None:
@@ -55,7 +48,7 @@ class GymObservationWrapper(gym.Wrapper):
         # Update observation space if needed
         if hasattr(obs_model, "obs_dim"):
             self.observation_space = spaces.Box(
-                low=-np.inf, high=np.inf, shape=(obs_model.obs_dim,), dtype=np.float32
+                low=-np.inf, high=np.inf, shape=(obs_model.obs_dim,), dtype=np.float16
             )
 
     def _is_torch_native_env(self) -> bool:
@@ -72,7 +65,7 @@ class GymObservationWrapper(gym.Wrapper):
         if isinstance(x, torch.Tensor):
             x = x.to(self.device)
         else:
-            x = torch.tensor(x, device=self.device, dtype=torch.float32)
+            x = torch.tensor(x, device=self.device, dtype=torch.float16)
 
         if x.dim() == 1:
             x = x.unsqueeze(0).unsqueeze(0)  # Add batch dimension if needed

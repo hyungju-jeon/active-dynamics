@@ -1,45 +1,17 @@
-from typing import Any, Dict, Tuple, Optional, Literal
+from typing import Dict, Tuple, Optional
 import torch
 import gpytorch
 from gpytorch.kernels import RBFKernel, ScaleKernel
-from abc import abstractmethod
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 
-# Type aliases
-ArrayType = torch.Tensor
-ModelType = Literal["multi", "ring", "limitcycle", "single"]
-
 
 class VectorField:
-    """A class for generating and manipulating 2D vector fields.
-
-    Args:
-        model: Type of vector field model. Defaults to "multi".
-        x_range: Range of coordinates (-x_range to x_range). Defaults to 2.
-        n_grid: Number of grid points in each dimension. Defaults to 40.
-
-    Attributes:
-        x_range: Range of x and y coordinates (-x_range to x_range).
-        n_grid: Number of grid points in each dimension.
-        model: Type of vector field model to generate.
-        X: X coordinates of the grid points.
-        Y: Y coordinates of the grid points.
-        xy: Combined XY coordinates.
-        U: X components of the vector field.
-        V: Y components of the vector field.
-    """
-
-    X: torch.Tensor
-    Y: torch.Tensor
-    xy: torch.Tensor
-    U: torch.Tensor
-    V: torch.Tensor
+    """A class for generating and manipulating 2D vector fields."""
 
     def __init__(
         self,
-        x_range: float = 2,
-        n_grid: int = 40,
+        alpha: float = 1.0,
         device: str = "cpu",
         **kwargs,
     ):
@@ -51,41 +23,32 @@ class VectorField:
             x_range: Range of coordinates (-x_range to x_range).
             n_grid: Number of grid points in each dimension.
         """
-        self.x_range = x_range
-        self.n_grid = n_grid
         self.device = torch.device(device)
-
-        self.create_grid(self.x_range, self.n_grid)
+        self.alpha = alpha
+        self.xy = None
 
     @torch.no_grad()
-    def create_grid(self, x_range: float, n_grid: int) -> None:
-        """Create a 2D grid for the vector field using PyTorch."""
-        x = torch.linspace(-x_range, x_range, n_grid, device=self.device)
-        y = torch.linspace(-x_range, x_range, n_grid, device=self.device)
-        X, Y = torch.meshgrid(x, y, indexing="xy")
-        xy = torch.stack([X.flatten(), Y.flatten()], dim=1).to(self.device)
-
-        self.X, self.Y, self.xy = X, Y, xy
-
-    @abstractmethod
-    @torch.no_grad()
-    def generate_vector_field(self, **kwargs) -> None:
-        """Generate the vector field components U and V and store them as attributes."""
-        pass
-
-    @abstractmethod
-    @torch.no_grad()
-    def compute(self, x: ArrayType) -> ArrayType:
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("compute method must be implemented in subclasses.")
 
-    def __call__(self, x: ArrayType) -> ArrayType:
-        """Callable interface for interpolation.
+    def set_params(self, dyn_params: torch.Tensor | list[float] | Dict[str, float]):
+        if isinstance(dyn_params, dict):
+            self._set_params(**dyn_params)
+        else:
+            if isinstance(dyn_params, list):
+                _dyn_params = torch.tensor(dyn_params, device=self.device, dtype=torch.float16)
+            else:
+                _dyn_params = dyn_params.to(self.device)
 
-        Args:
-            x: Points to interpolate at
-        Returns:
-            Array containing interpolated vector field values
-        """
+            if _dyn_params.ndim == 1:
+                _dyn_params = _dyn_params.unsqueeze(0)
+
+            self._set_params(*_dyn_params.mT)
+
+    def _set_params(self, *args, **kwargs):
+        raise NotImplementedError("_set_params method must be implemented in subclasses.")
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
         # Handle single vector input
         if x.dim() == 1:
             x = x.unsqueeze(0)  # Add batch dimension
@@ -97,37 +60,22 @@ class VectorField:
 class LimitCycle(VectorField):
     def __init__(
         self,
-        dyn_param: Optional[list[float]] | torch.Tensor = None,
-        x_range: float = 2,
-        n_grid: int = 40,
-        w: float = 1,
+        dyn_params: torch.Tensor | list[float] | Dict[str, float] = None,
         device: str = "cpu",
         **kwargs,
     ):
-        super().__init__(x_range=x_range, n_grid=n_grid, device=device)
-        if dyn_param is None:
+        super().__init__(device=device, **kwargs)
+        if dyn_params is None:
             self.w = 1
-            self.d = x_range / 2
+            self.d = 1
         else:
-            self.set_params(*dyn_param)
+            self.set_params(dyn_params)
 
-        self.alpha = 1
-        self.scaling = self.get_scaling()
-        self.alpha = 2 / self.scaling
-
-    def set_params(self, w=1.0, d=1.0):
+    def _set_params(self, w=1.0, d=1.0):
         self.w = w
         self.d = d
 
-    def get_scaling(self):
-        if self.xy is None:
-            self.create_grid(self.x_range, self.n_grid)
-        U, V = self.generate_vector_field()
-        speed = torch.sqrt(U**2 + V**2)
-        speed = speed.max()
-        return speed
-
-    def compute(self, x: ArrayType) -> ArrayType:
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
         r = torch.sqrt(x[..., 0] ** 2 + x[..., 1] ** 2)
         U = x[..., 0] * (self.d - r**2) - self.w * x[..., 1]
         V = x[..., 1] * (self.d - r**2) + self.w * x[..., 0]
@@ -137,47 +85,26 @@ class LimitCycle(VectorField):
 
         return torch.stack([U, V], dim=-1)
 
-    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
-        if self.xy is None:
-            self.create_grid(self.x_range, self.n_grid)
-        grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
-        UV = self.compute(self.xy)
-        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(grid_size, grid_size)
-
 
 class DoubleLimitCycle(VectorField):
     def __init__(
         self,
         dyn_param: Optional[list[float]] | torch.Tensor = None,
-        x_range: float = 2,
-        n_grid: int = 40,
         device: str = "cpu",
         **kwargs,
     ):
-        super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
+        super().__init__(device=device, **kwargs)
         if dyn_param is None:
             self.w = 1
-            self.d = x_range / 2
+            self.d = 1
         else:
-            self.set_params(*dyn_param)
+            self.set_params(dyn_param)
 
-        self.alpha = 1
-        self.scaling = self.get_scaling()
-        self.alpha = 1 / self.scaling
-
-    def set_params(self, w=1.0, d=1.0):
+    def _set_params(self, w=1.0, d=1.0):
         self.w = w
         self.d = d
 
-    def get_scaling(self):
-        if self.xy is None:
-            self.create_grid(self.x_range, self.n_grid)
-        U, V = self.generate_vector_field()
-        speed = torch.sqrt(U**2 + V**2)
-        speed = speed.max()
-        return speed
-
-    def compute(self, x: ArrayType) -> ArrayType:
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
         r = torch.sqrt(x[..., 0] ** 2 + x[..., 1] ** 2)
         U = x[..., 0] * (self.d - r) - self.w * x[..., 1] * (2 * self.d - r)
         V = x[..., 1] * (self.d - r) + self.w * x[..., 0] * (2 * self.d - r)
@@ -186,14 +113,8 @@ class DoubleLimitCycle(VectorField):
         V = self.alpha * V
         return torch.stack([U, V], dim=-1)
 
-    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
-        if self.xy is None:
-            self.create_grid(self.x_range, self.n_grid)
-        grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
-        UV = self.compute(self.xy)
-        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(grid_size, grid_size)
 
-
+# TODO: Fix the code to match the new structure
 class MultiAttractor(VectorField):
 
     def __init__(
@@ -220,7 +141,7 @@ class MultiAttractor(VectorField):
         self.length_scale = length_scale
 
     @torch.no_grad()
-    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
+    def generate_vector_field(self) -> Tuple[torch.Tensor, torch.Tensor]:
         base_kernel = RBFKernel(ard_num_dims=2)
         base_kernel.lengthscale = self.length_scale
         kernel = ScaleKernel(base_kernel)
@@ -253,7 +174,7 @@ class MultiAttractor(VectorField):
         self.U, self.V = U, V
         return U, V
 
-    def compute(self, state: ArrayType) -> ArrayType:
+    def compute(self, state: torch.Tensor) -> torch.Tensor:
         """Compute vector field at given state points using interpolation."""
         # Generate the vector field if not already generated
         if self.U is None or self.V is None:
@@ -296,39 +217,22 @@ class VanDerPol(VectorField):
 
     def __init__(
         self,
-        x_range: float = 2,
-        n_grid: int = 40,
         dyn_param: Optional[list[float]] | torch.Tensor = None,
         device: str = "cpu",
         **kwargs,
     ):
-        super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
+        super().__init__(device=device, **kwargs)
         if dyn_param is None:
             self.mu = 1.0
             self.w = 1.0
         else:
-            self.set_params(*dyn_param)
+            self.set_params(dyn_param)
 
-        self.alpha = 1
-        if kwargs.get("alpha") is not None:
-            self.alpha = kwargs.get("alpha")
-        else:
-            self.scaling = self.get_scaling()
-            self.alpha = 2 / self.scaling
-
-    def set_params(self, mu, w):
+    def _set_params(self, mu=1.0, w=1.0):
         self.mu = mu
         self.w = w
 
-    def get_scaling(self):
-        if self.xy is None:
-            self.create_grid(self.x_range, self.n_grid)
-        U, V = self.generate_vector_field()
-        speed = torch.sqrt(U**2 + V**2)
-        speed = speed.max()
-        return speed
-
-    def compute(self, x: ArrayType) -> ArrayType:
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
         U = x[..., 1]
         V = self.mu * (1 - x[..., 0] ** 2) * x[..., 1] - self.w * x[..., 0]
 
@@ -337,54 +241,30 @@ class VanDerPol(VectorField):
 
         return torch.stack([U, V], dim=-1)
 
-    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
-        if self.xy is None:
-            self.create_grid(self.x_range, self.n_grid)
-        grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
-        UV = self.compute(self.xy)
-        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(grid_size, grid_size)
-
 
 class Duffing(VectorField):
     """Duffing oscillator"""
 
     def __init__(
         self,
-        x_range: float = 2,
-        n_grid: int = 40,
         dyn_param: Optional[list[float]] | torch.Tensor = None,
         device: str = "cpu",
         **kwargs,
     ):
-        super().__init__(x_range=x_range, n_grid=n_grid, device=device, **kwargs)
+        super().__init__(device=device, **kwargs)
         if dyn_param is None:
             self.a = 0.1
             self.b = -0.1
             self.c = 0.1
         else:
-            self.set_params(*dyn_param)
+            self.set_params(dyn_param)
 
-        self.alpha = 1
-        if kwargs.get("alpha") is not None:
-            self.alpha = kwargs.get("alpha")
-        else:
-            self.scaling = self.get_scaling()
-            self.alpha = 2 / self.scaling
-
-    def set_params(self, a=0.1, b=-0.1, c=0.1):
+    def _set_params(self, a=0.1, b=-0.1, c=0.1):
         self.a = a
         self.b = b
         self.c = c
 
-    def get_scaling(self):
-        if self.xy is None:
-            self.create_grid(self.x_range, self.n_grid)
-        U, V = self.generate_vector_field()
-        speed = torch.sqrt(U**2 + V**2)
-        speed = speed.max()
-        return speed
-
-    def compute(self, x: ArrayType) -> ArrayType:
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
         U = x[..., 1]
         V = self.a * x[..., 1] - x[..., 0] * (self.b + self.c * x[..., 0] ** 2)
         U = self.alpha * U
@@ -392,15 +272,46 @@ class Duffing(VectorField):
 
         return torch.stack([U, V], dim=-1)
 
-    def generate_vector_field(self) -> Tuple[ArrayType, ArrayType]:
-        if self.xy is None:
-            self.create_grid(self.x_range, self.n_grid)
-        grid_size = int(torch.sqrt(torch.tensor(self.xy.shape[0])))
-        UV = self.compute(self.xy)
-        return UV[:, 0].reshape(grid_size, grid_size), UV[:, 1].reshape(grid_size, grid_size)
+
+class SnowMan(VectorField):
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        if dyn_param is None:
+            self.w = 1
+            self.d = 1
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, w=1.0, d=1.0, beta=10.0):
+        self.w = w
+        self.d = d
+        self.beta = beta
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        d = self.d
+        r = torch.sqrt((x[..., 0] - d) ** 2 + x[..., 1] ** 2)
+        U1 = (x[..., 0] - d) * (d**2 - r**2) - self.w * x[..., 1]
+        V1 = x[..., 1] * (d**2 - r**2) + self.w * (x[..., 0] - d)
+
+        r = torch.sqrt((x[..., 0] + d) ** 2 + x[..., 1] ** 2)
+        U2 = (x[..., 0] + d) * (d**2 - r**2) + self.w * x[..., 1]
+        V2 = x[..., 1] * (d**2 - r**2) - self.w * (x[..., 0] + d)
+
+        U = self.alpha * (
+            torch.sigmoid(self.beta * x[..., 0]) * U1 + torch.sigmoid(-self.beta * x[..., 0]) * U2
+        )
+        V = self.alpha * (
+            torch.sigmoid(self.beta * x[..., 0]) * V1 + torch.sigmoid(-self.beta * x[..., 0]) * V2
+        )
+
+        return torch.stack([U, V], dim=-1)
 
 
 if __name__ == "__main__":
     # Example usage with smaller grid size
     vf = VanDerPol(x_range=2.5, n_grid=50)
-    vf.generate_vector_field()

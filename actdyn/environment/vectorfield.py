@@ -1,17 +1,20 @@
 """Vector field environment implementation."""
 
 import torch
+import numpy as np
+import gymnasium as gym
+from gymnasium import spaces
 from actdyn.utils.vectorfield_definition import (
     LimitCycle,
     MultiAttractor,
     DoubleLimitCycle,
     VanDerPol,
     Duffing,
+    SnowMan,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence
 from actdyn.utils.visualize import plot_vector_field
 
-from .base import BaseDynamicsEnv
 
 vf_from_string = {
     "limit_cycle": LimitCycle,
@@ -19,122 +22,118 @@ vf_from_string = {
     "multi_attractor": MultiAttractor,
     "van_der_pol": VanDerPol,
     "duffing": Duffing,
+    "snowman": SnowMan,
 }
 
 
-class VectorFieldEnv(BaseDynamicsEnv):
+class VectorFieldEnv(gym.Env):
     """Unified environment for latent dynamics simulation."""
 
     def __init__(
         self,
         dynamics_type: str = "limit_cycle",
         state_dim: int = 2,
-        noise_scale: float = 0.1,
+        Q: float = 0.1,
         dt: float = 0.1,
         device: str = "cpu",
-        dyn_param: Optional[list[float]] | torch.Tensor = None,  #
+        dyn_params: Optional[list[float]] | torch.Tensor = None,  #
         render_mode: Optional[str] = None,
         action_bounds: Sequence[float] = (-1.0, 1.0),
         state_bounds: Optional[Sequence[float]] = None,
         **kwargs: Any,
     ):
-        # Initialize base environment
-        super().__init__(
-            state_dim=state_dim,
-            noise_scale=noise_scale,
-            dt=dt,
-            device=device,
-            render_mode=render_mode,
-            action_bounds=action_bounds,
-            state_bounds=state_bounds,
-        )
-        self.dyn_param = dyn_param if dyn_param is not None else {}
-        self.dynamics_type = dynamics_type
+        super().__init__()
+        self.state_dim = state_dim
+        self.Q = Q
+        self.dt = dt
+        self.device = torch.device(device)
+        self.render_mode = render_mode
+
+        # Initialize spaces with configurable bounds
+        self.action_space = self._set_space_bounds(action_bounds, state_dim)
+
+        if state_bounds is None:
+            state_bounds = (-np.inf, np.inf)
+        self.observation_space = self._set_space_bounds(state_bounds, state_dim)
 
         # Initialize dynamics
         if dynamics_type not in vf_from_string:
             raise ValueError(f"Unknown dynamics type: {dynamics_type}")
-
-        # Determine x_range: use from kwargs if available, otherwise from state_bounds
-        if "x_range" in kwargs:
-            x_range = kwargs.pop("x_range")  # Remove from kwargs to avoid duplication
-        elif state_bounds is not None:
-            x_range = state_bounds[-1]
-        else:
-            raise ValueError(
-                "Either 'x_range' must be provided in kwargs or 'state_bounds' must be set"
-            )
-
         self.dynamics = vf_from_string[dynamics_type](
-            dyn_param=dyn_param, device=self.device, x_range=x_range, **kwargs
+            dyn_param=dyn_params, device=self.device, **kwargs
+        )
+        self.set_params(dyn_params)
+
+        # Initialize state
+        self.state = torch.tensor(
+            self.observation_space.sample(), device=self.device, dtype=torch.float16
         )
 
-    def _get_dynamics(self, state: torch.Tensor) -> torch.Tensor:
-        """Compute vector field at given state."""
-        return self.dynamics(state)
+    def _set_space_bounds(self, bounds: Sequence[float], dim: int) -> spaces.Box:
+        """Set space bounds for action and observation spaces."""
+        if not (isinstance(bounds, (tuple, list)) and len(bounds) == 2):
+            raise ValueError(f"bounds must be a tuple or list of (low, high), got {bounds}")
+        low = np.full((dim,), bounds[0], dtype=np.float16)
+        high = np.full((dim,), bounds[1], dtype=np.float16)
+        return spaces.Box(low=low, high=high, dtype=np.float16)
 
-    def set_params(self, dyn_param: torch.Tensor | list[float] | Dict[str, float]):
+    def get_params(self) -> torch.Tensor:
+        return self.dynamics.dyn_params
+
+    def set_params(self, dyn_params: torch.Tensor | list[float] | Dict[str, float]):
         """Set dynamics parameters."""
-        if isinstance(dyn_param, dict):
-            self.dyn_param = torch.tensor(
-                [v for k, v in dyn_param.items()], device=self.device, dtype=torch.float32
-            ).unsqueeze(0)
-        elif isinstance(dyn_param, list):
-            self.dyn_param = torch.tensor(
-                dyn_param, device=self.device, dtype=torch.float32
-            ).unsqueeze(0)
+        if isinstance(dyn_params, dict):
+            _dyn_params = torch.tensor(
+                [v for k, v in dyn_params.items()], device=self.device, dtype=torch.float16
+            )
+        elif isinstance(dyn_params, list):
+            _dyn_params = torch.tensor(dyn_params, device=self.device, dtype=torch.float16)
         else:
-            if dyn_param.ndim == 1:
-                dyn_param = dyn_param.unsqueeze(0)
-            self.dyn_param = dyn_param
+            _dyn_params = dyn_params.to(self.device)
+
+        if _dyn_params.ndim == 1:
+            _dyn_params = _dyn_params.unsqueeze(0)
 
         if hasattr(self.dynamics, "set_params"):
-            self.dynamics.set_params(*dyn_param.mT.to(self.device))
+            self.dynamics.set_params(*_dyn_params.mT)
 
-    @torch.no_grad()
-    def generate_trajectory(self, x0, n_steps, action=None):
-        if x0.ndim == 2:
-            if x0.shape[0] == 1:
-                x0 = x0.unsqueeze(0)
-            else:
-                x0 = x0.unsqueeze(1)
-        B, T, D = x0.shape
-        if action is None:
-            action = torch.zeros(B, n_steps, D, device=self.device)
-        traj = [x0]
-        for i in range(n_steps):
-            traj.append(
-                traj[i]
-                + (self._get_dynamics(traj[i]) + action[:, i].unsqueeze(1)) * self.dt
-                + torch.randn_like(traj[i]) * torch.sqrt(torch.tensor(self.noise_scale * self.dt))
-            )
-        return torch.cat(traj, dim=1)
+    def compute_dynamics(self, state: torch.Tensor) -> torch.Tensor:
+        """Compute vector field at given state."""
+        return self.dynamics(state)
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment."""
         super().reset(seed=seed)
-        self.state = torch.rand(self.state_dim, device=self.device) * 2 - 1
-        return self.state.to(self.device), {}
+        self.state = torch.tensor(
+            self.observation_space.sample(), device=self.device, dtype=torch.float16
+        )
+        return self.state, {}
 
     def step(self, action: torch.Tensor) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
         """Step the environment."""
         # Compute dynamics
-        dynamics = self._get_dynamics(self.state)
+        dynamics = self.compute_dynamics(self.state)
 
         # Update state
         self.state = self.state + (dynamics + action) * self.dt
 
         # Add noise
-        self.state += torch.randn_like(self.state) * torch.sqrt(
-            torch.tensor(self.noise_scale) * self.dt
-        )
+        self.state += torch.randn_like(self.state) * torch.sqrt(torch.tensor(self.Q) * self.dt)
 
         # Compute reward
         reward = 0
 
         return self.state, reward, False, False, {}
+
+    @property
+    def logvar(self) -> torch.Tensor:
+        return torch.log(self.var)
+
+    @property
+    def var(self) -> torch.Tensor:
+        return torch.tensor(self.Q)
 
     def render(self, ax=None, x_range=1):
         if self.render_mode == "rgb_array":
