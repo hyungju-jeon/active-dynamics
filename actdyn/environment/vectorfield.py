@@ -32,7 +32,7 @@ class VectorFieldEnv(gym.Env):
     def __init__(
         self,
         dynamics_type: str = "limit_cycle",
-        state_dim: int = 2,
+        d_state: int = 2,
         Q: float = 0.1,
         dt: float = 0.1,
         device: str = "cpu",
@@ -43,18 +43,18 @@ class VectorFieldEnv(gym.Env):
         **kwargs: Any,
     ):
         super().__init__()
-        self.state_dim = state_dim
+        self.d_state = d_state
         self.Q = Q
         self.dt = dt
         self.device = torch.device(device)
         self.render_mode = render_mode
 
         # Initialize spaces with configurable bounds
-        self.action_space = self._set_space_bounds(action_bounds, state_dim)
+        self.action_space = self._set_space_bounds(action_bounds, d_state)
 
         if state_bounds is None:
             state_bounds = (-np.inf, np.inf)
-        self.observation_space = self._set_space_bounds(state_bounds, state_dim)
+        self.observation_space = self._set_space_bounds(state_bounds, d_state)
 
         # Initialize dynamics
         if dynamics_type not in vf_from_string:

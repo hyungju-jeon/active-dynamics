@@ -24,7 +24,7 @@ class MlpActionEncoder(BaseAction):
 
     def __init__(
         self,
-        hidden_dim=[16],
+        hidden_dims=[16],
         activation="relu",
         **kwargs,
     ):
@@ -33,7 +33,7 @@ class MlpActionEncoder(BaseAction):
 
         layers = []
         prev_dim = self.d_action if not self.state_dependent else self.d_action + self.d_latent
-        for h in hidden_dim:
+        for h in hidden_dims:
             layers.append(nn.Linear(prev_dim, h))
             layers.append(self.activation)
             prev_dim = h

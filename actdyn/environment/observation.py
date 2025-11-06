@@ -9,79 +9,51 @@ from .base import BaseObservation
 
 
 class Exp(nn.Module):
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return torch.exp(x)
+
+
+class Scale(nn.Module):
+    def __init__(self, scale_factor: float):
+        super().__init__()
+        self.scale_factor = scale_factor
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return x * self.scale_factor
 
 
 class IdentityObservation(BaseObservation):
     """Identity observation model."""
 
-    def __init__(
-        self,
-        latent_dim: int,
-        obs_dim: int,
-        noise_type: Optional[str] = None,
-        noise_scale: float = 0.0,
-        device: str = "cpu",
-        **kwargs,
-    ):
-        super().__init__(
-            latent_dim=latent_dim,
-            obs_dim=obs_dim,
-            device=device,
-            noise_type=noise_type,
-            noise_scale=noise_scale,
-        )
-        self.network = nn.Identity().to(device)
-        # if latent_dim != obs_dim:
-        #     raise ValueError("Identity observation requires latent_dim == obs_dim")
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.network = nn.Identity().to(self.device)
 
 
 class LinearObservation(BaseObservation):
     """Linear observation model: y = Cz + b."""
 
-    def __init__(
-        self,
-        latent_dim: int,
-        obs_dim: int,
-        noise_type: Optional[str] = None,
-        noise_scale: float = 0.0,
-        device: str = "cpu",
-        **kwargs,
-    ):
-        super().__init__(
-            latent_dim=latent_dim,
-            obs_dim=obs_dim,
-            noise_type=noise_type,
-            noise_scale=noise_scale,
-            device=device,
-        )
-        self.network = nn.Linear(latent_dim, obs_dim).to(device)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.network = nn.Linear(self.d_latent, self.d_obs).to(self.device)
 
 
 class LogLinearObservation(BaseObservation):
     """Log-linear observation model: y = exp(Cz + b)."""
 
-    def __init__(
-        self,
-        latent_dim: int,
-        obs_dim: int,
-        noise_type: Optional[str] = None,
-        noise_scale: float = 0.0,
-        device: str = "cpu",
-        **kwargs,
-    ):
+    def __init__(self, dt: float = 1.0, **kwargs):
         super().__init__(
-            latent_dim=latent_dim,
-            obs_dim=obs_dim,
-            noise_type=noise_type,
-            noise_scale=noise_scale,
-            device=device,
+            **kwargs,
         )
+        self.dt = dt
         self.network = nn.Sequential(
-            nn.Linear(latent_dim, obs_dim),
-            Exp(),
-        ).to(device)
+            nn.Linear(self.d_latent, self.d_obs), Exp(), Scale(self.dt)
+        ).to(self.device)
+
+    def set_dt(self, dt: float):
+        """Set the time step for scaling the output."""
+        self.dt = dt
+        self.network[2].scale_factor = self.dt
 
 
 class NonlinearObservation(BaseObservation):
@@ -89,30 +61,18 @@ class NonlinearObservation(BaseObservation):
 
     def __init__(
         self,
-        latent_dim: int,
-        obs_dim: int,
-        hidden_dims: Optional[list] = None,
+        hidden_dims: list = [64, 64],
         activation: str = "relu",
-        noise_type: Optional[str] = None,
-        noise_scale: float = 0.0,
-        device: str = "cpu",
+        **kwargs,
     ):
-        super().__init__(
-            latent_dim=latent_dim,
-            obs_dim=obs_dim,
-            noise_type=noise_type,
-            noise_scale=noise_scale,
-            device=device,
-        )
+        super().__init__(**kwargs)
         self.activation = activation_from_str(activation)
 
-        if hidden_dims is None:
-            hidden_dims = [64, 64]
         layers = []
-        prev_dim = latent_dim
+        prev_dim = self.d_latent
         for h in hidden_dims:
             layers.append(nn.Linear(prev_dim, h))
             layers.append(self.activation)
             prev_dim = h
-        layers.append(nn.Linear(prev_dim, obs_dim))
-        self.network = nn.Sequential(*layers).to(device)
+        layers.append(nn.Linear(prev_dim, self.d_obs))
+        self.network = nn.Sequential(*layers).to(self.device)

@@ -25,7 +25,7 @@ class EnvWrapper(gym.Wrapper):
         self.obs_model = obs_model
         self.action_model = action_model
         self.dt = dt
-        self.state_dim = env.observation_space.shape[0]
+        self.d_latent = env.observation_space.shape[0]
 
         # Auto-detect device from observation model if available
         if hasattr(obs_model, "network") and obs_model.network is not None:
@@ -46,9 +46,9 @@ class EnvWrapper(gym.Wrapper):
         self._torch_native = self._is_torch_native_env()
 
         # Update observation space if needed
-        if hasattr(obs_model, "obs_dim"):
+        if hasattr(obs_model, "d_obs"):
             self.observation_space = spaces.Box(
-                low=-np.inf, high=np.inf, shape=(obs_model.obs_dim,), dtype=np.float16
+                low=-np.inf, high=np.inf, shape=(obs_model.d_obs,), dtype=np.float16
             )
 
     def _is_torch_native_env(self) -> bool:
