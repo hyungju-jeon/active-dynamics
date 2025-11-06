@@ -6,31 +6,17 @@ from actdyn.utils.helper import activation_from_str
 class IdentityActionEncoder(BaseAction):
     """Identity action encoder."""
 
-    def __init__(self, action_dim, latent_dim, action_bounds, device="cpu", **kwargs):
-        self.state_dependent = kwargs.get("state_dependent", False)
-        super().__init__(
-            action_dim,
-            latent_dim,
-            action_bounds,
-            state_dependent=self.state_dependent,
-            device=device,
-        )
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
         self.network = nn.Identity()
 
 
 class LinearActionEncoder(BaseAction):
     """Simpler action encoder: just a single linear layer."""
 
-    def __init__(self, action_dim, latent_dim, action_bounds, device="cpu", **kwargs):
-        self.state_dependent = kwargs.get("state_dependent", False)
-        super().__init__(
-            action_dim,
-            latent_dim,
-            action_bounds,
-            state_dependent=self.state_dependent,
-            device=device,
-        )
-        self.network = nn.Linear(action_dim, latent_dim).to(device)
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.network = nn.Linear(self.d_action, self.d_latent).to(self.device)
 
 
 class MlpActionEncoder(BaseAction):
@@ -38,22 +24,18 @@ class MlpActionEncoder(BaseAction):
 
     def __init__(
         self,
-        action_dim,
-        latent_dim,
-        action_bounds,
         hidden_dim=[16],
-        state_dependent=False,
         activation="relu",
-        device="cpu",
+        **kwargs,
     ):
-        super().__init__(action_dim, latent_dim, action_bounds, state_dependent, device)
+        super().__init__(**kwargs)
         self.activation = activation_from_str(activation)
 
         layers = []
-        prev_dim = action_dim if not state_dependent else action_dim + latent_dim
+        prev_dim = self.d_action if not self.state_dependent else self.d_action + self.d_latent
         for h in hidden_dim:
             layers.append(nn.Linear(prev_dim, h))
             layers.append(self.activation)
             prev_dim = h
-        layers.append(nn.Linear(prev_dim, latent_dim))
-        self.network = nn.Sequential(*layers).to(device)
+        layers.append(nn.Linear(prev_dim, self.d_latent))
+        self.network = nn.Sequential(*layers).to(self.device)
