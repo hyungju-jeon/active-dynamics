@@ -99,3 +99,7 @@ class BaseObservation(nn.Module):
             y = self.network(z)
             return self._add_noise(y)
         raise NotImplementedError("Network is not defined in BaseObservation.")
+
+    def observe(self, z: torch.Tensor) -> torch.Tensor:
+        """Generate observation from latent state (alias for forward)."""
+        return self.forward(z)

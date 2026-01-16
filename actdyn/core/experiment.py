@@ -26,6 +26,7 @@ class Experiment:
         self.rollout = Rollout(device="cpu")
         self.writer = None
         self.video_recorder = None
+        self.pbar = None
         self.training_info = {}
 
         # Setup results directory
@@ -175,18 +176,20 @@ class Experiment:
 
     def _finalize_experiment(self):
         # Finalize experiment
-        if self.writer:
+        if hasattr(self, 'writer') and self.writer:
             self.writer.close()
             self.writer = None
-        if self.video_recorder:
+        if hasattr(self, 'video_recorder') and self.video_recorder:
             self.video_recorder.close()
             self.video_recorder = None
-        if self.pbar:
+        if hasattr(self, 'pbar') and self.pbar:
             self.pbar.close()
             self.pbar = None
 
-        self.rollout.finalize()
-        self.agent.model.save(self.results_path / "model" / "model_final.pth")
+        if hasattr(self, 'rollout') and self.rollout:
+            self.rollout.finalize()
+        if hasattr(self, 'agent') and self.agent and hasattr(self, 'results_path'):
+            self.agent.model.save(self.results_path / "model" / "model_final.pth")
 
     def init_experiment(self, reset=True):
         # Create necessary directories

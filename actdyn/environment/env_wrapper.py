@@ -48,7 +48,7 @@ class EnvWrapper(gym.Wrapper):
         # Update observation space if needed
         if hasattr(obs_model, "d_obs"):
             self.observation_space = spaces.Box(
-                low=-np.inf, high=np.inf, shape=(obs_model.d_obs,), dtype=np.float16
+                low=-np.inf, high=np.inf, shape=(obs_model.d_obs,), dtype=np.float32
             )
 
     def _is_torch_native_env(self) -> bool:
@@ -63,9 +63,9 @@ class EnvWrapper(gym.Wrapper):
         """Convert input to torch tensor."""
         # Get the device from the observation model's network if available
         if isinstance(x, torch.Tensor):
-            x = x.to(self.device)
+            x = x.to(self.device).float()
         else:
-            x = torch.tensor(x, device=self.device, dtype=torch.float16)
+            x = torch.tensor(x, device=self.device, dtype=torch.float32)
 
         if x.dim() == 1:
             x = x.unsqueeze(0).unsqueeze(0)  # Add batch dimension if needed

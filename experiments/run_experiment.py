@@ -63,7 +63,7 @@ def run_hydra_experiment(exp_config: ExperimentConfig) -> None:
         torch.manual_seed(exp_config.seed)
         np.random.seed(exp_config.seed)
         offline_experiment, _, _, _ = setup_experiment(exp_config)
-        offline_experiment.offline_learning()
+        offline_experiment.offline_run()
 
 
 if __name__ == "__main__":

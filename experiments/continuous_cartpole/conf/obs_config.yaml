@@ -1,5 +1,5 @@
 # @package _global_
-# Base config for hydra entry
+# Base config for offline_debug hydra entry
 
 defaults:
   - _self_
@@ -13,25 +13,23 @@ hydra:
 seed: 11
 device: "cuda"
 results_dir: ${hydra:run.dir}
-action_dim: 2
-observation_dim: 50
-latent_dim: 2
-dt : 0.1
+action_dim: 1
+observation_dim: 20
+latent_dim: 8
+dt : 0.01
 run_offline: false
 run_analysis: true
 
 # Environment
 environment:
-  environment_type: "vectorfield"
-  env_noise_scale: 0.01
-  env_alpha: 10
+  environment_type: "continuous_cartpole_partial"
+  env_noise_scale: 0.00
   env_render_mode: null
-  env_action_bounds: [-5, 5]
+  env_action_bounds: [-0.5, 0.5]
   observation_type: "linear"
   obs_noise_type: "gaussian"
-  obs_noise_scale: 0.1
+  obs_noise_scale: 0.05
   action_type: "identity"
-  env_dt: 0.1
 
 # Model
 model:
@@ -51,35 +49,22 @@ model:
   dynamics_type: "mlp"
   dyn_hidden_dim: [32]
   dyn_activation: "tanh"
+  is_residual: false
   action_type: "mlp"
   act_hidden_dim: [32]
   act_activation: "tanh"
-  model_type: "filtering-embedding"
+  model_type: "seq-vae"
 
 # Policy 
 policy:
-  policy_type: "mpc-icem"
-  mpc_verbose: False
-  mpc_horizon: 20
-  mpc_num_samples: 24
-  mpc_num_iterations: 10
-  mpc_num_elite: 10
-  mpc_alpha: 0.1
-  mpc_init_std: 0.5
-  mpc_noise_beta: 1.0
-  mpc_factor_decrease_num: 1.25
-  mpc_frac_prev_elites: 0.2
-  mpc_frac_elites_reused: 0.3
-  mpc_use_mean_actions: True
-  mpc_shift_elites: True
-  mpc_keep_elites: True
+  policy_type: "random"
 
 # Metric (unused directly here)
 metric:
-  metric_type: ["embedding-fisher", "action"]
+  metric_type: ["D-optimality", "action"]
   compute_type: "sum"
   gamma: 0.99
-  composite_weights: [1]
+  composite_weights: [.1, 5]
   met_use_diag: true
   met_discount_factor: 0.99
   met_goal: [2, 2]
@@ -88,11 +73,11 @@ metric:
 
 # Training (offline parameters are what we sweep)
 training:
-  total_steps: 500
+  total_steps: 25000
   train_every: 1
   rollout_horizon: 100
   optimizer: "SGD"
-  learning_rate: 0.001
+  learning_rate: 0.0005
   weight_decay: 0.0001
   beta: 1
   n_epochs: 1
@@ -103,7 +88,7 @@ training:
   grad_clip_norm: 1.0
   annealing_type: "linear" # "linear" or "cyclic"
   annealing_steps: 5000
-  warmup: 20000
+  warmup: 10000
   offline_annealing_type: "linear" # "linear" or "cyclic"
   offline_annealing_steps: 500
   offline_warmup: 500
@@ -112,9 +97,8 @@ training:
   offline_batch_size: 32
   offline_chunk_size: 500
   offline_decay: 0.0001
-  p_mask: 0.5
 
 # Logging
 logging:
-  save_every: 500
+  save_every: 1000
   plot_every: 1000

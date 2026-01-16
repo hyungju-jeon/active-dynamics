@@ -259,11 +259,11 @@ class RBFDynamicsEnsemble(BaseDynamicsEnsemble):
     """
 
     def __init__(self, state_dim, n_models=5, **kwargs):
+        dynamics_config = {"state_dim": state_dim, **kwargs}
         super().__init__(
             dynamics_cls=RBFDynamics,
-            state_dim=state_dim,
             n_models=n_models,
-            dynamics_config=kwargs,
+            dynamics_config=dynamics_config,
         )
 
 
@@ -273,9 +273,9 @@ class MLPDynamicsEnsemble(BaseDynamicsEnsemble):
     """
 
     def __init__(self, state_dim, n_models=5, **kwargs):
+        dynamics_config = {"state_dim": state_dim, **kwargs}
         super().__init__(
-            dynamics_class=MLPDynamics,
-            state_dim=state_dim,
+            dynamics_cls=MLPDynamics,
             n_models=n_models,
-            dynamics_config=kwargs,
+            dynamics_config=dynamics_config,
         )

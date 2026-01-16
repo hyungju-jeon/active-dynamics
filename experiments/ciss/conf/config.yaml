@@ -88,22 +88,22 @@ metric:
 
 # Training (offline parameters are what we sweep)
 training:
-  total_steps: 500
+  total_steps: 10000
   train_every: 1
   rollout_horizon: 100
   optimizer: "SGD"
-  learning_rate: 0.001
+  learning_rate: 0.01
   weight_decay: 0.0001
   beta: 1
   n_epochs: 1
   k_steps: 1
-  n_samples: 32
+  n_samples: 16
   perturbation: 0.00
   verbose: false
-  grad_clip_norm: 1.0
+  grad_clip_norm: 5.0
   annealing_type: "linear" # "linear" or "cyclic"
-  annealing_steps: 5000
-  warmup: 20000
+  annealing_steps: 1
+  warmup: 500
   offline_annealing_type: "linear" # "linear" or "cyclic"
   offline_annealing_steps: 500
   offline_warmup: 500
@@ -116,5 +116,5 @@ training:
 
 # Logging
 logging:
-  save_every: 500
+  save_every: 1000
   plot_every: 1000

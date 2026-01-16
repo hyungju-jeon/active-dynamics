@@ -9,7 +9,6 @@ from unittest import result
 
 import matplotlib.pyplot as plt
 import numpy as np
-from sympy import E, EX
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,7 +20,6 @@ from tqdm import tqdm
 
 # from external.integrative_inference.src.utils import save_model, load_model
 import actdyn
-import actdyn.core
 import actdyn.core.experiment
 import actdyn.environment
 import actdyn.environment.action
@@ -701,11 +699,11 @@ if not os.path.exists(base_dir):
 
 meta_dynamics = MetaDynamics(hypernet_dynamics, mean_dynamics)
 dz, de, du, dy = 2, 2, 2, 50
-dt = 0.1
-alpha = 1
+dt = 0.01
+alpha = 10
 action_strength = 0.5
-noise_scale = 0.01
-torch.manual_seed(7)
+noise_scale = 0.1
+torch.manual_seed(70)
 # torch.manual_seed(10)
 e = e_sampler(1)
 a, b = e.reshape(-1)
@@ -790,6 +788,7 @@ model = actdyn.models.FilteringEmbedding(
     device=device,
 )
 model.set_params(e_bel["m"])
+# model.set_params(e)
 
 # ------------------------------------------------------------------------------
 # Model Components - Policy
@@ -814,12 +813,12 @@ off_policy = actdyn.policy.OffPolicy(action_space=env.action_space, device=devic
 # ------------------------------------------------------------------------------
 # Model Components - Agent and Experiment
 # ------------------------------------------------------------------------------
-agent = actdyn.AsyncAgent(env=env, model=model, policy=mpc_policy, device=device, buffer_length=10)
-# agent = actdyn.Agent(env=env, model=model, policy=mpc_policy, device=device)
+# agent = actdyn.AsyncAgent(env=env, model=model, policy=mpc_policy, device=device, buffer_length=10)
+agent = actdyn.Agent(env=env, model=model, policy=mpc_policy, device=device)
 
 exp_config = ExperimentConfig.from_yaml(os.path.join(os.path.dirname(__file__), "conf/config.yaml"))
 exp_config.results_dir = base_dir
-exp_config.training.total_steps = 500
+exp_config.training.total_steps = 1000
 experiment = actdyn.core.experiment.MetaEmbeddingExperiment(
     agent=agent,
     config=exp_config,
@@ -827,8 +826,19 @@ experiment = actdyn.core.experiment.MetaEmbeddingExperiment(
 
 decoder.set_params(obs_model)
 experiment.run()
+# agent.reset(seed=1)
+# model.set_params(e)
+# model._state = agent._env_state
+# agent._model_state = agent._env_state
+# model.z["m"] = agent._env_state
+
+# # # 2. Execute
+# for _ in range(99):
+#     action = agent.plan()
+#     transition, done = agent.step(action)
 
 print(f"True embedding: {e}, Learned embedding: {model.e['m']}")
+
 # %%
 # %%
 ro = save_load.load_and_concatenate_rollouts(os.path.join(base_dir, "rollouts"))
