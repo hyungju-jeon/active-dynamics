@@ -176,19 +176,19 @@ class Experiment:
 
     def _finalize_experiment(self):
         # Finalize experiment
-        if hasattr(self, 'writer') and self.writer:
+        if hasattr(self, "writer") and self.writer:
             self.writer.close()
             self.writer = None
-        if hasattr(self, 'video_recorder') and self.video_recorder:
+        if hasattr(self, "video_recorder") and self.video_recorder:
             self.video_recorder.close()
             self.video_recorder = None
-        if hasattr(self, 'pbar') and self.pbar:
+        if hasattr(self, "pbar") and self.pbar:
             self.pbar.close()
             self.pbar = None
 
-        if hasattr(self, 'rollout') and self.rollout:
+        if hasattr(self, "rollout") and self.rollout:
             self.rollout.finalize()
-        if hasattr(self, 'agent') and self.agent and hasattr(self, 'results_path'):
+        if hasattr(self, "agent") and self.agent and hasattr(self, "results_path"):
             self.agent.model.save(self.results_path / "model" / "model_final.pth")
 
     def init_experiment(self, reset=True):

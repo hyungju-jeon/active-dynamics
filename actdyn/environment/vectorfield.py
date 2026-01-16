@@ -84,7 +84,7 @@ class VectorFieldEnv(gym.Env):
         """Set dynamics parameters."""
         if dyn_params is None:
             return  # Do nothing if no params provided
-            
+
         if isinstance(dyn_params, dict):
             _dyn_params = torch.tensor(
                 [v for k, v in dyn_params.items()], device=self.device, dtype=torch.float16

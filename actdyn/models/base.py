@@ -356,13 +356,16 @@ class BaseModel(nn.Module):
         self.input_dim = self.decoder.obs_dim
         self.latent_dim = getattr(self.decoder, "latent_dim", 0)
         # Support both 'action_dim' (model classes) and 'd_action' (environment classes)
-        self.action_dim = getattr(self.action_encoder, "action_dim", None) or getattr(self.action_encoder, "d_action", 0)
+        self.action_dim = getattr(self.action_encoder, "action_dim", None) or getattr(
+            self.action_encoder, "d_action", 0
+        )
         self.is_ensemble = hasattr(self.dynamics, "ensemble") and hasattr(self.dynamics, "n_models")
         self.dt = getattr(self.dynamics, "dt", 1.0)
         self.step_count = 0
 
         # Initialize state tracking
         self._state = None
+
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
         self._state = -torch.ones(1, 1, self.dynamics.state_dim, device=self.device)
@@ -380,7 +383,7 @@ class BaseModel(nn.Module):
         # Extract the latest observation and action from the recent rollout
         observation = recent["next_obs"]
         action = recent["action"]
-        
+
         with torch.no_grad():
             self._state = self.update_posterior_embedding(y=observation, u=action)
             if self.action_encoder is not None and action is not None:

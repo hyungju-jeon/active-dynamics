@@ -10,7 +10,7 @@ from gymnasium import spaces
 class BaseAction(nn.Module):
     """Base class for deterministic action encoder."""
 
-    def __init__(self, d_action, d_latent, action_bounds, state_dependent=False, device="cpu"):
+    def __init__(self, d_action, d_latent, action_bounds, state_dependent=False, device="cpu", **kwargs):
         super().__init__()
         self.d_action = d_action
         self.d_latent = d_latent
@@ -71,6 +71,7 @@ class BaseObservation(nn.Module):
         noise_type: Optional[str] = None,
         R: float = 0.0,
         device: str = "cpu",
+        **kwargs,  # Accept extra params for subclass flexibility
     ):
         super().__init__()
         self.d_latent = d_latent  # latent dimension

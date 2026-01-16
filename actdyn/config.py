@@ -51,7 +51,7 @@ class EnvironmentConfig:
 
     def get_observation_cfg(self):
         return {
-            "hidden_dim": self.obs_hidden_dim,
+            "hidden_dims": self.obs_hidden_dim,  # Classes use hidden_dims (plural)
             "activation": self.obs_activation,
             "noise_type": self.obs_noise_type,
             "noise_scale": self.obs_noise_scale,
@@ -59,7 +59,7 @@ class EnvironmentConfig:
 
     def get_action_cfg(self):
         return {
-            "hidden_dim": self.act_hidden_dim,
+            "hidden_dims": self.act_hidden_dim,  # Classes use hidden_dims (plural)
             "activation": self.act_activation,
         }
 
