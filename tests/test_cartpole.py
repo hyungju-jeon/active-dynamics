@@ -15,7 +15,7 @@ from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping, Identit
 from actdyn.models.dynamics import LinearDynamics, MLPDynamics
 from actdyn.models.model import SeqVae
 from actdyn.environment.action import LinearActionEncoder
-from actdyn.utils.torch_helper import to_np
+from actdyn.utils.helper import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from torch.utils.tensorboard import SummaryWriter
 

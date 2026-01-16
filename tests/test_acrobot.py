@@ -13,8 +13,9 @@ from actdyn.models.decoder import Decoder, LinearMapping, GaussianNoise
 from actdyn.models.dynamics import LinearDynamics
 from actdyn.models.model import SeqVae
 from actdyn.environment.action import LinearActionEncoder
-from actdyn.utils.torch_helper import to_np
+from actdyn.utils.helper import to_np
 from actdyn.utils.rollout import Rollout, RolloutBuffer
+
 
 class AcrobotContinuousWrapper(gym.Wrapper):
     def __init__(self, env, max_torque=1.0, screen_width=600, screen_height=600):
@@ -22,10 +23,7 @@ class AcrobotContinuousWrapper(gym.Wrapper):
         self.max_torque = max_torque
         # override action space with continuous Box
         self.action_space = gym.spaces.Box(
-            low=-self.max_torque,
-            high=self.max_torque,
-            shape=(1,),
-            dtype=np.float32
+            low=-self.max_torque, high=self.max_torque, shape=(1,), dtype=np.float32
         )
 
         global RENDER
@@ -33,7 +31,7 @@ class AcrobotContinuousWrapper(gym.Wrapper):
             # Pygame init
             pygame.init()
             self.screen = pygame.display.set_mode((screen_width, screen_height))
-            pygame.display.set_caption('Acrobot Continuous Control')
+            pygame.display.set_caption("Acrobot Continuous Control")
             self.clock = pygame.time.Clock()
             self.screen_width = screen_width
             self.screen_height = screen_height
@@ -61,21 +59,23 @@ class AcrobotContinuousWrapper(gym.Wrapper):
         lc1, lc2 = base.LINK_COM_POS_1, base.LINK_COM_POS_2
         I1 = base.LINK_MOI
         I2 = base.LINK_MOI
-        g = 9.8 # i think this is the value they use originally? can't find inside "base"
+        g = 9.8  # i think this is the value they use originally? can't find inside "base"
         # current state
         a1, a2, a1_dot, a2_dot = base.state
 
         # equations of motion
-        d1 = (m1*lc1**2 + m2*(l1**2 + lc2**2 + 2*l1*lc2*np.cos(a2)) + I1 + I2)
-        d2 = m2*(lc2**2 + l1*lc2*np.cos(a2)) + I2
-        phi2 = m2*lc2*g*np.cos(a1 + a2 - np.pi/2)
-        phi1 = (-m2*l1*lc2*a2_dot**2*np.sin(a2)
-                -2*m2*l1*lc2*a1_dot*a2_dot*np.sin(a2)
-                + (m1*lc1 + m2*l1)*g*np.cos(a1 - np.pi/2)
-                + phi2)
+        d1 = m1 * lc1**2 + m2 * (l1**2 + lc2**2 + 2 * l1 * lc2 * np.cos(a2)) + I1 + I2
+        d2 = m2 * (lc2**2 + l1 * lc2 * np.cos(a2)) + I2
+        phi2 = m2 * lc2 * g * np.cos(a1 + a2 - np.pi / 2)
+        phi1 = (
+            -m2 * l1 * lc2 * a2_dot**2 * np.sin(a2)
+            - 2 * m2 * l1 * lc2 * a1_dot * a2_dot * np.sin(a2)
+            + (m1 * lc1 + m2 * l1) * g * np.cos(a1 - np.pi / 2)
+            + phi2
+        )
         # accelerations
-        a2_ddot = (torque + d2/d1*phi1 - phi2) / (m2*lc2**2 + I2 - d2**2/d1)
-        a1_ddot = -(d2*a2_ddot + phi1) / d1
+        a2_ddot = (torque + d2 / d1 * phi1 - phi2) / (m2 * lc2**2 + I2 - d2**2 / d1)
+        a1_ddot = -(d2 * a2_ddot + phi1) / d1
         # integrate
         a1_dot += dt * a1_ddot
         a2_dot += dt * a2_ddot
@@ -85,12 +85,12 @@ class AcrobotContinuousWrapper(gym.Wrapper):
 
         # get observations, reward, done
         ob = base._get_ob()
-        terminal = False # never done in continuous setup
+        terminal = False  # never done in continuous setup
         reward = -1.0 if not terminal else 0.0
         # Gymnasium API: obs, reward, done, truncated, info
         return ob, reward, terminal, False, {}
 
-    def render(self, mode='human'):
+    def render(self, mode="human"):
         global RENDER
         if not RENDER:
             return
@@ -125,25 +125,22 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.set_default_device(device)
 
 # Define environment parameters for the test
-gym_env = AcrobotContinuousWrapper(gym.make('Acrobot-v1'))
+gym_env = AcrobotContinuousWrapper(gym.make("Acrobot-v1"))
 obs_dim = gym_env.observation_space.shape[0]  # 6-D observation
-action_dim = gym_env.action_space.shape[0]    # 1-D action (torque)
+action_dim = gym_env.action_space.shape[0]  # 1-D action (torque)
 latent_dim = obs_dim
 action_bounds = (-gym_env.max_torque, gym_env.max_torque)
 
 # Define SeqVAE model components
-encoder = MLPEncoder(input_dim=obs_dim, latent_dim=latent_dim, device=device, hidden_dims=[1])
+encoder = MLPEncoder(obs_dim=obs_dim, latent_dim=latent_dim, device=device, hidden_dims=[1])
 decoder = Decoder(
-    LinearMapping(latent_dim=latent_dim, output_dim=obs_dim),
-    GaussianNoise(output_dim=obs_dim, sigma=0.5),
+    LinearMapping(latent_dim=latent_dim, obs_dim=obs_dim),
+    GaussianNoise(obs_dim=obs_dim, sigma=0.5),
     device=device,
 )
 dynamics = LinearDynamics(state_dim=latent_dim, device=device)
 action_encoder = LinearActionEncoder(
-    action_dim=action_dim,
-    latent_dim=latent_dim,
-    action_bounds=action_bounds,
-    device=device
+    d_action=action_dim, d_latent=latent_dim, action_bounds=action_bounds, device=device
 )
 
 model = SeqVae(
@@ -161,7 +158,7 @@ if __name__ == "__main__":
     rollout_buffer = RolloutBuffer(num_samples)
 
     for _ in range(num_samples):
-        obs_seq = torch.zeros(num_steps+1, obs_dim, device=device)
+        obs_seq = torch.zeros(num_steps + 1, obs_dim, device=device)
         actions = torch.zeros(num_steps, action_dim, device=device)
 
         # reset environment and record initial observation
@@ -175,7 +172,7 @@ if __name__ == "__main__":
             actions[t] = a_tensor
 
             obs_raw, reward, done, truncated, info = gym_env.step(a_cont)
-            obs_seq[t+1] = torch.from_numpy(obs_raw).float().to(device)
+            obs_seq[t + 1] = torch.from_numpy(obs_raw).float().to(device)
             if done or truncated:
                 break
 
@@ -186,7 +183,7 @@ if __name__ == "__main__":
             rollout.add(
                 obs=obs_seq[t].unsqueeze(0),
                 action=actions[t].unsqueeze(0),
-                next_obs=obs_seq[t+1].unsqueeze(0),
+                next_obs=obs_seq[t + 1].unsqueeze(0),
             )
         rollout_buffer.add(rollout)
 
@@ -198,32 +195,32 @@ if __name__ == "__main__":
         n_epochs=1000,
     )
 
-# %%
+    # %%
 
     # visualize one stored rollout in latent space vs observations
     raw_rollout = rollout_buffer.buffer[0]  # first rollout
     rollout_dict = raw_rollout.as_dict()
 
-    obs = rollout_dict['obs']        # tensor[T,1,obs_dim]
-    obs_traj = obs.squeeze(1)        # now [T, obs_dim]
-    obs_traj = obs_traj.unsqueeze(0) # now [1, T, obs_dim]
-    obs_traj = obs_traj.to(device)   # move to GPU
+    obs = rollout_dict["obs"]  # tensor[T,1,obs_dim]
+    obs_traj = obs.squeeze(1)  # now [T, obs_dim]
+    obs_traj = obs_traj.unsqueeze(0)  # now [1, T, obs_dim]
+    obs_traj = obs_traj.to(device)  # move to GPU
 
     with torch.no_grad():
         enc_z, *_ = model.encoder(obs_traj)
 
     plt.figure()
-    plt.plot(to_np(enc_z[0,:,0]), to_np(enc_z[0,:,1]), '-', label='latent')
-    plt.title('Encoded Latent Trajectory')
+    plt.plot(to_np(enc_z[0, :, 0]), to_np(enc_z[0, :, 1]), "-", label="latent")
+    plt.title("Encoded Latent Trajectory")
     plt.legend()
     plt.show()
 
     # reconstruction plot for the same rollout
     recon = model.decoder(enc_z)
     plt.figure()
-    plt.plot(to_np(recon[0]), '-', label='reconstructed obs')
-    plt.plot(to_np(obs_traj[0]), '--', label='true obs')
-    plt.title('Observation Reconstruction')
+    plt.plot(to_np(recon[0]), "-", label="reconstructed obs")
+    plt.plot(to_np(obs_traj[0]), "--", label="true obs")
+    plt.title("Observation Reconstruction")
     plt.legend()
     plt.show()
 
@@ -251,8 +248,8 @@ print(f"Reconstruction MSE on random test batch: {loss.item():.6f}")
 n_show = 5
 for i in range(n_show):
     plt.figure()
-    plt.plot(dummy_obs[:,i].cpu().numpy(), '--', label='original')
-    plt.plot(recon[:,i].detach().cpu().numpy() * 1000, '-', label='recon')
+    plt.plot(dummy_obs[:, i].cpu().numpy(), "--", label="original")
+    plt.plot(recon[:, i].detach().cpu().numpy() * 1000, "-", label="recon")
     plt.title(f"Sample {i} Recon")
     plt.legend()
     plt.show()

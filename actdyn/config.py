@@ -1,5 +1,5 @@
 import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import Any, List, Optional, Union
 import yaml
 
@@ -10,7 +10,11 @@ class EnvironmentConfig:
     env_dynamics_type: Optional[str] = (
         "limit_cycle"  # Options: "limit_cycle", "double_limit_cycle", "multi_attractor"
     )
-    env_dt = 0.1
+    # DESIGN FIX: Add type annotation to allow custom initialization from __init__ and YAML
+    # Without type annotation, this becomes a class variable and cannot be passed to constructor
+    # Issue: test_config.py fails when trying EnvironmentConfig(env_dt=0.05)
+    # Usage: experiments/run_experiment.py loads configs with custom env_dt values
+    env_dt: float = 0.1
     env_noise_scale: float = 0.1
     env_render_mode: Optional[str] = None  # Options: "human", "rgb_array"
     env_action_bounds: List[float] = field(default_factory=lambda: [-0.1, 0.1])
@@ -275,7 +279,7 @@ class TrainingConfig:
 class LoggingConfig:
     plot_every: int = 1000
     save_every: int = 1000
-    video_path: Optional[str] = None
+    video_filename: Optional[str] = None
 
 
 @dataclass
@@ -336,4 +340,4 @@ class ExperimentConfig:
 
     def to_dict(self) -> dict:
         """Convert the ExperimentConfig instance to a dictionary."""
-        return self.__dict__
+        return asdict(self)

@@ -5,9 +5,25 @@ re-exported when Hydra is available; otherwise they are skipped so importing
 the package does not require Hydra.
 """
 
-from .save_load import save_model, load_model, save_rollout, load_rollout
+from .save_load import save_rollout, load_rollout
+from .helper import Belief, Transition, format_list, to_np, eps
+from .rollout import Rollout, RolloutBuffer, RecentRollout
+from .video import VideoRecorder
 
-__all__ = ["setup_experiment", "save_model", "load_model", "save_rollout", "load_rollout"]
+__all__ = [
+    "setup_experiment",
+    "save_rollout",
+    "load_rollout",
+    "Rollout",
+    "RolloutBuffer",
+    "RecentRollout",
+    "VideoRecorder",
+    "Belief",
+    "Transition",
+    "format_list",
+    "to_np",
+    "eps",
+]
 
 
 def setup_experiment(*args, **kwargs):

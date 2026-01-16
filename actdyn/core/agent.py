@@ -1,17 +1,16 @@
+"""actdyn.core.agent.py: Agent class for active learning in dynamical systems."""
+
 from typing import Dict, Tuple
+
 import torch
-from actdyn.environment.vectorfield import VectorFieldEnv
-from actdyn.metrics.uncertainty import RandomNetworkDistillation
-from actdyn.models.decoder import GaussianNoise, PoissonNoise
-from actdyn.utils.rollout import RecentRollout, RolloutBuffer
-from actdyn.environment.env_wrapper import GymObservationWrapper
+
+from actdyn.environment.env_wrapper import EnvWrapper
 from actdyn.models.base import BaseModel
+from actdyn.models.decoder import PoissonNoise
 from actdyn.policy.base import BasePolicy
 from actdyn.policy.mpc import BaseMPC
-from actdyn.metrics.base import CompositeMetric
-from actdyn.metrics.information import FisherInformationMetric
-from einops import rearrange
-from actdyn.utils import Transition, Belief
+from actdyn.utils import Transition
+from actdyn.utils.rollout import RecentRollout
 
 
 class Agent:
@@ -19,7 +18,7 @@ class Agent:
 
     def __init__(
         self,
-        env: GymObservationWrapper,
+        env: EnvWrapper,
         model: BaseModel,
         policy: BasePolicy,
         buffer_length: int = 20,
@@ -49,7 +48,7 @@ class Agent:
             try:
                 if seed is not None and hasattr(self.env, "action_space"):
                     self.env.action_space.seed(int(seed))
-            except Exception:
+            except (AttributeError, TypeError):
                 pass
             self._observation = obs
             # Reset model
@@ -99,7 +98,7 @@ class Agent:
         # Update observation and environment/model state
         self._observation = obs
         self._env_state = env_info["latent_state"]
-        self._model_state = self.model._state
+        self._model_state = self.model.get_state()
 
         return transition, done
 
@@ -109,12 +108,12 @@ class Agent:
         action = self.policy(self._model_state)
         return action
 
-    def update_policy(self, transition: Transition) -> None:
+    def update_policy(self, rollout: RecentRollout) -> None:
         """Update the policy based on the latest transition."""
         # Update policy if necessary (only on MPC for now)
         if isinstance(self.policy, BaseMPC):
             for metric in self.policy.metric.metric_list:
-                metric.update(transition)
+                metric.update(rollout)
 
     def train_model(self, sampling_ratio: int = 1, **kwargs) -> Dict[str, float | torch.Tensor]:
         """Train the model using recent transitions."""
@@ -130,7 +129,7 @@ class AsyncAgent(Agent):
 
     def __init__(
         self,
-        env: GymObservationWrapper,
+        env: EnvWrapper,
         model: BaseModel,
         policy: BasePolicy,
         buffer_length: int = 20,
@@ -182,6 +181,6 @@ class AsyncAgent(Agent):
         # Update observation and environment/model state
         self._observation = obs
         self._env_state = env_info["latent_state"]
-        self._model_state = self.model._state
+        self._model_state = self.model.get_state()
 
         return transition, done

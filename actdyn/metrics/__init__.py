@@ -8,7 +8,6 @@ from .base import BaseMetric, CompositeMetric, DiscountedMetric
 from .information import FisherInformationMetric
 
 __all__ = [
-    "metric_from_str",
     "BaseMetric",
     "FisherInformationMetric",
     "CompositeMetric",
@@ -24,6 +23,7 @@ _metric_map = {
     "A-optimality": (".information", "AOptimality"),
     "D-optimality": (".information", "DOptimality"),
     "Ensemble_disagreement": (".uncertainty", "EnsembleDisagreement"),
+    "embedding-fisher": (".information", "EmbeddingFisherMetric"),
 }
 
 

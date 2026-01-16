@@ -28,51 +28,57 @@ def load_model(model, path="checkpoints/model"):
 
 def save_rollout(rollout, path="checkpoints/rollout.pkl"):
     """Save rollout buffer to disk."""
+    p = Path(path)
     if isinstance(rollout, Rollout):
         rollout_copy = rollout.copy()  # Ensure we don't modify the original
         rollout_copy.finalize()  # Finalize the rollout before saving
     elif isinstance(rollout, RolloutBuffer):
         rollout_copy = rollout.copy()  # Ensure we don't modify the originalg
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "wb") as f:
+    else:
+        raise TypeError(f"Unsupported rollout type: {type(rollout)}")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("wb") as f:
         pickle.dump(rollout_copy, f)
 
 
 def load_rollout(path="checkpoints/rollout.pkl") -> Rollout:
     """Load rollout buffer from disk."""
-    with open(path, "rb") as f:
+    p = Path(path)
+    with p.open("rb") as f:
         return pickle.load(f)
 
 
 def save_config(config: ExperimentConfig, path=None):
     """Save experiment config to disk."""
     if path is None:
-        path = config.results_dir
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    config.to_yaml(os.path.join(path, "config.yaml"))
+        p = Path(config.results_dir)
+    else:
+        p = Path(path)
+    p.mkdir(parents=True, exist_ok=True)
+    config.to_yaml(str(p / "config.yaml"))
 
 
 def load_and_concatenate_rollouts(
     file_path: str, pattern: str = "rollout_*.pkl", device="cpu"
 ) -> Rollout:
     """Load and concatenate rollout buffers from disk."""
-    if not os.path.isdir(file_path):
+    p = Path(file_path)
+    if not p.is_dir():
         raise FileNotFoundError(
             f"Rollouts directory not found: {file_path}. Generate rollouts first."
         )
 
-    rollout_files = [f for f in os.listdir(file_path) if f.endswith(".pkl")]
+    rollout_files = [f for f in p.iterdir() if f.suffix == ".pkl"]
     if not rollout_files:
         raise FileNotFoundError(f"No .pkl rollouts found under {file_path}")
     try:
-        rollout_files.sort(key=lambda x: int(x.split("_")[1].split(".")[0]))
+        rollout_files.sort(key=lambda x: int(x.stem.split("_")[1]))
     except Exception:
         rollout_files.sort()
 
     rollout = Rollout(device=device)
     for rf in rollout_files:
-        rp = os.path.join(file_path, rf)
-        _r = load_rollout(rp)
+        _r = load_rollout(rf)
         rollout.add(**_r.to(device)._data)
 
     rollout.finalize()

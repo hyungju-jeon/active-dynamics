@@ -80,8 +80,11 @@ class VectorFieldEnv(gym.Env):
     def get_params(self) -> torch.Tensor:
         return self.dynamics.dyn_params
 
-    def set_params(self, dyn_params: torch.Tensor | list[float] | Dict[str, float]):
+    def set_params(self, dyn_params: torch.Tensor | list[float] | Dict[str, float] | None):
         """Set dynamics parameters."""
+        if dyn_params is None:
+            return  # Do nothing if no params provided
+            
         if isinstance(dyn_params, dict):
             _dyn_params = torch.tensor(
                 [v for k, v in dyn_params.items()], device=self.device, dtype=torch.float16

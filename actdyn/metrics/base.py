@@ -1,57 +1,58 @@
-from typing import List, Optional, Union
+from typing import List, Optional
 import torch
 from actdyn.utils.rollout import RolloutBuffer, Rollout
 
 
 class BaseMetric:
-    """Base class for metrics that compute both point-wise and final values."""
+    """Base class for metrics/costs"""
+
+    current_cost: Optional[torch.Tensor] = None
 
     def __init__(self, compute_type: str = "sum", device: str = "cuda"):
         self.device = torch.device(device)
         self.compute_type = compute_type
+        self.metric_list = [self]
 
-    def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        """Compute metric value along the trajectory."""
+    def compute_stepwise(self, rollout: Rollout | RolloutBuffer | dict) -> torch.Tensor:
+        """Compute and update current metric value per step along the trajectory."""
         raise NotImplementedError
 
-    def compute_final(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
+    def aggregate(self) -> torch.Tensor:
         """Compute final metric value over entire trajectory."""
-
-        metric = self.compute(rollout)
+        if self.current_cost is None:
+            raise ValueError("No current cost to aggregate. Call compute_stepwise first.")
 
         if self.compute_type == "sum":
-            return metric.sum(dim=-2)
+            return self.current_cost.sum(dim=-1)
         elif self.compute_type == "max":
-            return metric.max(dim=-2)[0]
+            return self.current_cost.max(dim=-1)[0]
         elif self.compute_type == "last":
-            return metric[..., -1, :]
+            return self.current_cost[..., -1]
         else:
             raise ValueError(f"Invalid compute type: {self.compute_type}")
 
-    def __call__(self, rollout: Union[Rollout, RolloutBuffer], **kwargs) -> torch.Tensor:
-        return self.compute(rollout, **kwargs)
+    def update(self, rollout: Rollout) -> None:
+        """Update internal state based on new transition data, if needed."""
+        pass
+
+    def __call__(self, rollout: Rollout | RolloutBuffer, **kwargs) -> torch.Tensor:
+        self.compute_stepwise(rollout)
+        return self.aggregate()
 
 
 class DiscountedMetric(BaseMetric):
     """Wrapper for discounting a metric."""
 
-    def __init__(self, metric: BaseMetric, gamma: float = 0.99, device: str = "cpu"):
-        super().__init__(device)
-        self.metric = metric
+    def __init__(self, compute_type: str = "sum", gamma: float = 0.99, device: str = "cpu"):
+        super().__init__(compute_type=compute_type, device=device)
         self.gamma = gamma
 
-    def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
-        if isinstance(rollout, RolloutBuffer):
-            reward_tensor = rollout.flat["reward"]
-        else:
-            if not getattr(rollout, "finalized", True):
-                rollout.finalize()
-            reward_tensor = rollout["reward"]
-        if not isinstance(reward_tensor, torch.Tensor):
-            reward_tensor = torch.as_tensor(reward_tensor, device=self.metric.device)
-        return self.gamma ** torch.arange(
-            reward_tensor.shape[-2], device=self.metric.device
-        ).unsqueeze(-1) * self.metric.compute(rollout)
+    def compute_stepwise(self, rollout: Rollout | RolloutBuffer | dict) -> torch.Tensor:
+        super().compute_stepwise(rollout)
+        T = self.current_cost.shape[-1]
+        discounts = self.gamma ** torch.arange(T, device=self.device)
+        self.current_cost *= discounts
+        return self.current_cost
 
 
 class CompositeMetric(BaseMetric):
@@ -65,19 +66,25 @@ class CompositeMetric(BaseMetric):
         device: str = "cuda",
     ):
         super().__init__(compute_type=compute_type, device=device)
-        self.metrics = metrics
+        self.metric_list = metrics
         self.weights = weights if weights is not None else [1.0] * len(metrics)
         self.weights = torch.tensor(
             self.weights,
         ).to(device)
         assert len(self.weights) == len(
-            self.metrics
+            self.metric_list
         ), "Number of weights must match number of cost functions"
 
-    def compute(self, rollout: Union[Rollout, RolloutBuffer], **kwargs) -> torch.Tensor:
-        total_cost = torch.zeros(1, device=self.device).to(self.device)
-        for metric, weight in zip(self.metrics, self.weights):
-            val = metric.compute(rollout, **kwargs).squeeze()
-            # print(f"Metric {metric.__class__.__name__} computed value: {val.mean()}")
-            total_cost = total_cost.to(self.device) + weight * val
-        return total_cost
+    def compute_stepwise(self, rollout: Rollout | RolloutBuffer | dict) -> torch.Tensor:
+        current_cost_list = []
+        for weight, metric in zip(self.weights, self.metric_list):
+            metric_cost = metric.compute_stepwise(rollout)
+            weighted_cost = weight * metric_cost
+            current_cost_list.append(weighted_cost)
+
+        acc = None
+        for c in current_cost_list:
+            acc = c if acc is None else acc + c
+        self.current_cost = acc
+
+        return self.current_cost

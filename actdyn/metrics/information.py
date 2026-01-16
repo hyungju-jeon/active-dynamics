@@ -1,13 +1,14 @@
-from zmq import FD
 import actdyn
 import actdyn.models
 from actdyn.models.base import BaseDynamicsEnsemble
 import torch
-from typing import Dict, Union
+from typing import Dict, Union, Callable
 from actdyn.models import BaseDynamics, Decoder
 from actdyn.models.decoder import LinearMapping, LogLinearMapping
 from actdyn.models.dynamics import RBFDynamics
+from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.rollout import Rollout, RolloutBuffer
+from external.integrative_inference.src.modules import models
 from .base import BaseMetric
 from torch.nn.functional import softplus
 
@@ -65,7 +66,7 @@ class FisherInformationMetric(BaseMetric):
         discount_factor: float = 0.99,
         device: str = "cuda",
         covariance: str = "invariant",
-        sensitivity: bool = True,
+        sensitivity: bool = False,
         **kwargs,
     ):
         super().__init__(compute_type, device)
@@ -155,8 +156,18 @@ class FisherInformationMetric(BaseMetric):
         dh_dz = self.compute_dh_dz(z)
         dz_dtheta = self.compute_dz_dtheta(z).detach()  # (B, T, d, p)
         if self.covariance == "invariant":
-            invCC = torch.linalg.pinv(dh_dz @ dh_dz.mT)  # (B, T, d, d)
-            Ht_H = dh_dz.mT @ invCC @ dh_dz  # (B, T, d, d)
+            # Using cholesky decomposition for solving the linear system is faster than pinv
+            CC = dh_dz @ dh_dz.mT  # (B, T, d_obs, d_obs)
+            try:
+                # Add a small epsilon for numerical stability before cholesky
+                L = torch.linalg.cholesky(CC + eps * torch.eye(CC.shape[-1], device=CC.device))
+                # Solve (CC)X = dh_dz -> X = inv(CC) @ dh_dz
+                invCC_dh_dz = torch.cholesky_solve(dh_dz, L)
+                Ht_H = dh_dz.mT @ invCC_dh_dz  # (B, T, d_latent, d_latent)
+            except torch.linalg.LinAlgError:
+                # Fallback to pinverse if cholesky fails
+                invCC = torch.linalg.pinv(CC)
+                Ht_H = dh_dz.mT @ invCC @ dh_dz
         else:
             Ht_H = torch.einsum("btnd,btnf->btdf", dh_dz, dh_dz)  # (B, T, d, d)
 
@@ -210,7 +221,7 @@ class FisherInformationMetric(BaseMetric):
 class AOptimality(FisherInformationMetric):
     """Metric that computes A-optimality."""
 
-    def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
+    def compute_stepwise(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
         fim_traj = self.compute_fim(rollout)  # (batch, 1, d_param)
         if self.use_diag:
             # reciprocal of element greater than 1e-3
@@ -226,7 +237,7 @@ class AOptimality(FisherInformationMetric):
 class DOptimality(FisherInformationMetric):
     """Metric that computes D-optimality."""
 
-    def compute(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
+    def compute_stepwise(self, rollout: Union[Rollout, RolloutBuffer]) -> torch.Tensor:
         fim_traj = self.compute_fim(rollout)  # (batch, 1, d_param)
         if self.use_diag:
             # reciprocal of element greater than 1e-3
@@ -244,25 +255,24 @@ class EmbeddingFisherMetric(BaseMetric):
 
     def __init__(
         self,
+        model: FilteringEmbedding,
         compute_type: str = "sum",
         device: str = "cuda",
-        Fe_net: callable = None,
-        Fz_net: callable = None,
-        decoder: actdyn.models.Decoder = None,
+        Fe_net: Callable = None,
+        Fz_net: Callable = None,
         **kwargs,
     ):
         super().__init__(compute_type, device)
         self.I = None
         self.Fe_net = Fe_net
         self.Fz_net = Fz_net
-        self.decoder = decoder
+        self.model = model
 
-    def compute(
-        self, rollout: Union[Rollout, RolloutBuffer, Dict], e_bel, z_bel, Q
-    ) -> torch.Tensor:
+    def compute_stepwise(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
+        e_bel = self.model.e
+        z_bel = self.model.z
+
         z = rollout["model_state"].to(self.device)
-
-        # Throw error if Fe_net, Fz_net, or decoder is not set
 
         if len(z.shape) != 3:
             z = z.unsqueeze(0)  # Ensure z is (batch, T, d_latent)
@@ -272,45 +282,85 @@ class EmbeddingFisherMetric(BaseMetric):
 
         # Move beliefs/covariances to device to avoid implicit copies
         P = z_bel["P"].to(self.device).squeeze(0)  # (batch, d_latent, d_latent)
-        Q = Q.to(self.device).unsqueeze(0)  # (batch, d_latent, d_latent)
-        R = softplus(self.decoder.logvar).diag_embed().to(self.device)  # (batch, d_obs, d_obs)
+        Q = (
+            softplus(self.model.dynamics.logvar).diag_embed().to(self.device)
+        )  # (d_latent, d_latent)
+        R = self.model.decoder.var(z_bel["m"]).diag_embed().to(self.device)  # (d_obs, d_obs)
 
         # Ensure the embedding mean is on the same device and expand appropriately
-        e_m = e_bel["m"].to(self.device)
 
-        # Compute Fe and Fz without tracking gradients (already in no_grad scope)
+        e_m = e_bel["m"].to(self.device)
         Fe = self.Fe_net(z, e_m.repeat(batch, T, 1)).detach()  # (batch, T, d_latent, d_emb)
         Fz = self.Fz_net(z, e_m.repeat(batch, T, 1)).detach()  # (batch, T, d_latent, d_latent)
-        # Preallocate accumulators on the correct device
-        J = torch.zeros(batch, d_embedding, d_embedding, device=self.device)
+        J = torch.zeros(batch, T, d_embedding, d_embedding, device=self.device)
         Gt = torch.zeros(batch, d_latent, d_latent, device=self.device)
-        Gt = self.Fe_net(z_bel["m"], e_m).detach()
+        # Gt = self.Fe_net(z_bel["m"], e_m).detach()
 
-        # Cache decoder jacobian on device (broadcasting handles batch dim)
-        Ht = (
-            self.decoder.jacobian.unsqueeze(0).unsqueeze(0).to(self.device)
-        )  # (batch, d_obs, d_latent)
-        for i in range(T):
-            dyde = Ht @ Gt  # (batch, time, d_obs, d_emb)
+        if isinstance(self.model.decoder.noise, actdyn.models.decoder.PoissonNoise):
+            for i in range(T):
+                R = self.model.decoder(z[:, i : i + 1]).diag_embed()  # (batch, T, d_obs, d_obs)
+                Ht = self.model.decoder.jacobian(z[:, i : i + 1]).to(
+                    self.device
+                )  # (batch, d_obs, d_latent)
+                Gt = Fz[:, i] @ Gt + Fe[:, i]
+                dyde = Ht @ Gt.unsqueeze(1)  # (batch, time, d_obs, d_emb)
+                J[:, i : i + 1] = dyde.mT @ R @ dyde  # (batch, d_emb, d_emb)
+
+            # R = self.model.decoder(z).diag_embed()  # (batch, T, d_obs, d_obs)
+            # Gt = self.Fe_net(z, e_m.repeat(batch, T, 1)).detach()  # (batch, T, d_latent, d_emb)
+            # Ht = self.model.decoder.jacobian(z).to(self.device)  # (batch, d_obs, d_latent)
+            # J = Ht.mT @ R @ Ht  # (batch, d_latent, d_latent)
+            # J = Gt.mT @ J @ Gt  # (batch, T, d_emb, d_emb)
+            del Fe, Fz, dyde
+        else:
+            R = (
+                softplus(self.model.decoder.logvar).diag_embed().to(self.device)
+            )  # (batch, d_obs, d_obs)
+            # Compute Fe and Fz without tracking gradients (already in no_grad scope)
+            # Preallocate accumulators on the correct device
+            # Cache decoder jacobian on device (broadcasting handles batch dim)
+            Ht = self.model.decoder.jacobian().to(self.device)  # (batch, d_obs, d_latent)
+            # for i in range(T):
+            #     dyde = Ht @ Gt  # (batch, time, d_obs, d_emb)
+            #     S = Ht @ P @ Ht.mT + R
+            #     # cholesky on symmetric positive-definite S
+            #     chol_S = torch.linalg.cholesky(S)
+            #     # solve S x = dyde -> x has same shape as dyde
+            #     sol = torch.cholesky_solve(dyde, chol_S)
+            #     J += (dyde.mT @ sol).squeeze(0)  # (batch, d_emb, d_emb)
+            #     Gt = Fz[:, i] @ Gt + Fe[:, i]
+            #     P = Fz[:, i] @ P @ Fz[:, i].mT + Q
+
+            # Assume S is contant over time for efficiency
+            Gt = self.Fe_net(z, e_m.repeat(batch, T, 1)).detach()  # (batch, T, d_latent, d_emb)
             S = Ht @ P @ Ht.mT + R
-            # cholesky on symmetric positive-definite S
             chol_S = torch.linalg.cholesky(S)
-            # solve S x = dyde -> x has same shape as dyde
-            sol = torch.cholesky_solve(dyde, chol_S)
-            J += (dyde.mT @ sol).squeeze(0)  # (batch, d_emb, d_emb)
-            Gt = Fz[:, i] @ Gt + Fe[:, i]
-            P = Fz[:, i] @ P @ Fz[:, i].mT + Q
+            HSH = Ht.mT @ torch.cholesky_solve(Ht, chol_S)  # (batch, T, d_latent, d_latent)
+
+            J = Gt.mT @ HSH @ Gt  # (batch, T, d_emb, d_emb)
+            del Fe, Fz, chol_S, Ht, S
+
+        # weight sum by discount factor
+        # J = torch.sum(J, dim=1)  # sum over time -> (batch, d_emb, d_emb)
+        discount_factor = 1.0
+        discounts = discount_factor ** torch.arange(T, device=self.device)
+        J = torch.einsum("t,btpq->bpq", discounts, J)
 
         # Use slogdet for numerical stability and to avoid accidental graph retention
         mat = e_bel["P"].to(self.device) @ J + torch.eye(d_embedding, device=self.device)
-        sign, logabsdet = torch.linalg.slogdet(mat)
-        # if sign <= 0, logabsdet may be -inf or NaN; keep current behaviour but avoid crash
-        EIG = logabsdet
+        # sign, logabsdet = torch.linalg.slogdet(mat)
+        # # if sign <= 0, logabsdet may be -inf or NaN; keep current behaviour but avoid crash
+        # EIG = logabsdet
+        EIG = torch.log(torch.det(mat) + eps)
 
         # Explicitly delete large temporaries (helps long-running processes)
-        del Fe, Fz, sol, mat, chol_S, Ht, dyde, S
+        del mat
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+
+        # return diagonal approximation of J
+        # J_diag = -1.0 / J.diagonal(dim1=-2, dim2=-1)
+        # return -J_diag.sum(dim=-1).unsqueeze(-1)
 
         return -EIG  # (batch, )
 
@@ -371,7 +421,7 @@ class EmbeddingFisherMetric(BaseMetric):
         #         # Innovation covariance S = H P H^T + R  -> (batch, d_obs, d_obs)
         #         S = H @ P @ H.mT + R
 
-        #         # Cholesky and solve: solve S x = dyde for x
+        #         # Cholesky and solve: solve S x = dyde -> x has same shape as dyde
         #         chol_S = torch.linalg.cholesky(S)
         #         sol = torch.cholesky_solve(dyde, chol_S)
 

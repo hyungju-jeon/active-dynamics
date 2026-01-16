@@ -94,7 +94,7 @@ def plot_vector_field(dynamics, ax=None, title=None, **kwargs):
     if ax is not None:
         plt.sca(ax)
     else:
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(8, 8))
     plt.streamplot(
         X,
         Y,
@@ -107,7 +107,7 @@ def plot_vector_field(dynamics, ax=None, title=None, **kwargs):
     )
     title = "Vector Field of Latent Dynamics" if title is None else title
     if ax is None:
-        plt.colorbar(label="Speed", aspect=20)
+        # plt.colorbar(label="Speed", aspect=20)
         plt.xlabel("Latent Dimension 1")
         plt.ylabel("Latent Dimension 2")
         plt.title(title)
@@ -180,5 +180,90 @@ def create_subplot(x):
 
     fig, axs = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
     axs = axs.flatten() if d > 1 else [axs]
+
+    return fig, axs
+
+
+def plot_spike_train(z, y, dt, fname=None):
+    if isinstance(z, torch.Tensor):
+        z = to_np(z.squeeze())
+    if isinstance(y, torch.Tensor):
+        y = to_np(y.squeeze())
+
+    tr = np.arange(0, z.shape[0]) * dt
+
+    dy = y.shape[1]
+    spike_times = [np.where(y[:, k] > 0)[0] * dt for k in range(dy)]
+
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, sharex=True, figsize=(12, 6), gridspec_kw={"height_ratios": [3, 1]}
+    )
+
+    for i, st in enumerate(spike_times):
+        ax1.eventplot(st, colors="black", lineoffsets=i, linelengths=0.5)
+
+    ax1.set_ylim(-1, dy)
+    ax1.set_ylabel("Neurons")
+    ax1.xaxis.set_ticklabels([])
+
+    ax2.plot(tr, z)
+    ax2.set_xlabel("Time (s)")
+    ax2.set_ylabel("Latents")
+    ax2.set_xlim(tr[0], tr[-1])
+
+    plt.subplots_adjust(hspace=0.05)
+    if fname is not None:
+        plt.savefig(f"../figs/{fname}.pdf")
+
+
+def plot_current_state(
+    env,
+    model,
+    delta_f=None,
+    x=None,
+    z=None,
+    title=None,
+):
+    def plot_trajectory(x, ax):
+        num_bold = min(20, x.shape[1] // 10)
+        ax.plot(
+            x[0, :-num_bold, 0],
+            x[0, :-num_bold, 1],
+            color="red",
+            alpha=0.5,
+            lw=1,
+        )
+        ax.plot(
+            x[0, -num_bold:, 0],
+            x[0, -num_bold:, 1],
+            color="red",
+            alpha=0.7,
+            marker=".",
+            lw=1,
+        )
+
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+    axs = axs.flatten()
+
+    plot_vector_field(env.dynamics, ax=axs[0], x_range=5)
+    axs[0].set_xlim(-5, 5)
+    axs[0].set_ylim(-5, 5)
+    axs[0].set_title("True Vector Field")
+    plot_trajectory(x, axs[0])
+
+    plot_vector_field(model.dynamics, ax=axs[1], x_range=5)
+    axs[1].set_xlim(-5, 5)
+    axs[1].set_ylim(-5, 5)
+    axs[1].set_title("Learned Vector Field")
+    plot_trajectory(z, axs[1])
+
+    axs[2].plot(
+        delta_f,
+        color="red",
+    )
+    axs[2].set_title(r"norm($f - \hat{f}$) over time")
+
+    if title is not None:
+        fig.suptitle(title)
 
     return fig, axs

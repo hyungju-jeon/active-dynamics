@@ -8,7 +8,7 @@ from actdyn.environment import (
     environment_from_str,
     observation_from_str,
     action_from_str,
-    GymObservationWrapper,
+    EnvWrapper,
 )
 from actdyn.models import (
     encoder_from_str,
@@ -64,8 +64,8 @@ def setup_environment(config: ExperimentConfig):
     obs_model_cls = observation_from_str(config.environment.observation_type)
     obs_config = config.environment.get_observation_cfg()
     observation_model = obs_model_cls(
-        obs_dim=config.observation_dim,
-        latent_dim=env_obs_dim,
+        d_obs=config.observation_dim,
+        d_latent=env_obs_dim,
         device=config.device,
         **obs_config,
     )
@@ -77,13 +77,13 @@ def setup_environment(config: ExperimentConfig):
     action_model = action_model_cls(
         **action_config,
         action_bounds=config.environment.env_action_bounds,
-        action_dim=config.action_dim,
-        latent_dim=config.latent_dim,
+        d_action=config.action_dim,
+        d_latent=config.latent_dim,
         device=config.device,
     )
 
     # Wrap the environment with GymObservationWrapper
-    env = GymObservationWrapper(
+    env = EnvWrapper(
         env=base_env,
         dt=config.environment.env_dt,
         obs_model=observation_model,
@@ -151,9 +151,9 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
     action_config = config.model.get_action_cfg()
     action_model = action_model_cls(
         **action_config,
-        action_dim=config.action_dim,
+        d_action=config.action_dim,
         action_bounds=config.environment.env_action_bounds,
-        latent_dim=config.latent_dim,
+        d_latent=config.latent_dim,
         device=config.device,
     )
 

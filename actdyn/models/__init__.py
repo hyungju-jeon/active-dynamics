@@ -17,7 +17,7 @@ from .base import (
 )
 from .decoder import Decoder
 from .model_wrapper import ModelWrapper
-from .model import *
+from .model import SeqVae, FilteringEmbedding
 
 __all__ = [
     # Base classes
@@ -45,7 +45,7 @@ import importlib
 # Factory tables
 _model_map = {
     "seq-vae": (".model", "SeqVae"),
-    "filtering-posterior": (".model", "FilteringPosterior"),
+    "filtering-embedding": (".model", "FilteringEmbedding"),
 }
 _encoder_map = {"mlp": (".encoder", "MLPEncoder"), "rnn": (".encoder", "RNNEncoder")}
 _mapping_map = {

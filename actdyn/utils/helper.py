@@ -4,16 +4,39 @@ General helper functions and constants
 
 import torch
 import numpy as np
+from typing import Dict
 
-eps = 1e-6
+eps = 1e-12
+
+
+Belief = Dict[str, torch.Tensor]
+Transition = Dict[str, torch.Tensor]
 
 
 # -------------------------------------------------------------
 # General Helpers
 # -------------------------------------------------------------
 def format_list(x):
-    fstr = ", ".join([f"{val:.3f}" for val in x.reshape(-1).tolist()])
-    return "(" + fstr + ")"
+    if isinstance(x, torch.Tensor):
+        x = to_np(x.reshape(-1)).tolist()
+        fstr = ", ".join([f"{val:.3f}" for val in x])
+        return "(" + fstr + ")"
+    else:
+        return f"{x:.3f}"
+
+
+def make_uniform_sampler(low: list[float] | float, high: list[float] | float, dim: int):
+    if isinstance(low, float):
+        low = [low] * dim
+    if isinstance(high, float):
+        high = [high] * dim
+
+    def _sampler(N: int):
+        return torch.stack(
+            [low[i] + (high[i] - low[i]) * torch.rand(N) for i in range(dim)], dim=-1
+        )
+
+    return _sampler
 
 
 # -------------------------------------------------------------
@@ -40,38 +63,7 @@ def symmetrize(M):
 
 
 def activation_from_str(activation_str: str):
-    """Convert a string to a PyTorch activation function.
-
-    DESIGN NOTE: Incomplete activation registry
-    ============================================
-
-    Issue: Tests use "leaky_relu" (with underscore) but registry only supports "leakyrelu" (no underscore)
-    Impact: Multiple test failures across encoder, decoder, dynamics tests
-
-    Better design:
-    1. Support common variations (with/without underscore, camelCase, etc.)
-    2. Add comprehensive list of activations used in config.py defaults
-    3. Consider using a dict-based registry for easier extension
-
-    Recommended registry:
-    ACTIVATION_MAP = {
-        'relu': torch.nn.ReLU,
-        'tanh': torch.nn.Tanh,
-        'sigmoid': torch.nn.Sigmoid,
-        'leakyrelu': torch.nn.LeakyReLU,
-        'leaky_relu': torch.nn.LeakyReLU,  # Common alias
-        'elu': torch.nn.ELU,
-        'gelu': torch.nn.GELU,
-        'selu': torch.nn.SELU,
-        'prelu': torch.nn.PReLU,
-        'swish': torch.nn.SiLU,  # Swish = SiLU
-        'silu': torch.nn.SiLU,
-    }
-
-    Usage in codebase:
-    - config.py mentions "leaky_relu" in comments as option
-    - Multiple components (encoder, decoder, dynamics) use this
-    """
+    """Convert a string to a PyTorch activation function."""
     if activation_str is None:
         return None
     if isinstance(activation_str, str):
@@ -84,10 +76,29 @@ def activation_from_str(activation_str: str):
             return torch.nn.Sigmoid()
         elif activation_str == "leakyrelu":
             return torch.nn.LeakyReLU()
-        # DESIGN FIX: Add common alias with underscore
         elif activation_str == "leaky_relu":
             return torch.nn.LeakyReLU()
         elif activation_str == "elu":
             return torch.nn.ELU()
         else:
             raise ValueError(f"Unknown activation function: {activation_str}")
+
+
+# @torch.no_grad()
+# def generate_trajectory(self, x0, n_steps, action=None):
+#     if x0.ndim == 2:
+#         if x0.shape[0] == 1:
+#             x0 = x0.unsqueeze(0)
+#         else:
+#             x0 = x0.unsqueeze(1)
+#     B, T, D = x0.shape
+#     if action is None:
+#         action = torch.zeros(B, n_steps, D, device=self.device)
+#     traj = [x0]
+#     for i in range(n_steps):
+#         traj.append(
+#             traj[i]
+#             + (self.compute_dynamics(traj[i]) + action[:, i].unsqueeze(1)) * self.dt
+#             + torch.randn_like(traj[i]) * torch.sqrt(torch.tensor(self.var * self.dt))
+#         )
+#     return torch.cat(traj, dim=1)

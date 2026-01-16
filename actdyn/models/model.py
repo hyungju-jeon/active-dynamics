@@ -1,4 +1,3 @@
-from calendar import c
 import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -7,15 +6,13 @@ from einops import rearrange, repeat, einsum
 from torch.nn.functional import softplus
 
 from actdyn.environment.action import BaseAction
-from actdyn.utils.helper import safe_cholesky, symmetrize, eps
+from actdyn.utils.helper import safe_cholesky, symmetrize, eps, Belief
 from actdyn.utils.rollout import RolloutBuffer
 
 from .base import BaseDynamicsEnsemble, BaseModel
 from .decoder import Decoder
 from .dynamics import BaseDynamics, FunctionDynamics
 from .encoder import BaseEncoder
-
-Belief = Dict[str, torch.Tensor]
 
 
 class SeqVae(BaseModel):
@@ -319,10 +316,7 @@ class SeqVae(BaseModel):
         if verbose:
             epoch_pbar.close()
 
-        epoch_info = {
-            key: torch.tensor([e[key] for e in epoch_info]).mean(dim=0).item()
-            for key in epoch_info[0]
-        }
+        epoch_info = {key: torch.tensor([e[key] for e in epoch_info]) for key in epoch_info[0]}
 
         return epoch_info
 
@@ -675,7 +669,7 @@ class SeqStateVae(BaseModel):
 
         return epoch_info
 
-    def update_posterior_embedding(self, y, z, u=None):
+    def update_posterior_embedding(self, y, u=None, **kwargs):
         """Update the posterior state given new observation and action."""
         # with torch.no_grad():
         _, z_post, _ = self.encoder(y=y, u=u, n_samples=1)
@@ -861,7 +855,7 @@ class FilteringEmbedding(BaseModel):
         self.e = {"m": mu_e.detach(), "P": Sigma_e.detach(), "L": L_new.detach()}
 
     @torch.no_grad()
-    def update_posterior(self, y, u=None):
+    def update_prediction(self, y, u=None):
         """Update the posterior state given new observation and action."""
 
         y = y[:, -1:, :]
@@ -1016,8 +1010,6 @@ class FilteringEmbedding(BaseModel):
             L, eta = L_new, eta_new
 
         # Detach after all refinements
-        alpha = 0.5
-        mu_e = (1 - alpha) * mu_e + alpha * self.e["m"].detach()
         self.e = {"m": mu_e.detach(), "P": Sigma_e.detach(), "L": L_new.detach()}
         self.set_params(self.e["m"].detach())
 

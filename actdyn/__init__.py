@@ -9,7 +9,7 @@ __version__ = "0.1.0"
 __author__ = "Hyungju Jeon"
 
 # Core components
-from actdyn.core.agent import Agent
+from actdyn.core.agent import Agent, AsyncAgent
 from actdyn.core.experiment import Experiment
 
 # Configuration
@@ -24,7 +24,7 @@ from actdyn.models.model_wrapper import ModelWrapper
 
 # Common environments
 from actdyn.environment.vectorfield import VectorFieldEnv
-from actdyn.environment.env_wrapper import GymObservationWrapper
+from actdyn.environment.env_wrapper import EnvWrapper
 
 # Common policies
 from actdyn.policy.mpc import MpcICem
@@ -35,6 +35,7 @@ from actdyn.metrics.information import FisherInformationMetric
 __all__ = [
     # Core
     "Agent",
+    "AsyncAgent",
     "Experiment",
     "ExperimentConfig",
     "setup_experiment",
@@ -43,7 +44,7 @@ __all__ = [
     "ModelWrapper",
     # Environments
     "VectorFieldEnv",
-    "GymObservationWrapper",
+    "EnvWrapper",
     # Policies
     "MpcICem",
     # Metrics

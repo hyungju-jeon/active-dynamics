@@ -226,3 +226,32 @@ def _compute_average_r2(
         r2_mean.cpu().numpy(),
         r2_std.cpu().numpy(),
     )
+
+
+# def validate_elbo(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
+#     B, T, D = rb["obs"].shape
+#     loss, log_like, kl_d = experiment.agent.model_env.model.compute_elbo(
+#         y=rb["next_obs"],
+#         u=rb["action"],
+#         idx=None,
+#         n_samples=16,
+#         beta=1,
+#         k_steps=1,
+#     )
+#     writer.add_scalar("validation/ELBO", -loss.item() / T, 0)
+#     writer.add_scalar("validation/log_like", log_like.item() / T, 0)
+#     writer.add_scalar("validation/kl_d", kl_d.item() / T, 0)
+
+
+# def validate_kstep_r2(experiment: Experiment, rb: Rollout | RolloutBuffer, writer: SummaryWriter):
+#     r2_fig_path = Path(experiment.results_dir) / "validation_kstep.png"
+#     r2m, _ = compute_kstep_r2(
+#         model=experiment.agent.model_env.model,
+#         rollout=rb,
+#         k_max=10,
+#         n_samples=50,
+#         fig_path=r2_fig_path,
+#     )
+#     for i in range(r2m.shape[1]):
+#         for k in range(r2m.shape[0]):
+#             writer.add_scalar(f"validation/kstep/r2_mean_{i}", r2m[k, i], k + 1)

@@ -11,10 +11,8 @@ from tqdm import tqdm
 
 from actdyn.config import ExperimentConfig
 from actdyn.core.agent import Agent
-from actdyn.utils import save_load
-from actdyn.utils.helper import format_list, to_np
-from actdyn.utils.rollout import Rollout, RolloutBuffer
-from actdyn.utils.video import VideoRecorder
+from actdyn.utils import to_np, format_list, VideoRecorder, Rollout, RolloutBuffer, save_rollout
+from actdyn.utils.save_load import load_and_concatenate_rollouts
 
 SESSION_DIR_PATTERN = re.compile(r"\d{8}_\d{4}_session\d{2}")
 
@@ -170,7 +168,7 @@ class Experiment:
         video_filename = self.cfg.logging.video_filename
         if video_filename:
             video_path = self.results_path / "video" / video_filename
-            self.video_recorder = VideoRecorder(self.agent.env, video_path, fps=fps)
+            self.video_recorder = VideoRecorder(video_path, fps=fps)
             self.video_recorder.capture_frame()
         else:
             self.video_recorder = None
@@ -242,8 +240,8 @@ class Experiment:
         validate_rollout_path = target_dir / "validation.pkl"
         train_rollout_path = target_dir / "train.pkl"
 
-        save_load.save_rollout(rb_train, str(train_rollout_path))
-        save_load.save_rollout(rb_validate, str(validate_rollout_path))
+        save_rollout(rb_train, str(train_rollout_path))
+        save_rollout(rb_validate, str(validate_rollout_path))
         print(f"rollout saved to {validate_rollout_path} and {train_rollout_path}")
         return rb_train, rb_validate
 
@@ -261,8 +259,10 @@ class Experiment:
             else:
                 self.writer.add_scalar(prefix + key, value, self.env_step)
 
-    def update_pbar(self, pbar: tqdm, interval: int = 100, postfix: dict = {}):
+    def update_pbar(self, pbar: tqdm, interval: int = 100, postfix: dict | None = None):
         # Update progress bar with training info
+        if postfix is None:
+            postfix = {}
         if self.env_step % interval == 0 and self.env_step > 0:
             pbar.set_postfix(
                 {k: f"{format_list(v)}" for k, v in self.training_info.items()} | postfix
@@ -320,7 +320,7 @@ class Experiment:
 
             # Periodic rollout saving for crash recovery and memory management
             if self.check_step("save"):
-                save_load.save_rollout(
+                save_rollout(
                     self.rollout,
                     str(self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"),
                 )
@@ -351,9 +351,7 @@ class Experiment:
             self.writer = SummaryWriter(log_dir=str(self.results_path / "logs"))
             self.rollout.clear()
             # Check if rollout exists in the results directory
-            self.rollout = save_load.load_and_concatenate_rollouts(
-                str(self.results_path / "rollouts")
-            )
+            self.rollout = load_and_concatenate_rollouts(str(self.results_path / "rollouts"))
             offline_cfg = self.cfg.training.get_offline_optim_cfg()
             print(f"Training params: {offline_cfg['param_list']}")
 
@@ -394,8 +392,6 @@ class Experiment:
 
 
 class MetaEmbeddingExperiment(Experiment):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
 
     def run(self, plot_fcn: Callable[[Agent], Figure] | None = None, reset: bool = True):
         self.e_norm = []
@@ -444,7 +440,7 @@ class MetaEmbeddingExperiment(Experiment):
 
             # Periodic rollout saving for crash recovery and memory management
             if self.check_step("save"):
-                save_load.save_rollout(
+                save_rollout(
                     self.rollout,
                     str(self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"),
                 )
