@@ -1,5 +1,26 @@
 # Change Notes
 
+## 2026-01-17 - Device Handling, Agent Tests, and Docs
+
+### Summary
+Updated device handling for model components, aligned agent tests with current API behavior, removed outdated tests, and added TODO lists to documentation.
+
+### Changes
+- **Device updates**: Added `to()` overrides for `BaseMapping`, `BaseNoise`, and `Decoder` to keep `device` attributes in sync.
+- **Decoder tests**: Updated Jacobian expectations to call the callable and validate shape.
+- **Agent tests**: Fixed `RNNEncoder` parameter naming to use `action_dim`/`latent_dim`, included `action_encoder` in `SeqVae` fixtures, and updated `train_model` expectation to return a metrics dict.
+- **Test cleanup**: Removed obsolete `tests/old` directory.
+- **Docs**: Added TODO lists to README and PROJECT documentation; removed a dangling code fence in README.
+
+### Files Modified
+- `actdyn/models/base.py`
+- `actdyn/models/decoder.py`
+- `tests/test_models_decoder.py`
+- `tests/test_core_agent.py`
+- `README.md`
+- `PROJECT.md`
+- `tests/old/`
+
 ## 2025-01-16 - Test Cleanup and Code Fixes (Branch: copilot)
 
 ### Summary

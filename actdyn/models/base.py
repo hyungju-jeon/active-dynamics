@@ -74,6 +74,12 @@ class BaseMapping(nn.Module):
         self.latent_dim = latent_dim
         self.obs_dim = obs_dim
 
+    def to(self, device):
+        """Override to update device attribute."""
+        super().to(device)
+        self.device = torch.device(device)
+        return self
+
     def forward(self, z: torch.Tensor) -> torch.Tensor:
         """Map latent state z to observation space."""
         return self.network(z)
@@ -120,6 +126,12 @@ class BaseNoise(nn.Module):
 
     def log_prob(self, mean, x):
         raise NotImplementedError
+
+    def to(self, device):
+        """Override to update device attribute."""
+        super().to(device)
+        self.device = torch.device(device)
+        return self
 
 
 # Dynamics models

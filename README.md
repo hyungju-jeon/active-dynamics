@@ -1,6 +1,6 @@
 # Active Dynamics
 
-Active Learning for Latent Dynamical System Identification
+Active Learning for Latent Dynamical System Identification.
 
 ## Overview
 
@@ -27,7 +27,13 @@ This project implements active learning algorithms for identifying latent dynami
 ```bash
 git clone https://github.com/hyungju-jeon/active-dynamics.git
 cd active-dynamics
-```
+Basic example coming soon.
+
+## TODO
+
+- [ ] Add a complete end-to-end example with a minimal config.
+- [ ] Document common experiment flags and Hydra overrides.
+- [ ] Provide troubleshooting tips for CUDA/CPU configuration.
 
 2. Create and activate the conda environment:
 ```bash

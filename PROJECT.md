@@ -876,3 +876,12 @@ from actdyn import (
     MpcICem, FisherInformationMetric
 )
 ```
+
+---
+
+## VI. TODO / Roadmap
+
+- [ ] Add a minimal, CPU-only quickstart config and tutorial.
+- [ ] Document the action/observation naming convention and mapping between `d_*` and `*_dim`.
+- [ ] Summarize known test isolation issues and recommended pytest flags.
+- [ ] Provide a table of supported environment/model combinations.

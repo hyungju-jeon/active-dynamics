@@ -190,6 +190,14 @@ class Decoder(nn.Module):
         self.obs_dim = mapping.obs_dim
         self.latent_dim = mapping.latent_dim
 
+    def to(self, device):
+        """Override to update device attribute."""
+        super().to(device)
+        self.device = torch.device(device)
+        self.mapping = self.mapping.to(device)
+        self.noise = self.noise.to(device)
+        return self
+
     def compute_log_prob(self, z, x):
         mean = self.mapping(z)
         return self.noise.log_prob(mean, x)
