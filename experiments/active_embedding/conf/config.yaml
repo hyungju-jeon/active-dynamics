@@ -36,23 +36,23 @@ environment:
 # Model
 model:
   encoder_type: "rnn"
-  enc_hidden_dim: [0]
-  enc_rnn_hidden_dim: [128]
+  enc_hidden_dims: [0]
+  enc_rnn_hidden_dims: [128]
   enc_rnn_type: "gru"
   enc_activation: "tanh"
   enc_h_init: "reset"
   mapping_type: "linear"
-  map_hidden_dim: [0]
+  map_hidden_dims: [0]
   map_activation: "tanh"
   noise_type: "gaussian"
   n_models: 1
   is_ensemble: false
   is_residual: true
   dynamics_type: "mlp"
-  dyn_hidden_dim: [32]
+  dyn_hidden_dims: [32]
   dyn_activation: "tanh"
   action_type: "mlp"
-  act_hidden_dim: [32]
+  act_hidden_dims: [32]
   act_activation: "tanh"
   model_type: "filtering-embedding"
 

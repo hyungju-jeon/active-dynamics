@@ -24,7 +24,7 @@ latent_dim: 2
 
 # Environment configuration
 environment:
-  environment_type: "vectorfield"  # or "cartpole", "maze"
+  environment_type: "vectorfield"  # or "windfield"
   env_dynamics_type: "limit_cycle"  # or "double_limit_cycle", "multi_attractor"
   env_noise_scale: 0.01
   env_render_mode: null  # or "human", "rgb_array"
@@ -34,11 +34,11 @@ environment:
   env_w_attractor: 0.1
   env_length_scale: 0.5
   env_alpha: 0.25
-  observation_type: "loglinear"  # or "linear", "identity"
+  observation_type: "log-linear"  # or "linear", "identity"
   obs_hidden_dims: [16]
   obs_activation: "relu"
-  noise_type: "gaussian"
-  noise_scale: 0.0
+  obs_noise_type: "gaussian"
+  obs_noise_scale: 0.0
   action_type: "identity"  # or "linear", "mlp"
   act_hidden_dims: [16]
   act_activation: "relu"
@@ -47,11 +47,10 @@ environment:
 model:
   encoder_type: "rnn"  # or "mlp"
   enc_hidden_dims: [16]
-  enc_hidden_dim: 16
+  enc_rnn_hidden_dims: [16]
   enc_rnn_type: "gru"  # or "lstm"
-  enc_num_layers: 1
   enc_activation: "relu"
-  mapping_type: "loglinear"  # or "linear", "identity", "mlp"
+  mapping_type: "log-linear"  # or "linear", "identity", "mlp"
   map_hidden_dims: [16]
   map_activation: "relu"
   noise_type: "gaussian"
@@ -70,7 +69,7 @@ model:
 
 # Policy configuration
 policy:
-  policy_type: "random"  # or "lazy", "mpc-icem"
+  policy_type: "random"  # or "mpc-icem", "off-policy"
   mpc_verbose: false
   mpc_horizon: 10
   mpc_num_samples: 32
@@ -88,7 +87,7 @@ policy:
 
 # Metric configuration
 metric:
-  metric_type: ["A-optimality"]  # or ["D-optimality"], ["action"], ["goal"], ["reward"]
+  metric_type: ["a-optimality"]  # or ["d-optimality"], ["action"], ["goal-distance"], ["reward"]
   compute_type: "sum"  # or "last", "max"
   gamma: 1.0
   composite_weights: null
@@ -102,10 +101,8 @@ metric:
 training:
   total_steps: 10000
   train_every: 1
-  save_every: 1000
-  animate_every: 1000
   rollout_horizon: 20
-  batch_size: 1
+  p_mask: 0.0
   learning_rate: 1e-3  # 0.001
   weight_decay: 1e-5   # 0.00001
   beta: 1.0
@@ -119,10 +116,6 @@ training:
 
 # Logging configuration
 logging:
-  log_every: 100
   plot_every: 1000
   save_every: 1000
-  video_path: null
-  model_path: "results/models"
-  buffer_path: "results/buffers"
-  logger_path: "results/logs"
+  video_filename: null
