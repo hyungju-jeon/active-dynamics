@@ -365,3 +365,54 @@ def plot_current_state(
         fig.suptitle(title)
 
     return fig, axs
+
+
+def plot_rollout_latent_comparison(
+    env_state,
+    model_state,
+    ax=None,
+    title="Latent Trajectory Comparison",
+    labels=("true", "model"),
+):
+    """Overlay true and model latent trajectories in 2D."""
+    env_xy = to_np(env_state)
+    model_xy = to_np(model_state)
+    if env_xy.ndim == 3:
+        env_xy = env_xy[0]
+    if model_xy.ndim == 3:
+        model_xy = model_xy[0]
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 8))
+    else:
+        fig = ax.figure
+
+    ax.plot(env_xy[:, 0], env_xy[:, 1], alpha=0.7, label=labels[0])
+    ax.plot(model_xy[:, 0], model_xy[:, 1], alpha=0.7, label=labels[1])
+    ax.set_xlabel("Latent Dimension 1")
+    ax.set_ylabel("Latent Dimension 2")
+    ax.set_title(title)
+    ax.legend(loc="best")
+    ax.set_aspect("equal", adjustable="box")
+    fig.tight_layout()
+    return fig, ax
+
+
+def plot_observation_channels(obs, n_channels=5, ax=None, title="Observation Channels"):
+    """Plot the first ``n_channels`` observation channels over time."""
+    obs_np = to_np(obs)
+    if obs_np.ndim == 3:
+        obs_np = obs_np[0]
+    n_channels = min(n_channels, obs_np.shape[-1])
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 4))
+    else:
+        fig = ax.figure
+
+    ax.plot(obs_np[:, :n_channels])
+    ax.set_xlabel("Time Step")
+    ax.set_ylabel("Observation")
+    ax.set_title(title)
+    fig.tight_layout()
+    return fig, ax
