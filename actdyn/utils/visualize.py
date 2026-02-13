@@ -3,6 +3,8 @@ import torch
 import matplotlib.pyplot as plt
 import seaborn as sns
 from cycler import cycler
+from matplotlib.collections import LineCollection
+from matplotlib.colors import to_rgba
 
 from actdyn.utils.helper import to_np
 
@@ -214,6 +216,102 @@ def plot_spike_train(z, y, dt, fname=None):
     plt.subplots_adjust(hspace=0.05)
     if fname is not None:
         plt.savefig(f"../figs/{fname}.pdf")
+
+
+def create_gradient_line(
+    ax,
+    data,
+    base_color,
+    label=None,
+    alpha_start=0.2,
+    alpha_end=0.95,
+    linewidth=1.5,
+):
+    """Plot a 2D trajectory with a fading alpha gradient."""
+    if isinstance(data, torch.Tensor):
+        data = to_np(data)
+    data = np.asarray(data)
+
+    if data.ndim == 3:
+        if data.shape[0] == 1:
+            data = data[0]
+        elif data.shape[1] == 1:
+            data = data[:, 0, :]
+        else:
+            data = data.reshape(-1, data.shape[-1])
+    if data.ndim != 2 or data.shape[0] < 2 or data.shape[1] < 2:
+        return None
+
+    points = data[:, :2]
+    segments = np.stack([points[:-1], points[1:]], axis=1)
+    alphas = np.linspace(alpha_start, alpha_end, len(segments))
+    colors = [to_rgba(base_color, alpha) for alpha in alphas]
+    line = LineCollection(segments, colors=colors, linewidths=linewidth, zorder=3)
+    ax.add_collection(line)
+    if label is not None:
+        ax.plot([], [], color=base_color, linewidth=linewidth, label=label)
+    return line
+
+
+def plot_embedding_error_comparison(
+    unknown_results,
+    known_results,
+    methods=("active (k=5)", "step", "active chunk(k=20)"),
+    max_steps=500,
+    ax=None,
+):
+    """Plot mean/std embedding error for unknown vs known observation settings."""
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(8, 4))
+    else:
+        fig = ax.figure
+
+    colorset = sns.color_palette("Set1", n_colors=max(len(methods), 1))
+    color_idx = 0
+
+    for method in methods:
+        if method not in unknown_results or method not in known_results:
+            continue
+
+        unknown = np.asarray(unknown_results[method])
+        known = np.asarray(known_results[method])
+        if unknown.size == 0 or known.size == 0:
+            continue
+
+        unknown_mean = unknown.mean(axis=0)
+        unknown_std = unknown.std(axis=0)
+        known_mean = known.mean(axis=0)
+        known_std = known.std(axis=0)
+
+        color = colorset[color_idx % len(colorset)]
+        color_idx += 1
+
+        ax.plot(unknown_mean, label=f"{method} (unknown obs.)", linestyle="--", color=color)
+        ax.fill_between(
+            np.arange(len(unknown_mean)),
+            unknown_mean - unknown_std,
+            unknown_mean + unknown_std,
+            alpha=0.1,
+            color=color,
+        )
+
+        ax.plot(known_mean, label=f"{method} (known obs.)", linestyle="-", color=color)
+        ax.fill_between(
+            np.arange(len(known_mean)),
+            known_mean - known_std,
+            known_mean + known_std,
+            alpha=0.1,
+            color=color,
+        )
+
+    if max_steps is not None:
+        ax.set_xlim(0, max_steps)
+    ax.set_xlabel("Environment Steps")
+    ax.set_ylabel("Embedding Error Norm")
+    ax.set_title("Embedding Error Norm over Environment Steps")
+    ax.legend()
+    fig.tight_layout()
+    return fig, ax
 
 
 def plot_current_state(
