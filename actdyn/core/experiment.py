@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 import re
 from datetime import datetime
@@ -72,7 +74,7 @@ class Experiment:
 
     def _find_latest_session_dir(self) -> Path | None:
         # Find the latest session directory
-        base_dir = getattr(self, "base_results_dir", None)
+        base_dir = getattr(self, "base_results_path", None)
         if base_dir is None or not base_dir.is_dir():
             return None
         session_dirs = [
@@ -290,38 +292,44 @@ class Experiment:
         plot_fcn: Callable[[Agent], Figure] | None = None,
         reset: bool = True,
     ):
-        train_cfg = self.cfg.training
+        self._run_online_loop(
+            train_cfg=self.cfg.training,
+            pbar_desc="Online",
+            plot_fcn=plot_fcn,
+            reset=reset,
+        )
 
-        # Initialize environment
+    def _run_online_loop(
+        self,
+        train_cfg,
+        pbar_desc: str,
+        plot_fcn: Callable[[Agent], Figure] | None,
+        reset: bool,
+        on_step_end: Callable[[dict], None] | None = None,
+    ) -> None:
         self.init_experiment(reset=reset)
         self._setup_video_recording()
+        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc=pbar_desc)
 
-        # Setup progress bar
-        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Online")
         while self.env_step < train_cfg.total_steps:
             self.env_step += 1
-
-            # 1. Plan
             action = self.agent.plan()
-            # 2. Execute
             transition, done = self.agent.step(action)
             self.rollout.add(**transition)
-
-            # 3-1. Update policy
             self.agent.update_policy(transition)
 
-            # 3-2. Train model
             if self.check_step("train"):
                 sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
                 self.training_info = self.agent.train_model(
                     **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
                 )
 
-            # 3-3. Update logs and plot
+            if on_step_end is not None:
+                on_step_end(transition)
+
             self.update_writer(self.training_info)
             self.update_pbar(self.pbar)
 
-            # Periodic rollout saving for crash recovery and memory management
             if self.check_step("save"):
                 save_rollout(
                     self.rollout,
@@ -330,20 +338,13 @@ class Experiment:
                 if self.env_step < train_cfg.total_steps:
                     self.rollout.clear(keep_last=100)
 
-            if self.check_step("plot"):
-                if plot_fcn:
-                    fig = plot_fcn(self.agent)
-                    self.video_recorder.capture_frame(fig=fig)
-
-            # Clean up tensors to prevent memory accumulation
-            if "cuda" in str(self.agent.device):
-                del transition, action
-                torch.cuda.empty_cache()
+            if self.check_step("plot") and plot_fcn:
+                fig = plot_fcn(self.agent)
+                self.video_recorder.capture_frame(fig=fig)
 
             if done:
                 break
 
-        # Close progress bar and finalize experiment
         self._finalize_experiment()
 
     # TODO Update offline_run to match new experiment structure
@@ -398,70 +399,24 @@ class MetaEmbeddingExperiment(Experiment):
 
     def run(self, plot_fcn: Callable[[Agent], Figure] | None = None, reset: bool = True):
         self.e_norm = []
-        train_cfg = self.cfg.training
 
-        # Initialize environment
-        self.init_experiment(reset=reset)
-        self._setup_video_recording()
-
-        # Setup progress bar
-        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Embedding")
-        while self.env_step < train_cfg.total_steps:
-            self.env_step += 1
-
-            # 1. Plan
-            action = self.agent.plan()
-            # 2. Execute
-            transition, done = self.agent.step(action)
-            self.rollout.add(**transition)
+        def _embedding_step_hook(transition: dict) -> None:
             e_bel = self.agent.model.embedding.reshape(-1)
-
-            # 3-1. Update policy
-            self.agent.update_policy(transition)
-
-            # 3-2. Train model
-            if self.check_step("train"):
-                sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
-                self.training_info = self.agent.train_model(
-                    **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
-                )
-
-            # 3-3. Update logs and plot
             self.training_info["e"] = e_bel
-            e = self.agent.env.env.get_params()
+
+            e_true = self.agent.env.env.get_params()
             self.writer.add_scalars(
                 "e",
-                {f"true_{i}": v for i, v in enumerate(to_np(e).tolist())},
+                {f"true_{i}": v for i, v in enumerate(to_np(e_true).tolist())},
                 self.env_step,
             )
-            self.e_norm.append(
-                torch.norm(e_bel.cpu() - self.agent.env.env.get_params().cpu()).item()
-            )
+            self.e_norm.append(torch.norm(e_bel.cpu() - e_true.cpu()).item())
             self.training_info["e_norm"] = self.e_norm[-1]
-            self.update_writer(self.training_info)
-            self.update_pbar(self.pbar)
 
-            # Periodic rollout saving for crash recovery and memory management
-            if self.check_step("save"):
-                save_rollout(
-                    self.rollout,
-                    str(self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"),
-                )
-                if self.env_step < train_cfg.total_steps:
-                    self.rollout.clear(keep_last=100)
-
-            if self.check_step("plot"):
-                if plot_fcn:
-                    fig = plot_fcn(self.agent)
-                    self.video_recorder.capture_frame(fig=fig)
-
-            # Clean up tensors to prevent memory accumulation
-            if "cuda" in str(self.agent.device):
-                del transition, action
-                torch.cuda.empty_cache()
-
-            if done:
-                break
-
-        # Close progress bar and finalize experiment
-        self._finalize_experiment()
+        self._run_online_loop(
+            train_cfg=self.cfg.training,
+            pbar_desc="Embedding",
+            plot_fcn=plot_fcn,
+            reset=reset,
+            on_step_end=_embedding_step_hook,
+        )

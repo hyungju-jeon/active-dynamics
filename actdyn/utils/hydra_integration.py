@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 """
 General Hydra integration utilities for actdyn experiments.
 This module provides reusable Hydra integration components that can be used across different experiments.
 """
 
 import hydra
+import ast
 from hydra.core.config_store import ConfigStore
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
@@ -24,20 +27,25 @@ from actdyn.config import (
 def list_to_str(lst):
     """Convert a list to a string representation suitable for filenames."""
     if isinstance(lst, list):
-        return "x".join([str(i) for i in lst])
+        return "x".join(str(i) for i in lst)
     elif isinstance(lst, str):
         try:
-            # Handle string representation of a list
-            return "x".join([str(i) for i in eval(lst)])
-        except (SyntaxError, NameError):
+            parsed = ast.literal_eval(lst)
+            if isinstance(parsed, list):
+                return "x".join(str(i) for i in parsed)
             # Not a list-like string, return as is or handle appropriately
+            return lst
+        except (SyntaxError, ValueError):
             return lst
 
 
 def str_to_list(s: str) -> list:
     """Convert a string representation of a list back to a list."""
     try:
-        return eval(s)
+        parsed = ast.literal_eval(s)
+        if not isinstance(parsed, list):
+            raise ValueError(f"Not a list literal: {s}")
+        return parsed
     except Exception as e:
         raise ValueError(f"Could not convert string to list: {s}") from e
 

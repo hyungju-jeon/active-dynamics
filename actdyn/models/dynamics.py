@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from functools import partial
 from os import read
 from einops import rearrange

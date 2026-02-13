@@ -6,14 +6,11 @@ import yaml
 
 @dataclass
 class EnvironmentConfig:
-    environment_type: str = "vectorfield"  # Options: "vectorfield", "cartpole", "maze"
+    environment_type: str = "vectorfield"  # Options: "vectorfield", "windfield"
     env_dynamics_type: Optional[str] = (
         "limit_cycle"  # Options: "limit_cycle", "double_limit_cycle", "multi_attractor"
     )
-    # DESIGN FIX: Add type annotation to allow custom initialization from __init__ and YAML
-    # Without type annotation, this becomes a class variable and cannot be passed to constructor
-    # Issue: test_config.py fails when trying EnvironmentConfig(env_dt=0.05)
-    # Usage: experiments/run_experiment.py loads configs with custom env_dt values
+    # Explicit field so YAML/CLI overrides can control the wrapped environment dt.
     env_dt: float = 0.1
     env_noise_scale: float = 0.1
     env_render_mode: Optional[str] = None  # Options: "human", "rgb_array"
@@ -25,14 +22,14 @@ class EnvironmentConfig:
     env_length_scale: float = 0.5
     env_alpha: float = 0.25  # Scaling factor for the vector field
 
-    observation_type: str = "loglinear"  # Options: "loglinear", "linear", "identity"
-    obs_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
+    observation_type: str = "log-linear"  # Options: "log-linear", "linear", "identity"
+    obs_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     obs_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
     obs_noise_type: Optional[str] = "gaussian"  # Options: "gaussian", "poisson"
     obs_noise_scale: float = 0.0
 
     action_type: str = "identity"  # Options: "identity", "linear", "mlp"
-    act_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
+    act_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     act_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
 
     def get_environment_cfg(self):
@@ -51,7 +48,7 @@ class EnvironmentConfig:
 
     def get_observation_cfg(self):
         return {
-            "hidden_dims": self.obs_hidden_dim,  # Classes use hidden_dims (plural)
+            "hidden_dims": self.obs_hidden_dims,
             "activation": self.obs_activation,
             "noise_type": self.obs_noise_type,
             "noise_scale": self.obs_noise_scale,
@@ -59,7 +56,7 @@ class EnvironmentConfig:
 
     def get_action_cfg(self):
         return {
-            "hidden_dims": self.act_hidden_dim,  # Classes use hidden_dims (plural)
+            "hidden_dims": self.act_hidden_dims,
             "activation": self.act_activation,
         }
 
@@ -67,14 +64,14 @@ class EnvironmentConfig:
 @dataclass
 class ModelConfig:
     encoder_type: str = "rnn"  # Options: "rnn", "mlp"
-    enc_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
-    enc_rnn_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
+    enc_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
+    enc_rnn_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     enc_rnn_type: Optional[str] = "gru"  # Options: "gru", "lstm"
     enc_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
     enc_h_init: Optional[str] = "reset"  # Options: "reset", "carryover", "step"
 
-    mapping_type: str = "loglinear"  # Options: "loglinear", "linear", "identity", "mlp"
-    map_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
+    mapping_type: str = "log-linear"  # Options: "log-linear", "linear", "identity", "mlp"
+    map_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     map_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
     noise_type: str = "gaussian"  # Options: "gaussian", "poisson"
 
@@ -82,7 +79,7 @@ class ModelConfig:
     is_ensemble: bool = False
     is_residual: bool = False
     n_models: Optional[int] = 1
-    dyn_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
+    dyn_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     dyn_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
     dyn_alpha: float = 0.1
     dyn_gamma: float = 1.0
@@ -92,15 +89,15 @@ class ModelConfig:
     dyn_dt: float = 0.1
 
     action_type: str = "identity"  # Options: "identity", "linear", "mlp"
-    act_hidden_dim: Optional[List[int]] = field(default_factory=lambda: [16])
+    act_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     act_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
     act_state_dependent: bool = False
     model_type: str = "seq-vae"  # Options: "seq-vae"
 
     def get_encoder_cfg(self):
         return {
-            "hidden_dim": self.enc_hidden_dim,
-            "rnn_hidden_dim": self.enc_rnn_hidden_dim,
+            "hidden_dim": self.enc_hidden_dims,
+            "rnn_hidden_dim": self.enc_rnn_hidden_dims,
             "activation": self.enc_activation,
             "rnn_type": self.enc_rnn_type,
             "h_init": self.enc_h_init,
@@ -108,13 +105,13 @@ class ModelConfig:
 
     def get_decoder_cfg(self):
         return {
-            "hidden_dim": self.map_hidden_dim,
+            "hidden_dim": self.map_hidden_dims,
             "activation": self.map_activation,
         }
 
     def get_dynamics_cfg(self):
         return {
-            "hidden_dim": self.dyn_hidden_dim,
+            "hidden_dim": self.dyn_hidden_dims,
             "activation": self.dyn_activation,
             "alpha": self.dyn_alpha,
             "gamma": self.dyn_gamma,
@@ -127,7 +124,7 @@ class ModelConfig:
 
     def get_action_cfg(self):
         return {
-            "hidden_dim": self.act_hidden_dim,
+            "hidden_dim": self.act_hidden_dims,
             "activation": self.act_activation,
             "state_dependent": self.act_state_dependent,
         }
@@ -140,7 +137,7 @@ class ModelConfig:
 
 @dataclass
 class PolicyConfig:
-    policy_type: str = "random"  # Options: "random", "lazy", "mpc-icem"
+    policy_type: str = "random"  # Options: "random", "mpc-icem", "off-policy"
     mpc_verbose: bool = False
     mpc_horizon: int = 10
     mpc_num_samples: int = 32
@@ -178,8 +175,8 @@ class PolicyConfig:
 @dataclass
 class MetricConfig:
     metric_type: List[str] = field(
-        default_factory=lambda: ["A-optimality"]
-    )  # Options: "A-optimality", "D-optimality", "action", "goal", "reward"
+        default_factory=lambda: ["a-optimality"]
+    )  # Options: "a-optimality", "d-optimality", "action", "goal-distance", "reward"
     compute_type: str = "sum"  # Options: "sum", "last", "max"
     gamma: float = 1.0  # Can be a single value, will be handled as list when needed
     composite_weights: Optional[List[float]] = None

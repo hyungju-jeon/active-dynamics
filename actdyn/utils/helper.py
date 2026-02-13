@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 """
 General helper functions and constants
 """
 
 import torch
 import numpy as np
-from typing import Dict
+from typing import Callable, Dict, Sequence
 
 eps = 1e-12
 
@@ -26,17 +28,56 @@ def format_list(x):
 
 
 def make_uniform_sampler(low: list[float] | float, high: list[float] | float, dim: int):
-    if isinstance(low, float):
-        low = [low] * dim
-    if isinstance(high, float):
-        high = [high] * dim
+    if isinstance(low, (int, float)):
+        low = [float(low)] * dim
+    if isinstance(high, (int, float)):
+        high = [float(high)] * dim
+    if len(low) != dim or len(high) != dim:
+        raise ValueError(f"low/high length must match dim={dim}, got {len(low)} and {len(high)}")
+
+    low_t = torch.tensor(low, dtype=torch.float32).reshape(1, dim)
+    span_t = torch.tensor(high, dtype=torch.float32).reshape(1, dim) - low_t
 
     def _sampler(N: int):
-        return torch.stack(
-            [low[i] + (high[i] - low[i]) * torch.rand(N) for i in range(dim)], dim=-1
-        )
+        return low_t + span_t * torch.rand(N, dim)
 
     return _sampler
+
+
+def jacobian_wrt_param(fn: Callable, inputs: Sequence[torch.Tensor], argnum: int) -> torch.Tensor:
+    """Compute Jacobian of ``fn(*inputs)`` with respect to a selected argument."""
+    has_time = inputs[0].ndim == 3
+    if has_time:
+        batch, T, in_dim = inputs[0].shape
+    else:
+        batch, in_dim = inputs[0].shape
+        T = 1
+
+    inputs_list = [
+        t.reshape(batch * T, -1).requires_grad_(True) if not t.requires_grad else t for t in inputs
+    ]
+
+    out = fn(*inputs_list)
+    if out.ndim == 1:
+        out = out.unsqueeze(0)
+    _, out_dim = out.shape
+
+    in_dim = inputs_list[argnum].shape[-1]
+    J = torch.zeros(batch, T, out_dim, in_dim, device=out.device, dtype=out.dtype)
+
+    for i in range(out_dim):
+        grad_outputs = torch.zeros_like(out)
+        grad_outputs[:, i] = 1.0
+        (gi,) = torch.autograd.grad(
+            out,
+            inputs_list[argnum],
+            grad_outputs=grad_outputs,
+            retain_graph=True,
+            create_graph=False,
+        )
+        J[..., i, :] = gi.reshape(batch, T, in_dim)
+
+    return J.reshape(batch, T, out_dim, in_dim)
 
 
 # -------------------------------------------------------------

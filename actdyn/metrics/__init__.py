@@ -20,9 +20,9 @@ _metric_map = {
     "reward": (".reward", "RewardMetric"),
     "goal-distance": (".reward", "GoalDistanceMetric"),
     "action": (".cost", "ActionCost"),
-    "A-optimality": (".information", "AOptimality"),
-    "D-optimality": (".information", "DOptimality"),
-    "Ensemble_disagreement": (".uncertainty", "EnsembleDisagreement"),
+    "a-optimality": (".information", "AOptimality"),
+    "d-optimality": (".information", "DOptimality"),
+    "ensemble-disagreement": (".uncertainty", "EnsembleDisagreement"),
     "embedding-fisher": (".information", "EmbeddingFisherMetric"),
 }
 

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """actdyn.core.agent.py: Agent class for active learning in dynamical systems."""
 
 from typing import Dict, Tuple

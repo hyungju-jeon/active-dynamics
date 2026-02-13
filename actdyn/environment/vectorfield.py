@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Vector field environment implementation."""
 
 import torch

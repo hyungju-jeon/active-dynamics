@@ -1,7 +1,6 @@
 import os
 from typing import Tuple, Dict, Any
 import torch
-from torch.utils.data import DataLoader, Dataset
 import gymnasium as gym
 
 from actdyn.models.base import BaseDynamicsEnsemble
@@ -37,6 +36,12 @@ class ModelWrapper(gym.Env):
 
         # Initialize state tracking
         self._state = None
+
+    def __getattr__(self, name: str):
+        """Delegate unknown attributes to the wrapped model."""
+        if name != "model" and hasattr(self.model, name):
+            return getattr(self.model, name)
+        raise AttributeError(f"{type(self).__name__!s} has no attribute {name!r}")
 
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
@@ -96,40 +101,21 @@ class ModelWrapper(gym.Env):
     def train_model(
         self, data, batch_size=32, chunk_size=1000, shuffle=False, num_workers=0, **kwargs
     ):
-        dataloader = self.prepare_dataloader(data, batch_size, chunk_size, shuffle, num_workers)
-        # Handle different input types and convert to DataLoader
-        if hasattr(data, "get_dataloader"):
-            # This is a RolloutBuffer
-            dataloader = data.get_dataloader(
-                batch_size=batch_size,
-                chunk_size=chunk_size,
-                shuffle=shuffle,
-                num_workers=num_workers,
-            )
-        elif isinstance(data, dict):
-            # Direct dict input - create single-item DataLoader
-            # Convert dict to single-batch format and create minimal DataLoader
-            class SingleBatchDataset(Dataset):
-                def __init__(self, batch_dict):
-                    self.batch = batch_dict
+        return self.model.train_model(
+            data,
+            batch_size=batch_size,
+            chunk_size=chunk_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            **kwargs,
+        )
 
-                def __len__(self):
-                    return 1
+    def save(self, path: str):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.model.save(path)
 
-                def __getitem__(self, idx):
-                    return self.batch
-
-            dataset = SingleBatchDataset(data)
-            dataloader = DataLoader(dataset, batch_size=1, shuffle=False)
-        else:
-            raise TypeError(
-                f"Unsupported data type: {type(data)}. "
-                f"Expected RolloutBuffer, Rollout, RecentRollout, or dict."
-            )
-
-        return self.train_model(dataloader=dataloader, **kwargs)
+    def load(self, path: str):
+        self.model.load(path)
 
     def save_model(self, path: str):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        """Save model parameters to disk."""
-        self.model.save(path)
+        self.save(path)

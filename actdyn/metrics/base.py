@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import List, Optional
 import torch
 from actdyn.utils.rollout import RolloutBuffer, Rollout

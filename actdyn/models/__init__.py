@@ -51,7 +51,7 @@ _encoder_map = {"mlp": (".encoder", "MLPEncoder"), "rnn": (".encoder", "RNNEncod
 _mapping_map = {
     "identity": (".decoder", "IdentityMapping"),
     "linear": (".decoder", "LinearMapping"),
-    "loglinear": (".decoder", "LogLinearMapping"),
+    "log-linear": (".decoder", "LogLinearMapping"),
     "mlp": (".decoder", "MLPMapping"),
 }
 _noise_map = {"gaussian": (".decoder", "GaussianNoise"), "poisson": (".decoder", "PoissonNoise")}

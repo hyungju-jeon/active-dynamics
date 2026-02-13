@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """Base model classes for the active dynamics package."""
 
 from typing import Any, Dict, Tuple

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """
 Helper functions for validating reconstruction results in Active Dynamics framework.
 """

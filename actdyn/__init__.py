@@ -1,52 +1,31 @@
-"""
-Active Dynamics: Active Learning for Latent Dynamical System Identification
+"""Active Dynamics package."""
 
-A framework for active learning of latent dynamical systems using Sequential VAEs
-and Model Predictive Control.
-"""
+from __future__ import annotations
 
 __version__ = "0.1.0"
 __author__ = "Hyungju Jeon"
 
-# Core components
-from actdyn.core.agent import Agent, AsyncAgent
-from actdyn.core.experiment import Experiment
+__all__ = ["__version__", "__author__"]
 
-# Configuration
-from actdyn.config import ExperimentConfig
 
-# Utilities
-from actdyn.utils.experiment_helpers import setup_experiment
+def _try_export(import_stmt: str, symbol: str) -> None:
+    try:
+        module = __import__(import_stmt, fromlist=[symbol])
+        globals()[symbol] = getattr(module, symbol)
+        __all__.append(symbol)
+    except Exception:
+        # Keep top-level import lightweight when optional runtime deps are missing.
+        pass
 
-# Main model types
-from actdyn.models.model import SeqVae
-from actdyn.models.model_wrapper import ModelWrapper
 
-# Common environments
-from actdyn.environment.vectorfield import VectorFieldEnv
-from actdyn.environment.env_wrapper import EnvWrapper
-
-# Common policies
-from actdyn.policy.mpc import MpcICem
-
-# Common metrics
-from actdyn.metrics.information import FisherInformationMetric
-
-__all__ = [
-    # Core
-    "Agent",
-    "AsyncAgent",
-    "Experiment",
-    "ExperimentConfig",
-    "setup_experiment",
-    # Models
-    "SeqVae",
-    "ModelWrapper",
-    # Environments
-    "VectorFieldEnv",
-    "EnvWrapper",
-    # Policies
-    "MpcICem",
-    # Metrics
-    "FisherInformationMetric",
-]
+_try_export("actdyn.config", "ExperimentConfig")
+_try_export("actdyn.utils.experiment_helpers", "setup_experiment")
+_try_export("actdyn.core.agent", "Agent")
+_try_export("actdyn.core.agent", "AsyncAgent")
+_try_export("actdyn.core.experiment", "Experiment")
+_try_export("actdyn.models.model", "SeqVae")
+_try_export("actdyn.models.model_wrapper", "ModelWrapper")
+_try_export("actdyn.environment.vectorfield", "VectorFieldEnv")
+_try_export("actdyn.environment.env_wrapper", "EnvWrapper")
+_try_export("actdyn.policy.mpc", "MpcICem")
+_try_export("actdyn.metrics.information", "FisherInformationMetric")

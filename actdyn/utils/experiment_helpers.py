@@ -1,6 +1,10 @@
+from __future__ import annotations
+
 # %%
-import torch
+import inspect
+
 import gymnasium
+import torch
 
 from actdyn.metrics.uncertainty import EnsembleDisagreement
 from actdyn.config import ExperimentConfig
@@ -31,32 +35,19 @@ def setup_environment(config: ExperimentConfig):
     # Environment
     env_cls = environment_from_str(config.environment.environment_type)
     env_config = config.environment.get_environment_cfg()
-    if isinstance(env_cls, str):
-        # If the environment is a gymnasium environment, we need to create it with gymnasium.make
-        base_env = gymnasium.make(env_cls)
-        # Set action bounds from gymnaisum environment
-        config.environment.env_action_bounds = (
-            base_env.action_space.low.tolist(),
-            base_env.action_space.high.tolist(),
-        )
-        config.environment.env_state_bounds = (
-            base_env.observation_space.low.tolist(),
-            base_env.observation_space.high.tolist(),
-        )
-        config.latent_dim = base_env.observation_space.shape[0]
+    # Don't pass dt explicitly if it's already in env_config to avoid conflicts
+    extra_params = {}
+    if "dt" not in env_config:
+        extra_params["dt"] = config.dt
 
-    else:
-        # Don't pass dt explicitly if it's already in env_config to avoid conflicts
-        extra_params = {}
-        if "dt" not in env_config:
-            extra_params["dt"] = config.dt
+    env_kwargs = {**env_config, **extra_params, "device": config.device}
+    signature = inspect.signature(env_cls.__init__)
+    if "d_state" in signature.parameters:
+        env_kwargs["d_state"] = config.latent_dim
+    elif "state_dim" in signature.parameters:
+        env_kwargs["state_dim"] = config.latent_dim
 
-        base_env = env_cls(
-            **env_config,
-            **extra_params,
-            state_dim=config.latent_dim,
-            device=config.device,
-        )
+    base_env = env_cls(**env_kwargs)
 
     env_obs_dim = base_env.observation_space.shape[0]
 
@@ -134,7 +125,9 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
             "device": config.device,
         }
     )
-    if config.model.is_ensemble or ("ensemble_disagreement" in config.metric.metric_type):
+    metric_type = config.metric.metric_type
+    metric_list = metric_type if isinstance(metric_type, list) else [metric_type]
+    if config.model.is_ensemble or ("ensemble-disagreement" in metric_list):
         # If ensemble dynamics, we need to create multiple dynamics models
         ensemble_config = config.model.get_ensemble_cfg()
         dynamics = BaseDynamicsEnsemble(

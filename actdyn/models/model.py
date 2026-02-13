@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -273,16 +275,9 @@ class SeqVae(BaseModel):
                     "log_L": log_like.detach().detach(),
                     "KL": kl_d.detach(),
                 }
-                batch_info.append(info)
                 # Update parameters
                 opt.step()
-                loss, log_like, kl_d = (
-                    loss.detach().item(),
-                    log_like.detach().item(),
-                    kl_d.detach().item(),
-                )
-                # Store normalized losses
-                batch_info.append(info)  # Assuming info contains the relevant metrics
+                batch_info.append(info)
 
                 # Explicit cleanup for gradient tensors
                 del batch, obs, loss, log_like, kl_d
@@ -308,10 +303,6 @@ class SeqVae(BaseModel):
                 epoch_pbar.set_postfix({k: f"{v:.4f}" for k, v in current_info.items()})
                 epoch_pbar.update(10)
 
-            # End of epoch cleanup
-            if "cuda" in str(self.device):
-                torch.cuda.empty_cache()
-
         # Close progress bar
         if verbose:
             epoch_pbar.close()
@@ -319,37 +310,6 @@ class SeqVae(BaseModel):
         epoch_info = {key: torch.tensor([e[key] for e in epoch_info]) for key in epoch_info[0]}
 
         return epoch_info
-
-    # DESIGN NOTE: Missing save/load methods
-    # =======================================
-    # Issue: experiment.py expects model.save_model(path) method
-    # Impact: Experiment tests fail - cannot save checkpoints
-    #
-    # Recommended implementation:
-    #
-    # def save_model(self, filepath):
-    #     """Save model state dict to file."""
-    #     torch.save({
-    #         'encoder': self.encoder.state_dict(),
-    #         'decoder': self.decoder.state_dict(),
-    #         'dynamics': self.dynamics.state_dict(),
-    #         'action_encoder': self.action_encoder.state_dict() if self.action_encoder else None,
-    #         'step_count': self.step_count,
-    #         'beta': self.beta,
-    #     }, filepath)
-    #
-    # def load_model(self, filepath):
-    #     """Load model state dict from file."""
-    #     checkpoint = torch.load(filepath, map_location=self.device)
-    #     self.encoder.load_state_dict(checkpoint['encoder'])
-    #     self.decoder.load_state_dict(checkpoint['decoder'])
-    #     self.dynamics.load_state_dict(checkpoint['dynamics'])
-    #     if self.action_encoder and checkpoint['action_encoder']:
-    #         self.action_encoder.load_state_dict(checkpoint['action_encoder'])
-    #     self.step_count = checkpoint.get('step_count', 0)
-    #     self.beta = checkpoint.get('beta', 0.0)
-    #
-    # Usage: experiments/run_experiment.py saves checkpoints during training
 
     def update_posterior_embedding(self, y, u=None):
         """Update the posterior state given new observation and action."""
@@ -619,16 +579,9 @@ class SeqStateVae(BaseModel):
                     "log_L": log_like.detach().detach(),
                     "KL": kl_d.detach(),
                 }
-                batch_info.append(info)
                 # Update parameters
                 opt.step()
-                loss, log_like, kl_d = (
-                    loss.detach().item(),
-                    log_like.detach().item(),
-                    kl_d.detach().item(),
-                )
-                # Store normalized losses
-                batch_info.append(info)  # Assuming info contains the relevant metrics
+                batch_info.append(info)
 
                 # Explicit cleanup for gradient tensors
                 del batch, obs, loss, log_like, kl_d
@@ -653,10 +606,6 @@ class SeqStateVae(BaseModel):
                 current_info = epoch_info[-1]
                 epoch_pbar.set_postfix({k: f"{v:.4f}" for k, v in current_info.items()})
                 epoch_pbar.update(10)
-
-            # End of epoch cleanup
-            if "cuda" in str(self.device):
-                torch.cuda.empty_cache()
 
         # Close progress bar
         if verbose:
@@ -1087,10 +1036,6 @@ class FilteringEmbedding(BaseModel):
                 current_info = epoch_info[-1]
                 epoch_pbar.set_postfix({k: f"{v:.4f}" for k, v in current_info.items()})
                 epoch_pbar.update(10)
-
-            # End of epoch cleanup
-            if "cuda" in str(self.device):
-                torch.cuda.empty_cache()
 
         # Close progress bar
         if verbose:
