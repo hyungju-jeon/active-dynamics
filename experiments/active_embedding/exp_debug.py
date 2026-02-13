@@ -3,9 +3,7 @@ import os
 import shutil
 from collections import deque
 from functools import partial
-from turtle import color
-from typing import Callable, Sequence
-from unittest import result
+from typing import Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -35,18 +33,12 @@ import external.integrative_inference.src.modules as metadyn
 from actdyn.config import ExperimentConfig
 from actdyn.utils import save_load
 from actdyn.utils.experiment_helpers import setup_environment, setup_experiment
+from actdyn.utils.runtime import configure_runtime, ensure_dir
 from actdyn.utils.rollout import RecentRollout, Rollout, RolloutBuffer
-from actdyn.utils.helper import *
+from actdyn.utils.helper import jacobian_wrt_param, make_uniform_sampler, to_np
 from actdyn.utils.visualize import plot_vector_field, set_matplotlib_style, plot_spike_train
 from external.integrative_inference.experiments.model_utils import build_hypernetwork
 
-
-# Configure matplotlib for better aesthetics
-set_matplotlib_style()
-
-# Set random seed for reproducibility
-torch.manual_seed(0)
-np.random.seed(0)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -173,20 +165,6 @@ class MetaDynamics:
         return self.mean_dynamics(x, out) * 10
 
 
-def make_uniform_sampler(low: list[float] | float, high: list[float] | float, dim: int):
-    if isinstance(low, float):
-        low = [low] * dim
-    if isinstance(high, float):
-        high = [high] * dim
-
-    def _sampler(N: int):
-        return torch.stack(
-            [low[i] + (high[i] - low[i]) * torch.rand(N) for i in range(dim)], dim=-1
-        )
-
-    return _sampler
-
-
 def curvature_penalty(model: nn.Module, z: torch.Tensor, e: torch.Tensor, eps: float = 1e-2):
     """Finite-difference smoothness of F̂_e w.r.t. (z,e)."""
     B = z.size(0)
@@ -196,54 +174,6 @@ def curvature_penalty(model: nn.Module, z: torch.Tensor, e: torch.Tensor, eps: f
     J = model(z, e)
     J_e = model(z + dz, e + de)
     return ((J_e - J) ** 2).mean()
-
-
-def jacobian_wrt_param(fn: Callable, inputs: Sequence[torch.Tensor], argnum: int) -> torch.Tensor:
-    """
-    Compute Jacobian of `fn(*inputs)` w.r.t. the input indexed by `argnum` using vjp.
-
-    Args:
-        fn: callable that accepts the full inputs tuple and returns tensor of shape [batch, time, out_dim]
-        inputs: tuple of input tensors (e.g., (z, e))
-        argnum: which argument to differentiate wrt (0-based)
-
-    Returns:
-        Jacobian tensor of shape [batch, time, out_dim, in_dim]
-    """
-    has_time = inputs[0].ndim == 3
-    if has_time:
-        batch, T, in_dim = inputs[0].shape
-    else:
-        batch, in_dim = inputs[0].shape
-        T = 1
-
-    # Work on a local list copy of inputs so we can set requires_grad
-    inputs_list = [
-        t.reshape(batch * T, -1).requires_grad_(True) if not t.requires_grad else t for t in inputs
-    ]
-
-    out = fn(*inputs_list)
-    if out.ndim == 1:
-        out = out.unsqueeze(0)
-    _, out_dim = out.shape
-
-    in_dim = inputs_list[argnum].shape[-1]
-    J = torch.zeros(batch, T, out_dim, in_dim, device=out.device, dtype=out.dtype)
-
-    # Compute row-wise grads: for each output dim, grad wrt z_flat
-    for i in range(out_dim):
-        grad_outputs = torch.zeros_like(out)
-        grad_outputs[:, i] = 1.0
-        (gi,) = torch.autograd.grad(
-            out,
-            inputs_list[argnum],
-            grad_outputs=grad_outputs,
-            retain_graph=True,
-            create_graph=False,
-        )
-        J[..., i, :] = gi.reshape(batch, T, in_dim)
-
-    return J.reshape(batch, T, out_dim, in_dim)
 
 
 def train_jacobian(
@@ -304,581 +234,590 @@ def Fz_true(z, e):
     return Fz
 
 
-# %% (Pretrain) Pretrain context dependent dynamics model
-z_sampler = make_uniform_sampler(-5.0, 5.0, 2)
-e_sampler = make_uniform_sampler([-3.0, -2.0], [-0.1, 2.0], 2)
-ds = zeDataset(100000, z_sampler, e_sampler, device)
 
-duffing_env = actdyn.VectorFieldEnv(
-    "duffing",
-    x_range=5,
-    dt=0.01,
-    alpha=10,
-    Q=0.01,
-    device=device,
-)
+def main() -> None:
+    set_matplotlib_style()
+    global device
+    device = configure_runtime(seed=0, device=device)
 
-cfg = {
-    "d_latent": 2,
-    "d_embed": 2,
-    "du": 0,
-    "d_hidden_embed": 16,
-    "d_context": 2,
-    "d_hidden_dynamics": 32,
-    "d_hidden_hypernet_dynamics": 16,
-    "n_hidden": 1,
-    "likelihood": "gaussian",  # 'gaussian' or 'poisson'
-    "l2_c": 1e-4,
-    "l2_dw_dynamics": 1e-4,
-    "rank_dynamics": 2,
-    "update_input": True,  # Whether to update input weights in dynamics
-    "update_hidden": True,  # Whether to update hidden weights in dynamics
-    "update_output": False,  # Whether to update output weights in dynamics
-    "linear_hypernetwork": False,  # Whether to use linear hypernetwork (no hidden layer)
-}
-
-hypernet_dynamics = build_hypernetwork(cfg, device)
-
-mean_dynamics = metadyn.HyperMlpDynamics(
-    d_latent=cfg["d_latent"],
-    d_hidden=cfg["d_hidden_dynamics"],
-    n_hidden=cfg["n_hidden"],
-    update_input=cfg["update_input"],
-    update_output=cfg["update_output"],
-    update_hidden=cfg["update_hidden"],
-    du=0,
-    device=device,
-)
-
-hypernet_model_path = os.path.join(
-    os.path.dirname(__file__), "models", "duffing_hypernet_dynamics.pth"
-)
-mean_dynamics_model_path = os.path.join(
-    os.path.dirname(__file__), "models", "duffing_mean_dynamics.pth"
-)
-if os.path.exists(hypernet_model_path):
-    hypernet_dynamics.load_state_dict(
-        torch.load(hypernet_model_path, map_location=device, weights_only=True)
+    # %% (Pretrain) Pretrain context dependent dynamics model
+    z_sampler = make_uniform_sampler(-5.0, 5.0, 2)
+    e_sampler = make_uniform_sampler([-3.0, -2.0], [-0.1, 2.0], 2)
+    ds = zeDataset(100000, z_sampler, e_sampler, device)
+    
+    duffing_env = actdyn.VectorFieldEnv(
+        "duffing",
+        x_range=5,
+        dt=0.01,
+        alpha=10,
+        Q=0.01,
+        device=device,
     )
-    mean_dynamics.load_state_dict(
-        torch.load(mean_dynamics_model_path, map_location=device, weights_only=True)
+    
+    cfg = {
+        "d_latent": 2,
+        "d_embed": 2,
+        "du": 0,
+        "d_hidden_embed": 16,
+        "d_context": 2,
+        "d_hidden_dynamics": 32,
+        "d_hidden_hypernet_dynamics": 16,
+        "n_hidden": 1,
+        "likelihood": "gaussian",  # 'gaussian' or 'poisson'
+        "l2_c": 1e-4,
+        "l2_dw_dynamics": 1e-4,
+        "rank_dynamics": 2,
+        "update_input": True,  # Whether to update input weights in dynamics
+        "update_hidden": True,  # Whether to update hidden weights in dynamics
+        "update_output": False,  # Whether to update output weights in dynamics
+        "linear_hypernetwork": False,  # Whether to use linear hypernetwork (no hidden layer)
+    }
+    
+    hypernet_dynamics = build_hypernetwork(cfg, device)
+    
+    mean_dynamics = metadyn.HyperMlpDynamics(
+        d_latent=cfg["d_latent"],
+        d_hidden=cfg["d_hidden_dynamics"],
+        n_hidden=cfg["n_hidden"],
+        update_input=cfg["update_input"],
+        update_output=cfg["update_output"],
+        update_hidden=cfg["update_hidden"],
+        du=0,
+        device=device,
     )
-    print("Loaded pretrained meta-dynamics model")
-
-else:
-    # Train with True embedding value and  RMSE loss
-    optimizer = torch.optim.Adam(
-        list(hypernet_dynamics.parameters()) + list(mean_dynamics.parameters()), lr=1e-3
+    
+    hypernet_model_path = os.path.join(
+        os.path.dirname(__file__), "models", "duffing_hypernet_dynamics.pth"
     )
-    n_epochs = 500
-    batch_size = 10000
-    dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=False)
-    pbar = tqdm(range(n_epochs))
-    for epoch in pbar:
-        for z, e in dl:
-            duffing_env.dynamics.a = e[:, 0]
-            duffing_env.dynamics.b = e[:, 1]
-            fx_true = duffing_env.compute_dynamics(z).to(device)
-
-            out, _ = hypernet_dynamics(e)
-            fx_pred = mean_dynamics.compute_param(z, out)
-
-            loss = F.mse_loss(fx_pred, fx_true)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-        pbar.set_postfix(loss=f"{loss.item():.4f}")
-
-meta_dynamics = MetaDynamics(hypernet_dynamics, mean_dynamics)
-
-# %% (Pretrain) Check learned meta-dynamical model (Checked)
-duffing_env = actdyn.VectorFieldEnv("duffing", x_range=5, dt=0.1, Q=0.0)
-
-if False:
-    for i in range(10):
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-        axs = axs.flatten()
-        i = torch.randint(0, 100, (1,))
-        e = e_sampler(1).to(device)
-        duffing_env.set_params(e)
-        plot_vector_field(
-            duffing_env.dynamics,
-            ax=axs[0],
-            x_range=5,
-            is_residual=True,
+    mean_dynamics_model_path = os.path.join(
+        os.path.dirname(__file__), "models", "duffing_mean_dynamics.pth"
+    )
+    if os.path.exists(hypernet_model_path):
+        hypernet_dynamics.load_state_dict(
+            torch.load(hypernet_model_path, map_location=device, weights_only=True)
         )
-        axs[0].set_title(
-            f"True Vector Field of Duffing System for a={e[..., 0].item():.2f}, b={e[..., 1].item():.2f}"
+        mean_dynamics.load_state_dict(
+            torch.load(mean_dynamics_model_path, map_location=device, weights_only=True)
         )
-        plot_vector_field(
-            lambda x: meta_dynamics(
-                x.to(device),
-                e=e,
-            ),
-            ax=axs[1],
-            x_range=5,
-            is_residual=True,
+        print("Loaded pretrained meta-dynamics model")
+    
+    else:
+        # Train with True embedding value and  RMSE loss
+        optimizer = torch.optim.Adam(
+            list(hypernet_dynamics.parameters()) + list(mean_dynamics.parameters()), lr=1e-3
         )
-        axs[1].set_title("Meta Learned Vector Field")
-        plt.show()
-
-
-# %% (Pretrain) Pretrain Jacobian Networks
-z_sampler = make_uniform_sampler(-5.0, 5.0, 2)
-e_sampler = make_uniform_sampler([-2.0, -1.0], [-0.1, 1.0], 2)
-
-Fe_net = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, device=device)
-Fe_model_path = os.path.join(os.path.dirname(__file__), "models", "duffing_amortized_Fe.pth")
-if os.path.exists(Fe_model_path):
-    Fe_net.load_state_dict(torch.load(Fe_model_path, map_location=device))
-    print("Loaded pretrained Fe model from", Fe_model_path)
-else:
-    fe_ds = FeDataset(meta_dynamics, 1000, z_sampler, e_sampler, device)
-    Fe_net = train_jacobian(
-        fe_ds, d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, curv_loss=0.0, device="cpu"
+        n_epochs = 500
+        batch_size = 10000
+        dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=False)
+        pbar = tqdm(range(n_epochs))
+        for epoch in pbar:
+            for z, e in dl:
+                duffing_env.dynamics.a = e[:, 0]
+                duffing_env.dynamics.b = e[:, 1]
+                fx_true = duffing_env.compute_dynamics(z).to(device)
+    
+                out, _ = hypernet_dynamics(e)
+                fx_pred = mean_dynamics.compute_param(z, out)
+    
+                loss = F.mse_loss(fx_pred, fx_true)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+    
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
+    
+    meta_dynamics = MetaDynamics(hypernet_dynamics, mean_dynamics)
+    
+    # %% (Pretrain) Check learned meta-dynamical model (Checked)
+    duffing_env = actdyn.VectorFieldEnv("duffing", x_range=5, dt=0.1, Q=0.0)
+    
+    if False:
+        for i in range(10):
+            fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+            axs = axs.flatten()
+            i = torch.randint(0, 100, (1,))
+            e = e_sampler(1).to(device)
+            duffing_env.set_params(e)
+            plot_vector_field(
+                duffing_env.dynamics,
+                ax=axs[0],
+                x_range=5,
+                is_residual=True,
+            )
+            axs[0].set_title(
+                f"True Vector Field of Duffing System for a={e[..., 0].item():.2f}, b={e[..., 1].item():.2f}"
+            )
+            plot_vector_field(
+                lambda x: meta_dynamics(
+                    x.to(device),
+                    e=e,
+                ),
+                ax=axs[1],
+                x_range=5,
+                is_residual=True,
+            )
+            axs[1].set_title("Meta Learned Vector Field")
+            plt.show()
+    
+    
+    # %% (Pretrain) Pretrain Jacobian Networks
+    z_sampler = make_uniform_sampler(-5.0, 5.0, 2)
+    e_sampler = make_uniform_sampler([-2.0, -1.0], [-0.1, 1.0], 2)
+    
+    Fe_net = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, device=device)
+    Fe_model_path = os.path.join(os.path.dirname(__file__), "models", "duffing_amortized_Fe.pth")
+    if os.path.exists(Fe_model_path):
+        Fe_net.load_state_dict(torch.load(Fe_model_path, map_location=device))
+        print("Loaded pretrained Fe model from", Fe_model_path)
+    else:
+        fe_ds = FeDataset(meta_dynamics, 1000, z_sampler, e_sampler, device)
+        Fe_net = train_jacobian(
+            fe_ds, d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, curv_loss=0.0, device="cpu"
+        )
+        torch.save(Fe_net.state_dict(), Fe_model_path)
+    Fe_net.eval()
+    
+    Fz_net = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, device=device)
+    Fz_model_path = os.path.join(os.path.dirname(__file__), "models", "duffing_amortized_Fz.pth")
+    if os.path.exists(Fz_model_path):
+        Fz_net.load_state_dict(torch.load(Fz_model_path, map_location=device))
+        print("Loaded pretrained Fz model from", Fz_model_path)
+    else:
+        fz_ds = FzDataset(meta_dynamics, 1000, z_sampler, e_sampler, device)
+        Fz_net = train_jacobian(
+            fz_ds, d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, curv_loss=0.0, device="cpu"
+        )
+        torch.save(Fz_net.state_dict(), Fz_model_path)
+    Fz_net.eval()
+    
+    # %% (Pretrain) Test Amortized Jacobian Network (Tested)
+    if False:
+        for i in range(1):
+            fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+    
+            axs = axs.flatten()
+            z = z_sampler(1).to(device)
+            e = e_sampler(1).to(device)
+            Fe_meta = jacobian_wrt_param(meta_dynamics, [z, e], 1).cpu().detach().squeeze()
+            Fe_hat = Fe_net(z, e).cpu().detach().squeeze() * 10
+            Fe_star = Fe_true(z, e).cpu().detach().squeeze() * 10
+    
+            args = {"head_width": 0.7, "width": 0.3}
+            axs[0].axis("equal")
+            axs[0].arrow(0, 0, Fe_meta[0, 0], Fe_meta[1, 0], color="r", label="Meta", **args)
+            axs[0].arrow(0, 0, Fe_meta[0, 1], Fe_meta[1, 1], color="r", **args, ls="--")
+            axs[0].arrow(0, 0, Fe_hat[0, 0], Fe_hat[1, 0], color="g", label="Amort.", **args)
+            axs[0].arrow(0, 0, Fe_hat[0, 1], Fe_hat[1, 1], color="g", **args, ls="--")
+            axs[0].arrow(0, 0, Fe_star[0, 0], Fe_star[1, 0], color="b", label="True", **args)
+            axs[0].arrow(0, 0, Fe_star[0, 1], Fe_star[1, 1], color="b", **args, ls="--")
+            axs[0].legend()
+            axs[0].set_title("Fe Comparison")
+            axs[1].axis("equal")
+    
+            Fz_meta = jacobian_wrt_param(meta_dynamics, [z, e], 0).cpu().detach().squeeze()
+            Fz_hat = Fz_net(z, e).cpu().detach().squeeze() * 10
+            Fz_star = Fz_true(z, e).cpu().detach().squeeze() * 10
+            axs[1].arrow(0, 0, Fz_meta[0, 0], Fz_meta[1, 0], color="r", label="Meta", **args)
+            axs[1].arrow(0, 0, Fz_meta[0, 1], Fz_meta[1, 1], color="r", **args, ls="--")
+            axs[1].arrow(0, 0, Fz_hat[0, 0], Fz_hat[1, 0], color="g", label="Amort.", **args)
+            axs[1].arrow(0, 0, Fz_hat[0, 1], Fz_hat[1, 1], color="g", **args, ls="--")
+            axs[1].arrow(0, 0, Fz_star[0, 0], Fz_star[1, 0], color="b", label="True", **args)
+            axs[1].arrow(0, 0, Fz_star[0, 1], Fz_star[1, 1], color="b", **args, ls="--")
+            axs[1].legend()
+            axs[1].set_title("Fz Comparison")
+            plt.show()
+    
+    
+    # %% EKF Test with Experiment Config
+    # base_dir = os.path.join(os.path.dirname(__file__), "../../results", "active_filtering_embedding")
+    # if not os.path.exists(base_dir):
+    #     os.makedirs(base_dir)
+    
+    # meta_dynamics = MetaDynamics(hypernet_dynamics, mean_dynamics)
+    # dz, de, du, dy = 2, 2, 2, 50
+    # dt = 0.05
+    # alpha = 1
+    # action_strength = 0.5
+    # torch.manual_seed(7)
+    # # torch.manual_seed(10)
+    # e = e_sampler(1)
+    # a, b = e.reshape(-1)
+    # # ------------------------------------------------------------------------------
+    # # Action Model
+    # # ------------------------------------------------------------------------------
+    # action_model = actdyn.environment.action.IdentityActionEncoder(
+    #     action_dim=du,
+    #     latent_dim=dz,
+    #     action_bounds=[-action_strength * alpha, action_strength * alpha],
+    #     device=device,
+    # )
+    # # ------------------------------------------------------------------------------
+    # # Observation Model
+    # # ------------------------------------------------------------------------------
+    # obs_model = actdyn.environment.observation.LinearObservation(
+    #     obs_dim=dy,
+    #     latent_dim=dz,
+    #     noise_scale=0.1,
+    #     noise_type="gaussian",
+    #     device=device,
+    # )
+    # # obs_model = actdyn.environment.observation.LogLinearObservation(
+    # #     obs_dim=dy,
+    # #     latent_dim=dz,
+    # #     noise_scale=0.1,
+    # #     noise_type="poisson",
+    # #     dt=dt,
+    # #     device=device,
+    # # )
+    
+    # # C = obs_model.network[0].weight.detach()
+    # # C[:, 0] = -torch.abs(C[:, 0])
+    # # C[:, 1] = torch.abs(C[:, 1])
+    # # C = C / torch.norm(C, dim=1, keepdim=True)  # Normalize rows of C
+    # # C *= 1
+    # # mean_firing = 1
+    # # bias = torch.log(mean_firing * torch.ones(dy, device=device)) - 1 / 2
+    
+    # # obs_model.network[0].bias = nn.Parameter(bias)
+    # # obs_model.network[0].weight = nn.Parameter(C)
+    
+    
+    # # ------------------------------------------------------------------------------
+    # # Environment
+    # # ------------------------------------------------------------------------------
+    # duffing_env = actdyn.VectorFieldEnv(
+    #     "duffing",
+    #     x_range=5,
+    #     dyn_param=torch.tensor([a, b, 0.1]),
+    #     dt=dt,
+    #     alpha=alpha,
+    #     noise_scale=0.01,
+    #     action_bounds=[action_model.action_space.low, action_model.action_space.high],
+    #     device=device,
+    # )
+    # env = actdyn.environment.GymObservationWrapper(
+    #     duffing_env, obs_model, action_model, dt=dt, device=device
+    # )
+    # # ------------------------------------------------------------------------------
+    # # Decoder with Gaussian Noise
+    # # ------------------------------------------------------------------------------
+    # mapping = actdyn.models.decoder.LinearMapping(latent_dim=dz, obs_dim=dy, device=device)
+    # # mapping = actdyn.models.decoder.LogLinearMapping(latent_dim=dz, obs_dim=dy, dt=dt, device=device)
+    # noise = actdyn.models.decoder.GaussianNoise(obs_dim=dy, sigma=0.01, device=device)
+    # # noise = actdyn.models.decoder.PoissonNoise(obs_dim=dy, sigma=0.01, device=device)
+    # decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
+    # # ------------------------------------------------------------------------------
+    # # Model Components - Dynamics and model
+    # # ------------------------------------------------------------------------------
+    # sim_vec_env = actdyn.VectorFieldEnv(
+    #     "duffing",
+    #     x_range=5,
+    #     dyn_param=torch.tensor([0, 0, 0.1]),
+    #     dt=dt,
+    #     alpha=alpha,
+    #     noise_scale=0.01,
+    #     device=device,
+    # )
+    # # dynamics = actdyn.models.dynamics.FunctionDynamics(
+    # #     state_dim=dz, dt=env.dt, dynamics_fn=meta_dynamics, device=device
+    # # )
+    # dynamics = actdyn.models.dynamics.FunctionDynamics(
+    #     state_dim=dz, dt=env.dt, dynamics_fn=sim_vec_env.dynamics, device=device
+    # )
+    
+    # sigma_0 = 0.01
+    # e_bel = {
+    #     "m": torch.ones(1, de, device=device),
+    #     "P": sigma_0 * torch.eye(de, device=device).unsqueeze(0),
+    #     "L": 1 / sigma_0 * torch.eye(de, device=device).unsqueeze(0),
+    # }
+    
+    # dynamics.set_params(e_bel["m"])
+    # dynamics.set_params(e)
+    # model = actdyn.models.FilteringEmbedding(
+    #     dynamics=dynamics,
+    #     decoder=decoder,
+    #     e=e_bel,
+    #     action_encoder=action_model,
+    #     Fe=Fe_true,
+    #     Fz=Fz_true,
+    #     device=device,
+    # )
+    
+    # # ------------------------------------------------------------------------------
+    # # Model Components - Policy
+    # # ------------------------------------------------------------------------------
+    # emb_metric = actdyn.metrics.information.EmbeddingFisherMetric(
+    #     model=model, Fe_net=Fe_true, Fz_net=Fz_true
+    # )
+    # mpc_policy = actdyn.policy.mpc.MpcICem(
+    #     metric=emb_metric,
+    #     model=model,
+    #     device=device,
+    #     horizon=50,
+    #     num_iterations=10,
+    #     num_samples=20,
+    #     num_elite=5,
+    #     chunk=5,
+    #     verbose=False,
+    # )
+    # step_policy = actdyn.policy.StepPolicy(action_space=env.action_space, step_size=20, device=device)
+    # random_policy = actdyn.policy.RandomPolicy(action_space=env.action_space, device=device)
+    # # ------------------------------------------------------------------------------
+    # # Model Components - Agent and Experiment
+    # # ------------------------------------------------------------------------------
+    # agent = actdyn.Agent(
+    #     env=env,
+    #     model=model,
+    #     policy=mpc_policy,
+    #     device=device,
+    # )
+    
+    # exp_config = ExperimentConfig.from_yaml(os.path.join(os.path.dirname(__file__), "conf/config.yaml"))
+    # exp_config.results_dir = base_dir
+    # experiment = actdyn.core.experiment.MetaEmbeddingExperiment(
+    #     agent=agent,
+    #     config=exp_config,
+    # )
+    
+    # decoder.set_params(obs_model)
+    # experiment.run()
+    
+    
+    # # %
+    # ro = save_load.load_and_concatenate_rollouts(os.path.join(base_dir, "rollouts"))
+    # # ro = experiment.rollout
+    # z = ro["env_state"]
+    # z_hat = ro["model_state"]
+    # sim_vec_env.set_params(model.embedding.squeeze())
+    # # plot_vector_field(duffing_env.dynamics, x_range=10)
+    # plot_vector_field(sim_vec_env.dynamics, x_range=5)
+    # plt.plot(to_np(z[0])[:, 0], to_np(z[0])[:, 1], alpha=0.7, label="true")
+    # plt.plot(to_np(z_hat[0])[:, 0], to_np(z_hat[0])[:, 1], alpha=0.7, label="model")
+    # plt.legend()
+    # plt.show()
+    # y = ro["obs"]
+    # plt.plot(to_np(y[0])[:, :5])
+    # plt.show()
+    
+    
+    # J = (
+    #     lambda x: ((decoder.jacobian(x) @ Fe_true(x, e)).mT @ (decoder.jacobian(x) @ Fe_true(x, e)))[
+    #         0, 0
+    #     ]
+    #     .diag()
+    #     .sum()
+    # )
+    
+    # # Create heatmap of Fisher Information
+    # grid_size = 20
+    # x = torch.linspace(-2, 2, grid_size)
+    # y = torch.linspace(-2, 2, grid_size)
+    # X, Y = torch.meshgrid(x, y)
+    # Z = torch.zeros_like(X)
+    # for i in range(grid_size):
+    #     for j in range(grid_size):
+    #         pos = torch.tensor([[X[i, j], Y[i, j]]], device=device)
+    #         Z[i, j] = torch.log(J(pos)).item()
+    # plt.figure(figsize=(6, 5))
+    # plt.contourf(X.cpu(), Y.cpu(), Z.cpu(), levels=50, cmap="viridis")
+    # plt.colorbar(label="Fisher Information")
+    # plt.title("Fisher Information Heatmap")
+    # plt.xlabel("x1")
+    # plt.ylabel("x2")
+    # plt.show()
+    
+    
+    # %%  Debugging
+    base_dir = ensure_dir(
+        os.path.join(os.path.dirname(__file__), "../../results", "active_filtering_embedding")
     )
-    torch.save(Fe_net.state_dict(), Fe_model_path)
-Fe_net.eval()
-
-Fz_net = Amortized_Jacobian(d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, device=device)
-Fz_model_path = os.path.join(os.path.dirname(__file__), "models", "duffing_amortized_Fz.pth")
-if os.path.exists(Fz_model_path):
-    Fz_net.load_state_dict(torch.load(Fz_model_path, map_location=device))
-    print("Loaded pretrained Fz model from", Fz_model_path)
-else:
-    fz_ds = FzDataset(meta_dynamics, 1000, z_sampler, e_sampler, device)
-    Fz_net = train_jacobian(
-        fz_ds, d_latent=2, d_embed=2, d_hidden=64, n_hidden=1, curv_loss=0.0, device="cpu"
+    
+    meta_dynamics = MetaDynamics(hypernet_dynamics, mean_dynamics)
+    dz, de, du, dy = 2, 2, 2, 50
+    dt = 0.01
+    alpha = 10
+    action_strength = 0.5
+    noise_scale = 0.1
+    torch.manual_seed(70)
+    # torch.manual_seed(10)
+    e = e_sampler(1)
+    a, b = e.reshape(-1)
+    # ------------------------------------------------------------------------------
+    # Action Model
+    # ------------------------------------------------------------------------------
+    action_model = actdyn.environment.action.IdentityActionEncoder(
+        action_dim=du,
+        latent_dim=dz,
+        action_bounds=[-action_strength * alpha, action_strength * alpha],
+        device=device,
     )
-    torch.save(Fz_net.state_dict(), Fz_model_path)
-Fz_net.eval()
+    # ------------------------------------------------------------------------------
+    # Observation Model
+    # ------------------------------------------------------------------------------
+    obs_model = actdyn.environment.observation.IdentityObservation(
+        obs_dim=dy, latent_dim=dz, device=device
+    )
+    obs_model = actdyn.environment.observation.LinearObservation(
+        obs_dim=dy,
+        latent_dim=dz,
+        noise_scale=noise_scale,
+        noise_type="gaussian",
+        device=device,
+    )
+    
+    # ------------------------------------------------------------------------------
+    # Environment
+    # ------------------------------------------------------------------------------
+    duffing_env = actdyn.VectorFieldEnv(
+        "duffing",
+        x_range=5,
+        dyn_params=torch.tensor([a, b, 0.1]),
+        dt=dt,
+        alpha=alpha,
+        Q=noise_scale,
+        action_bounds=[action_model.action_space.low, action_model.action_space.high],
+        device=device,
+    )
+    env = actdyn.environment.EnvWrapper(duffing_env, obs_model, action_model, dt=dt, device=device)
+    # ------------------------------------------------------------------------------
+    # Decoder with Gaussian Noise
+    # ------------------------------------------------------------------------------
+    mapping = actdyn.models.decoder.LinearMapping(latent_dim=dz, obs_dim=dy, device=device)
+    # mapping = actdyn.models.decoder.LogLinearMapping(latent_dim=dz, obs_dim=dy, dt=dt, device=device)
+    noise = actdyn.models.decoder.GaussianNoise(obs_dim=dy, sigma=0.01, device=device)
+    # noise = actdyn.models.decoder.PoissonNoise(obs_dim=dy, sigma=0.01, device=device)
+    decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
+    # ------------------------------------------------------------------------------
+    # Model Components - Dynamics and model
+    # ------------------------------------------------------------------------------
+    sim_vec_env = actdyn.VectorFieldEnv(
+        "duffing",
+        x_range=5,
+        dyn_params=torch.tensor([0, 0, 0.1]),
+        dt=dt,
+        alpha=alpha,
+        Q=noise_scale,
+        device=device,
+    )
+    dynamics = actdyn.models.dynamics.FunctionDynamics(
+        state_dim=dz, dt=env.dt, dynamics_fn=sim_vec_env.dynamics, device=device
+    )
+    dynamics.logvar = nn.Parameter(torch.log(torch.ones(1, dz) * noise_scale).to(device))
+    
+    sigma_0 = 1e-6
+    e_bel = {
+        "m": torch.ones(1, de, device=device),
+        "P": sigma_0 * torch.eye(de, device=device).unsqueeze(0),
+        "L": 1 / sigma_0 * torch.eye(de, device=device).unsqueeze(0),
+    }
+    
+    # dynamics.set_params(e_bel["m"])
+    
+    model = actdyn.models.FilteringEmbedding(
+        dynamics=dynamics,
+        decoder=decoder,
+        e=e_bel,
+        action_encoder=action_model,
+        Fe=Fe_true,
+        Fz=Fz_true,
+        device=device,
+    )
+    model.set_params(e_bel["m"])
+    # model.set_params(e)
+    
+    # ------------------------------------------------------------------------------
+    # Model Components - Policy
+    # ------------------------------------------------------------------------------
+    emb_metric = actdyn.metrics.information.EmbeddingFisherMetric(
+        model=model, Fe_net=Fe_true, Fz_net=Fz_true
+    )
+    mpc_policy = actdyn.policy.mpc.MpcICem(
+        metric=emb_metric,
+        model=model,
+        device=device,
+        horizon=20,
+        num_iterations=10,
+        num_samples=20,
+        num_elite=5,
+        chunk=5,
+        verbose=False,
+    )
+    step_policy = actdyn.policy.StepPolicy(action_space=env.action_space, step_size=50, device=device)
+    random_policy = actdyn.policy.RandomPolicy(action_space=env.action_space, device=device)
+    off_policy = actdyn.policy.OffPolicy(action_space=env.action_space, device=device)
+    # ------------------------------------------------------------------------------
+    # Model Components - Agent and Experiment
+    # ------------------------------------------------------------------------------
+    # agent = actdyn.AsyncAgent(env=env, model=model, policy=mpc_policy, device=device, buffer_length=10)
+    agent = actdyn.Agent(env=env, model=model, policy=mpc_policy, device=device)
+    
+    exp_config = ExperimentConfig.from_yaml(os.path.join(os.path.dirname(__file__), "conf/config.yaml"))
+    exp_config.results_dir = base_dir
+    exp_config.training.total_steps = 1000
+    experiment = actdyn.core.experiment.MetaEmbeddingExperiment(
+        agent=agent,
+        config=exp_config,
+    )
+    
+    decoder.set_params(obs_model)
+    experiment.run()
+    # agent.reset(seed=1)
+    # model.set_params(e)
+    # model._state = agent._env_state
+    # agent._model_state = agent._env_state
+    # model.z["m"] = agent._env_state
+    
+    # # # 2. Execute
+    # for _ in range(99):
+    #     action = agent.plan()
+    #     transition, done = agent.step(action)
+    
+    print(f"True embedding: {e}, Learned embedding: {model.e['m']}")
+    
+    # %%
+    # %%
+    ro = save_load.load_and_concatenate_rollouts(os.path.join(base_dir, "rollouts"))
+    # ro = experiment.rollout
+    z = ro["env_state"]
+    z_hat = ro["model_state"]
+    sim_vec_env.set_params(model.embedding.squeeze())
+    # plot_vector_field(duffing_env.dynamics, x_range=10)
+    plot_vector_field(sim_vec_env.dynamics, x_range=5)
+    plt.plot(to_np(z[0])[:, 0], to_np(z[0])[:, 1], alpha=0.7, label="true")
+    plt.plot(to_np(z_hat[0])[:, 0], to_np(z_hat[0])[:, 1], alpha=0.7, label="model")
+    plt.legend()
+    plt.show()
+    y = ro["obs"]
+    plt.plot(to_np(y[0])[:, :5])
+    plt.show()
+    
+    
+    J = (
+        lambda x: ((decoder.jacobian(x) @ Fe_true(x, e)).mT @ (decoder.jacobian(x) @ Fe_true(x, e)))[
+            0, 0
+        ]
+        .diag()
+        .sum()
+    )
+    
+    # Create heatmap of Fisher Information
+    grid_size = 20
+    x = torch.linspace(-2, 2, grid_size)
+    y = torch.linspace(-2, 2, grid_size)
+    X, Y = torch.meshgrid(x, y)
+    Z = torch.zeros_like(X)
+    for i in range(grid_size):
+        for j in range(grid_size):
+            pos = torch.tensor([[X[i, j], Y[i, j]]], device=device)
+            Z[i, j] = torch.log(J(pos)).item()
+    plt.figure(figsize=(6, 5))
+    plt.contourf(X.cpu(), Y.cpu(), Z.cpu(), levels=50, cmap="viridis")
+    plt.colorbar(label="Fisher Information")
+    plt.title("Fisher Information Heatmap")
+    plt.xlabel("x1")
+    plt.ylabel("x2")
+    plt.show()
 
-# %% (Pretrain) Test Amortized Jacobian Network (Tested)
-if False:
-    for i in range(1):
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-
-        axs = axs.flatten()
-        z = z_sampler(1).to(device)
-        e = e_sampler(1).to(device)
-        Fe_meta = jacobian_wrt_param(meta_dynamics, [z, e], 1).cpu().detach().squeeze()
-        Fe_hat = Fe_net(z, e).cpu().detach().squeeze() * 10
-        Fe_star = Fe_true(z, e).cpu().detach().squeeze() * 10
-
-        args = {"head_width": 0.7, "width": 0.3}
-        axs[0].axis("equal")
-        axs[0].arrow(0, 0, Fe_meta[0, 0], Fe_meta[1, 0], color="r", label="Meta", **args)
-        axs[0].arrow(0, 0, Fe_meta[0, 1], Fe_meta[1, 1], color="r", **args, ls="--")
-        axs[0].arrow(0, 0, Fe_hat[0, 0], Fe_hat[1, 0], color="g", label="Amort.", **args)
-        axs[0].arrow(0, 0, Fe_hat[0, 1], Fe_hat[1, 1], color="g", **args, ls="--")
-        axs[0].arrow(0, 0, Fe_star[0, 0], Fe_star[1, 0], color="b", label="True", **args)
-        axs[0].arrow(0, 0, Fe_star[0, 1], Fe_star[1, 1], color="b", **args, ls="--")
-        axs[0].legend()
-        axs[0].set_title("Fe Comparison")
-        axs[1].axis("equal")
-
-        Fz_meta = jacobian_wrt_param(meta_dynamics, [z, e], 0).cpu().detach().squeeze()
-        Fz_hat = Fz_net(z, e).cpu().detach().squeeze() * 10
-        Fz_star = Fz_true(z, e).cpu().detach().squeeze() * 10
-        axs[1].arrow(0, 0, Fz_meta[0, 0], Fz_meta[1, 0], color="r", label="Meta", **args)
-        axs[1].arrow(0, 0, Fz_meta[0, 1], Fz_meta[1, 1], color="r", **args, ls="--")
-        axs[1].arrow(0, 0, Fz_hat[0, 0], Fz_hat[1, 0], color="g", label="Amort.", **args)
-        axs[1].arrow(0, 0, Fz_hat[0, 1], Fz_hat[1, 1], color="g", **args, ls="--")
-        axs[1].arrow(0, 0, Fz_star[0, 0], Fz_star[1, 0], color="b", label="True", **args)
-        axs[1].arrow(0, 0, Fz_star[0, 1], Fz_star[1, 1], color="b", **args, ls="--")
-        axs[1].legend()
-        axs[1].set_title("Fz Comparison")
-        plt.show()
-
-
-# %% EKF Test with Experiment Config
-# base_dir = os.path.join(os.path.dirname(__file__), "../../results", "active_filtering_embedding")
-# if not os.path.exists(base_dir):
-#     os.makedirs(base_dir)
-
-# meta_dynamics = MetaDynamics(hypernet_dynamics, mean_dynamics)
-# dz, de, du, dy = 2, 2, 2, 50
-# dt = 0.05
-# alpha = 1
-# action_strength = 0.5
-# torch.manual_seed(7)
-# # torch.manual_seed(10)
-# e = e_sampler(1)
-# a, b = e.reshape(-1)
-# # ------------------------------------------------------------------------------
-# # Action Model
-# # ------------------------------------------------------------------------------
-# action_model = actdyn.environment.action.IdentityActionEncoder(
-#     action_dim=du,
-#     latent_dim=dz,
-#     action_bounds=[-action_strength * alpha, action_strength * alpha],
-#     device=device,
-# )
-# # ------------------------------------------------------------------------------
-# # Observation Model
-# # ------------------------------------------------------------------------------
-# obs_model = actdyn.environment.observation.LinearObservation(
-#     obs_dim=dy,
-#     latent_dim=dz,
-#     noise_scale=0.1,
-#     noise_type="gaussian",
-#     device=device,
-# )
-# # obs_model = actdyn.environment.observation.LogLinearObservation(
-# #     obs_dim=dy,
-# #     latent_dim=dz,
-# #     noise_scale=0.1,
-# #     noise_type="poisson",
-# #     dt=dt,
-# #     device=device,
-# # )
-
-# # C = obs_model.network[0].weight.detach()
-# # C[:, 0] = -torch.abs(C[:, 0])
-# # C[:, 1] = torch.abs(C[:, 1])
-# # C = C / torch.norm(C, dim=1, keepdim=True)  # Normalize rows of C
-# # C *= 1
-# # mean_firing = 1
-# # bias = torch.log(mean_firing * torch.ones(dy, device=device)) - 1 / 2
-
-# # obs_model.network[0].bias = nn.Parameter(bias)
-# # obs_model.network[0].weight = nn.Parameter(C)
-
-
-# # ------------------------------------------------------------------------------
-# # Environment
-# # ------------------------------------------------------------------------------
-# duffing_env = actdyn.VectorFieldEnv(
-#     "duffing",
-#     x_range=5,
-#     dyn_param=torch.tensor([a, b, 0.1]),
-#     dt=dt,
-#     alpha=alpha,
-#     noise_scale=0.01,
-#     action_bounds=[action_model.action_space.low, action_model.action_space.high],
-#     device=device,
-# )
-# env = actdyn.environment.GymObservationWrapper(
-#     duffing_env, obs_model, action_model, dt=dt, device=device
-# )
-# # ------------------------------------------------------------------------------
-# # Decoder with Gaussian Noise
-# # ------------------------------------------------------------------------------
-# mapping = actdyn.models.decoder.LinearMapping(latent_dim=dz, obs_dim=dy, device=device)
-# # mapping = actdyn.models.decoder.LogLinearMapping(latent_dim=dz, obs_dim=dy, dt=dt, device=device)
-# noise = actdyn.models.decoder.GaussianNoise(obs_dim=dy, sigma=0.01, device=device)
-# # noise = actdyn.models.decoder.PoissonNoise(obs_dim=dy, sigma=0.01, device=device)
-# decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
-# # ------------------------------------------------------------------------------
-# # Model Components - Dynamics and model
-# # ------------------------------------------------------------------------------
-# sim_vec_env = actdyn.VectorFieldEnv(
-#     "duffing",
-#     x_range=5,
-#     dyn_param=torch.tensor([0, 0, 0.1]),
-#     dt=dt,
-#     alpha=alpha,
-#     noise_scale=0.01,
-#     device=device,
-# )
-# # dynamics = actdyn.models.dynamics.FunctionDynamics(
-# #     state_dim=dz, dt=env.dt, dynamics_fn=meta_dynamics, device=device
-# # )
-# dynamics = actdyn.models.dynamics.FunctionDynamics(
-#     state_dim=dz, dt=env.dt, dynamics_fn=sim_vec_env.dynamics, device=device
-# )
-
-# sigma_0 = 0.01
-# e_bel = {
-#     "m": torch.ones(1, de, device=device),
-#     "P": sigma_0 * torch.eye(de, device=device).unsqueeze(0),
-#     "L": 1 / sigma_0 * torch.eye(de, device=device).unsqueeze(0),
-# }
-
-# dynamics.set_params(e_bel["m"])
-# dynamics.set_params(e)
-# model = actdyn.models.FilteringEmbedding(
-#     dynamics=dynamics,
-#     decoder=decoder,
-#     e=e_bel,
-#     action_encoder=action_model,
-#     Fe=Fe_true,
-#     Fz=Fz_true,
-#     device=device,
-# )
-
-# # ------------------------------------------------------------------------------
-# # Model Components - Policy
-# # ------------------------------------------------------------------------------
-# emb_metric = actdyn.metrics.information.EmbeddingFisherMetric(
-#     model=model, Fe_net=Fe_true, Fz_net=Fz_true
-# )
-# mpc_policy = actdyn.policy.mpc.MpcICem(
-#     metric=emb_metric,
-#     model=model,
-#     device=device,
-#     horizon=50,
-#     num_iterations=10,
-#     num_samples=20,
-#     num_elite=5,
-#     chunk=5,
-#     verbose=False,
-# )
-# step_policy = actdyn.policy.StepPolicy(action_space=env.action_space, step_size=20, device=device)
-# random_policy = actdyn.policy.RandomPolicy(action_space=env.action_space, device=device)
-# # ------------------------------------------------------------------------------
-# # Model Components - Agent and Experiment
-# # ------------------------------------------------------------------------------
-# agent = actdyn.Agent(
-#     env=env,
-#     model=model,
-#     policy=mpc_policy,
-#     device=device,
-# )
-
-# exp_config = ExperimentConfig.from_yaml(os.path.join(os.path.dirname(__file__), "conf/config.yaml"))
-# exp_config.results_dir = base_dir
-# experiment = actdyn.core.experiment.MetaEmbeddingExperiment(
-#     agent=agent,
-#     config=exp_config,
-# )
-
-# decoder.set_params(obs_model)
-# experiment.run()
-
-
-# # %
-# ro = save_load.load_and_concatenate_rollouts(os.path.join(base_dir, "rollouts"))
-# # ro = experiment.rollout
-# z = ro["env_state"]
-# z_hat = ro["model_state"]
-# sim_vec_env.set_params(model.embedding.squeeze())
-# # plot_vector_field(duffing_env.dynamics, x_range=10)
-# plot_vector_field(sim_vec_env.dynamics, x_range=5)
-# plt.plot(to_np(z[0])[:, 0], to_np(z[0])[:, 1], alpha=0.7, label="true")
-# plt.plot(to_np(z_hat[0])[:, 0], to_np(z_hat[0])[:, 1], alpha=0.7, label="model")
-# plt.legend()
-# plt.show()
-# y = ro["obs"]
-# plt.plot(to_np(y[0])[:, :5])
-# plt.show()
-
-
-# J = (
-#     lambda x: ((decoder.jacobian(x) @ Fe_true(x, e)).mT @ (decoder.jacobian(x) @ Fe_true(x, e)))[
-#         0, 0
-#     ]
-#     .diag()
-#     .sum()
-# )
-
-# # Create heatmap of Fisher Information
-# grid_size = 20
-# x = torch.linspace(-2, 2, grid_size)
-# y = torch.linspace(-2, 2, grid_size)
-# X, Y = torch.meshgrid(x, y)
-# Z = torch.zeros_like(X)
-# for i in range(grid_size):
-#     for j in range(grid_size):
-#         pos = torch.tensor([[X[i, j], Y[i, j]]], device=device)
-#         Z[i, j] = torch.log(J(pos)).item()
-# plt.figure(figsize=(6, 5))
-# plt.contourf(X.cpu(), Y.cpu(), Z.cpu(), levels=50, cmap="viridis")
-# plt.colorbar(label="Fisher Information")
-# plt.title("Fisher Information Heatmap")
-# plt.xlabel("x1")
-# plt.ylabel("x2")
-# plt.show()
-
-
-# %%  Debugging
-base_dir = os.path.join(os.path.dirname(__file__), "../../results", "active_filtering_embedding")
-if not os.path.exists(base_dir):
-    os.makedirs(base_dir)
-
-meta_dynamics = MetaDynamics(hypernet_dynamics, mean_dynamics)
-dz, de, du, dy = 2, 2, 2, 50
-dt = 0.01
-alpha = 10
-action_strength = 0.5
-noise_scale = 0.1
-torch.manual_seed(70)
-# torch.manual_seed(10)
-e = e_sampler(1)
-a, b = e.reshape(-1)
-# ------------------------------------------------------------------------------
-# Action Model
-# ------------------------------------------------------------------------------
-action_model = actdyn.environment.action.IdentityActionEncoder(
-    action_dim=du,
-    latent_dim=dz,
-    action_bounds=[-action_strength * alpha, action_strength * alpha],
-    device=device,
-)
-# ------------------------------------------------------------------------------
-# Observation Model
-# ------------------------------------------------------------------------------
-obs_model = actdyn.environment.observation.IdentityObservation(
-    obs_dim=dy, latent_dim=dz, device=device
-)
-obs_model = actdyn.environment.observation.LinearObservation(
-    obs_dim=dy,
-    latent_dim=dz,
-    noise_scale=noise_scale,
-    noise_type="gaussian",
-    device=device,
-)
-
-# ------------------------------------------------------------------------------
-# Environment
-# ------------------------------------------------------------------------------
-duffing_env = actdyn.VectorFieldEnv(
-    "duffing",
-    x_range=5,
-    dyn_params=torch.tensor([a, b, 0.1]),
-    dt=dt,
-    alpha=alpha,
-    Q=noise_scale,
-    action_bounds=[action_model.action_space.low, action_model.action_space.high],
-    device=device,
-)
-env = actdyn.environment.EnvWrapper(duffing_env, obs_model, action_model, dt=dt, device=device)
-# ------------------------------------------------------------------------------
-# Decoder with Gaussian Noise
-# ------------------------------------------------------------------------------
-mapping = actdyn.models.decoder.LinearMapping(latent_dim=dz, obs_dim=dy, device=device)
-# mapping = actdyn.models.decoder.LogLinearMapping(latent_dim=dz, obs_dim=dy, dt=dt, device=device)
-noise = actdyn.models.decoder.GaussianNoise(obs_dim=dy, sigma=0.01, device=device)
-# noise = actdyn.models.decoder.PoissonNoise(obs_dim=dy, sigma=0.01, device=device)
-decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
-# ------------------------------------------------------------------------------
-# Model Components - Dynamics and model
-# ------------------------------------------------------------------------------
-sim_vec_env = actdyn.VectorFieldEnv(
-    "duffing",
-    x_range=5,
-    dyn_params=torch.tensor([0, 0, 0.1]),
-    dt=dt,
-    alpha=alpha,
-    Q=noise_scale,
-    device=device,
-)
-dynamics = actdyn.models.dynamics.FunctionDynamics(
-    state_dim=dz, dt=env.dt, dynamics_fn=sim_vec_env.dynamics, device=device
-)
-dynamics.logvar = nn.Parameter(torch.log(torch.ones(1, dz) * noise_scale).to(device))
-
-sigma_0 = 1e-6
-e_bel = {
-    "m": torch.ones(1, de, device=device),
-    "P": sigma_0 * torch.eye(de, device=device).unsqueeze(0),
-    "L": 1 / sigma_0 * torch.eye(de, device=device).unsqueeze(0),
-}
-
-# dynamics.set_params(e_bel["m"])
-
-model = actdyn.models.FilteringEmbedding(
-    dynamics=dynamics,
-    decoder=decoder,
-    e=e_bel,
-    action_encoder=action_model,
-    Fe=Fe_true,
-    Fz=Fz_true,
-    device=device,
-)
-model.set_params(e_bel["m"])
-# model.set_params(e)
-
-# ------------------------------------------------------------------------------
-# Model Components - Policy
-# ------------------------------------------------------------------------------
-emb_metric = actdyn.metrics.information.EmbeddingFisherMetric(
-    model=model, Fe_net=Fe_true, Fz_net=Fz_true
-)
-mpc_policy = actdyn.policy.mpc.MpcICem(
-    metric=emb_metric,
-    model=model,
-    device=device,
-    horizon=20,
-    num_iterations=10,
-    num_samples=20,
-    num_elite=5,
-    chunk=5,
-    verbose=False,
-)
-step_policy = actdyn.policy.StepPolicy(action_space=env.action_space, step_size=50, device=device)
-random_policy = actdyn.policy.RandomPolicy(action_space=env.action_space, device=device)
-off_policy = actdyn.policy.OffPolicy(action_space=env.action_space, device=device)
-# ------------------------------------------------------------------------------
-# Model Components - Agent and Experiment
-# ------------------------------------------------------------------------------
-# agent = actdyn.AsyncAgent(env=env, model=model, policy=mpc_policy, device=device, buffer_length=10)
-agent = actdyn.Agent(env=env, model=model, policy=mpc_policy, device=device)
-
-exp_config = ExperimentConfig.from_yaml(os.path.join(os.path.dirname(__file__), "conf/config.yaml"))
-exp_config.results_dir = base_dir
-exp_config.training.total_steps = 1000
-experiment = actdyn.core.experiment.MetaEmbeddingExperiment(
-    agent=agent,
-    config=exp_config,
-)
-
-decoder.set_params(obs_model)
-experiment.run()
-# agent.reset(seed=1)
-# model.set_params(e)
-# model._state = agent._env_state
-# agent._model_state = agent._env_state
-# model.z["m"] = agent._env_state
-
-# # # 2. Execute
-# for _ in range(99):
-#     action = agent.plan()
-#     transition, done = agent.step(action)
-
-print(f"True embedding: {e}, Learned embedding: {model.e['m']}")
-
-# %%
-# %%
-ro = save_load.load_and_concatenate_rollouts(os.path.join(base_dir, "rollouts"))
-# ro = experiment.rollout
-z = ro["env_state"]
-z_hat = ro["model_state"]
-sim_vec_env.set_params(model.embedding.squeeze())
-# plot_vector_field(duffing_env.dynamics, x_range=10)
-plot_vector_field(sim_vec_env.dynamics, x_range=5)
-plt.plot(to_np(z[0])[:, 0], to_np(z[0])[:, 1], alpha=0.7, label="true")
-plt.plot(to_np(z_hat[0])[:, 0], to_np(z_hat[0])[:, 1], alpha=0.7, label="model")
-plt.legend()
-plt.show()
-y = ro["obs"]
-plt.plot(to_np(y[0])[:, :5])
-plt.show()
-
-
-J = (
-    lambda x: ((decoder.jacobian(x) @ Fe_true(x, e)).mT @ (decoder.jacobian(x) @ Fe_true(x, e)))[
-        0, 0
-    ]
-    .diag()
-    .sum()
-)
-
-# Create heatmap of Fisher Information
-grid_size = 20
-x = torch.linspace(-2, 2, grid_size)
-y = torch.linspace(-2, 2, grid_size)
-X, Y = torch.meshgrid(x, y)
-Z = torch.zeros_like(X)
-for i in range(grid_size):
-    for j in range(grid_size):
-        pos = torch.tensor([[X[i, j], Y[i, j]]], device=device)
-        Z[i, j] = torch.log(J(pos)).item()
-plt.figure(figsize=(6, 5))
-plt.contourf(X.cpu(), Y.cpu(), Z.cpu(), levels=50, cmap="viridis")
-plt.colorbar(label="Fisher Information")
-plt.title("Fisher Information Heatmap")
-plt.xlabel("x1")
-plt.ylabel("x2")
-plt.show()
+if __name__ == "__main__":
+    main()
