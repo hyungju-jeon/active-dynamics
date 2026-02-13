@@ -1,515 +1,539 @@
-# %%
-from operator import is_
-import os
-import numpy as np
+"""Utilities for analyzing experiment logs.
+
+The analyzer is designed for the remaining experiment tracks:
+- experiments/active_embedding
+- experiments/ciss
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
 from pathlib import Path
-from typing import Dict, List, Any, Optional
-import matplotlib.pyplot as plt
-from actdyn.utils.save_load import load_and_concatenate_logs, find_log_files
+from typing import Any, Optional
+
+import numpy as np
+
+MetricData = dict[str, list[Any]]
+ModelData = dict[str, MetricData]
+AllResults = dict[str, ModelData]
+
+DEFAULT_METRIC_KEYWORDS = ("elbo", "loss", "objective", "train")
 
 
-def load_log_file(file_path: Path) -> Dict[str, List[Any]]:
-    """Load a single log file and return as dictionary of lists."""
-    if file_path.suffix.lower() == ".json":
-        return load_log_file(file_path)
-    else:
-        print(f"Warning: Unsupported file format {file_path.suffix}")
+def _load_log_file(file_path: Path) -> MetricData:
+    """Load a JSON log file as a dict[str, list[Any]]."""
+    try:
+        with file_path.open("r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except Exception:
         return {}
 
+    if isinstance(payload, list):
+        if payload and isinstance(payload[0], dict):
+            data: MetricData = {}
+            for row in payload:
+                for key, value in row.items():
+                    data.setdefault(key, []).append(value)
+            return data
+        return {"values": payload}
 
-def load_seed_data(seed_dir: Path, is_offline: bool = False, verbose=False) -> Dict[str, List[Any]]:
-    """
-    Load and concatenate sequential log files for a single seed.
-    """
-    if verbose:
-        print(f"  Processing seed: {seed_dir.name}")
+    if isinstance(payload, dict):
+        if all(isinstance(v, list) for v in payload.values()):
+            return payload
+        return {k: [v] for k, v in payload.items()}
 
-    # Check if logs directory exists
+    return {"value": [payload]}
+
+
+def _find_log_files(logs_dir: Path, patterns: list[str]) -> list[Path]:
+    files: list[Path] = []
+    for pattern in patterns:
+        files.extend(logs_dir.glob(pattern))
+
+    def sort_key(path: Path):
+        import re
+
+        parts = re.split(r"(\d+)", path.name)
+        return [int(p) if p.isdigit() else p for p in parts]
+
+    return sorted(files, key=sort_key)
+
+
+def _concatenate_chunks(left: MetricData, right: MetricData) -> MetricData:
+    if not left:
+        return right
+    if set(left.keys()) != set(right.keys()):
+        raise ValueError("log chunk keys do not match")
+    return {key: left[key] + right[key] for key in left}
+
+
+def _seed_sort_key(path: Path) -> tuple[int, str]:
+    if path.name.startswith("seed_"):
+        raw = path.name.split("seed_", 1)[1]
+        if raw.isdigit():
+            return (int(raw), path.name)
+    return (10**9, path.name)
+
+
+def _seed_value(seed_dir: Path) -> int | str:
+    if seed_dir.name.startswith("seed_"):
+        raw = seed_dir.name.split("seed_", 1)[1]
+        if raw.isdigit():
+            return int(raw)
+    return seed_dir.name
+
+
+def _log_group_key(log_file: Path) -> str:
+    stem = log_file.stem
+    parts = stem.rsplit("_", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        return parts[0]
+    return stem
+
+
+def _safe_slug(value: str) -> str:
+    return value.replace("/", "_").replace(" ", "_")
+
+
+def _to_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float, np.number)):
+        return float(value)
+    return None
+
+
+def _numeric_columns(data: MetricData) -> list[str]:
+    columns: list[str] = []
+    for key, values in data.items():
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            if _to_float(value) is not None:
+                columns.append(key)
+                break
+    return columns
+
+
+def _match_metric_columns(data: MetricData, keywords: tuple[str, ...]) -> list[str]:
+    keywords_lc = tuple(k.lower() for k in keywords)
+    return [
+        col
+        for col in _numeric_columns(data)
+        if any(keyword in col.lower() for keyword in keywords_lc)
+    ]
+
+
+def _attach_seed_column(data: MetricData, seed: int | str) -> MetricData:
+    if not data:
+        return data
+
+    lengths = [len(v) for v in data.values() if isinstance(v, list)]
+    n_rows = max(lengths, default=0)
+    if n_rows == 0:
+        return data
+
+    out = {k: list(v) if isinstance(v, list) else v for k, v in data.items()}
+    if "seed" in out and isinstance(out["seed"], list):
+        seed_values = list(out["seed"])[:n_rows]
+        if len(seed_values) < n_rows:
+            seed_values.extend([seed] * (n_rows - len(seed_values)))
+        out["seed"] = seed_values
+    else:
+        out["seed"] = [seed] * n_rows
+    return out
+
+
+def load_seed_data(seed_dir: Path, is_offline: bool = False, verbose: bool = False) -> ModelData:
+    """Load and concatenate log chunks for a single seed directory."""
     logs_dir = seed_dir / "logs"
     if not logs_dir.exists():
-        print(f"Warning: logs directory not found in {seed_dir}")
+        if verbose:
+            print(f"Skip {seed_dir.name}: missing logs directory")
         return {}
 
-    # Use the refactored function from helpers
-    if is_offline:
-        pattern = "offline_*.json"
-        concatenated_data = load_and_concatenate_logs(logs_dir, pattern)
-    else:
-        concatenated_data = load_and_concatenate_logs(logs_dir)
+    patterns = ["offline_*.json"] if is_offline else ["log_*.json"]
+    log_files = _find_log_files(logs_dir, patterns=patterns)
+    if not log_files and not is_offline:
+        # Fallback for runs that only saved generic json names.
+        log_files = _find_log_files(logs_dir, patterns=["*.json"])
 
-    return concatenated_data
+    if not log_files:
+        if verbose:
+            print(f"Skip {seed_dir.name}: no matching log files")
+        return {}
+
+    grouped: ModelData = {}
+    for log_file in log_files:
+        chunk = _load_log_file(log_file)
+        if not chunk:
+            continue
+
+        group_key = _log_group_key(log_file)
+        if group_key not in grouped:
+            grouped[group_key] = chunk
+            continue
+
+        try:
+            grouped[group_key] = _concatenate_chunks(grouped[group_key], chunk)
+        except ValueError:
+            # If schemas differ, keep a separate key instead of discarding data.
+            grouped[log_file.stem] = chunk
+
+    seed = _seed_value(seed_dir)
+    for file_key in list(grouped.keys()):
+        grouped[file_key] = _attach_seed_column(grouped[file_key], seed)
+    return grouped
 
 
-def load_model_data(
-    model_dir: Path, is_offline: bool = False, verbose=False
-) -> Dict[str, Dict[str, List[Any]]]:
-    """Load and concatenate data for all seeds of a model."""
-    if verbose:
-        print(f"\nProcessing model: {model_dir.name}")
-    # Find all seed directories
-    seed_dirs = [d for d in model_dir.iterdir() if d.is_dir() and d.name.startswith("seed_")]
-
+def load_model_data(model_dir: Path, is_offline: bool = False, verbose: bool = False) -> ModelData:
+    """Load data for all seeds under one model directory."""
+    seed_dirs = sorted(
+        [d for d in model_dir.iterdir() if d.is_dir() and d.name.startswith("seed_")],
+        key=_seed_sort_key,
+    )
     if not seed_dirs:
-        print(f"  No seed directories found in {model_dir}")
         return {}
 
-    if verbose:
-        print(f"  Found {len(seed_dirs)} seed directories")
-
-    # Dictionary to store concatenated data for each log file type
-    model_data = {}
-    # Load data from each seed
-    for seed_dir in sorted(seed_dirs):
-        seed_data = load_seed_data(seed_dir, is_offline=is_offline)
-
-        # Concatenate with existing data
-        for file_key, data in seed_data.items():
+    model_data: ModelData = {}
+    for seed_dir in seed_dirs:
+        seed_data = load_seed_data(seed_dir, is_offline=is_offline, verbose=verbose)
+        for file_key, chunk in seed_data.items():
             if file_key not in model_data:
-                model_data[file_key] = []
-            model_data[file_key].append(data)
-
+                model_data[file_key] = chunk
+                continue
+            try:
+                model_data[file_key] = _concatenate_chunks(model_data[file_key], chunk)
+            except ValueError:
+                common = set(model_data[file_key]).intersection(chunk)
+                if not common:
+                    continue
+                left = {k: model_data[file_key][k] for k in common}
+                right = {k: chunk[k] for k in common}
+                model_data[file_key] = _concatenate_chunks(left, right)
     return model_data
 
 
-def analyze_all_models(exp_folder: str, is_offline: bool = False) -> Dict[str, Dict[str, Any]]:
-    """Analyze all models in the experiment folder."""
+def analyze_all_models(exp_folder: str, is_offline: bool = False) -> AllResults:
+    """Load all model logs under an experiment result folder."""
     base_path = Path(exp_folder)
     if not base_path.exists():
-        print(f"Error: Base folder does not exist: {exp_folder}")
+        print(f"Error: missing experiment folder: {base_path}")
         return {}
 
-    print(f"Analyzing results in: {exp_folder}")
-    # Find all model directories
-    model_dirs = [d for d in base_path.iterdir() if d.is_dir()]
-    if not model_dirs:
-        print("No model directories found!")
-        return {}
-    print(f"Found {len(model_dirs)} model directories")
-
-    results = {}
-    for model_dir in sorted(model_dirs):
-        model_name = model_dir.name
-        # Load concatenated data for this model
+    model_dirs = sorted([d for d in base_path.iterdir() if d.is_dir()])
+    results: AllResults = {}
+    for model_dir in model_dirs:
         model_data = load_model_data(model_dir, is_offline=is_offline)
-        if not model_data:
-            print(f"  No data loaded for {model_name}")
-            continue
-        results[model_name] = model_data
-
+        if model_data:
+            results[model_dir.name] = model_data
     return results
 
 
-def save_summary_results(
-    results: Dict[str, Dict[str, Any]], exp_folder: str, output_file: Optional[str] = None
-) -> Dict[str, List[Any]]:
-    """Save summary statistics to a JSON file."""
-    if output_file is None:
-        output_file = os.path.join(exp_folder, "analysis_summary.json")
+def prepare_metric_plot_data(data: MetricData, metric_col: str) -> dict[str, Any] | None:
+    """Compute aligned mean/std curves across seeds for one metric column."""
+    if metric_col not in data or "seed" not in data:
+        return None
 
-    return save_analysis_summary(results, output_file)
+    values = data.get(metric_col, [])
+    seeds = data.get("seed", [])
+    if not isinstance(values, list) or not isinstance(seeds, list):
+        return None
+    if not values or not seeds:
+        return None
 
+    n_rows = min(len(values), len(seeds))
+    step_values = data.get("step", None)
+    has_steps = isinstance(step_values, list) and len(step_values) >= n_rows
 
-def print_summary(results: Dict[str, Dict[str, Any]]):
-    """Print a summary of the analysis results."""
-    print("\n" + "=" * 80)
-    print("ANALYSIS SUMMARY")
-    print("=" * 80)
-
-    for model_name, model_results in results.items():
-        print(f"\nModel: {model_name}")
-        print("-" * 40)
-
-        stats = model_results["statistics"]
-        if not stats:
-            print("  No statistics computed")
+    per_seed: dict[int | str, dict[str, list[Any]]] = {}
+    for idx in range(n_rows):
+        seed = seeds[idx]
+        value = _to_float(values[idx])
+        if value is None:
             continue
 
-        for file_key, file_stats in stats.items():
-            print(f"\n  Log file: {file_key}")
+        if seed not in per_seed:
+            per_seed[seed] = {"values": [], "steps": []}
+        per_seed[seed]["values"].append(value)
+        if has_steps:
+            per_seed[seed]["steps"].append(step_values[idx])
 
-            # Group metrics by base name
-            metrics = {}
-            for key, value in file_stats.items():
-                if key.endswith("_mean"):
-                    metric_name = key[:-5]  # Remove '_mean'
-                    if metric_name not in metrics:
-                        metrics[metric_name] = {}
-                    metrics[metric_name]["mean"] = value
-                elif key.endswith("_std"):
-                    metric_name = key[:-4]  # Remove '_std'
-                    if metric_name not in metrics:
-                        metrics[metric_name] = {}
-                    metrics[metric_name]["std"] = value
-                elif key.endswith("_count_seeds"):
-                    metric_name = key[:-12]  # Remove '_count_seeds'
-                    if metric_name not in metrics:
-                        metrics[metric_name] = {}
-                    metrics[metric_name]["seeds"] = value
-
-            # Print metrics in a nice format
-            for metric_name, values in metrics.items():
-                mean_val = values.get("mean", "N/A")
-                std_val = values.get("std", "N/A")
-                seeds = values.get("seeds", "N/A")
-
-                if isinstance(mean_val, (int, float, np.number)) and isinstance(
-                    std_val, (int, float, np.number)
-                ):
-                    if not (np.isnan(mean_val) or np.isnan(std_val)):
-                        print(
-                            f"    {metric_name}: {mean_val:.4f} ± {std_val:.4f} (n={seeds} seeds)"
-                        )
-                    else:
-                        print(f"    {metric_name}: N/A ± N/A (n={seeds} seeds)")
-                else:
-                    print(f"    {metric_name}: {mean_val} ± {std_val} (n={seeds} seeds)")
-
-
-def plot_elbo_over_time(results: Dict[str, Dict[str, Any]], output_dir: Optional[str] = None):
-    """Plot ELBO over time with mean and shaded standard deviation area."""
-    # Note: exp_folder would need to be passed as parameter if output_dir is None
-
-    # Look for ELBO data in results
-    elbo_data = {}
-
-    for model_name, model_results in results.items():
-        data = model_results["data"]
-
-        # Look for files that might contain ELBO data
-        elbo_file_keys = []
-        for file_key in data.keys():
-            # Check if any columns contain 'elbo', 'loss', or 'objective'
-            file_data = data[file_key]
-            elbo_columns = []
-
-            for col_name in file_data.keys():
-                if any(
-                    keyword in col_name.lower()
-                    for keyword in ["elbo", "loss", "objective", "train"]
-                ):
-                    # Check if it's numeric
-                    if col_name in get_numeric_columns(file_data):
-                        elbo_columns.append(col_name)
-
-            if elbo_columns:
-                elbo_file_keys.append((file_key, elbo_columns))
-
-        if elbo_file_keys:
-            elbo_data[model_name] = elbo_file_keys
-
-    if not elbo_data:
-        print("No ELBO/loss data found for plotting")
-        return
-
-    print(f"\nGenerating ELBO plots...")
-
-    # Create plots for each model and each ELBO column
-    for model_name, file_data in elbo_data.items():
-        print(f"  Plotting ELBO for model: {model_name}")
-
-        for file_key, elbo_columns in file_data:
-            model_data = results[model_name]["data"][file_key]
-
-            for elbo_col in elbo_columns:
-                print(f"    Plotting {elbo_col} from {file_key}")
-
-                # Add debug info about the data
-                print(f"        Data shape: {len(model_data[elbo_col])} records")
-                if "step" in model_data:
-                    print(
-                        f"        Step range: {min(model_data['step'])}-{max(model_data['step'])}"
-                    )
-
-                # Prepare data for plotting
-                plot_data = prepare_elbo_plot_data(model_data, elbo_col)
-
-                if plot_data:
-                    print(
-                        f"        Plot data prepared: {len(plot_data['time_steps'])} points, {plot_data['n_seeds']} seeds"
-                    )
-
-                    # Create the plot
-                    _, ax = plt.subplots(figsize=(10, 6))
-
-                    # Plot mean line and shaded std area
-                    plot_elbo_curve(ax, plot_data, elbo_col, model_name)
-
-                    # Save plot
-                    safe_model_name = model_name.replace("/", "_").replace(" ", "_")
-                    safe_file_key = file_key.replace("/", "_").replace(" ", "_")
-                    safe_elbo_col = elbo_col.replace("/", "_").replace(" ", "_")
-
-                    plot_filename = (
-                        f"elbo_plot_{safe_model_name}_{safe_file_key}_{safe_elbo_col}.png"
-                    )
-                    if output_dir:
-                        plot_path = os.path.join(output_dir, plot_filename)
-                    else:
-                        plot_path = plot_filename
-
-                    plt.tight_layout()
-                    plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-                    plt.close()
-
-                    print(f"      Saved plot: {plot_filename}")
-                else:
-                    print(
-                        f"      No valid data for {elbo_col} (prepare_elbo_plot_data returned None)"
-                    )
-
-
-def prepare_elbo_plot_data(data: Dict[str, List[Any]], elbo_col: str) -> Optional[Dict[str, Any]]:
-    """Prepare ELBO data for plotting by computing mean and std across seeds."""
-    if elbo_col not in data or "seed" not in data:
+    if not per_seed:
         return None
 
-    # Check if we have step information (from sequential logs)
-    has_steps = "step" in data
-
-    # Group data by seed
-    seed_data = {}
-    for i, seed in enumerate(data["seed"]):
-        if seed not in seed_data:
-            seed_data[seed] = {"values": [], "steps": []}
-
-        if i < len(data[elbo_col]) and data[elbo_col][i] is not None:
-            seed_data[seed]["values"].append(data[elbo_col][i])
-            if has_steps and i < len(data["step"]):
-                seed_data[seed]["steps"].append(data["step"][i])
-            else:
-                seed_data[seed]["steps"].append(i)
-
-    if not seed_data:
-        return None
-
-    # If we have steps, use them for x-axis; otherwise use indices
+    ordered_seeds = sorted(per_seed.keys(), key=lambda s: str(s))
     if has_steps:
-        # Find common step range across all seeds
-        all_steps = set()
-        for seed_values in seed_data.values():
-            all_steps.update(seed_values["steps"])
+        all_steps: set[float] = set()
+        step_maps: list[dict[float, float]] = []
+        for seed in ordered_seeds:
+            pairs = zip(per_seed[seed]["steps"], per_seed[seed]["values"])
+            step_map: dict[float, float] = {}
+            for step, value in pairs:
+                step_f = _to_float(step)
+                if step_f is None:
+                    continue
+                step_map[step_f] = value
+            if step_map:
+                all_steps.update(step_map.keys())
+            step_maps.append(step_map)
 
-        common_steps = sorted(all_steps)
-
-        if not common_steps:
+        if not all_steps:
             return None
 
-        # Create aligned data for each seed
-        seed_arrays = []
-        valid_steps = []
+        ordered_steps = np.array(sorted(all_steps), dtype=np.float64)
+        matrix = np.full((len(ordered_seeds), len(ordered_steps)), np.nan, dtype=np.float64)
+        step_index = {step: i for i, step in enumerate(ordered_steps)}
+        for row_idx, seed_map in enumerate(step_maps):
+            for step, value in seed_map.items():
+                matrix[row_idx, step_index[step]] = value
 
-        for step in common_steps:
-            step_values = []
-            for seed, seed_values in seed_data.items():
-                if step in seed_values["steps"]:
-                    step_idx = seed_values["steps"].index(step)
-                    step_values.append(seed_values["values"][step_idx])
-                else:
-                    step_values.append(np.nan)
-
-            # Only keep steps where we have data from at least one seed
-            if not all(np.isnan(v) for v in step_values):
-                if not seed_arrays:
-                    seed_arrays = [[] for _ in range(len(seed_data))]
-
-                for i, val in enumerate(step_values):
-                    seed_arrays[i].append(val)
-                valid_steps.append(step)
-
-        if not seed_arrays or not valid_steps:
-            return None
-
-        # Convert to numpy arrays
-        seed_arrays = [np.array(arr) for arr in seed_arrays]
-        time_steps = np.array(valid_steps)
-
-    else:
-        # Use indices - find minimum length across all seeds
-        min_length = min(len(seed_values["values"]) for seed_values in seed_data.values())
-
-        if min_length == 0:
-            return None
-
-        # Create arrays for plotting
-        time_steps = np.arange(min_length)
-        seed_arrays = []
-
-        for seed, seed_values in seed_data.items():
-            # Take only the first min_length values to ensure all seeds have same length
-            seed_array = np.array(seed_values["values"][:min_length])
-            seed_arrays.append(seed_array)
-
-    # Handle case where we have varying lengths or NaN values
-    if has_steps:
-        # For step-based data, compute statistics ignoring NaN values
-        all_seeds_matrix = np.array(seed_arrays)  # Shape: (n_seeds, n_timesteps)
-
-        mean_values = np.nanmean(all_seeds_matrix, axis=0)
-        std_values = np.nanstd(all_seeds_matrix, axis=0)
-
-        # Remove time points where all seeds are NaN
+        mean_values = np.nanmean(matrix, axis=0)
+        std_values = np.nanstd(matrix, axis=0)
         valid_mask = ~np.isnan(mean_values)
         if not np.any(valid_mask):
             return None
 
-        time_steps = time_steps[valid_mask]
-        mean_values = mean_values[valid_mask]
-        std_values = std_values[valid_mask]
+        return {
+            "time_steps": ordered_steps[valid_mask],
+            "mean": mean_values[valid_mask],
+            "std": std_values[valid_mask],
+            "n_seeds": len(ordered_seeds),
+        }
 
-    else:
-        # For index-based data, all should have same length
-        all_seeds_data = np.stack(seed_arrays)  # Shape: (n_seeds, n_timesteps)
-        mean_values = np.mean(all_seeds_data, axis=0)
-        std_values = np.std(all_seeds_data, axis=0)
+    min_len = min(len(per_seed[seed]["values"]) for seed in ordered_seeds)
+    if min_len == 0:
+        return None
 
+    matrix = np.stack(
+        [np.array(per_seed[seed]["values"][:min_len], dtype=np.float64) for seed in ordered_seeds]
+    )
     return {
-        "time_steps": time_steps,
-        "mean": mean_values,
-        "std": std_values,
-        "n_seeds": len(seed_arrays),
+        "time_steps": np.arange(min_len),
+        "mean": np.mean(matrix, axis=0),
+        "std": np.std(matrix, axis=0),
+        "n_seeds": len(ordered_seeds),
     }
 
 
-def plot_elbo_curve(ax, plot_data: Dict[str, Any], elbo_col: str, model_name: str):
-    """Plot ELBO curve with mean line and shaded standard deviation area."""
+def plot_elbo_curve(ax, plot_data: dict[str, Any], metric_name: str, model_name: str) -> None:
+    """Plot mean/std metric curve for one model."""
     time_steps = plot_data["time_steps"]
     mean_values = plot_data["mean"]
     std_values = plot_data["std"]
     n_seeds = plot_data["n_seeds"]
 
-    # Plot mean line
-    ax.plot(time_steps, mean_values, linewidth=2, label=f"Mean (n={n_seeds} seeds)")
+    ax.plot(time_steps, mean_values, linewidth=2, label=f"Mean (n={n_seeds})")
+    ax.fill_between(time_steps, mean_values - std_values, mean_values + std_values, alpha=0.25)
 
-    # Plot shaded standard deviation area
-    ax.fill_between(
-        time_steps, mean_values - std_values, mean_values + std_values, alpha=0.3, label="±1 std"
-    )
-
-    # Formatting
     ax.set_xlabel("Training Steps")
-    ax.set_ylabel(elbo_col)
-    ax.set_title(f"{elbo_col} Over Time - {model_name}")
-    ax.legend()
+    ax.set_ylabel(metric_name)
+    ax.set_title(f"{metric_name} Over Time - {model_name}")
     ax.grid(True, alpha=0.3)
-
-    # Add some styling
+    ax.legend()
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
 
-    # Add some debug info
-    print(
-        f"        Plot range: steps {time_steps[0]:.0f}-{time_steps[-1]:.0f}, "
-        f"values {mean_values.min():.4f}-{mean_values.max():.4f}"
-    )
+
+def plot_elbo_over_time(
+    results: AllResults,
+    output_dir: Optional[str] = None,
+    keywords: tuple[str, ...] = DEFAULT_METRIC_KEYWORDS,
+) -> list[str]:
+    """Generate metric-over-time plots for each model/log group."""
+    import matplotlib.pyplot as plt
+
+    output_path = Path(output_dir or ".")
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    saved_paths: list[str] = []
+    for model_name, model_data in results.items():
+        for file_key, data in model_data.items():
+            metric_columns = _match_metric_columns(data, keywords=keywords)
+            for metric_col in metric_columns:
+                plot_data = prepare_metric_plot_data(data, metric_col)
+                if plot_data is None:
+                    continue
+
+                _, ax = plt.subplots(figsize=(10, 6))
+                plot_elbo_curve(ax, plot_data, metric_col, model_name)
+
+                filename = (
+                    f"metric_plot_{_safe_slug(model_name)}_{_safe_slug(file_key)}_"
+                    f"{_safe_slug(metric_col)}.png"
+                )
+                plot_path = output_path / filename
+                plt.tight_layout()
+                plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+                plt.close()
+                saved_paths.append(str(plot_path))
+    return saved_paths
 
 
 def plot_all_models_elbo_comparison(
-    results: Dict[str, Dict[str, Any]], output_dir: Optional[str] = None
-):
-    """Create comparison plots with all models on the same plot."""
-    if output_dir is None:
-        output_dir = exp_folder
+    results: AllResults,
+    output_dir: Optional[str] = None,
+    keywords: tuple[str, ...] = DEFAULT_METRIC_KEYWORDS,
+) -> list[str]:
+    """Generate comparison plots with all models for the same metric/log group."""
+    import matplotlib.pyplot as plt
 
-    # Collect ELBO data from all models
-    all_elbo_data = {}
+    output_path = Path(output_dir or ".")
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    for model_name, model_results in results.items():
-        data = model_results["data"]
+    grouped: dict[str, dict[str, dict[str, Any]]] = {}
+    for model_name, model_data in results.items():
+        for file_key, data in model_data.items():
+            for metric_col in _match_metric_columns(data, keywords=keywords):
+                plot_data = prepare_metric_plot_data(data, metric_col)
+                if plot_data is None:
+                    continue
+                key = f"{file_key}::{metric_col}"
+                grouped.setdefault(key, {})[model_name] = plot_data
 
-        for file_key, file_data in data.items():
-            elbo_columns = []
-            for col_name in file_data.keys():
-                if any(
-                    keyword in col_name.lower()
-                    for keyword in ["elbo", "loss", "objective", "train"]
-                ):
-                    if col_name in get_numeric_columns(file_data):
-                        elbo_columns.append(col_name)
+    saved_paths: list[str] = []
+    for key, by_model in grouped.items():
+        if len(by_model) < 2:
+            continue
 
-            for elbo_col in elbo_columns:
-                plot_data = prepare_elbo_plot_data(file_data, elbo_col)
-                if plot_data:
-                    key = f"{file_key}_{elbo_col}"
-                    if key not in all_elbo_data:
-                        all_elbo_data[key] = {}
-                    all_elbo_data[key][model_name] = plot_data
+        file_key, metric_col = key.split("::", 1)
+        _, ax = plt.subplots(figsize=(12, 8))
+        colors = plt.cm.get_cmap("tab10")(np.linspace(0, 1, len(by_model)))
 
-    # Create comparison plots
-    for data_key, model_data in all_elbo_data.items():
-        if len(model_data) > 1:  # Only create comparison if we have multiple models
-            _, ax = plt.subplots(figsize=(12, 8))
+        for idx, (model_name, plot_data) in enumerate(sorted(by_model.items())):
+            time_steps = plot_data["time_steps"]
+            mean_values = plot_data["mean"]
+            std_values = plot_data["std"]
+            n_seeds = plot_data["n_seeds"]
+            color = colors[idx]
 
-            colors = plt.cm.get_cmap("tab10")(np.linspace(0, 1, len(model_data)))
+            ax.plot(
+                time_steps,
+                mean_values,
+                linewidth=2,
+                color=color,
+                label=f"{model_name} (n={n_seeds})",
+            )
+            ax.fill_between(
+                time_steps,
+                mean_values - std_values,
+                mean_values + std_values,
+                alpha=0.2,
+                color=color,
+            )
 
-            for i, (model_name, plot_data) in enumerate(model_data.items()):
-                time_steps = plot_data["time_steps"]
-                mean_values = plot_data["mean"]
-                std_values = plot_data["std"]
-                n_seeds = plot_data["n_seeds"]
+        ax.set_xlabel("Training Steps")
+        ax.set_ylabel(metric_col)
+        ax.set_title(f"{metric_col} Comparison - {file_key}")
+        ax.grid(True, alpha=0.3)
+        ax.legend()
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
 
-                color = colors[i]
+        filename = f"metric_comparison_{_safe_slug(file_key)}_{_safe_slug(metric_col)}.png"
+        plot_path = output_path / filename
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        saved_paths.append(str(plot_path))
+    return saved_paths
 
-                # Plot mean line
-                ax.plot(
-                    time_steps,
-                    mean_values,
-                    linewidth=2,
-                    color=color,
-                    label=f"{model_name} (n={n_seeds})",
+
+def summarize_results(results: AllResults) -> dict[str, dict[str, dict[str, float]]]:
+    """Compute final-step summary stats for each model/log group/metric."""
+    summary: dict[str, dict[str, dict[str, float]]] = {}
+    for model_name, model_data in results.items():
+        summary[model_name] = {}
+        for file_key, data in model_data.items():
+            file_stats: dict[str, float] = {}
+            for metric_col in _numeric_columns(data):
+                if metric_col in {"seed", "step"}:
+                    continue
+                plot_data = prepare_metric_plot_data(data, metric_col)
+                if plot_data is None:
+                    continue
+                file_stats[f"{metric_col}_last_mean"] = float(plot_data["mean"][-1])
+                file_stats[f"{metric_col}_last_std"] = float(plot_data["std"][-1])
+                file_stats[f"{metric_col}_seed_count"] = float(plot_data["n_seeds"])
+            summary[model_name][file_key] = file_stats
+    return summary
+
+
+def save_summary_results(
+    results: AllResults, exp_folder: str, output_file: Optional[str] = None
+) -> dict[str, dict[str, dict[str, float]]]:
+    """Save summary statistics to a JSON file and return them."""
+    summary = summarize_results(results)
+    output_path = Path(output_file) if output_file else Path(exp_folder) / "analysis_summary.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+    return summary
+
+
+def print_summary(results: AllResults) -> None:
+    """Print compact final-step summary statistics."""
+    summary = summarize_results(results)
+    print("\n" + "=" * 80)
+    print("ANALYSIS SUMMARY")
+    print("=" * 80)
+
+    for model_name, model_summary in summary.items():
+        print(f"\nModel: {model_name}")
+        for file_key, stats in model_summary.items():
+            print(f"  Log group: {file_key}")
+            if not stats:
+                print("    No numeric metrics")
+                continue
+
+            metric_names = sorted(
+                set(
+                    key[: -len("_last_mean")]
+                    for key in stats
+                    if key.endswith("_last_mean")
                 )
+            )
+            for metric in metric_names:
+                mean = stats.get(f"{metric}_last_mean")
+                std = stats.get(f"{metric}_last_std")
+                n = int(stats.get(f"{metric}_seed_count", 0.0))
+                if mean is None or std is None:
+                    continue
+                print(f"    {metric}: {mean:.4f} ± {std:.4f} (n={n})")
 
-                # Plot shaded std area
-                ax.fill_between(
-                    time_steps,
-                    mean_values - std_values,
-                    mean_values + std_values,
-                    alpha=0.2,
-                    color=color,
-                )
 
-            # Formatting
-            file_key, elbo_col = data_key.rsplit("_", 1)
-            ax.set_xlabel("Time Steps")
-            ax.set_ylabel(elbo_col)
-            ax.set_title(f"{elbo_col} Comparison - All Models ({file_key})")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Analyze experiment result logs.")
+    parser.add_argument("exp_folder", type=str, help="Path to result root directory")
+    parser.add_argument("--offline", action="store_true", help="Use offline_* logs")
+    parser.add_argument("--summary", action="store_true", help="Print summary to stdout")
+    parser.add_argument("--plot", action="store_true", help="Generate per-model plots")
+    parser.add_argument("--compare", action="store_true", help="Generate model comparison plots")
+    parser.add_argument("--output-dir", type=str, default=None, help="Output directory for plots")
+    parser.add_argument(
+        "--save-summary",
+        action="store_true",
+        help="Save summary JSON to <exp_folder>/analysis_summary.json",
+    )
+    args = parser.parse_args()
 
-            # Save comparison plot
-            safe_data_key = data_key.replace("/", "_").replace(" ", "_")
-            plot_filename = f"elbo_comparison_{safe_data_key}.png"
-            plot_path = os.path.join(output_dir, plot_filename)
+    results = analyze_all_models(args.exp_folder, is_offline=args.offline)
+    if not results:
+        print("No results found.")
+        return 1
 
-            plt.tight_layout()
-            plt.savefig(plot_path, dpi=300, bbox_inches="tight")
-            plt.close()
-
-            print(f"  Saved comparison plot: {plot_filename}")
+    if args.summary:
+        print_summary(results)
+    if args.save_summary:
+        save_summary_results(results, exp_folder=args.exp_folder)
+    if args.plot:
+        paths = plot_elbo_over_time(results, output_dir=args.output_dir)
+        print(f"Saved {len(paths)} plot(s).")
+    if args.compare:
+        paths = plot_all_models_elbo_comparison(results, output_dir=args.output_dir)
+        print(f"Saved {len(paths)} comparison plot(s).")
+    return 0
 
 
 if __name__ == "__main__":
-    """Main function to run the analysis."""
-    print("Starting hierarchical results analysis...")
-    exp_folder = Path("/home/hyungju/Desktop/active-dynamics/results/offline_debug/sweep")
-
-    # Analyze all models
-    results = analyze_all_models(exp_folder)
-
-    # if not results:
-    #     print("No results to analyze!")
-    #     return {}, {}
-
-    # # Print summary
-    # print_summary(results)
-
-    # # Save summary to CSV
-    # summary_data = save_summary_results(results)
-
-    # # Generate ELBO plots
-    # plot_elbo_over_time(results)
-    # plot_all_models_elbo_comparison(results)
-
-    # print(f"\nAnalysis complete!")
-    # print(f"Processed {len(results)} models")
+    raise SystemExit(main())
