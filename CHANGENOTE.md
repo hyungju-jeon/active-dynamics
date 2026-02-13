@@ -1,5 +1,37 @@
 # Change Notes
 
+## 2026-02-12 - Post-Legacy Cleanup and Single CLI Entry
+
+### Summary
+- Removed legacy experiment references and aligned the project around the active experiment tracks.
+- Added a single CLI entry point (`python -m actdyn`) for run/sweep/analyze workflows.
+- Enforced canonical config/registry key conventions and added a deterministic migration script.
+
+### Key Updates
+- Added `actdyn/cli.py` and `actdyn/__main__.py`.
+- Converted `experiments/run_experiment.py` and `experiments/run_hydra.py` to thin wrappers.
+- Removed legacy environment registrations that no longer have active experiment coverage.
+- Updated config schema to canonical keys:
+  - `enc_hidden_dims`, `enc_rnn_hidden_dims`, `map_hidden_dims`, `dyn_hidden_dims`, `act_hidden_dims`
+  - canonical string values like `log-linear`, `a-optimality`, `d-optimality`, `ensemble-disagreement`
+- Added `scripts/migrate_config_keys.py` for config migration.
+- Fixed safety/consistency issues:
+  - unsafe `eval` usage in Hydra integration replaced with `ast.literal_eval`
+  - resume path variable mismatch in `actdyn/core/experiment.py`
+  - recursion bug in `actdyn/models/model_wrapper.py`
+  - reduced hot-path cache clearing and deduplicated online loop logic in `actdyn/core/experiment.py`
+- Experiment cleanup/optimization:
+  - rewrote `experiments/analyze_results.py` with deterministic log grouping and robust summary/plot pipeline
+  - updated `actdyn analyze` integration to use the normalized analyzer output directly (`--summary`, `--plot`, `--compare`, `--save-summary`)
+  - removed per-step `torch.cuda.empty_cache()` calls from large experiment scripts
+  - consolidated duplicated experiment helper functions (`make_uniform_sampler`, `jacobian_wrt_param`) into `actdyn/utils/helper.py`
+  - cleaned notebook-artifact imports in experiment scripts and removed stray `True_` alias usage
+  - moved heavy experiment execution blocks behind script guards (`main()` or `if __name__ == "__main__"`) to avoid import-time side effects
+  - added shared runtime helpers (`actdyn/utils/runtime.py`) and applied them in core experiment scripts
+  - applied the same guard/runtime pattern to `experiments/active_embedding/exp_debug.py` and `experiments/active_embedding/exp_filtering_embedding.py`
+  - replaced wildcard helper imports in experiment scripts with explicit imports
+  - added analyzer/CLI smoke coverage (`tests/test_analyze_results.py`, `tests/test_cli_smoke.py`)
+
 ## 2026-01-17 - Device Handling, Agent Tests, and Docs
 
 ### Summary
@@ -62,7 +94,7 @@ fixed config parameter naming, and added **kwargs to base classes for flexibilit
 - `BaseMetric.aggregate()` with "sum" reduces the last dimension
 
 ### Remaining Issues
-- ~89 tests fail due to test ordering/isolation issues (pass individually, fail in sequence)
+- ~89 tests fail due to test execution-order and isolation issues (pass individually, fail in sequence)
 - Model integration tests need proper configuration matching between components
 
 ### Files Modified
@@ -136,7 +168,6 @@ The codebase uses two different naming conventions:
 - `tests/test_utils_save_load.py.skipped`: Skipped (tests non-existent `save_buffer`, `load_buffer` functions)
 
 #### Parameter Naming Fixes in Tests
-- `tests/test_acrobot.py`: Fixed `MLPEncoder` and `LinearActionEncoder` parameters
 - `tests/test_environment.py`: Fixed `BaseAction` and `BaseObservation` parameters to use `d_action`, `d_latent`, `d_obs`
 - `tests/test_core_agent.py`: Fixed parameter names:
   - `SimpleObsModel`: `obs_dim=10` → `d_obs=10`
@@ -162,7 +193,6 @@ The codebase uses two different naming conventions:
 - `actdyn/models/base.py`
 - `actdyn/models/dynamics.py`
 - `actdyn/models/model.py`
-- `tests/test_acrobot.py`
 - `tests/test_config.py`
 - `tests/test_core_agent.py`
 - `tests/test_core_experiment.py`

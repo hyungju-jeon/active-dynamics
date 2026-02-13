@@ -340,16 +340,6 @@ VectorFieldEnv(dynamics_type, d_state, Q, dt, device, dyn_params, ...)
     .compute_dynamics(state) -> velocity
 ```
 
-#### `cartpole.py` - CartPole Variants
-
-| Class | Description |
-|-------|-------------|
-| `ContinuousCartPoleEnv` | Standard cartpole with continuous actions |
-| `ContinuousCartPoleEnv_partial` | Partial observability variant |
-| `ContinuousCartPoleEnv_angle` | Angle-focused observation |
-
-**Features:** Circular track topology, friction modeling, pygame rendering.
-
 #### `env_wrapper.py` - Environment Wrapper
 
 **Purpose:** Adds observation/action encoding and converts numpy ↔ torch.
@@ -587,26 +577,28 @@ register_actdyn_configs()  # Register with ConfigStore
 #### Structure
 ```
 experiments/
-├── run_experiment.py      # Hydra-based experiment runner
-├── run_hydra.py          # Alternative Hydra entry point
-├── analyze_results.py    # Post-experiment analysis
-├── active_embedding/     # Embedding learning experiments
-│   ├── conf/            # Hydra config files
-│   ├── exp_active.py
-│   └── exp_filtering_embedding.py
-├── continuous_cartpole/  # CartPole experiments
-├── ciss/                 # CISS experiments
-├── ring/                 # Ring attractor experiments
-└── VJF/                  # Variational Joint Filtering
+├── run_experiment.py      # Thin wrapper -> `python -m actdyn run`
+├── run_hydra.py           # Thin wrapper -> `python -m actdyn sweep`
+├── analyze_results.py     # Analysis utility used by `actdyn analyze`
+├── active_embedding/      # Active embedding experiments
+├── ciss/                  # CISS experiments
+├── _hydra_templates/      # Shared config templates
 ```
 
 #### Running Experiments
 ```bash
-# Via Hydra
-python experiments/run_experiment.py --config-name=my_config
+# Primary entry point
+python -m actdyn run --config experiments/active_embedding/conf/config.yaml
 
-# Direct Python
-python experiments/active_embedding/exp_active.py
+# Sweep
+python -m actdyn sweep --config-path experiments/ciss/conf
+
+# Analyze
+python -m actdyn analyze results
+
+# Legacy wrappers (compatibility)
+python experiments/run_experiment.py --config experiments/active_embedding/conf/config.yaml
+python experiments/run_hydra.py --config-path experiments/ciss/conf
 ```
 
 ---
@@ -619,22 +611,17 @@ Contains `integrative_inference` submodule for additional filtering algorithms.
 
 ### 10. `tests/` - Test Suite
 
-**Coverage:** 180+ test cases across 17 test files.
+Current baseline focuses on smoke + contract coverage for the refactored entry points and registry behavior.
 
 | File | Coverage |
 |------|----------|
-| `test_config.py` | Configuration parsing |
-| `test_models_*.py` | All model components |
-| `test_environment.py` | Environments and wrappers |
-| `test_core_*.py` | Agent and Experiment |
-| `test_policy.py` | Policy implementations |
-| `test_mpc.py` | MPC-iCEM specifically |
-| `test_utils_*.py` | Utility functions |
+| `tests/test_cli_smoke.py` | CLI parse/help + tiny run smoke |
+| `tests/test_environment_registry.py` | Canonical environment key contract |
 
 **Running Tests:**
 ```bash
-pytest tests/ -v
-python tests/run_utils_tests.py
+pytest -q
+python -m compileall -q actdyn experiments tests
 ```
 
 ---
@@ -681,7 +668,7 @@ dynamics = dynamics_from_str("rbf")(state_dim=2, ...)
 model = SeqVae(encoder=encoder, decoder=decoder, dynamics=dynamics)
 
 # Create policy  
-metric = metric_from_str("A-optimality")(model=model, ...)
+metric = metric_from_str("a-optimality")(model=model, ...)
 policy = policy_from_str("mpc-icem")(model=model, metric=metric, horizon=10)
 ```
 
@@ -698,13 +685,13 @@ dt: 0.1
 environment:
   environment_type: vectorfield
   env_dynamics_type: limit_cycle
-  observation_type: loglinear
+  observation_type: log-linear
   obs_noise_type: poisson
 
 model:
   encoder_type: rnn
   dynamics_type: rbf
-  mapping_type: loglinear
+  mapping_type: log-linear
   noise_type: poisson
 
 policy:
@@ -713,7 +700,7 @@ policy:
   mpc_num_samples: 32
 
 metric:
-  metric_type: [A-optimality, action]
+  metric_type: [a-optimality, action]
   compute_type: sum
 
 training:
@@ -723,21 +710,25 @@ training:
   rollout_horizon: 20
 ```
 
-#### Hydra Integration
+#### CLI Invocation
 ```bash
-python run_experiment.py \
-  model.dynamics_type=mlp \
-  training.total_steps=5000 \
-  --multirun seed=1,2,3
+python -m actdyn run \
+  --config experiments/active_embedding/conf/config.yaml \
+  --seed 1 \
+  --device cpu
+
+python -m actdyn sweep \
+  --config-path experiments/ciss/conf \
+  --dry-run
 ```
 
 ### Command-Line Entry Points
 
 | Script | Purpose |
 |--------|---------|
-| `experiments/run_experiment.py` | Main Hydra-based runner |
-| `experiments/run_hydra.py` | Alternative Hydra entry |
-| `experiments/analyze_results.py` | Post-experiment analysis |
+| `python -m actdyn` | Canonical CLI (`run`, `sweep`, `analyze`) |
+| `experiments/run_experiment.py` | Compatibility wrapper to `actdyn run` |
+| `experiments/run_hydra.py` | Compatibility wrapper to `actdyn sweep` |
 
 ### Expected Inputs/Outputs
 
@@ -818,7 +809,6 @@ cost: Tensor  # Shape: (batch,)
 | `models/dynamics.py` | 300 | Dynamics models |
 | `models/model_wrapper.py` | 130 | Gym wrapper for models |
 | `environment/vectorfield.py` | 145 | Vector field env |
-| `environment/cartpole.py` | 247 | CartPole variants |
 | `environment/env_wrapper.py` | 130 | Environment wrapper |
 | `policy/mpc.py` | 250 | MPC-iCEM |
 | `policy/base.py` | 95 | Policy base classes |
@@ -852,16 +842,16 @@ cost: Tensor  # Shape: (batch,)
 
 | Function | Returns | Keys |
 |----------|---------|------|
-| `environment_from_str(key)` | `type[Env]` | `vectorfield`, `continuous_cartpole` |
-| `observation_from_str(key)` | `type[BaseObservation]` | `identity`, `linear`, `loglinear`, `nonlinear` |
+| `environment_from_str(key)` | `type[Env]` | `vectorfield`, `windfield` |
+| `observation_from_str(key)` | `type[BaseObservation]` | `identity`, `linear`, `log-linear`, `non-linear` |
 | `action_from_str(key)` | `type[BaseAction]` | `identity`, `linear`, `mlp` |
 | `encoder_from_str(key)` | `type[BaseEncoder]` | `mlp`, `rnn` |
 | `dynamics_from_str(key)` | `type[BaseDynamics]` | `linear`, `mlp`, `rbf` |
-| `mapping_from_str(key)` | `type[BaseMapping]` | `identity`, `linear`, `loglinear`, `mlp` |
+| `mapping_from_str(key)` | `type[BaseMapping]` | `identity`, `linear`, `log-linear`, `mlp` |
 | `noise_from_str(key)` | `type[BaseNoise]` | `gaussian`, `poisson` |
 | `model_from_str(key)` | `type[BaseModel]` | `seq-vae`, `filtering-embedding` |
 | `policy_from_str(key)` | `type[BasePolicy]` | `random`, `off-policy`, `mpc-icem` |
-| `metric_from_str(key)` | `type[BaseMetric]` | `A-optimality`, `D-optimality`, `action`, `goal-distance`, `reward` |
+| `metric_from_str(key)` | `type[BaseMetric]` | `a-optimality`, `d-optimality`, `action`, `goal-distance`, `reward` |
 
 ### Conda Environment
 ```bash
