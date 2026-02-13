@@ -12,9 +12,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from einops import einsum, rearrange, repeat
-from matplotlib import colors
-from matplotlib.collections import LineCollection
-from matplotlib.colors import to_rgba
 from torch.nn.functional import softplus
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.tensorboard.writer import SummaryWriter
@@ -40,7 +37,12 @@ from actdyn.utils.experiment_helpers import setup_experiment
 from actdyn.utils.runtime import configure_runtime, ensure_dir
 from actdyn.utils.rollout import RecentRollout, Rollout, RolloutBuffer
 from actdyn.utils.helper import jacobian_wrt_param, make_uniform_sampler, safe_cholesky, symmetrize, to_np
-from actdyn.utils.visualize import plot_vector_field, set_matplotlib_style
+from actdyn.utils.visualize import (
+    create_gradient_line,
+    plot_embedding_error_comparison,
+    plot_vector_field,
+    set_matplotlib_style,
+)
 from external.integrative_inference.experiments.model_utils import build_hypernetwork
 
 # Small constant to prevent numerical instability
@@ -252,7 +254,7 @@ def debug_fix_decoder(
 
 
 
-def main() -> None:
+def main(run_analysis: bool = True) -> None:
     # Configure matplotlib and random seeds for reproducibility.
     set_matplotlib_style()
     global device
@@ -913,45 +915,21 @@ def main() -> None:
     
     with open(os.path.join(base_dir, "unknown_comparison.pkl"), "wb") as f:
         pickle.dump(e_dict, f)
-    
-    active_dict = pickle.load(open(os.path.join(base_dir, "active_comparison.pkl"), "rb"))
-    # plot std, mean of each method
-    plt.close("all")
-    plt.figure(figsize=(8, 4))
-    # use seaborn color palette
-    import seaborn as sns
-    
-    plt.close("all")
-    plt.figure(figsize=(8, 4))
-    # use seaborn color palette
-    import seaborn as sns
-    
-    sns.set_palette("Set1")
-    colorset = sns.color_palette("Set1", n_colors=5)
-    i = 0
-    for k, v in e_dict.items():
-        if k not in ["active (k=5)", "step", "active chunk(k=20)"]:
-            continue
-        v = np.array(v)
-        v2 = np.array(active_dict[k])
-        mean = v.mean(0)
-        mean2 = v2.mean(0)
-        std = v.std(0)
-        std2 = v2.std(0)
-        # same color for each method but different line style
-        plt.plot(mean, label=k + " (unknown obs.)", linestyle="--", color=colorset[i])
-        plt.fill_between(np.arange(len(mean)), mean - std, mean + std, alpha=0.1, color=colorset[i])
-        plt.plot(mean2, label=k + " (known obn)", linestyle="-", color=colorset[i])
-        plt.fill_between(
-            np.arange(len(mean2)), mean2 - std2, mean2 + std2, alpha=0.1, color=colorset[i]
-        )
-        i += 1
-    plt.xlim(0, 500)
-    plt.xlabel("Environment Steps")
-    plt.ylabel("Embedding Error Norm")
-    plt.legend()
-    plt.title("Embedding Error Norm over Environment Steps")
-    plt.tight_layout()
+
+    if run_analysis:
+        known_results_path = os.path.join(base_dir, "active_comparison.pkl")
+        if os.path.exists(known_results_path):
+            with open(known_results_path, "rb") as f:
+                active_dict = pickle.load(f)
+            fig, _ = plot_embedding_error_comparison(e_dict, active_dict)
+            fig.savefig(
+                os.path.join(base_dir, "embedding_error_comparison.png"),
+                dpi=200,
+                bbox_inches="tight",
+            )
+            plt.close(fig)
+        else:
+            print(f"Skipped analysis: missing known-results file {known_results_path}")
     
     
     # %% 1-2-1. ✅ True EKF with Meta
