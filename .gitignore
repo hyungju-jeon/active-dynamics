@@ -21,7 +21,6 @@ develop-eggs/
 dist/
 reference/
 downloads/
-tests/
 runs/
 eggs/
 .eggs/
