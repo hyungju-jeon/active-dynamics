@@ -1,0 +1,28 @@
+{
+  "target": "myopic_worse_than_planning",
+  "target_satisfied": true,
+  "margin_myopic_minus_planning": 0.3572536822486372,
+  "meaningful_margin_gt_0p1": true,
+  "figure_generation_mode": "separate_panels_then_compose",
+  "panel_pngs": [
+    "docs/figs/experiments/multistable_grid_unknown_attractors_k4_v2/panel1_true_vs_guess.png",
+    "docs/figs/experiments/multistable_grid_unknown_attractors_k4_v2/panel2_trajectories.png",
+    "docs/figs/experiments/multistable_grid_unknown_attractors_k4_v2/panel3_acquisition_timecourse.png",
+    "docs/figs/experiments/multistable_grid_unknown_attractors_k4_v2/panel4_error_convergence.png"
+  ],
+  "escape_probability_random_single_action": 0.0,
+  "myopic": {
+    "final_basin": 0,
+    "escaped_initial_basin": false,
+    "final_error": 1.1318362665196493,
+    "mean_acquisition": 0.3162807699061897,
+    "mean_novelty": 0.008840430241560239
+  },
+  "planning": {
+    "final_basin": 0,
+    "escaped_initial_basin": false,
+    "final_error": 0.7745825842710121,
+    "mean_acquisition": 0.1104058128538769,
+    "mean_novelty": 0.010431374888548024
+  }
+}
