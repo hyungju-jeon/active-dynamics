@@ -1,0 +1,33 @@
+Experiment: circular_constant_omega_unknown_omega_policy_compare_v3_map_evolution_all_strategies
+
+Definitions
+- I_dyn: I_dyn(r,Var[omega])=(a0+a1*Var[omega])*exp(-0.5*((r-r_dyn*(Var[omega]))/s_dyn)^2)
+- I_obs: I_obs(r)=exp(-r^2/s_obs^2)
+- A_total: A_total^policy = w_dyn*I_dyn + w_obs*I_obs
+
+Map-change metrics (L2 on full grid)
+- dyn_only:
+  - I_dyn_L2: t0->tmid=1.288773, tmid->tend=0.000175, t0->tend=1.288948
+  - I_obs_L2: t0->tmid=0.000000, tmid->tend=0.000000, t0->tend=0.000000
+  - A_total_L2: t0->tmid=1.288773, tmid->tend=0.000175, t0->tend=1.288948
+- obs_only:
+  - I_dyn_L2: t0->tmid=34.127839, tmid->tend=0.393240, t0->tend=34.490886
+  - I_obs_L2: t0->tmid=0.000000, tmid->tend=0.000000, t0->tend=0.000000
+  - A_total_L2: t0->tmid=0.000000, tmid->tend=0.000000, t0->tend=0.000000
+- combined:
+  - I_dyn_L2: t0->tmid=33.692753, tmid->tend=0.524085, t0->tend=34.177835
+  - I_obs_L2: t0->tmid=0.000000, tmid->tend=0.000000, t0->tend=0.000000
+  - A_total_L2: t0->tmid=20.215652, tmid->tend=0.314451, t0->tend=20.506701
+
+Outputs
+- triptych (dyn_only): maps_triptych_dyn_only.png
+- animation (dyn_only) gif: maps_evolution_dyn_only.gif
+- animation (dyn_only) mp4: maps_evolution_dyn_only.mp4
+- triptych (obs_only): maps_triptych_obs_only.png
+- animation (obs_only) gif: maps_evolution_obs_only.gif
+- animation (obs_only) mp4: maps_evolution_obs_only.mp4
+- triptych (combined): maps_triptych_combined.png
+- animation (combined) gif: maps_evolution_combined.gif
+- animation (combined) mp4: maps_evolution_combined.mp4
+- representative panel png: representative_panel_map_evolution.png
+- representative panel pdf: representative_panel_map_evolution.pdf
