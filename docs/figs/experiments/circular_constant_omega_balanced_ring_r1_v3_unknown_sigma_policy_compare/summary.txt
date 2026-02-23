@@ -1,0 +1,38 @@
+Experiment: circular_constant_omega_balanced_ring_r1_v3_unknown_sigma_policy_compare
+
+Definitions
+- I_dyn: I_dyn(r)=C_d-a_d(r-r_d)^2
+- I_obs: I_obs(r;sigma_c)=(r^2/sigma_c^4)*exp(-r^2/sigma_c^2)
+- I_comb: I_comb(r;sigma_hat;policy)=w_dyn*I_dyn(r)+w_obs*I_obs(r;sigma_hat)
+
+Policies compared
+- obs-only: optimize only I_obs (w_dyn=0, w_obs=1)
+- dyn-only: optimize only I_dyn (w_dyn=1, w_obs=0)
+- combined: optimize w_dyn*I_dyn + w_obs*I_obs
+
+Unknown parameter mechanism retained
+- sigma_c inferred online from noisy observations with Bayesian grid posterior.
+
+Fair initialization
+- Same initial state and initial posterior belief for all policies.
+- Shared observation/control noise sequences used for fair comparison.
+
+Quantitative comparison
+- obs-only final radius: 1.3343
+- dyn-only final radius: 0.9914
+- combined final radius: 1.0635
+- obs-only mean radius: 1.3736
+- dyn-only mean radius: 1.0200
+- combined mean radius: 1.0888
+- cumulative I_obs (obs-only): 5.2535
+- cumulative I_dyn (dyn-only): 46.5177
+- cumulative I_comb_policy (combined): 50.5829
+- trajectory divergence mean distance (obs vs dyn): 0.3536
+- trajectory divergence final distance (obs vs dyn): 0.3429
+
+Animation outputs
+- GIF: trajectory_policy_comparison.gif
+- MP4: trajectory_policy_comparison.mp4 (exists=True)
+
+Representative figure
+- final_panel.png
