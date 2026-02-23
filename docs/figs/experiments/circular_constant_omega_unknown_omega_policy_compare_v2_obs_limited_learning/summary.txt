@@ -1,0 +1,38 @@
+Experiment: circular_constant_omega_unknown_omega_policy_compare_v2_obs_limited_learning
+
+Unknown omega setting with observation-limited inference quality.
+All policies share the same initial state, same initial omega posterior,
+and the same realized noise sequences (fairness preserved).
+
+Key equations
+- I_obs(r): I_obs(r)=exp(-r^2/s_obs^2)
+- sigma_theta_meas(r): sigma_theta_meas(r)=sigma_floor + sigma0/(I_obs(r)+eps)^p
+- posterior update: p_t(omega) propto p_{t-1}(omega) * exp(-0.5 * wrap(dtheta_obs-omega*dt)^2 / sigma_theta_meas(r_obs,t)^2)
+
+Interpretation
+- As radius grows, I_obs(r) becomes small.
+- Then sigma_theta_meas(r) increases strongly.
+- The posterior likelihood becomes flatter/noisier, weakening omega updates.
+
+Radius behavior checks
+- final radius ordering (obs < combined < dyn): True
+- mean radius ordering (obs < combined < dyn): True
+- dyn outward trend: True
+- obs center-seeking: True
+- combined middle: True
+
+Final omega learning metrics
+- dyn_only:  abs error=0.063970, posterior std=0.430568
+- combined:  abs error=0.022642, posterior std=0.015643
+- obs_only:  abs error=0.058310, posterior std=0.011377
+
+Worse-learning evidence for dyn_only
+- dyn/obs abs-error ratio: 1.0971
+- dyn/obs posterior-std ratio: 37.8460
+- dyn worse than obs by abs error (>1.0): True
+- dyn worse than obs by posterior std (>1.5): True
+
+Deliverables
+- figures: fig01..fig05
+- panel: final_panel.png / final_panel.pdf
+- animation: trajectory_all_policies_unknown_omega.gif / trajectory_all_policies_unknown_omega.mp4
