@@ -1,7 +1,7 @@
 {
   "experiment_name": "multistable_grid_unknown_attractors_k4_v2",
   "signature": "869c1a3d70fa",
-  "generated_at": "2026-02-23T08:50:44",
+  "generated_at": "2026-02-23T08:42:56",
   "config": {
     "output_root": "docs/figs/experiments",
     "experiment_name": "multistable_grid_unknown_attractors_k4_v2",
