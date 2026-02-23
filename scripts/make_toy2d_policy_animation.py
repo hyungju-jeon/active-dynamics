@@ -30,19 +30,19 @@ class Config:
     grid_max: float = 2.3
     grid_n: int = 141
 
-    dt: float = 0.20
-    steps: int = 24
+    dt: float = 0.18
+    steps: int = 30
 
-    # Control/action discretization
-    u_max: float = 0.30
+    # Control/action discretization (kept small for smooth transitions)
+    u_max: float = 0.16
 
     # Planning policy hyperparameters
-    plan_horizon: int = 6
+    plan_horizon: int = 10
     plan_gamma: float = 0.96
     plan_num_sequences: int = 700
 
     # Animation
-    fps: int = 2
+    fps: int = 3
 
     # Initial state and parameter precision
     z0: tuple[float, float] = (-1.6, -1.2)
@@ -160,6 +160,23 @@ def acquisition_map(precision: np.ndarray, grid_points: np.ndarray, cfg: Config)
     return logdet2x2(precision + I) - logdet2x2(precision)
 
 
+def dynamics_field(cfg: Config, n: int = 31) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Underlying nominal dynamics field on a coarse grid for visualization."""
+    g = np.linspace(cfg.grid_min, cfg.grid_max, n)
+    Xd, Yd = np.meshgrid(g, g)
+    Zd = np.stack([Xd, Yd], axis=-1)
+    Fd = toy_dynamics(Zd, cfg)
+    Ud = Fd[..., 0]
+    Vd = Fd[..., 1]
+
+    # Normalize arrow lengths for visual readability while preserving direction.
+    mag = np.sqrt(Ud**2 + Vd**2)
+    scale = np.quantile(mag, 0.85) + 1e-9
+    Ud = Ud / scale
+    Vd = Vd / scale
+    return Xd, Yd, Ud, Vd
+
+
 def step_state(z: np.ndarray, u: np.ndarray, cfg: Config) -> np.ndarray:
     z_next = z + cfg.dt * toy_dynamics(z, cfg) + u
     return np.clip(z_next, cfg.grid_min, cfg.grid_max)
@@ -271,8 +288,10 @@ def make_animation(
     data_myopic: dict[str, np.ndarray],
     data_planning: dict[str, np.ndarray],
     cfg: Config,
-    X: np.ndarray,
-    Y: np.ndarray,
+    Xd: np.ndarray,
+    Yd: np.ndarray,
+    Ud: np.ndarray,
+    Vd: np.ndarray,
     out_gif: Path,
     out_mp4: Path,
 ) -> None:
@@ -314,6 +333,21 @@ def make_animation(
             animated=True,
         )
         ims.append(im)
+
+        # Underlying nominal dynamics field
+        ax.streamplot(
+            Xd,
+            Yd,
+            Ud,
+            Vd,
+            color=(1.0, 1.0, 1.0, 0.30),
+            density=0.75,
+            linewidth=0.55,
+            arrowsize=0.6,
+            minlength=0.12,
+            broken_streamlines=True,
+            zorder=2,
+        )
 
         line, = ax.plot([], [], "w-", lw=1.6, alpha=0.95)
         lines.append(line)
@@ -405,6 +439,10 @@ def make_sequence_figure(
     data_myopic: dict[str, np.ndarray],
     data_planning: dict[str, np.ndarray],
     cfg: Config,
+    Xd: np.ndarray,
+    Yd: np.ndarray,
+    Ud: np.ndarray,
+    Vd: np.ndarray,
     out_png: Path,
     out_pdf: Path,
 ) -> None:
@@ -415,7 +453,9 @@ def make_sequence_figure(
     arg1 = data_myopic["argmax"]
     arg2 = data_planning["argmax"]
 
-    times = np.linspace(0, cfg.steps - 1, 6, dtype=int)
+    times = list(range(0, cfg.steps, 5))
+    if times[-1] != cfg.steps - 1:
+        times.append(cfg.steps - 1)
 
     vmin = float(min(maps1.min(), maps2.min()))
     vmax = float(max(maps1.max(), maps2.max()))
@@ -432,6 +472,19 @@ def make_sequence_figure(
             vmin=vmin,
             vmax=vmax,
             interpolation="nearest",
+        )
+        ax.streamplot(
+            Xd,
+            Yd,
+            Ud,
+            Vd,
+            color=(1.0, 1.0, 1.0, 0.30),
+            density=0.75,
+            linewidth=0.5,
+            arrowsize=0.55,
+            minlength=0.12,
+            broken_streamlines=True,
+            zorder=2,
         )
         ax.plot(traj1[: t + 1, 0], traj1[: t + 1, 1], "w-", lw=1.2)
         ax.scatter(traj1[0, 0], traj1[0, 1], c="cyan", edgecolors="black", s=36, marker="s")
@@ -453,6 +506,19 @@ def make_sequence_figure(
             vmin=vmin,
             vmax=vmax,
             interpolation="nearest",
+        )
+        ax.streamplot(
+            Xd,
+            Yd,
+            Ud,
+            Vd,
+            color=(1.0, 1.0, 1.0, 0.30),
+            density=0.75,
+            linewidth=0.5,
+            arrowsize=0.55,
+            minlength=0.12,
+            broken_streamlines=True,
+            zorder=2,
         )
         ax.plot(traj2[: t + 1, 0], traj2[: t + 1, 1], "w-", lw=1.2)
         ax.scatter(traj2[0, 0], traj2[0, 1], c="cyan", edgecolors="black", s=36, marker="s")
@@ -500,6 +566,7 @@ def write_summary(
         "Toy 2D Poisson active-learning policy comparison",
         "==============================================",
         f"steps = {cfg.steps}",
+        f"dt = {cfg.dt}, u_max = {cfg.u_max}",
         f"planning horizon = {cfg.plan_horizon}, gamma = {cfg.plan_gamma}",
         "",
         "Final state:",
@@ -537,6 +604,8 @@ def main() -> None:
     data_myopic = run_policy("myopic", cfg, grid_points)
     data_planning = run_policy("planning", cfg, grid_points)
 
+    Xd, Yd, Ud, Vd = dynamics_field(cfg)
+
     out_dir = Path("docs/figs")
     out_gif = out_dir / "toy2d_policy_comparison.gif"
     out_mp4 = out_dir / "toy2d_policy_comparison.mp4"
@@ -544,8 +613,8 @@ def main() -> None:
     out_pdf = out_dir / "toy2d_policy_comparison_sequence.pdf"
     out_txt = out_dir / "toy2d_policy_comparison_summary.txt"
 
-    make_animation(data_myopic, data_planning, cfg, X, Y, out_gif, out_mp4)
-    make_sequence_figure(data_myopic, data_planning, cfg, out_png, out_pdf)
+    make_animation(data_myopic, data_planning, cfg, Xd, Yd, Ud, Vd, out_gif, out_mp4)
+    make_sequence_figure(data_myopic, data_planning, cfg, Xd, Yd, Ud, Vd, out_png, out_pdf)
     write_summary(data_myopic, data_planning, cfg, out_txt)
 
     print(f"[ok] wrote {out_gif}")
