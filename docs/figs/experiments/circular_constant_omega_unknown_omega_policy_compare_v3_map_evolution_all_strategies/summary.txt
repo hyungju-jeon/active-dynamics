@@ -4,6 +4,12 @@ Definitions
 - I_dyn: I_dyn(r,Var[omega])=(a0+a1*Var[omega])*exp(-0.5*((r-r_dyn*(Var[omega]))/s_dyn)^2)
 - I_obs: I_obs(r)=exp(-r^2/s_obs^2)
 - A_total: A_total^policy = w_dyn*I_dyn + w_obs*I_obs
+- latent dynamics (discrete): r[t+1] = clip(r[t] + u[t] + eps_r[t], r_min, r_max); theta[t+1] = (theta[t] + omega_true*dt + eps_theta[t]) mod 2*pi; z[t] = [r[t]cos(theta[t]), r[t]sin(theta[t])]
+
+Acquisition map style (shared across strategies/time/frames)
+- cmap: cividis
+- fixed vmin: 0.000000
+- fixed vmax: 0.999494
 
 Map-change metrics (L2 on full grid)
 - dyn_only:
@@ -31,3 +37,5 @@ Outputs
 - animation (combined) mp4: maps_evolution_combined.mp4
 - representative panel png: representative_panel_map_evolution.png
 - representative panel pdf: representative_panel_map_evolution.pdf
+- policy trajectory + vector field figure: policy_trajectory_vectorfield.png
+- script used copy: script_used.py

@@ -3,7 +3,13 @@
   "definitions": {
     "I_dyn": "I_dyn(r,Var[omega])=(a0+a1*Var[omega])*exp(-0.5*((r-r_dyn*(Var[omega]))/s_dyn)^2)",
     "I_obs": "I_obs(r)=exp(-r^2/s_obs^2)",
-    "A_total": "A_total^policy = w_dyn*I_dyn + w_obs*I_obs"
+    "A_total": "A_total^policy = w_dyn*I_dyn + w_obs*I_obs",
+    "latent_dynamics_discrete": "r[t+1] = clip(r[t] + u[t] + eps_r[t], r_min, r_max); theta[t+1] = (theta[t] + omega_true*dt + eps_theta[t]) mod 2*pi; z[t] = [r[t]cos(theta[t]), r[t]sin(theta[t])]"
+  },
+  "acquisition_map_style": {
+    "cmap": "cividis",
+    "fixed_vmin": 1.9497677860172307e-09,
+    "fixed_vmax": 0.9994936875851967
   },
   "fairness": {
     "same_initial_state": true,
@@ -104,7 +110,9 @@
       }
     },
     "panel_png": "representative_panel_map_evolution.png",
-    "panel_pdf": "representative_panel_map_evolution.pdf"
+    "panel_pdf": "representative_panel_map_evolution.pdf",
+    "policy_trajectory_figure": "policy_trajectory_vectorfield.png",
+    "script_used": "script_used.py"
   },
   "params": {
     "dt": 0.06,
