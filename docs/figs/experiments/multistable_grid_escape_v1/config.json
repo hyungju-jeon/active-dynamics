@@ -1,0 +1,44 @@
+{
+  "experiment_name": "multistable_grid_escape_v1",
+  "signature": "6835cb7b56fa",
+  "generated_at": "2026-02-23T01:41:55",
+  "config": {
+    "output_root": "docs/figs/experiments",
+    "experiment_name": "multistable_grid_escape_v1",
+    "grid_min": -2.2,
+    "grid_max": 2.2,
+    "grid_n": 181,
+    "stream_grid_n": 35,
+    "dt": 0.12,
+    "steps": 42,
+    "u_max": 0.24,
+    "action_penalty": 1.0,
+    "plan_horizon": 16,
+    "plan_gamma": 0.97,
+    "plan_num_sequences": 900,
+    "fps": 3,
+    "z0": [
+      -1.45,
+      -1.35
+    ],
+    "precision0_diag": [
+      0.03,
+      0.02
+    ],
+    "attractor_grid": [
+      -1.5,
+      0.0,
+      1.5
+    ],
+    "attractor_strength": 3.0,
+    "assignment_beta": 5.0,
+    "swirl": 0.06,
+    "obs_c": [
+      0.95,
+      0.65
+    ],
+    "obs_b": -0.9,
+    "random_escape_trials": 2000,
+    "random_relax_steps": 50
+  }
+}
