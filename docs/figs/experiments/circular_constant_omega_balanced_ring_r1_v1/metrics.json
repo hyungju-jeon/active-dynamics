@@ -1,0 +1,44 @@
+{
+  "experiment_name": "circular_constant_omega_balanced_ring_r1_v1",
+  "analytic": {
+    "r_star_formula": "(a_d*r_d + a_o*r_o)/(a_d + a_o)",
+    "r_star": 1.0,
+    "condition_for_r_star_eq_1": "a_d*(r_d-1) + a_o*(r_o-1) = 0"
+  },
+  "numerical": {
+    "r_star_estimated": 1.0000499999999999,
+    "abs_error_to_target_1": 4.999999999988347e-05,
+    "abs_error_num_vs_analytic": 4.999999999988347e-05,
+    "max_A_value": 3.279999995
+  },
+  "simulation": {
+    "initial_radius": 2.2,
+    "final_radius": 0.993391954234789,
+    "mean_radius_last_100": 0.9996777094052487,
+    "std_radius_last_100": 0.003960131745515854
+  },
+  "params": {
+    "a_d": 1.0,
+    "r_d": 1.6,
+    "C_d": 2.0,
+    "a_o": 1.0,
+    "r_o": 0.4,
+    "C_o": 2.0,
+    "omega": 1.15,
+    "dt": 0.05,
+    "T": 440,
+    "k_gain": 0.2,
+    "smoothness": 0.28,
+    "control_max": 0.06,
+    "noise_std": 0.004,
+    "seed": 7
+  },
+  "outputs": {
+    "radial_profiles": "radial_profiles.png",
+    "spatial_maps": "spatial_maps.png",
+    "trajectory_timeseries": "trajectory_timeseries.png",
+    "representative_figure": "representative_trajectory_landscape.png",
+    "animation_gif": "trajectory_evolution.gif",
+    "animation_mp4": "trajectory_evolution.mp4"
+  }
+}
