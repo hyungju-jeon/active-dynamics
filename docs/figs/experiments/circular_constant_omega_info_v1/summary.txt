@@ -1,0 +1,31 @@
+Circular constant-omega experiment summary
+========================================
+experiment_name: circular_constant_omega_info_v1
+
+Latent dynamics:
+z_{t+1} = R(omega*dt) z_t + u_t (+ bounded clipping)
+R(theta) = [[cos theta, -sin theta], [sin theta, cos theta]]
+
+Information definitions:
+Dynamics information (for omega): I_dyn(z) = dt^2 ||z||^2 / sigma_d^2
+Observation information (for gain g in y=g c^T z + v): I_obs(z) = (c^T z)^2 / sigma_o^2
+
+Radius-invariant angular velocity check:
+  radius=0.700, estimated_omega=1.400000, abs_err=0.000000
+  radius=1.300, estimated_omega=1.400000, abs_err=0.000000
+  radius=2.000, estimated_omega=1.400000, abs_err=0.000000
+max_abs_omega_error: 0.000000
+std_estimated_omega: 0.000000
+
+Policy comparison (same initialization):
+  same_start: True
+  dynamics-greedy final cumulative I_dyn: 524.5790
+  observation-greedy final cumulative I_dyn: 484.9493
+  dynamics-greedy final cumulative I_obs: 6604.2896
+  observation-greedy final cumulative I_obs: 6480.8120
+
+Qualitative observations:
+- Rotation speed estimate remains nearly constant across radii.
+- Dynamics information increases radially (larger radius gives stronger omega identifiability).
+- Observation information is anisotropic and aligned with observation direction c.
+- Policies emphasize different information sources over time.
