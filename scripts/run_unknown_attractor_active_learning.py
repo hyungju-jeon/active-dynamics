@@ -215,7 +215,8 @@ def set_error(true_centers: np.ndarray, guessed: np.ndarray) -> float:
 
 def run_policy(mode: str, cfg: Config, true_centers: np.ndarray) -> dict[str, np.ndarray]:
     assert mode in {"myopic", "planning"}
-    rng = np.random.default_rng(cfg.init_guess_seed + (101 if mode == "planning" else 0))
+    # Keep initial guessed attractors identical across policies for fair comparison.
+    rng = np.random.default_rng(cfg.init_guess_seed)
 
     z = np.array(cfg.z0, dtype=float)
     guessed = rng.uniform(cfg.grid_min * 0.85, cfg.grid_max * 0.85, size=(cfg.K, 2))
