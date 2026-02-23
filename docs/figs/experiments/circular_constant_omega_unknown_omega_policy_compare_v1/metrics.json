@@ -1,0 +1,104 @@
+{
+  "experiment_name": "circular_constant_omega_unknown_omega_policy_compare_v1",
+  "equations": {
+    "latent_dynamics": "r_{t+1}=clip(r_t+u_t+eps_r), theta_{t+1}=theta_t+omega*dt+eps_theta",
+    "observation": "(x^o_t,y^o_t)=(r_t cos theta_t, r_t sin theta_t)+noise",
+    "posterior_update": "p_t(omega) propto p_{t-1}(omega) * exp(-0.5 * wrap(dtheta_obs-omega*dt)^2 / sigma_theta(r)^2)",
+    "I_dyn": "I_dyn(r,Var[omega])=(a0+a1*Var[omega])*exp(-0.5*((r-r_dyn*(Var[omega]))/s_dyn)^2)",
+    "I_obs": "I_obs(r)=exp(-r^2/s_obs^2)",
+    "A_total_policy": "A=w_dyn*I_dyn + w_obs*I_obs",
+    "combined_control_regularizer": "for combined: grad_eff=drA - lambda_reg*(r-r_mid)"
+  },
+  "fairness": {
+    "same_initial_state": true,
+    "same_initial_omega_belief": true,
+    "shared_noise_sequences": true,
+    "initial_state": {
+      "r0": 1.55,
+      "theta0": 0.18,
+      "omega_belief": "uniform over omega_grid"
+    }
+  },
+  "policy_metrics": {
+    "dyn_only": {
+      "final_radius": 2.1260766169149146,
+      "mean_radius": 2.128738066952123,
+      "mean_radius_last_80": 2.125577466455489,
+      "cum_objective": 6.667148482981574,
+      "omega_mean_final": 1.2591464971499953,
+      "omega_std_final": 0.013713337979328083,
+      "omega_abs_error_final": 0.020853502850004757
+    },
+    "obs_only": {
+      "final_radius": 0.03,
+      "mean_radius": 0.090747578379509,
+      "mean_radius_last_80": 0.030000000000000006,
+      "cum_objective": 18.412343109636517,
+      "omega_mean_final": 1.2786600257616114,
+      "omega_std_final": 0.06779653520274044,
+      "omega_abs_error_final": 0.0013399742383886082
+    },
+    "combined": {
+      "final_radius": 0.9224724622509952,
+      "mean_radius": 0.9282767250398795,
+      "mean_radius_last_80": 0.9203807243575348,
+      "cum_objective": 6.908769477200006,
+      "omega_mean_final": 1.2592388662243912,
+      "omega_std_final": 0.01941588660455023,
+      "omega_abs_error_final": 0.020761133775608842
+    }
+  },
+  "qualitative_targets": {
+    "final_radius_order_obs_lt_comb_lt_dyn": true,
+    "mean_radius_order_obs_lt_comb_lt_dyn": true,
+    "dyn_outward_trend": true,
+    "obs_center_seeking": true,
+    "combined_middle": true
+  },
+  "unknown_omega": {
+    "parameter": "omega",
+    "true_omega": 1.28,
+    "initial_belief": "uniform over omega grid",
+    "inference_method": "online Bayesian grid posterior using observed angle increments",
+    "final_abs_error_combined": 0.020761133775608842,
+    "final_posterior_std_combined": 0.01941588660455023,
+    "posterior_std_reduction_combined": 0.4294310338413078
+  },
+  "outputs": {
+    "acquisition_maps": "fig01_acquisition_decomposition_maps.png",
+    "trajectories": "fig02_policy_trajectories.png",
+    "omega_evolution": "fig03_omega_inference_evolution.png",
+    "radius_cumulative": "fig04_radius_and_cumulative_objective.png",
+    "uncertainty_snapshots": "fig05_combined_map_uncertainty_snapshots.png",
+    "final_panel_png": "final_panel.png",
+    "final_panel_pdf": "final_panel.pdf",
+    "animation_gif": "trajectory_all_policies_unknown_omega.gif",
+    "animation_mp4": "trajectory_all_policies_unknown_omega.mp4",
+    "animation_mp4_exists": true
+  },
+  "params": {
+    "dt": 0.06,
+    "T": 320,
+    "omega_true": 1.28,
+    "omega_grid_min": 0.55,
+    "omega_grid_max": 2.1,
+    "omega_grid_n": 320,
+    "r_min": 0.03,
+    "r_max": 2.8,
+    "u_max": 0.065,
+    "k_gain": 0.26,
+    "smoothness": 0.22,
+    "control_noise_std": 0.0022,
+    "theta_dyn_noise_std": 0.01,
+    "radial_process_noise_std": 0.0015,
+    "obs_pos_noise_std": 0.01,
+    "seed": 24,
+    "obs_center_sigma": 0.9,
+    "dyn_peak_width": 0.62,
+    "dyn_amp_base": 0.35,
+    "dyn_amp_unc_scale": 0.6,
+    "grid_lim": 2.85,
+    "grid_n": 240,
+    "r_mid_target": 1.22
+  }
+}
