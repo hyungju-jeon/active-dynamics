@@ -1,0 +1,17 @@
+{
+  "escape_probability_random_single_action": 0.0,
+  "myopic": {
+    "final_basin": 4,
+    "escaped_initial_basin": true,
+    "final_error": 0.615108203109016,
+    "mean_acquisition": 0.9143052290064575,
+    "mean_novelty": 0.03503984670673091
+  },
+  "planning": {
+    "final_basin": 6,
+    "escaped_initial_basin": true,
+    "final_error": 0.6638155516989641,
+    "mean_acquisition": 0.3373801896550946,
+    "mean_novelty": 0.026874567451180942
+  }
+}
