@@ -1,0 +1,49 @@
+{
+  "experiment_name": "circular_constant_omega_acquisition_qualitative_v1",
+  "figure_generation_mode": "individual_figures_first_then_compose",
+  "definitions": {
+    "I_dyn": "I_dyn(z)=dt^2||z||^2/sigma_d^2",
+    "I_obs": "I_obs(z)=exp(-||z||^2/sigma_c^2)/sigma_o^2",
+    "A": "A=w_dyn*I_dyn + w_obs*I_obs + w_nov*novelty - control_cost*||u||^2",
+    "novelty": "1-exp(-min_j ||z-z_j||^2/(2*sigma_n^2)) where z_j are visited states"
+  },
+  "corr_radius_I_dyn": 0.9676987539269394,
+  "corr_radius_I_obs": -0.9251364778869908,
+  "vectorfield_dyn_dominant_frac": 0.8052930056710775,
+  "vectorfield_obs_dominant_frac": 0.1947069943289225,
+  "same_initialization": true,
+  "myopic": {
+    "first_action": [
+      -0.16,
+      -0.16
+    ],
+    "cum_A_final": 295.7509178680096,
+    "mean_A": 8.215303274111374
+  },
+  "planning": {
+    "first_action": [
+      -0.16,
+      -0.16
+    ],
+    "cum_A_final": 292.95323956731994,
+    "mean_A": 8.13758998798111,
+    "planning_horizon": 6,
+    "planning_candidates": 320
+  },
+  "diagnostic": {
+    "first_action_angle_deg": 0.00035809876399411287,
+    "mean_divergence_firstN": 0.06688198318990116,
+    "max_divergence_firstN": 0.16,
+    "N_divergence": 15
+  },
+  "outputs": {
+    "figA": "docs/figs/experiments/circular_constant_omega_acquisition_qualitative_v1/figA_acquisition_decomposition_maps.png",
+    "figB": "docs/figs/experiments/circular_constant_omega_acquisition_qualitative_v1/figB_best_action_vector_field.png",
+    "figC": "docs/figs/experiments/circular_constant_omega_acquisition_qualitative_v1/figC_trajectory_timeline_contributions.png",
+    "figD": "docs/figs/experiments/circular_constant_omega_acquisition_qualitative_v1/figD_myopic_vs_planning_diagnostic.png",
+    "panel_png": "docs/figs/experiments/circular_constant_omega_acquisition_qualitative_v1/panel_acquisition_qualitative_set.png",
+    "panel_pdf": "docs/figs/experiments/circular_constant_omega_acquisition_qualitative_v1/panel_acquisition_qualitative_set.pdf",
+    "summary": "docs/figs/experiments/circular_constant_omega_acquisition_qualitative_v1/summary.txt",
+    "metrics": "docs/figs/experiments/circular_constant_omega_acquisition_qualitative_v1/metrics.json"
+  }
+}
