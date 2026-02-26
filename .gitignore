@@ -65,6 +65,7 @@ results/
 external/
 data/
 logs/
+.worktrees/
 */_OLD/
 *.log
 *.pkl
