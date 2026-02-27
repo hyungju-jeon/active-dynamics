@@ -1,0 +1,63 @@
+# Fast smoke configuration for CI/local sanity checks.
+output_dir: results/benchmark_actdyn
+run_name: smoke_v1
+append_timestamp: false
+
+methods:
+  - baseline-random
+  - baseline-prbs
+  - baseline-ce-mpc
+  - baseline-thompson
+  - baseline-ucb
+
+environments:
+  - linear_easy
+  - linear_shifted
+
+seeds: [0]
+episodes_per_env: 1
+horizon: 8
+
+action:
+  low: -1.0
+  high: 1.0
+
+reward:
+  action_penalty: 0.02
+
+estimator:
+  ridge: 1.0
+  noise_var: 1.0
+
+env_params:
+  linear_easy:
+    theta: 0.65
+    action_gain: 0.7
+    process_noise: 0.02
+    observation_noise: 0.02
+  linear_shifted:
+    theta: 0.8
+    theta_shift: 1.05
+    theta_shift_step: 4
+    action_gain: 0.7
+    process_noise: 0.03
+    observation_noise: 0.04
+
+method_params:
+  baseline-prbs:
+    hold_steps: 2
+    amplitude: 1.0
+  baseline-ce-mpc:
+    horizon: 4
+    num_samples: 24
+    num_iterations: 2
+    num_elite: 6
+    alpha: 0.3
+    init_std: 0.5
+    action_penalty: 0.05
+  baseline-thompson:
+    prior_var: 0.2
+    ridge: 1.0
+  baseline-ucb:
+    beta: 1.0
+    ridge: 1.0

@@ -1,0 +1,63 @@
+# Benchmark v1 default configuration
+output_dir: results/benchmark_actdyn
+run_name: benchmark_v1
+append_timestamp: true
+
+methods:
+  - baseline-random
+  - baseline-prbs
+  - baseline-ce-mpc
+  - baseline-thompson
+  - baseline-ucb
+
+environments:
+  - linear_easy
+  - linear_shifted
+
+seeds: [0, 1]
+episodes_per_env: 3
+horizon: 30
+
+action:
+  low: -1.0
+  high: 1.0
+
+reward:
+  action_penalty: 0.02
+
+estimator:
+  ridge: 1.0
+  noise_var: 1.0
+
+env_params:
+  linear_easy:
+    theta: 0.65
+    action_gain: 0.7
+    process_noise: 0.03
+    observation_noise: 0.03
+  linear_shifted:
+    theta: 0.8
+    theta_shift: 1.05
+    theta_shift_step: 15
+    action_gain: 0.7
+    process_noise: 0.04
+    observation_noise: 0.05
+
+method_params:
+  baseline-prbs:
+    hold_steps: 4
+    amplitude: 1.0
+  baseline-ce-mpc:
+    horizon: 6
+    num_samples: 48
+    num_iterations: 3
+    num_elite: 8
+    alpha: 0.25
+    init_std: 0.5
+    action_penalty: 0.05
+  baseline-thompson:
+    prior_var: 0.2
+    ridge: 1.0
+  baseline-ucb:
+    beta: 1.0
+    ridge: 1.0
