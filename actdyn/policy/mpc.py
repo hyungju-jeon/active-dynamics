@@ -215,9 +215,12 @@ class MpcICem(BaseMPC):
                 best_cost = costs[min_cost_idx]
                 best_first_action = actions[min_cost_idx, 0]
 
-            # Update mean and std
+            # Update mean/std using a numerically stable variance estimate.
+            # `unbiased=False` avoids NaNs when num_elites == 1.
             new_mean = self.elite_actions.mean(dim=0).to(self.device)
-            new_std = self.elite_actions.std(dim=0).to(self.device)
+            new_std = self.elite_actions.std(dim=0, unbiased=False).to(self.device)
+            new_mean = torch.nan_to_num(new_mean, nan=0.0, posinf=0.0, neginf=0.0)
+            new_std = torch.nan_to_num(new_std, nan=0.0, posinf=self.init_std, neginf=0.0)
 
             self.mean = (1 - self.alpha) * new_mean + self.alpha * self.mean
             self.std = (1 - self.alpha) * new_std + self.alpha * self.std

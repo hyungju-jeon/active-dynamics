@@ -653,11 +653,14 @@ class FilteringEmbedding(BaseModel):
         e: Belief,
         Fe: Callable = None,
         Fz: Callable = None,
+        q_theta: float = 1e-4,
+        k_theta: int = 10,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.beta = 0.0
         self.e: Belief = e
+        self._normalize_embedding_belief()
         self.z: Belief = {
             "m": torch.zeros(1, 1, self.latent_dim, device=self.device),
             "P": torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
@@ -665,8 +668,114 @@ class FilteringEmbedding(BaseModel):
         self.Fe = Fe
         self.Fz = Fz
         self._state = torch.zeros(1, 1, self.latent_dim, device=self.device)
+        self.q_theta = float(q_theta)
+        self.k_theta = max(1, int(k_theta))
         self.gn_iter = 10
-        self.set_params(e["m"])
+        self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
+        self.set_params(self.e["m"])
+
+    def _normalize_embedding_belief(self) -> None:
+        """Normalize embedding belief tensors to batched shapes on the model device."""
+        e_m = self.e["m"].to(self.device)
+        if e_m.dim() == 1:
+            e_m = e_m.unsqueeze(0)
+        batch = e_m.shape[0]
+        d_embed = e_m.shape[-1]
+        eye = torch.eye(d_embed, device=self.device).unsqueeze(0)
+
+        P = self.e.get("P", eye.clone())
+        if P.dim() == 2:
+            P = P.unsqueeze(0)
+        P = P.to(self.device)
+        if P.shape[0] == 1 and batch > 1:
+            P = P.expand(batch, -1, -1).clone()
+        if P.shape[0] != batch:
+            raise ValueError(f"Embedding covariance batch mismatch: {P.shape} vs mean batch {batch}")
+        P = symmetrize(P)
+
+        L = self.e.get("L")
+        if L is None:
+            chol_P = safe_cholesky(P)
+            L = torch.cholesky_inverse(chol_P)
+        if L.dim() == 2:
+            L = L.unsqueeze(0)
+        L = L.to(self.device)
+        if L.shape[0] == 1 and batch > 1:
+            L = L.expand(batch, -1, -1).clone()
+        if L.shape[0] != batch:
+            raise ValueError(f"Embedding precision batch mismatch: {L.shape} vs mean batch {batch}")
+        L = symmetrize(L)
+
+        self.e = {"m": e_m, "P": P, "L": L}
+
+    def _ensure_state_belief_shapes(self, batch_size: int) -> None:
+        """Normalize latent-state belief tensors to (B, 1, ...) shapes."""
+        z_m = self.z["m"]
+        if z_m.dim() == 2:
+            z_m = z_m.unsqueeze(1)
+        z_m = z_m.to(self.device)
+        if z_m.shape[0] == 1 and batch_size > 1:
+            z_m = z_m.expand(batch_size, -1, -1).clone()
+
+        z_P = self.z["P"]
+        if z_P.dim() == 2:
+            z_P = z_P.unsqueeze(0).unsqueeze(0)
+        elif z_P.dim() == 3:
+            z_P = z_P.unsqueeze(1)
+        z_P = z_P.to(self.device)
+        if z_P.shape[0] == 1 and batch_size > 1:
+            z_P = z_P.expand(batch_size, -1, -1, -1).clone()
+        z_P = symmetrize(z_P)
+        self.z = {"m": z_m, "P": z_P}
+
+    def _reset_embedding_block_state(self, batch_size: int) -> None:
+        d_embed = self.e["m"].shape[-1]
+        self._theta_block_steps = 0
+        self._theta_score_block = torch.zeros(batch_size, d_embed, device=self.device)
+        self._theta_info_block = torch.zeros(batch_size, d_embed, d_embed, device=self.device)
+        self._theta_sensitivity = torch.zeros(batch_size, self.latent_dim, d_embed, device=self.device)
+
+    def _apply_embedding_block_update(self) -> None:
+        """Apply block-wise information-form update with drifting prior."""
+        score = self._theta_score_block
+        info = self._theta_info_block
+        if score.shape[0] != self.e["m"].shape[0]:
+            # Shared parameter belief across batch: aggregate per-step statistics.
+            score = score.mean(dim=0, keepdim=True)
+            info = info.mean(dim=0, keepdim=True)
+        score = torch.nan_to_num(score, nan=0.0, posinf=1e6, neginf=-1e6)
+        info = torch.nan_to_num(info, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        d_embed = self.e["m"].shape[-1]
+        eye = torch.eye(d_embed, device=self.device).unsqueeze(0)
+
+        P_prior = self._project_spd(self.e["P"] + self.q_theta * eye)
+        try:
+            chol_P_prior = safe_cholesky(P_prior)
+        except Exception:
+            P_prior = self._project_spd(P_prior + 1e-6 * eye, min_eig=1e-6)
+            chol_P_prior = safe_cholesky(P_prior)
+        L_prior = torch.cholesky_inverse(chol_P_prior)
+
+        L_new = self._project_spd(L_prior + info)
+        try:
+            chol_L_new = safe_cholesky(L_new)
+        except Exception:
+            L_new = self._project_spd(L_new + 1e-4 * eye, min_eig=1e-4)
+            chol_L_new = safe_cholesky(L_new)
+        P_new = torch.cholesky_inverse(chol_L_new)
+        m_new = self.e["m"] + (P_new @ score.unsqueeze(-1)).squeeze(-1)
+
+        self.e = {"m": m_new.detach(), "P": P_new.detach(), "L": L_new.detach()}
+        self.set_params(self.e["m"].detach())
+        self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
+
+    @staticmethod
+    def _project_spd(M: torch.Tensor, min_eig: float = 1e-6) -> torch.Tensor:
+        M = symmetrize(M)
+        eigvals, eigvecs = torch.linalg.eigh(M)
+        eigvals = eigvals.clamp_min(min_eig)
+        return symmetrize(eigvecs @ torch.diag_embed(eigvals) @ eigvecs.transpose(-1, -2))
 
     def set_params(self, e: torch.Tensor):
         self.e["m"] = e.to(self.device)
@@ -675,17 +784,23 @@ class FilteringEmbedding(BaseModel):
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
         observation, info = super().reset(observation)
+        d_embed = self.e["m"].shape[-1]
+        batch = self.e["m"].shape[0]
+        eye_embed = torch.eye(d_embed, device=self.device).unsqueeze(0).expand(batch, -1, -1).clone()
         self.e.update(
             {
-                "P": torch.eye(self.e["m"].shape[-1], device=self.device),
-                "L": torch.eye(self.e["m"].shape[-1], device=self.device),
+                "P": eye_embed,
+                "L": eye_embed.clone(),
             }
         )
+        self._normalize_embedding_belief()
         self.z = {
             "m": self._state,
-            "P": torch.eye(self.latent_dim, device=self.device),
+            "P": torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
         }
+        self._ensure_state_belief_shapes(batch_size=batch)
         self.set_params(self.e["m"])
+        self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
 
         return observation, info
 
@@ -884,14 +999,29 @@ class FilteringEmbedding(BaseModel):
     def update_posterior_embedding(self, y, u=None, **kwargs):
         """Update the posterior state given new observation and action."""
 
+        self._normalize_embedding_belief()
+        self._ensure_state_belief_shapes(batch_size=self.e["m"].shape[0])
         y = y[:, -1:, :]
         u = u[:, -1:, :] if u is not None else None
         Q = softplus(self.dynamics.logvar).diag_embed().unsqueeze(0) * self.dt
         I = torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
 
+        if self.Fe is None or self.Fz is None:
+            raise ValueError("FilteringEmbedding requires both Fe and Fz callables for parameter updates.")
+
+        batch_size = y.shape[0]
+        if self._theta_score_block.shape[0] != batch_size:
+            self._reset_embedding_block_state(batch_size=batch_size)
+
+        z_prev = self.z["m"]
+        e_eval = self.e["m"]
+        if e_eval.shape[0] == 1 and batch_size > 1:
+            e_eval = e_eval.expand(batch_size, -1)
+
         # Transition linearization at current posterior mean
-        Fz = self.Fz(self.z["m"], self.e["m"])
+        Fz = self.Fz(z_prev, e_eval)
         dfdz = Fz * self.dt + I
+        F_theta = self.Fe(z_prev, e_eval) * self.dt
 
         if u is not None and self.action_encoder is not None:
             u_enc = self.action_encoder(u, self.z["m"])
@@ -900,16 +1030,28 @@ class FilteringEmbedding(BaseModel):
 
         # Predict
 
+        pred_m = torch.nan_to_num(self.predict(action=u_enc), nan=0.0, posinf=10.0, neginf=-10.0)
+        pred_cov = dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q + 1e-6 * I
+        pred_cov = torch.nan_to_num(pred_cov, nan=0.0, posinf=1e6, neginf=-1e6)
         z_pred = {
-            "m": self.predict(action=u_enc),
-            "P": dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q,
+            "m": pred_m,
+            "P": self._project_spd(pred_cov),
         }
 
         # Re-linearize observation and variance at new z_pred
-        dhdz = self.decoder.jacobian(z_pred["m"])
-        R = self.decoder.var(z_pred["m"]).diag_embed()
-        S = symmetrize(dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2)) + R
-        chol_S = safe_cholesky(S)
+        z_obs = torch.nan_to_num(z_pred["m"], nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)
+        dhdz = torch.nan_to_num(self.decoder.jacobian(z_obs), nan=0.0, posinf=1e6, neginf=-1e6)
+        R_diag = torch.nan_to_num(self.decoder.var(z_obs), nan=1e-6, posinf=1e6, neginf=1e-6).clamp_min(
+            1e-6
+        )
+        R = self._project_spd(R_diag.diag_embed())
+        eye_obs = torch.eye(R.shape[-1], device=self.device).view(1, 1, R.shape[-1], R.shape[-1])
+        S = self._project_spd(dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R + 1e-6 * eye_obs)
+        try:
+            chol_S = safe_cholesky(S)
+        except Exception:
+            S = self._project_spd(S + 1e-4 * eye_obs, min_eig=1e-4)
+            chol_S = safe_cholesky(S)
 
         # Compute Kalman Gain and update posterior with observation y_t
         HPt = dhdz @ z_pred["P"]
@@ -918,25 +1060,42 @@ class FilteringEmbedding(BaseModel):
         P_upd = (I - KH) @ z_pred["P"] @ (I - KH).transpose(-1, -2) + K @ R @ K.transpose(-1, -2)
 
         # innovation uses current y_pred; recompute for consistency
-        y_pred = self.decoder(z_pred["m"])
+        y_pred = torch.nan_to_num(self.decoder(z_obs), nan=0.0, posinf=1e6, neginf=-1e6)
         r = y - y_pred
 
         z_post = {
             "m": z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1),
-            "P": symmetrize(P_upd),
+            "P": self._project_spd(P_upd + 1e-8 * I),
         }
 
         self.z = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
         self._state = z_post["m"].detach()
-        # Sensitivity wrt embedding via dynamics (ignore Fz dependence)
-        Gt = self.Fe(self.z["m"], self.e["m"]) * self.dt
-        HzGt = dhdz @ Gt
 
-        # GN curvature
-        X = torch.cholesky_solve(HzGt, chol_S)
-        curv_ll = einsum(HzGt, X, "b t y d, b t y e->b t d e")
-        curv_ll = symmetrize(curv_ll)  # ensure symmetry
-        self.update_embedding(r, chol_S, HzGt, curv_ll)
+        # Parameter sensitivity recursion S_t = F_theta,t + F_z,t S_{t-1}.
+        S_prev = self._theta_sensitivity
+        S_t = F_theta.squeeze(1) + dfdz.squeeze(1) @ S_prev  # (B, Dz, De)
+
+        # Score: s_t = S_t^T (Pz_pred)^-1 (z_post - z_pred).
+        chol_P_pred = safe_cholesky(self._project_spd(z_pred["P"]))
+        delta_z = z_post["m"] - z_pred["m"]  # (B, 1, Dz)
+        invP_delta = torch.cholesky_solve(delta_z.unsqueeze(-1), chol_P_pred).squeeze(-1).squeeze(1)
+        score_t = torch.einsum("bze,bz->be", S_t, invP_delta)
+
+        # Information: I_t = S_t^T (I + Pz_pred I_z)^-1 I_z S_t.
+        chol_R = safe_cholesky(self._project_spd(R))
+        invR_H = torch.cholesky_solve(dhdz, chol_R)
+        I_z = symmetrize(dhdz.transpose(-1, -2) @ invR_H)
+        atten_mat = self._project_spd(I + z_pred["P"] @ I_z)
+        chol_atten = safe_cholesky(atten_mat)
+        atten_Iz = torch.cholesky_solve(I_z, chol_atten).squeeze(1)
+        info_t = symmetrize(S_t.transpose(-1, -2) @ atten_Iz @ S_t)
+
+        self._theta_score_block += score_t
+        self._theta_info_block += info_t
+        self._theta_sensitivity = S_t.detach()
+        self._theta_block_steps += 1
+        if self._theta_block_steps >= self.k_theta:
+            self._apply_embedding_block_update()
 
         return self._state
 

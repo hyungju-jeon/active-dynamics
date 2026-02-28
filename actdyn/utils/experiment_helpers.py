@@ -152,13 +152,21 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
 
     # Model
     model_cls = model_from_str(config.model.model_type)
-    model = model_cls(
+    model_kwargs = dict(
         dynamics=dynamics,
         encoder=encoder,
         decoder=decoder,
         action_encoder=action_model,
         device=config.device,
     )
+    if config.model.model_type == "filtering-embedding":
+        model_kwargs.update(
+            {
+                "q_theta": config.model.emb_q_theta,
+                "k_theta": config.model.emb_k_theta,
+            }
+        )
+    model = model_cls(**model_kwargs)
 
     return model
 

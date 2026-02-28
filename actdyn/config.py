@@ -92,6 +92,8 @@ class ModelConfig:
     act_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [16])
     act_activation: Optional[str] = "relu"  # Options: "relu", "tanh", "sigmoid", "leaky_relu"
     act_state_dependent: bool = False
+    emb_q_theta: float = 1e-4
+    emb_k_theta: int = 10
     model_type: str = "seq-vae"  # Options: "seq-vae"
 
     def get_encoder_cfg(self):
@@ -189,6 +191,7 @@ class MetricConfig:
     def get_metric_cfg(self):
         return {
             "compute_type": self.compute_type,
+            "gamma": self.gamma,
             "met_goal": self.met_goal,
             "met_discount_factor": self.met_discount_factor,
             "met_use_diag": self.met_use_diag,

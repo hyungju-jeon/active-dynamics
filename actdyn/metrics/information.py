@@ -8,9 +8,9 @@ from actdyn.models.decoder import LinearMapping, LogLinearMapping
 from actdyn.models.dynamics import RBFDynamics
 from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.rollout import Rollout, RolloutBuffer
-from external.integrative_inference.src.modules import models
 from .base import BaseMetric
 from torch.nn.functional import softplus
+from actdyn.utils.helper import symmetrize
 
 eps = 1e-12
 
@@ -260,6 +260,7 @@ class EmbeddingFisherMetric(BaseMetric):
         device: str = "cuda",
         Fe_net: Callable = None,
         Fz_net: Callable = None,
+        gamma: float | None = None,
         **kwargs,
     ):
         super().__init__(compute_type, device)
@@ -267,6 +268,11 @@ class EmbeddingFisherMetric(BaseMetric):
         self.Fe_net = Fe_net
         self.Fz_net = Fz_net
         self.model = model
+        # Backward-compatible alias from existing config fields.
+        legacy_gamma = kwargs.get("met_discount_factor")
+        if gamma is None:
+            gamma = legacy_gamma if legacy_gamma is not None else 1.0
+        self.gamma = float(gamma)
 
     def compute_stepwise(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
         e_bel = self.model.e
@@ -340,18 +346,24 @@ class EmbeddingFisherMetric(BaseMetric):
             J = Gt.mT @ HSH @ Gt  # (batch, T, d_emb, d_emb)
             del Fe, Fz, chol_S, Ht, S
 
-        # weight sum by discount factor
-        # J = torch.sum(J, dim=1)  # sum over time -> (batch, d_emb, d_emb)
-        discount_factor = 1.0
-        discounts = discount_factor ** torch.arange(T, device=self.device)
+        # Discounted precision accumulation over planning horizon.
+        discounts = self.gamma ** torch.arange(T, device=self.device, dtype=J.dtype)
         J = torch.einsum("t,btpq->bpq", discounts, J)
 
-        # Use slogdet for numerical stability and to avoid accidental graph retention
-        mat = e_bel["P"].to(self.device) @ J + torch.eye(d_embedding, device=self.device)
-        # sign, logabsdet = torch.linalg.slogdet(mat)
-        # # if sign <= 0, logabsdet may be -inf or NaN; keep current behaviour but avoid crash
-        # EIG = logabsdet
-        EIG = torch.log(torch.det(mat) + eps)
+        P_theta = e_bel["P"].to(self.device)
+        if P_theta.dim() == 2:
+            P_theta = P_theta.unsqueeze(0)
+        if P_theta.shape[0] == 1 and batch > 1:
+            P_theta = P_theta.expand(batch, -1, -1)
+
+        eye = torch.eye(d_embedding, device=self.device).unsqueeze(0).expand(batch, -1, -1)
+        mat = symmetrize(eye + P_theta @ J)
+        sign, logabsdet = torch.linalg.slogdet(mat)
+        invalid = (sign <= 0) | (~torch.isfinite(logabsdet))
+        if invalid.any():
+            eigvals = torch.linalg.eigvalsh(mat)
+            logabsdet = torch.log(eigvals.clamp_min(eps)).sum(dim=-1)
+        EIG = 0.5 * logabsdet
 
         # Explicitly delete large temporaries (helps long-running processes)
         del mat
@@ -362,7 +374,8 @@ class EmbeddingFisherMetric(BaseMetric):
         # J_diag = -1.0 / J.diagonal(dim1=-2, dim2=-1)
         # return -J_diag.sum(dim=-1).unsqueeze(-1)
 
-        return -EIG  # (batch, )
+        self.current_cost = (-EIG).unsqueeze(-1)
+        return self.current_cost
 
         # with torch.no_grad():
         #     z = rollout["next_model_state"].to(self.device)

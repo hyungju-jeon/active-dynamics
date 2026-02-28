@@ -1,0 +1,54 @@
+manifest_version: 1
+name: cosyne_ciss_mid_size_validation
+
+commits:
+  baseline: "b44b630"
+  updated: "b1da3e2"
+
+locked_metadata_fields:
+  - model_tag
+  - commit
+  - seed
+  - exp_id
+  - total_steps
+  - base_dir
+  - status
+  - start_time
+  - end_time
+
+defaults:
+  base_dir: "results/CISS/cosyne"
+  model_tags: ["baseline", "updated"]
+  seeds: [0, 10]
+  exp_ids: ["active_short", "active_long", "RND", "random"]
+  repeats: 1
+  track_total_steps: 1000
+  smoke_total_steps: 1000
+  q_theta: 1.0e-4
+  k_theta: 10
+  gamma: 1.0
+  writing_ref: "docs/active-dynamics-writing/methods.tex"
+
+matrix:
+  smoke:
+    model_tag: "baseline"
+    seeds: [0]
+    total_steps: 1000
+  tracks:
+    model_tags: ["baseline", "updated"]
+    exp_ids: ["active_short", "active_long", "RND", "random"]
+    seeds: [0, 10]
+    total_steps: 1000
+    repeats: 1
+
+summary_outputs:
+  csv: "results/CISS/cosyne/summary/metrics.csv"
+  markdown: "results/CISS/cosyne/summary/metrics.md"
+  figures_glob: "results/CISS/cosyne/summary/figures/*.png"
+
+acceptance_thresholds:
+  allow_nan_metrics: false
+  catastrophic_regression_threshold:
+    metric: "embedding_error_final"
+    comparator: "updated_minus_baseline"
+    max_allowed_increase: 0.05
