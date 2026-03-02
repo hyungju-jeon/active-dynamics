@@ -95,3 +95,5 @@ site/
 dist/
 build/
 *.egg-info/
+
+.venv/
