@@ -1,9 +1,8 @@
 manifest_version: 1
-name: cosyne_ciss_mid_size_validation
+name: cosyne_parameter_id_mid_size_validation
 
 commits:
-  baseline: "b44b630"
-  updated: "b1da3e2"
+  updated: "1ef4d6f"
 
 locked_metadata_fields:
   - model_tag
@@ -17,9 +16,9 @@ locked_metadata_fields:
   - end_time
 
 defaults:
-  base_dir: "results/CISS/cosyne"
-  model_tags: ["baseline", "updated"]
-  seeds: [0, 10]
+  base_dir: "results/cosyne"
+  model_tags: ["updated"]
+  seeds: [0, 10, 20, 30, 40]
   exp_ids: ["active_short", "active_long", "RND", "random"]
   repeats: 1
   track_total_steps: 1000
@@ -31,24 +30,21 @@ defaults:
 
 matrix:
   smoke:
-    model_tag: "baseline"
+    model_tag: "updated"
     seeds: [0]
     total_steps: 1000
   tracks:
-    model_tags: ["baseline", "updated"]
+    model_tags: ["updated"]
     exp_ids: ["active_short", "active_long", "RND", "random"]
-    seeds: [0, 10]
+    seeds: [0, 10, 20, 30, 40]
     total_steps: 1000
     repeats: 1
 
 summary_outputs:
-  csv: "results/CISS/cosyne/summary/metrics.csv"
-  markdown: "results/CISS/cosyne/summary/metrics.md"
-  figures_glob: "results/CISS/cosyne/summary/figures/*.png"
+  csv: "results/cosyne/summary/metrics.csv"
+  markdown: "results/cosyne/summary/metrics.md"
+  figures_glob: "results/cosyne/summary/figures/*.png"
 
 acceptance_thresholds:
   allow_nan_metrics: false
-  catastrophic_regression_threshold:
-    metric: "embedding_error_final"
-    comparator: "updated_minus_baseline"
-    max_allowed_increase: 0.05
+  max_failed_track_runs: 0

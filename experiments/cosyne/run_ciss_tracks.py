@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cosyne helper to preflight and run parameter-identification CISS experiments."""
+"""Cosyne helper to preflight and run parameter-identification experiments."""
 
 from __future__ import annotations
 
@@ -657,7 +657,7 @@ def _run_single_parameter_identification(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run Cosyne CISS parameter-identification workflows")
+    parser = argparse.ArgumentParser(description="Run Cosyne parameter-identification workflows")
     parser.add_argument(
         "--mode",
         choices=["preflight", "smoke", "tracks", "ablation", "all"],

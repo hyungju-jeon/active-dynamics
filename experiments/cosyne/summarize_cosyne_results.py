@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate Cosyne CISS run metadata into CSV/Markdown/figures."""
+"""Aggregate Cosyne parameter-identification run metadata into CSV/Markdown/figures."""
 
 from __future__ import annotations
 
@@ -279,7 +279,7 @@ def _write_markdown(
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines: list[str] = []
-    lines.append("# Cosyne CISS Summary")
+    lines.append("# Cosyne Parameter-ID Summary")
     lines.append("")
     lines.append("## Matrix Coverage")
     lines.append("")
@@ -291,33 +291,17 @@ def _write_markdown(
     by_tag = {tag: _aggregate_by_track(rows, tag) for tag in model_tags}
     lines.append("")
 
-    if "baseline" in by_tag and "updated" in by_tag:
-        baseline = by_tag["baseline"]
-        updated = by_tag["updated"]
-        lines.append("## Baseline vs Updated Parameter Error (Lower Is Better)")
+    lines.append("## Parameter Error by Track (Lower Is Better)")
+    lines.append("")
+    for model_tag in model_tags:
+        lines.append(f"### {model_tag}")
         lines.append("")
-        lines.append("| exp_id | baseline | updated | updated-baseline |")
-        lines.append("| --- | ---: | ---: | ---: |")
-        for exp_id in sorted(set(baseline).union(updated)):
-            b = baseline.get(exp_id)
-            u = updated.get(exp_id)
-            delta = None if b is None or u is None else (u - b)
-            b_txt = "n/a" if b is None else f"{b:.6f}"
-            u_txt = "n/a" if u is None else f"{u:.6f}"
-            d_txt = "n/a" if delta is None else f"{delta:.6f}"
-            lines.append(f"| {exp_id} | {b_txt} | {u_txt} | {d_txt} |")
-    else:
-        lines.append("## Parameter Error by Track (Lower Is Better)")
+        lines.append("| exp_id | final_error_mean |")
+        lines.append("| --- | ---: |")
+        metrics = by_tag.get(model_tag, {})
+        for exp_id in sorted(metrics):
+            lines.append(f"| {exp_id} | {metrics[exp_id]:.6f} |")
         lines.append("")
-        for model_tag in model_tags:
-            lines.append(f"### {model_tag}")
-            lines.append("")
-            lines.append("| exp_id | final_error_mean |")
-            lines.append("| --- | ---: |")
-            metrics = by_tag.get(model_tag, {})
-            for exp_id in sorted(metrics):
-                lines.append(f"| {exp_id} | {metrics[exp_id]:.6f} |")
-            lines.append("")
 
     lines.append("## Track Ranking")
     lines.append("")
@@ -434,37 +418,6 @@ def _plot_figures(
         fig.savefig(figures_dir / "final_error_by_track.png", dpi=150)
         plt.close(fig)
 
-    if "baseline" in model_tags and "updated" in model_tags:
-        fig, ax = plt.subplots(figsize=(8.5, 4.8))
-        for exp_id in exp_ids:
-            base_vals = [
-                row for row in rows if row["exp_id"] == exp_id and row["model_tag"] == "baseline"
-            ]
-            upd_vals = [
-                row for row in rows if row["exp_id"] == exp_id and row["model_tag"] == "updated"
-            ]
-            by_seed_base = {
-                int(r["seed"]): _safe_float(r["embedding_error_final_mean"]) for r in base_vals
-            }
-            by_seed_upd = {
-                int(r["seed"]): _safe_float(r["embedding_error_final_mean"]) for r in upd_vals
-            }
-            common = sorted(set(by_seed_base).intersection(by_seed_upd))
-            if not common:
-                continue
-            bx = [by_seed_base[s] for s in common]
-            uy = [by_seed_upd[s] for s in common]
-            ax.scatter(bx, uy, label=exp_id)
-
-        ax.set_xlabel("Baseline final parameter error")
-        ax.set_ylabel("Updated final parameter error")
-        ax.set_title("Cosyne: Baseline vs Updated by Seed")
-        ax.grid(alpha=0.2)
-        ax.legend(loc="best")
-        fig.tight_layout()
-        fig.savefig(figures_dir / "baseline_vs_updated_scatter.png", dpi=150)
-        plt.close(fig)
-
     if param_trace_rows:
         fig, ax = plt.subplots(figsize=(9.5, 5.0))
         key_pairs = sorted({(r["model_tag"], r["exp_id"]) for r in param_trace_rows})
@@ -561,7 +514,7 @@ def _plot_figures(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Summarize Cosyne CISS run metadata")
+    parser = argparse.ArgumentParser(description="Summarize Cosyne parameter-identification runs")
     parser.add_argument("--base-dir", type=str, default="results/cosyne")
     parser.add_argument("--summary-dir", type=str, default="results/cosyne/summary")
     parser.add_argument("--exp-ids", type=str, default=",".join(DEFAULT_EXP_IDS))

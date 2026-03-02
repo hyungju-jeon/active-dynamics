@@ -1,4 +1,4 @@
-# Cosyne CISS Parameter Identification Workspace
+# Cosyne Parameter Identification Workspace
 
 This folder contains planning and orchestration artifacts for Cosyne-oriented
 parameter-identification reruns.
@@ -15,19 +15,19 @@ parameter-identification reruns.
 1. Preflight
 
 ```bash
-python experiments/cosyne/run_ciss_tracks.py --mode preflight --model-tag baseline
+python experiments/cosyne/run_ciss_tracks.py --mode preflight
 ```
 
-2. Parameter-ID smoke (baseline)
+2. Parameter-ID smoke (updated-only)
 
 ```bash
 python experiments/cosyne/run_ciss_tracks.py \
   --mode smoke \
-  --model-tag baseline \
+  --model-tag updated \
   --q-theta 1e-4 \
   --k-theta 10 \
   --eig-gamma 1.0 \
-  --base-dir results/CISS/cosyne
+  --base-dir results/cosyne
 ```
 
 3. Mid-size parameter-ID tracks (example)
@@ -42,14 +42,33 @@ python experiments/cosyne/run_ciss_tracks.py \
   --q-theta 1e-4 \
   --k-theta 10 \
   --eig-gamma 1.0 \
-  --base-dir results/CISS/cosyne
+  --base-dir results/cosyne
 ```
 
-4. Summarize
+4. Ablation suite (planning window + update frequency)
+
+```bash
+python experiments/cosyne/run_ciss_tracks.py \
+  --mode ablation \
+  --model-tag updated \
+  --seeds 0,10,20 \
+  --ablation-exp-id active_short \
+  --ablation-total-steps 1000 \
+  --ablation-planning-windows 3,5,10,15 \
+  --ablation-k-thetas 1,5,10,20 \
+  --ablation-fixed-k-theta 10 \
+  --ablation-fixed-planning-window 5 \
+  --base-dir results/cosyne
+```
+
+5. Summarize (updated-only)
 
 ```bash
 python experiments/cosyne/summarize_cosyne_results.py \
-  --base-dir results/CISS/cosyne \
-  --summary-dir results/CISS/cosyne/summary \
+  --base-dir results/cosyne \
+  --summary-dir results/cosyne/summary \
+  --model-tags updated \
   --fail-on-missing
 ```
+
+Baseline-vs-updated comparison is intentionally excluded from this folder.

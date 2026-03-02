@@ -75,9 +75,9 @@ def test_run_ciss_tracks_parser_accepts_expected_args():
             "--total-steps",
             "1000",
             "--model-tag",
-            "baseline",
+            "updated",
             "--base-dir",
-            "results/CISS/cosyne",
+            "results/cosyne",
             "--q-theta",
             "1e-4",
             "--k-theta",
@@ -90,8 +90,8 @@ def test_run_ciss_tracks_parser_accepts_expected_args():
     assert args.exp_ids == "active_short,active_long,RND,random"
     assert args.seeds == "0,10"
     assert args.total_steps == 1000
-    assert args.model_tag == "baseline"
-    assert args.base_dir == "results/CISS/cosyne"
+    assert args.model_tag == "updated"
+    assert args.base_dir == "results/cosyne"
     assert args.q_theta == 1e-4
     assert args.k_theta == 10
     assert args.eig_gamma == 1.0
@@ -101,7 +101,7 @@ def test_summarizer_fail_on_missing_expected_matrix(tmp_path: Path):
     module = _load_module("cosyne_summary", "experiments/cosyne/summarize_cosyne_results.py")
     base_dir = tmp_path / "results"
     summary_dir = tmp_path / "summary"
-    _write_track_metadata(base_dir, model_tag="baseline", exp_id="active_short", seed=0)
+    _write_track_metadata(base_dir, model_tag="updated", exp_id="active_short", seed=0)
 
     exit_code = module.main(
         [
@@ -114,7 +114,7 @@ def test_summarizer_fail_on_missing_expected_matrix(tmp_path: Path):
             "--seeds",
             "0,10",
             "--model-tags",
-            "baseline,updated",
+            "updated",
             "--fail-on-missing",
         ]
     )
@@ -127,7 +127,7 @@ def test_summarizer_writes_expected_track_row_count(tmp_path: Path):
     summary_dir = tmp_path / "summary"
     exp_ids = ["active_short", "active_long", "RND", "random"]
     seeds = [0, 10]
-    model_tags = ["baseline", "updated"]
+    model_tags = ["updated"]
 
     for model_tag in model_tags:
         for exp_id in exp_ids:
@@ -137,7 +137,7 @@ def test_summarizer_writes_expected_track_row_count(tmp_path: Path):
                     model_tag=model_tag,
                     exp_id=exp_id,
                     seed=seed,
-                    latent_error_final=0.15 if model_tag == "baseline" else 0.12,
+                    latent_error_final=0.12,
                 )
 
     exit_code = module.main(
@@ -151,7 +151,7 @@ def test_summarizer_writes_expected_track_row_count(tmp_path: Path):
             "--seeds",
             "0,10",
             "--model-tags",
-            "baseline,updated",
+            "updated",
             "--fail-on-missing",
         ]
     )
