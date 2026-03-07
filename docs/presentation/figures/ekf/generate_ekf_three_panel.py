@@ -789,7 +789,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--outdir",
-        default="docs/presentation/figures",
+        default="docs/presentation/figures/ekf",
         help="Directory where figure files are written.",
     )
     parser.add_argument(
