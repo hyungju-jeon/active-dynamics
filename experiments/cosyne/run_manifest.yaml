@@ -1,5 +1,5 @@
 manifest_version: 1
-name: cosyne_parameter_id_mid_size_validation
+name: cosyne_action_limit_comparison
 
 commits:
   updated: "1ef4d6f"
@@ -17,27 +17,30 @@ locked_metadata_fields:
 
 defaults:
   base_dir: "results/cosyne"
-  model_tags: ["updated"]
-  seeds: [0, 10, 20, 30, 40]
+  model_tags: ["low_action", "high_action"]
+  seeds: [0, 10, 20]
   exp_ids: ["active_short", "active_long", "RND", "random"]
   repeats: 1
-  track_total_steps: 1000
-  smoke_total_steps: 1000
-  q_theta: 1.0e-4
+  track_total_steps: 500
+  q_theta: 5.0e-4
   k_theta: 10
+  q_theta_meas_coeff: 0.0
+  q_theta_max_scale: 10.0
+  state_noise: 0.2
   gamma: 1.0
+  dynamics_alpha: 1.0
+  action_max_by_tag:
+    low_action: 1.0
+    high_action: 3.0
+  state_init_uncertainty: 50.0
   writing_ref: "docs/active-dynamics-writing/methods.tex"
 
 matrix:
-  smoke:
-    model_tag: "updated"
-    seeds: [0]
-    total_steps: 1000
   tracks:
-    model_tags: ["updated"]
+    model_tags: ["low_action", "high_action"]
     exp_ids: ["active_short", "active_long", "RND", "random"]
-    seeds: [0, 10, 20, 30, 40]
-    total_steps: 1000
+    seeds: [0, 10, 20]
+    total_steps: 500
     repeats: 1
 
 summary_outputs:

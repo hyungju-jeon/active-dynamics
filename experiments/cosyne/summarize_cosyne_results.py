@@ -12,7 +12,7 @@ from typing import Any
 import numpy as np
 
 DEFAULT_EXP_IDS = ["active_short", "active_long", "RND", "random"]
-DEFAULT_SEEDS = [0, 10, 20, 30, 40]
+DEFAULT_SEEDS = [0, 10, 20]
 DEFAULT_MODEL_TAGS = ["updated"]
 
 
@@ -223,7 +223,110 @@ def _aggregate_trace(
                     "exp_id": exp_id,
                     "step": step_i,
                     "value_mean": float(np.mean(values)),
-                    "value_std": float(np.std(values)) if len(values) > 1 else 0.0,
+                    "value_std": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
+                    "cpu_time_sec_mean": float(np.mean(cpu_vals)) if cpu_vals else None,
+                    "n_points": len(values),
+                }
+            )
+
+    out_rows.sort(key=lambda row: (row["model_tag"], row["exp_id"], int(row["step"])))
+    return out_rows
+
+
+def _reconstruct_observation_params(
+    seed: int,
+    *,
+    d_obs: int = 50,
+    d_latent: int = 2,
+    mean_firing: float = 50.0,
+    max_firing_rate: float = 100.0,
+    state_range_for_cap: float = 5.0,
+) -> tuple[np.ndarray, np.ndarray] | None:
+    try:
+        import torch
+        import torch.nn as nn
+    except Exception:
+        return None
+
+    with torch.no_grad():
+        torch.manual_seed(int(seed))
+        layer = nn.Linear(d_latent, d_obs, bias=True)
+        C = layer.weight.detach().clone()
+        C[:, 0] = torch.abs(C[:, 0])
+        C[:, 1] = C[:, 1] * 2.0
+
+        mean_log_rate = torch.log(torch.full((d_obs,), float(mean_firing)))
+        max_log_rate = torch.log(torch.full((d_obs,), float(max_firing_rate)))
+
+        for _ in range(6):
+            c_row_l1 = torch.sum(torch.abs(C), dim=1)
+            c_row_l2_sq = torch.sum(C * C, dim=1)
+            bias_from_mean = mean_log_rate - 0.5 * c_row_l2_sq
+            capped_log_rate = float(state_range_for_cap) * c_row_l1 + bias_from_mean
+            if torch.all(capped_log_rate <= max_log_rate):
+                break
+            safe_den = torch.clamp(float(state_range_for_cap) * c_row_l1, min=1e-8)
+            row_scale = torch.clamp((max_log_rate - bias_from_mean) / safe_den, min=0.0, max=1.0)
+            C = C * row_scale.unsqueeze(1)
+
+        bias = mean_log_rate - 0.5 * torch.sum(C * C, dim=1)
+        return C.cpu().numpy(), bias.cpu().numpy()
+
+
+def _aggregate_mean_firing_trace(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out_rows: list[dict[str, Any]] = []
+    group_keys = sorted({(str(r["model_tag"]), str(r["exp_id"])) for r in records})
+    obs_cache: dict[int, tuple[np.ndarray, np.ndarray] | None] = {}
+
+    for model_tag, exp_id in group_keys:
+        subgroup = [
+            r for r in records if str(r["model_tag"]) == model_tag and str(r["exp_id"]) == exp_id
+        ]
+        by_step: dict[int, dict[str, list[float]]] = {}
+
+        for record in subgroup:
+            seed = int(record["seed"])
+            if seed not in obs_cache:
+                obs_cache[seed] = _reconstruct_observation_params(seed)
+            params = obs_cache[seed]
+            if params is None:
+                continue
+            C, bias = params
+
+            trace_path = _trace_path(
+                record,
+                metadata_key="state_action_trace_path",
+                fallback_name="state_action_trace.csv",
+            )
+            if trace_path is None or not trace_path.exists():
+                continue
+
+            for row in _read_trace_csv(trace_path):
+                step = _safe_float(row.get("step"))
+                x = _safe_float(row.get("true_x"))
+                v = _safe_float(row.get("true_v"))
+                cpu_sec = _safe_float(row.get("cpu_time_sec"))
+                if step is None or x is None or v is None:
+                    continue
+                z = np.asarray([x, v], dtype=np.float64)
+                log_rate = C.dot(z) + bias
+                rate_hz = float(np.mean(np.exp(np.clip(log_rate, -40.0, 40.0))))
+                step_i = int(step)
+                bucket = by_step.setdefault(step_i, {"value": [], "cpu": []})
+                bucket["value"].append(rate_hz)
+                if cpu_sec is not None:
+                    bucket["cpu"].append(cpu_sec)
+
+        for step_i in sorted(by_step):
+            values = by_step[step_i]["value"]
+            cpu_vals = by_step[step_i]["cpu"]
+            out_rows.append(
+                {
+                    "model_tag": model_tag,
+                    "exp_id": exp_id,
+                    "step": step_i,
+                    "value_mean": float(np.mean(values)),
+                    "value_std": float(np.std(values, ddof=1)) if len(values) > 1 else 0.0,
                     "cpu_time_sec_mean": float(np.mean(cpu_vals)) if cpu_vals else None,
                     "n_points": len(values),
                 }
@@ -380,6 +483,7 @@ def _plot_figures(
     rows: list[dict[str, Any]],
     param_trace_rows: list[dict[str, Any]],
     traj_trace_rows: list[dict[str, Any]],
+    firing_trace_rows: list[dict[str, Any]],
     ablation_rows: list[dict[str, Any]],
 ) -> None:
     figures_dir.mkdir(parents=True, exist_ok=True)
@@ -397,6 +501,7 @@ def _plot_figures(
         fig, ax = plt.subplots(figsize=(9, 4.8))
         for idx, model_tag in enumerate(model_tags):
             values = []
+            stds = []
             for exp_id in exp_ids:
                 series = [
                     _safe_float(row["embedding_error_final_mean"])
@@ -405,12 +510,13 @@ def _plot_figures(
                 ]
                 nums = [v for v in series if v is not None]
                 values.append(float(np.mean(nums)) if nums else np.nan)
+                stds.append(float(np.std(nums, ddof=1)) if len(nums) > 1 else 0.0)
             offset = (idx - (len(model_tags) - 1) / 2.0) * width
-            ax.bar(x + offset, values, width=width, label=model_tag)
+            ax.bar(x + offset, values, width=width, yerr=stds, capsize=3, label=model_tag)
 
         ax.set_xticks(x)
         ax.set_xticklabels(exp_ids, rotation=20)
-        ax.set_ylabel("Final Parameter Error (mean)")
+        ax.set_ylabel("Final Parameter Error (mean ± STD over seeds)")
         ax.set_title("Cosyne: Final Parameter Error by Track")
         ax.legend(loc="best")
         ax.grid(alpha=0.2, axis="y")
@@ -428,13 +534,21 @@ def _plot_figures(
                 for r in param_trace_rows
                 if r["model_tag"] == model_tag and r["exp_id"] == exp_id
             ]
+            series.sort(key=lambda r: int(r["step"]))
             xs = [int(r["step"]) for r in series]
             ys = [float(r["value_mean"]) for r in series]
+            std = [float(r["value_std"]) for r in series]
             label = exp_id if single_tag else f"{model_tag}:{exp_id}"
             ax.plot(xs, ys, label=label)
+            ax.fill_between(
+                xs,
+                np.asarray(ys) - np.asarray(std),
+                np.asarray(ys) + np.asarray(std),
+                alpha=0.18,
+            )
         ax.set_xlabel("Environment Step")
-        ax.set_ylabel("Parameter Error (mean over seeds)")
-        ax.set_title("Parameter Error Over Time Steps")
+        ax.set_ylabel("Parameter Error (mean ± STD over seeds)")
+        ax.set_title("Parameter Error Over Time Steps (with STD)")
         ax.grid(alpha=0.2)
         ax.legend(loc="best")
         fig.tight_layout()
@@ -449,13 +563,21 @@ def _plot_figures(
                 if r["model_tag"] == model_tag and r["exp_id"] == exp_id
             ]
             series = [r for r in series if r["cpu_time_sec_mean"] is not None]
+            series.sort(key=lambda r: int(r["step"]))
             xs = [float(r["cpu_time_sec_mean"]) for r in series]
             ys = [float(r["value_mean"]) for r in series]
+            std = [float(r["value_std"]) for r in series]
             label = exp_id if single_tag else f"{model_tag}:{exp_id}"
             ax.plot(xs, ys, label=label)
+            ax.fill_between(
+                xs,
+                np.asarray(ys) - np.asarray(std),
+                np.asarray(ys) + np.asarray(std),
+                alpha=0.18,
+            )
         ax.set_xlabel("CPU Time (sec)")
-        ax.set_ylabel("Parameter Error (mean over seeds)")
-        ax.set_title("Parameter Error Over CPU Time")
+        ax.set_ylabel("Parameter Error (mean ± STD over seeds)")
+        ax.set_title("Parameter Error Over CPU Time (with STD)")
         ax.grid(alpha=0.2)
         ax.legend(loc="best")
         fig.tight_layout()
@@ -472,17 +594,56 @@ def _plot_figures(
                 for r in traj_trace_rows
                 if r["model_tag"] == model_tag and r["exp_id"] == exp_id
             ]
+            series.sort(key=lambda r: int(r["step"]))
             xs = [int(r["step"]) for r in series]
             ys = [float(r["value_mean"]) for r in series]
+            std = [float(r["value_std"]) for r in series]
             label = exp_id if single_tag else f"{model_tag}:{exp_id}"
             ax.plot(xs, ys, label=label)
+            ax.fill_between(
+                xs,
+                np.asarray(ys) - np.asarray(std),
+                np.asarray(ys) + np.asarray(std),
+                alpha=0.18,
+            )
         ax.set_xlabel("Environment Step")
-        ax.set_ylabel("Trajectory R2 (mean over seeds)")
-        ax.set_title("Trajectory R2 Over Time (No-input rollout checks)")
+        ax.set_ylabel("Trajectory R2 (mean ± STD over seeds)")
+        ax.set_title("Trajectory R2 Over Time (No-input rollout checks, with STD)")
         ax.grid(alpha=0.2)
         ax.legend(loc="best")
         fig.tight_layout()
         fig.savefig(figures_dir / "trajectory_r2_over_steps.png", dpi=150)
+        plt.close(fig)
+
+    if firing_trace_rows:
+        fig, ax = plt.subplots(figsize=(9.5, 5.0))
+        key_pairs = sorted({(r["model_tag"], r["exp_id"]) for r in firing_trace_rows})
+        single_tag = len({k[0] for k in key_pairs}) == 1
+        for model_tag, exp_id in key_pairs:
+            series = [
+                r
+                for r in firing_trace_rows
+                if r["model_tag"] == model_tag and r["exp_id"] == exp_id
+            ]
+            series.sort(key=lambda r: int(r["step"]))
+            xs = [int(r["step"]) for r in series]
+            ys = [float(r["value_mean"]) for r in series]
+            std = [float(r["value_std"]) for r in series]
+            label = exp_id if single_tag else f"{model_tag}:{exp_id}"
+            ax.plot(xs, ys, label=label)
+            ax.fill_between(
+                xs,
+                np.asarray(ys) - np.asarray(std),
+                np.asarray(ys) + np.asarray(std),
+                alpha=0.18,
+            )
+        ax.set_xlabel("Environment Step")
+        ax.set_ylabel("Mean Firing Rate (Hz, mean ± STD over seeds)")
+        ax.set_title("Mean Firing Rate Over Time Steps (with STD)")
+        ax.grid(alpha=0.2)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        fig.savefig(figures_dir / "mean_firing_rate_over_steps.png", dpi=150)
         plt.close(fig)
 
     if ablation_rows:
@@ -554,12 +715,18 @@ def main(argv: list[str] | None = None) -> int:
         fallback_name="trajectory_r2_trace.csv",
         value_col="trajectory_r2",
     )
+    firing_trace_rows = _aggregate_mean_firing_trace(records)
 
     ablation_rows = collect_ablation_rows(base_dir)
 
     _write_csv(summary_dir / "metrics.csv", rows)
     _write_curve_csv(summary_dir / "parameter_error_over_steps.csv", param_trace_rows, "parameter_error_mean")
     _write_curve_csv(summary_dir / "trajectory_r2_over_steps.csv", traj_trace_rows, "trajectory_r2_mean")
+    _write_curve_csv(
+        summary_dir / "mean_firing_rate_over_steps.csv",
+        firing_trace_rows,
+        "mean_firing_rate_hz_mean",
+    )
     _write_ablation_csv(summary_dir / "ablation_metrics.csv", ablation_rows)
     _write_markdown(summary_dir / "metrics.md", rows, missing, model_tags=model_tags)
     _plot_figures(
@@ -567,6 +734,7 @@ def main(argv: list[str] | None = None) -> int:
         rows=rows,
         param_trace_rows=param_trace_rows,
         traj_trace_rows=traj_trace_rows,
+        firing_trace_rows=firing_trace_rows,
         ablation_rows=ablation_rows,
     )
 
