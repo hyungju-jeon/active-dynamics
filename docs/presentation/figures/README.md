@@ -1,37 +1,19 @@
-# EKF Three-Panel Figure
+# Presentation Figures
 
-This directory contains a standalone script that generates an Extended Kalman Filter illustration with three panels:
+This directory contains standalone scientific figure generators used for presentation assets.
 
-- Prediction
-- Measurement
-- Update
+## Figure Folders
 
-## Generate the Figure
+- `ekf/`: Extended Kalman Filter three-panel illustration
+- `information/`: Sensitivity-certainty information taxonomy matrix
+- `uncertainty/`: Bayesian uncertainty reduction diagram
+
+## Generate Figures
 
 From the repository root:
 
 ```bash
-python docs/presentation/figures/generate_ekf_three_panel.py
+python docs/presentation/figures/ekf/generate_ekf_three_panel.py
+python docs/presentation/figures/information/generate_information_sensitivity_certainty.py
+python docs/presentation/figures/uncertainty/generate_bayesian_uncertainty_reduction.py
 ```
-
-Default outputs:
-
-- `docs/presentation/figures/ekf_three_panel.svg`
-- `docs/presentation/figures/ekf_three_panel.png`
-
-## Optional Flags
-
-```bash
-python docs/presentation/figures/generate_ekf_three_panel.py \
-  --outdir docs/presentation/figures \
-  --basename ekf_three_panel \
-  --dpi 300 \
-  --seed 17 \
-  --formats svg,png
-```
-
-- `--outdir`: output directory
-- `--basename`: output filename prefix
-- `--dpi`: PNG DPI
-- `--seed`: deterministic measurement sampling seed
-- `--formats`: comma-separated formats (`png`, `svg`, `pdf`)
