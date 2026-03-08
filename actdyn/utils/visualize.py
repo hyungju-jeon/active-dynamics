@@ -116,6 +116,7 @@ def plot_vector_field(dynamics, ax=None, title=None, **kwargs):
         # plt.axis("off")
         plt.axis("equal")
         plt.tight_layout()
+        plt.colorbar(label="Speed", aspect=20)
 
 
 @torch.no_grad()
