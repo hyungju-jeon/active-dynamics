@@ -29,8 +29,70 @@ from actdyn.config import ExperimentConfig
 from actdyn.models.dynamics import FunctionDynamics
 from actdyn.utils.helper import jacobian_wrt_param, make_uniform_sampler
 from actdyn.utils.runtime import configure_runtime, ensure_dir
-from external.integrative_inference.experiments.model_utils import build_hypernetwork
-import external.integrative_inference.src.modules as metadyn
+
+try:
+    from external.integrative_inference.experiments.model_utils import build_hypernetwork
+    import external.integrative_inference.src.modules as metadyn
+    HAS_INTEGRATIVE_INFERENCE = True
+except ModuleNotFoundError:
+    HAS_INTEGRATIVE_INFERENCE = False
+
+    class _FallbackLowRankHypernet(nn.Module):
+        def __init__(self, d_embed: int, d_context: int, d_hidden: int):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(d_embed, d_hidden),
+                nn.SiLU(),
+                nn.Linear(d_hidden, d_hidden),
+                nn.SiLU(),
+                nn.Linear(d_hidden, d_context),
+            )
+
+        def forward(self, e: torch.Tensor):
+            ctx = self.net(e)
+            return ctx, None
+
+    class _FallbackHyperMlpDynamics(nn.Module):
+        def __init__(
+            self,
+            d_latent: int,
+            d_hidden: int,
+            n_hidden: int,
+            update_input: bool,
+            update_output: bool,
+            update_hidden: bool,
+            du: int,
+            device: str,
+            d_context: int = 16,
+        ):
+            super().__init__()
+            layers: list[nn.Module] = []
+            in_dim = d_latent + d_context
+            for _ in range(max(n_hidden, 1)):
+                layers.append(nn.Linear(in_dim, d_hidden))
+                layers.append(nn.SiLU())
+                in_dim = d_hidden
+            layers.append(nn.Linear(in_dim, d_latent))
+            self.net = nn.Sequential(*layers)
+
+        def compute_param(self, z: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+            return self.net(torch.cat([z, out], dim=-1))
+
+        def forward(self, z: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+            return self.compute_param(z, out)
+
+    class _FallbackMetadynModule:
+        LowRankHypernet = _FallbackLowRankHypernet
+        HyperMlpDynamics = _FallbackHyperMlpDynamics
+
+    def build_hypernetwork(cfg, device):
+        return _FallbackLowRankHypernet(
+            d_embed=int(cfg["d_embed"]),
+            d_context=int(cfg["d_context"]),
+            d_hidden=max(int(cfg.get("d_hidden_hypernet_dynamics", 16)), int(cfg["d_context"])),
+        ).to(device)
+
+    metadyn = _FallbackMetadynModule()
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -102,78 +164,118 @@ def _make_family_embedding(
     )
 
 
-def build_mixed40_system_specs() -> tuple[SystemSpec, ...]:
+def build_mixed80_system_specs() -> tuple[SystemSpec, ...]:
     family_param_bank: list[tuple[str, str, list[tuple[float, float]]]] = [
         (
             "duffing_single",
             "Duffing single-attractor regime (positive linear stiffness, damped)",
             [
-                (-0.62, 0.55),
-                (-0.60, 0.65),
-                (-0.58, 0.75),
-                (-0.56, 0.85),
-                (-0.54, 0.95),
-                (-0.52, 1.05),
-                (-0.50, 1.15),
-                (-0.48, 1.25),
-                (-0.46, 1.35),
-                (-0.44, 1.45),
+                (-0.66, 0.48),
+                (-0.64, 0.54),
+                (-0.62, 0.60),
+                (-0.60, 0.68),
+                (-0.58, 0.76),
+                (-0.56, 0.84),
+                (-0.55, 0.92),
+                (-0.54, 1.00),
+                (-0.53, 1.08),
+                (-0.52, 1.16),
+                (-0.51, 1.24),
+                (-0.50, 1.32),
+                (-0.49, 1.40),
+                (-0.48, 1.48),
+                (-0.47, 1.56),
+                (-0.46, 1.64),
+                (-0.45, 1.72),
+                (-0.44, 1.80),
+                (-0.43, 1.88),
+                (-0.42, 1.96),
             ],
         ),
         (
             "duffing_bistable",
             "Duffing bistable regime (negative linear stiffness, damped)",
             [
-                (-0.60, -0.12),
-                (-0.58, -0.16),
-                (-0.56, -0.20),
-                (-0.54, -0.24),
-                (-0.52, -0.28),
-                (-0.50, -0.32),
-                (-0.48, -0.36),
-                (-0.46, -0.40),
-                (-0.44, -0.44),
-                (-0.42, -0.48),
+                (-0.66, -0.08),
+                (-0.64, -0.10),
+                (-0.62, -0.12),
+                (-0.60, -0.15),
+                (-0.58, -0.18),
+                (-0.56, -0.21),
+                (-0.55, -0.24),
+                (-0.54, -0.27),
+                (-0.53, -0.30),
+                (-0.52, -0.33),
+                (-0.51, -0.36),
+                (-0.50, -0.39),
+                (-0.49, -0.42),
+                (-0.48, -0.45),
+                (-0.47, -0.48),
+                (-0.46, -0.51),
+                (-0.45, -0.54),
+                (-0.44, -0.57),
+                (-0.43, -0.60),
+                (-0.42, -0.63),
             ],
         ),
         (
             "van_der_pol",
             "Van der Pol limit-cycle strength sweep",
             [
-                (0.60, 0.90),
+                (0.55, 0.88),
+                (0.65, 0.90),
                 (0.75, 0.92),
-                (0.90, 0.95),
-                (1.05, 1.00),
-                (1.20, 1.02),
-                (1.40, 1.05),
+                (0.85, 0.94),
+                (0.95, 0.96),
+                (1.05, 0.98),
+                (1.15, 1.00),
+                (1.25, 1.02),
+                (1.35, 1.04),
+                (1.45, 1.06),
                 (1.60, 1.08),
-                (1.85, 1.12),
-                (2.10, 1.18),
-                (2.35, 1.24),
+                (1.75, 1.10),
+                (1.90, 1.12),
+                (2.05, 1.15),
+                (2.20, 1.18),
+                (2.35, 1.21),
+                (2.36, 1.22),
+                (2.42, 1.23),
+                (2.48, 1.24),
+                (2.50, 1.24),
             ],
         ),
         (
             "double_limit_cycle",
             "double-ring limit-cycle family (inner/outer radial structure)",
             [
-                (0.45, 0.72),
-                (0.52, 0.82),
-                (0.59, 0.92),
-                (0.66, 1.02),
-                (0.73, 1.12),
-                (0.80, 1.22),
-                (0.87, 1.02),
-                (0.94, 1.18),
-                (1.01, 1.30),
-                (1.08, 1.42),
+                (0.40, 0.68),
+                (0.45, 0.74),
+                (0.50, 0.80),
+                (0.55, 0.86),
+                (0.60, 0.92),
+                (0.65, 0.98),
+                (0.70, 1.04),
+                (0.75, 1.10),
+                (0.80, 1.16),
+                (0.85, 1.22),
+                (0.90, 0.96),
+                (0.95, 1.02),
+                (1.00, 1.08),
+                (1.05, 1.14),
+                (1.10, 1.20),
+                (1.15, 1.26),
+                (1.20, 1.32),
+                (1.25, 1.38),
+                (1.30, 1.44),
+                (1.35, 1.50),
             ],
         ),
     ]
 
     specs: list[SystemSpec] = []
     for family, note, params in family_param_bank:
-        if len(params) != 10:
-            raise ValueError(f"Family {family} must define exactly 10 parameter sets.")
+        if len(params) != 20:
+            raise ValueError(f"Family {family} must define exactly 20 parameter sets.")
         for i, pair in enumerate(params):
             specs.append(
                 SystemSpec(
@@ -184,13 +286,13 @@ def build_mixed40_system_specs() -> tuple[SystemSpec, ...]:
                     note=note,
                 )
             )
-    if len(specs) != 40:
-        raise ValueError(f"Expected 40 systems, got {len(specs)}.")
+    if len(specs) != 80:
+        raise ValueError(f"Expected 80 systems, got {len(specs)}.")
     return tuple(specs)
 
 
-MIXED40_SYSTEM_SPECS: tuple[SystemSpec, ...] = build_mixed40_system_specs()
-BASE_SYSTEM_SPECS: tuple[SystemSpec, ...] = MIXED40_SYSTEM_SPECS
+MIXED80_SYSTEM_SPECS: tuple[SystemSpec, ...] = build_mixed80_system_specs()
+BASE_SYSTEM_SPECS: tuple[SystemSpec, ...] = MIXED80_SYSTEM_SPECS
 
 
 @dataclass
@@ -545,6 +647,9 @@ def train_meta_dynamics(
         n_hidden=n_hidden,
     )
     cfg["dynamics_scale"] = dynamics_scale
+    cfg["train_samples_per_system"] = int(n_per_system)
+    cfg["train_epochs"] = int(n_epochs)
+    cfg["batch_size"] = int(batch_size)
     hypernet = build_hypernetwork(cfg, device)
     mean_dynamics = metadyn.HyperMlpDynamics(
         d_latent=cfg["d_latent"],
@@ -555,7 +660,8 @@ def train_meta_dynamics(
         update_hidden=cfg["update_hidden"],
         du=0,
         device=device,
-    )
+        d_context=cfg["d_context"],
+    ).to(device)
     learned_table: nn.Embedding | None = None
     if embedding_mode == "learned_system_id":
         learned_table = nn.Embedding(len(systems), d_embed, device=device)
@@ -931,6 +1037,9 @@ def write_pretrain_summary_markdown(
 - Embedding mode: {payload['embedding_mode']}
 - Systems: {len(payload['systems'])}
 - Final train loss: {payload['train_summary']['final_train_loss']:.6f}
+- Training samples/system: {payload['train_cfg']['train_samples_per_system']}
+- Training epochs: {payload['train_cfg']['train_epochs']}
+- Batch size: {payload['train_cfg']['batch_size']}
 - Verification passed: {verification['n_passed']}/{verification['n_systems']}
 - Checkpoint: `{checkpoint_path}`
 - Embedding figure: `{payload['embedding_cluster_figure']['path']}`
@@ -997,6 +1106,12 @@ def summarize_offline(
         "embedding_mode": bundle.embedding_mode,
         "train_summary": bundle.train_summary,
         "model_cfg": bundle.cfg,
+        "train_cfg": {
+            "train_samples_per_system": int(bundle.cfg.get("train_samples_per_system", -1)),
+            "train_epochs": int(bundle.cfg.get("train_epochs", -1)),
+            "batch_size": int(bundle.cfg.get("batch_size", -1)),
+            "integrative_inference_backend": bool(HAS_INTEGRATIVE_INFERENCE),
+        },
         "rollout_cfg": {
             "horizon": rollout_horizon,
             "n_init": rollout_inits,
@@ -1420,7 +1535,7 @@ def summarize_identification_results(records: list[dict], out_path: str):
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["pretrain_eval", "identify"], default="pretrain_eval")
-    parser.add_argument("--system-bank", choices=["mixed40", "legacy4"], default="mixed40")
+    parser.add_argument("--system-bank", choices=["mixed80", "mixed40", "legacy4"], default="mixed80")
     parser.add_argument("--embedding-mode", choices=["fixed", "learned_system_id"], default="learned_system_id")
     parser.add_argument("--train-samples-per-system", type=int, default=1500)
     parser.add_argument("--train-epochs", type=int, default=80)
@@ -1458,8 +1573,8 @@ def main():
     results_root = '/home/hyungju/Desktop/al-metadynamics/results'
     base_dir = ensure_dir(os.path.join(results_root, args.results_subdir))
 
-    if args.system_bank == "mixed40":
-        bank = MIXED40_SYSTEM_SPECS
+    if args.system_bank in {"mixed80", "mixed40"}:
+        bank = MIXED80_SYSTEM_SPECS
     elif args.system_bank == "legacy4":
         bank = LEGACY_SYSTEM_SPECS
     else:
