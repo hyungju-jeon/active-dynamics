@@ -194,80 +194,80 @@ def build_mixed80_system_specs() -> tuple[SystemSpec, ...]:
         ),
         (
             "duffing_bistable",
-            "Duffing bistable regime (negative linear stiffness, damped)",
+            "Duffing bistable regime (negative linear stiffness, damped; speed-constrained)",
             [
-                (-0.66, -0.08),
-                (-0.64, -0.10),
-                (-0.62, -0.12),
-                (-0.60, -0.15),
+                (-0.62, -0.10),
+                (-0.61, -0.12),
+                (-0.60, -0.14),
+                (-0.59, -0.16),
                 (-0.58, -0.18),
-                (-0.56, -0.21),
+                (-0.57, -0.20),
+                (-0.56, -0.22),
                 (-0.55, -0.24),
-                (-0.54, -0.27),
-                (-0.53, -0.30),
-                (-0.52, -0.33),
-                (-0.51, -0.36),
-                (-0.50, -0.39),
-                (-0.49, -0.42),
-                (-0.48, -0.45),
-                (-0.47, -0.48),
-                (-0.46, -0.51),
-                (-0.45, -0.54),
-                (-0.44, -0.57),
-                (-0.43, -0.60),
-                (-0.42, -0.63),
+                (-0.54, -0.26),
+                (-0.53, -0.28),
+                (-0.52, -0.30),
+                (-0.51, -0.32),
+                (-0.50, -0.34),
+                (-0.49, -0.36),
+                (-0.48, -0.38),
+                (-0.47, -0.40),
+                (-0.46, -0.42),
+                (-0.45, -0.44),
+                (-0.44, -0.46),
+                (-0.43, -0.48),
             ],
         ),
         (
             "van_der_pol",
-            "Van der Pol limit-cycle strength sweep",
+            "Van der Pol limit-cycle strength sweep (speed-constrained, fewer relaxation-extreme cases)",
             [
-                (0.55, 0.88),
-                (0.65, 0.90),
-                (0.75, 0.92),
-                (0.85, 0.94),
-                (0.95, 0.96),
-                (1.05, 0.98),
-                (1.15, 1.00),
-                (1.25, 1.02),
-                (1.35, 1.04),
-                (1.45, 1.06),
-                (1.60, 1.08),
-                (1.75, 1.10),
-                (1.90, 1.12),
-                (2.05, 1.15),
-                (2.20, 1.18),
-                (2.35, 1.21),
-                (2.36, 1.22),
-                (2.42, 1.23),
-                (2.48, 1.24),
-                (2.50, 1.24),
+                (0.50, 0.92),
+                (0.56, 0.94),
+                (0.62, 0.96),
+                (0.68, 0.98),
+                (0.74, 1.00),
+                (0.80, 1.02),
+                (0.86, 1.04),
+                (0.92, 1.06),
+                (0.98, 1.08),
+                (1.04, 1.10),
+                (1.10, 0.96),
+                (1.16, 0.98),
+                (1.22, 1.00),
+                (1.28, 1.02),
+                (1.34, 1.04),
+                (1.40, 1.06),
+                (1.44, 1.08),
+                (1.48, 1.10),
+                (1.52, 1.11),
+                (1.56, 1.12),
             ],
         ),
         (
             "double_limit_cycle",
-            "double-ring limit-cycle family (inner/outer radial structure)",
+            "double-ring limit-cycle family (speed-constrained angular/radial sweep)",
             [
-                (0.40, 0.68),
-                (0.45, 0.74),
-                (0.50, 0.80),
-                (0.55, 0.86),
-                (0.60, 0.92),
-                (0.65, 0.98),
-                (0.70, 1.04),
-                (0.75, 1.10),
-                (0.80, 1.16),
-                (0.85, 1.22),
-                (0.90, 0.96),
-                (0.95, 1.02),
-                (1.00, 1.08),
-                (1.05, 1.14),
-                (1.10, 1.20),
-                (1.15, 1.26),
-                (1.20, 1.32),
-                (1.25, 1.38),
-                (1.30, 1.44),
-                (1.35, 1.50),
+                (0.34, 0.78),
+                (0.38, 0.82),
+                (0.42, 0.86),
+                (0.46, 0.90),
+                (0.50, 0.94),
+                (0.54, 0.98),
+                (0.58, 1.02),
+                (0.62, 1.06),
+                (0.66, 1.10),
+                (0.70, 1.14),
+                (0.46, 0.88),
+                (0.50, 0.92),
+                (0.54, 0.96),
+                (0.58, 1.00),
+                (0.62, 1.04),
+                (0.66, 1.08),
+                (0.70, 1.12),
+                (0.74, 1.16),
+                (0.78, 1.20),
+                (0.82, 1.24),
             ],
         ),
     ]
@@ -484,7 +484,7 @@ def true_dynamics_from_spec(spec: SystemSpec, z: torch.Tensor, dynamics_scale: f
         inner2 = inner_r**2
         barrier2 = barrier_r**2
         outer2 = outer_r**2
-        radial = 0.05 * (r2 - inner2) * (barrier2 - r2) * (r2 - outer2)
+        radial = 0.02 * (r2 - inner2) * (barrier2 - r2) * (r2 - outer2)
         dx = x * radial - p0 * y
         dy = y * radial + p0 * x
     else:
@@ -924,25 +924,33 @@ def verify_parameter_bank(
         mean_final_radius = float(torch.linalg.norm(final_xy, dim=-1).mean().item())
         std_final_radius = float(torch.linalg.norm(final_xy, dim=-1).std(unbiased=False).item())
         tail_radius_std = float(tail_radii.std(unbiased=False).item())
-        mean_speed = float(torch.linalg.norm(traj[:, 1:, :] - traj[:, :-1, :], dim=-1).mean().item() / dt)
-        max_speed = float(torch.linalg.norm(traj[:, 1:, :] - traj[:, :-1, :], dim=-1).max().item() / dt)
+        speed = torch.linalg.norm(traj[:, 1:, :] - traj[:, :-1, :], dim=-1) / dt
+        mean_speed = float(speed.mean().item())
+        p95_speed = float(torch.quantile(speed.reshape(-1), 0.95).item())
+        max_speed = float(speed.max().item())
         sign_diversity = int(torch.unique(torch.sign(final_xy[:, 0])).numel())
 
         family_ok = False
         family_reason = ''
+        speed_cap = 180.0
+        p95_cap = 80.0
         if spec.family == 'duffing_single':
-            family_ok = mean_final_radius < 0.8 and std_final_radius < 0.55
-            family_reason = 'single-attractor convergence toward origin'
+            family_ok = mean_final_radius < 0.8 and std_final_radius < 0.55 and max_speed < 80.0
+            family_reason = 'single-attractor convergence toward origin with modest transient speed'
         elif spec.family == 'duffing_bistable':
-            family_ok = mean_final_radius > 0.7 and sign_diversity >= 2 and std_final_radius < 0.8
-            family_reason = 'bistable settling into separated wells'
+            family_ok = mean_final_radius > 0.7 and sign_diversity >= 2 and std_final_radius < 0.8 and max_speed < 40.0
+            family_reason = 'bistable settling into separated wells without steep well-crossing transients'
         elif spec.family == 'van_der_pol':
-            family_ok = 0.8 < mean_final_radius < 3.5 and tail_radius_std < 0.85
-            family_reason = 'stable oscillatory limit cycle'
+            speed_cap = 130.0
+            p95_cap = 82.0
+            family_ok = 0.8 < mean_final_radius < 3.2 and tail_radius_std < 0.80 and max_speed < speed_cap and p95_speed < p95_cap
+            family_reason = 'stable oscillatory limit cycle with controlled relaxation speed'
         elif spec.family == 'double_limit_cycle':
-            family_ok = 0.5 < mean_final_radius < 4.5 and 0.12 < std_final_radius < 1.8
-            family_reason = 'bounded multi-ring radial dynamics'
-        generic_ok = finite_ok and max_radius < 8.0 and max_speed < 350.0 and mean_speed > 0.05
+            speed_cap = 120.0
+            p95_cap = 55.0
+            family_ok = 0.5 < mean_final_radius < 4.0 and 0.12 < std_final_radius < 1.6 and max_speed < speed_cap and p95_speed < p95_cap
+            family_reason = 'bounded multi-ring radial dynamics with controlled angular speed'
+        generic_ok = finite_ok and max_radius < 8.0 and max_speed < speed_cap and p95_speed < p95_cap and mean_speed > 0.05
         passed = bool(generic_ok and family_ok)
         rows.append({
             'name': spec.name,
@@ -955,7 +963,10 @@ def verify_parameter_bank(
             'std_final_radius': std_final_radius,
             'tail_radius_std': tail_radius_std,
             'mean_speed': mean_speed,
+            'p95_speed': p95_speed,
             'max_speed': max_speed,
+            'speed_cap': speed_cap,
+            'p95_cap': p95_cap,
             'sign_diversity': sign_diversity,
             'generic_ok': generic_ok,
             'family_ok': family_ok,
@@ -976,6 +987,8 @@ def verify_parameter_bank(
             'n_systems': len(family_rows),
             'n_passed': int(sum(1 for r in family_rows if r['passed'])),
             'max_radius_max': float(max(r['max_radius'] for r in family_rows)),
+            'mean_speed_mean': float(np.mean([r['mean_speed'] for r in family_rows])),
+            'p95_speed_max': float(max(r['p95_speed'] for r in family_rows)),
             'max_speed_max': float(max(r['max_speed'] for r in family_rows)),
             'mean_final_radius_mean': float(np.mean([r['mean_final_radius'] for r in family_rows])),
             'std_final_radius_mean': float(np.mean([r['std_final_radius'] for r in family_rows])),
@@ -1029,7 +1042,7 @@ def write_pretrain_summary_markdown(
     verification_lines = []
     for family, stats in verification['family_summary'].items():
         verification_lines.append(
-            f"- {family}: {stats['n_passed']}/{stats['n_systems']} passed, max radius {stats['max_radius_max']:.3f}, max speed {stats['max_speed_max']:.3f}"
+            f"- {family}: {stats['n_passed']}/{stats['n_systems']} passed, max radius {stats['max_radius_max']:.3f}, p95 speed max {stats['p95_speed_max']:.3f}, max speed {stats['max_speed_max']:.3f}"
         )
     text = f"""# Mixed-family meta-dynamics pretraining summary
 
