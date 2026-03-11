@@ -1,5 +1,12 @@
 # Mixed-family meta-dynamics pretraining summary
 
+## Modular workflow scripts (refactored)
+- `experiments/cosyne/train_metadynamics.py`: pretrain + offline evaluation + checkpoint save.
+- `experiments/cosyne/run_online_id.py`: rollout-centered online identification experiments.
+- `experiments/cosyne/plot_vectorfield_reconstructions.py`: reproducible family-wise vector-field reconstruction figures.
+- `experiments/cosyne/plot_embedding_clusters.py`: embedding cluster figure generation.
+- `experiments/cosyne/mixed_family_metadynamics.py`: backward-compatible wrapper with `--mode`.
+
 - System bank: mixed80
 - Embedding mode: learned_system_id
 - Systems: 80

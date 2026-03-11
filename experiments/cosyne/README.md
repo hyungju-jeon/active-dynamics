@@ -1,27 +1,74 @@
-# Cosyne CISS Parameter Identification Workspace
+# Cosyne Experiment Workspace
 
-This folder contains planning and orchestration artifacts for Cosyne-oriented
-parameter-identification reruns.
+This directory includes two experiment tracks:
 
-## Contents
+- CISS rerun orchestration (`run_ciss_tracks.py`, `summarize_cosyne_results.py`)
+- Mixed-family meta-dynamics workflows (training, online ID, reproducible plotting)
 
-- `ciss_rerun_plan.md`: implementation-oriented plan and run matrix.
-- `run_manifest.yaml`: locked defaults, metadata schema, and acceptance thresholds.
-- `run_ciss_tracks.py`: preflight + execution helper for parameter-ID smoke/track runs.
-- `summarize_cosyne_results.py`: aggregate run metadata into CSV/Markdown/figures.
+## Mixed-Family Meta-Dynamics Layout
 
-## Quick Start
+- `mixed_family_lib.py`: shared data model, training, checkpoint I/O, rollout eval, online ID, plotting utilities.
+- `train_metadynamics.py`: pretrain/eval workflow; writes checkpoint + summary JSON/Markdown.
+- `run_online_id.py`: rollout-centered online identification using a checkpoint (or trains if checkpoint omitted).
+- `plot_vectorfield_reconstructions.py`: family-wise true-vs-reconstructed vector-field figure generation.
+- `plot_embedding_clusters.py`: embedding-cluster figure generation.
+- `mixed_family_metadynamics.py`: compatibility wrapper for old `--mode {pretrain_eval,identify,vectorfield_figures}` usage.
+
+## Mixed-Family Quick Start
+
+1. Pretrain + evaluate (creates checkpoint and metrics)
+
+```bash
+python3 experiments/cosyne/train_metadynamics.py \
+  --system-bank mixed80 \
+  --embedding-mode learned_system_id \
+  --d-embed 2 \
+  --train-samples-per-system 1500 \
+  --train-epochs 80 \
+  --results-subdir mixed_family_metadynamics_pretrain
+```
+
+2. Run rollout-centered online identification from a pretrained checkpoint
+
+```bash
+python3 experiments/cosyne/run_online_id.py \
+  --checkpoint results/mixed_family_metadynamics_pretrain/meta_dynamics_checkpoint.pt \
+  --systems duffing_single_00 duffing_bistable_00 van_der_pol_00 double_limit_cycle_00 \
+  --policies active_short random \
+  --repeats 2 \
+  --total-steps 120 \
+  --results-subdir mixed_family_metadynamics_online_id
+```
+
+3. Generate family-wise vector-field reconstruction figure
+
+```bash
+python3 experiments/cosyne/plot_vectorfield_reconstructions.py \
+  --checkpoint results/mixed_family_metadynamics_pretrain/meta_dynamics_checkpoint.pt \
+  --results-subdir mixed_family_metadynamics_figures \
+  --grid-n 25
+```
+
+4. (Optional) Generate embedding-cluster figure only
+
+```bash
+python3 experiments/cosyne/plot_embedding_clusters.py \
+  --checkpoint results/mixed_family_metadynamics_pretrain/meta_dynamics_checkpoint.pt \
+  --results-subdir mixed_family_metadynamics_figures
+```
+
+## CISS Track (Unchanged)
 
 1. Preflight
 
 ```bash
-python experiments/cosyne/run_ciss_tracks.py --mode preflight --model-tag baseline
+python3 experiments/cosyne/run_ciss_tracks.py --mode preflight --model-tag baseline
 ```
 
 2. Parameter-ID smoke (baseline)
 
 ```bash
-python experiments/cosyne/run_ciss_tracks.py \
+python3 experiments/cosyne/run_ciss_tracks.py \
   --mode smoke \
   --model-tag baseline \
   --q-theta 1e-4 \
@@ -33,7 +80,7 @@ python experiments/cosyne/run_ciss_tracks.py \
 3. Mid-size parameter-ID tracks (example)
 
 ```bash
-python experiments/cosyne/run_ciss_tracks.py \
+python3 experiments/cosyne/run_ciss_tracks.py \
   --mode tracks \
   --model-tag updated \
   --seeds 0,10 \
@@ -48,7 +95,7 @@ python experiments/cosyne/run_ciss_tracks.py \
 4. Summarize
 
 ```bash
-python experiments/cosyne/summarize_cosyne_results.py \
+python3 experiments/cosyne/summarize_cosyne_results.py \
   --base-dir results/CISS/cosyne \
   --summary-dir results/CISS/cosyne/summary \
   --fail-on-missing
