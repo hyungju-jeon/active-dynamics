@@ -83,9 +83,9 @@ def _make_family_embedding(
     total: int = 10,
 ) -> tuple[float, float, float, float]:
     family_centers = {
-        "duffing": (-1.8, -0.6, -0.8, -0.2),
+        "duffing_single": (-1.8, -0.6, -0.8, -0.2),
+        "duffing_bistable": (-0.8, 1.2, -0.2, -0.4),
         "van_der_pol": (1.4, -0.9, 0.8, 0.1),
-        "limit_cycle": (-0.6, 1.5, 0.1, 0.9),
         "double_limit_cycle": (1.1, 1.2, -0.4, 0.8),
     }
     if family not in family_centers:
@@ -105,19 +105,35 @@ def _make_family_embedding(
 def build_mixed40_system_specs() -> tuple[SystemSpec, ...]:
     family_param_bank: list[tuple[str, str, list[tuple[float, float]]]] = [
         (
-            "duffing",
-            "damped Duffing with monostable-to-bistable sweep",
+            "duffing_single",
+            "Duffing single-attractor regime (positive linear stiffness, damped)",
             [
-                (-0.58, 1.05),
-                (-0.54, 0.85),
-                (-0.50, 0.68),
-                (-0.46, 0.50),
-                (-0.42, 0.28),
-                (-0.38, 0.08),
-                (-0.38, -0.10),
-                (-0.42, -0.24),
-                (-0.48, -0.34),
-                (-0.54, -0.42),
+                (-0.62, 0.55),
+                (-0.60, 0.65),
+                (-0.58, 0.75),
+                (-0.56, 0.85),
+                (-0.54, 0.95),
+                (-0.52, 1.05),
+                (-0.50, 1.15),
+                (-0.48, 1.25),
+                (-0.46, 1.35),
+                (-0.44, 1.45),
+            ],
+        ),
+        (
+            "duffing_bistable",
+            "Duffing bistable regime (negative linear stiffness, damped)",
+            [
+                (-0.60, -0.12),
+                (-0.58, -0.16),
+                (-0.56, -0.20),
+                (-0.54, -0.24),
+                (-0.52, -0.28),
+                (-0.50, -0.32),
+                (-0.48, -0.36),
+                (-0.46, -0.40),
+                (-0.44, -0.44),
+                (-0.42, -0.48),
             ],
         ),
         (
@@ -134,22 +150,6 @@ def build_mixed40_system_specs() -> tuple[SystemSpec, ...]:
                 (1.85, 1.12),
                 (2.10, 1.18),
                 (2.35, 1.24),
-            ],
-        ),
-        (
-            "limit_cycle",
-            "single-ring radial limit-cycle family (d>0)",
-            [
-                (0.60, 0.60),
-                (0.70, 0.72),
-                (0.80, 0.84),
-                (0.90, 0.96),
-                (1.00, 1.08),
-                (1.10, 1.20),
-                (1.20, 1.32),
-                (1.30, 1.44),
-                (1.40, 1.56),
-                (1.50, 1.68),
             ],
         ),
         (
@@ -368,22 +368,23 @@ def true_dynamics_from_spec(spec: SystemSpec, z: torch.Tensor, dynamics_scale: f
     x = z[..., 0]
     y = z[..., 1]
     p0, p1 = spec.params
-    if spec.family == "duffing":
+    if spec.family in {"duffing_single", "duffing_bistable"}:
         dx = y
         dy = p0 * y - x * (p1 + 0.1 * x**2)
     elif spec.family == "van_der_pol":
         dx = y
         dy = p0 * (1 - x**2) * y - p1 * x
-    elif spec.family == "limit_cycle":
-        # Stable ring attractor for d>0 with angular speed p0.
-        r = torch.sqrt(x**2 + y**2)
-        dx = x * (p1 - r**2) - p0 * y
-        dy = y * (p1 - r**2) + p0 * x
     elif spec.family == "double_limit_cycle":
-        # Two-ring variant; preserves radial structure while varying p0/p1.
-        r = torch.sqrt(x**2 + y**2)
-        dx = x * (p1 - r) - p0 * y * (2 * p1 - r)
-        dy = y * (p1 - r) + p0 * x * (2 * p1 - r)
+        r2 = x**2 + y**2
+        inner_r = p1
+        barrier_r = p1 + 0.55
+        outer_r = p1 + 1.10
+        inner2 = inner_r**2
+        barrier2 = barrier_r**2
+        outer2 = outer_r**2
+        radial = 0.05 * (r2 - inner2) * (barrier2 - r2) * (r2 - outer2)
+        dx = x * radial - p0 * y
+        dy = y * radial + p0 * x
     else:
         raise ValueError(f"Unknown family: {spec.family}")
     return dynamics_scale * torch.stack([dx, dy], dim=-1)
@@ -784,6 +785,165 @@ def save_embedding_cluster_figure(
 
 def _rollout_dt_key(dt: float) -> str:
     return f"{dt:.6g}"
+
+
+def verify_parameter_bank(
+    systems: tuple[SystemSpec, ...],
+    out_dir: str,
+    dynamics_scale: float = 10.0,
+    horizon: int = 300,
+    dt: float = 0.01,
+) -> dict:
+    import csv
+
+    ensure_dir(out_dir)
+    init_grid = torch.tensor(
+        [
+            [-2.0, -2.0], [-2.0, 0.0], [-2.0, 2.0],
+            [0.0, -2.0], [0.0, -0.75], [0.0, 0.75], [0.0, 2.0],
+            [2.0, -2.0], [2.0, 0.0], [2.0, 2.0],
+            [-1.2, 1.2], [1.2, -1.2], [1.5, 0.5], [-1.5, -0.5],
+        ],
+        dtype=torch.float32,
+    )
+    rows: list[dict] = []
+    for spec in systems:
+        traj = rollout_true(spec, init_grid, horizon=horizon, dt=dt, dynamics_scale=dynamics_scale).cpu()
+        finite_ok = bool(torch.isfinite(traj).all().item())
+        radii = torch.linalg.norm(traj, dim=-1)
+        final_xy = traj[:, -1, :]
+        tail = traj[:, -80:, :]
+        tail_radii = torch.linalg.norm(tail, dim=-1)
+        max_radius = float(radii.max().item())
+        mean_final_radius = float(torch.linalg.norm(final_xy, dim=-1).mean().item())
+        std_final_radius = float(torch.linalg.norm(final_xy, dim=-1).std(unbiased=False).item())
+        tail_radius_std = float(tail_radii.std(unbiased=False).item())
+        mean_speed = float(torch.linalg.norm(traj[:, 1:, :] - traj[:, :-1, :], dim=-1).mean().item() / dt)
+        max_speed = float(torch.linalg.norm(traj[:, 1:, :] - traj[:, :-1, :], dim=-1).max().item() / dt)
+        sign_diversity = int(torch.unique(torch.sign(final_xy[:, 0])).numel())
+
+        family_ok = False
+        family_reason = ''
+        if spec.family == 'duffing_single':
+            family_ok = mean_final_radius < 0.8 and std_final_radius < 0.55
+            family_reason = 'single-attractor convergence toward origin'
+        elif spec.family == 'duffing_bistable':
+            family_ok = mean_final_radius > 0.7 and sign_diversity >= 2 and std_final_radius < 0.8
+            family_reason = 'bistable settling into separated wells'
+        elif spec.family == 'van_der_pol':
+            family_ok = 0.8 < mean_final_radius < 3.5 and tail_radius_std < 0.85
+            family_reason = 'stable oscillatory limit cycle'
+        elif spec.family == 'double_limit_cycle':
+            family_ok = 0.5 < mean_final_radius < 4.5 and 0.12 < std_final_radius < 1.8
+            family_reason = 'bounded multi-ring radial dynamics'
+        generic_ok = finite_ok and max_radius < 8.0 and max_speed < 350.0 and mean_speed > 0.05
+        passed = bool(generic_ok and family_ok)
+        rows.append({
+            'name': spec.name,
+            'family': spec.family,
+            'param_0': float(spec.params[0]),
+            'param_1': float(spec.params[1]),
+            'finite_ok': finite_ok,
+            'max_radius': max_radius,
+            'mean_final_radius': mean_final_radius,
+            'std_final_radius': std_final_radius,
+            'tail_radius_std': tail_radius_std,
+            'mean_speed': mean_speed,
+            'max_speed': max_speed,
+            'sign_diversity': sign_diversity,
+            'generic_ok': generic_ok,
+            'family_ok': family_ok,
+            'passed': passed,
+            'check': family_reason,
+        })
+
+    csv_path = os.path.join(out_dir, 'parameter_bank_verification.csv')
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
+
+    family_summary = {}
+    for family in sorted({r['family'] for r in rows}):
+        family_rows = [r for r in rows if r['family'] == family]
+        family_summary[family] = {
+            'n_systems': len(family_rows),
+            'n_passed': int(sum(1 for r in family_rows if r['passed'])),
+            'max_radius_max': float(max(r['max_radius'] for r in family_rows)),
+            'max_speed_max': float(max(r['max_speed'] for r in family_rows)),
+            'mean_final_radius_mean': float(np.mean([r['mean_final_radius'] for r in family_rows])),
+            'std_final_radius_mean': float(np.mean([r['std_final_radius'] for r in family_rows])),
+        }
+    payload = {
+        'verification_horizon': horizon,
+        'verification_dt': dt,
+        'dynamics_scale': dynamics_scale,
+        'n_systems': len(rows),
+        'n_passed': int(sum(1 for r in rows if r['passed'])),
+        'all_passed': bool(all(r['passed'] for r in rows)),
+        'family_summary': family_summary,
+        'csv_path': csv_path,
+        'rows': rows,
+    }
+    json_path = os.path.join(out_dir, 'parameter_bank_verification.json')
+    with open(json_path, 'w', encoding='utf-8') as f:
+        json.dump(payload, f, indent=2)
+    return payload
+
+
+def save_model_bundle_checkpoint(bundle: ModelBundle, out_dir: str) -> str:
+    ckpt_path = os.path.join(out_dir, 'meta_dynamics_checkpoint.pt')
+    torch.save(
+        {
+            'cfg': bundle.cfg,
+            'train_summary': bundle.train_summary,
+            'embedding_mode': bundle.embedding_mode,
+            'system_embeddings': bundle.system_embeddings,
+            'hypernet_state_dict': bundle.meta_dynamics.hypernet.state_dict(),
+            'mean_dynamics_state_dict': bundle.meta_dynamics.mean_dynamics.state_dict(),
+            'output_scale': bundle.meta_dynamics.output_scale,
+        },
+        ckpt_path,
+    )
+    return ckpt_path
+
+
+def write_pretrain_summary_markdown(
+    *,
+    out_path: str,
+    payload: dict,
+    verification: dict,
+    checkpoint_path: str,
+) -> str:
+    family_lines = []
+    for family, stats in payload['family_rollout_eval'].items():
+        family_lines.append(
+            f"- {family}: mean rollout MSE {stats['mean_rollout_mse']:.4f}, mean final-state MSE {stats['mean_final_state_mse']:.4f}"
+        )
+    verification_lines = []
+    for family, stats in verification['family_summary'].items():
+        verification_lines.append(
+            f"- {family}: {stats['n_passed']}/{stats['n_systems']} passed, max radius {stats['max_radius_max']:.3f}, max speed {stats['max_speed_max']:.3f}"
+        )
+    text = f"""# Mixed-family meta-dynamics pretraining summary
+
+- System bank: {payload['system_bank']}
+- Embedding mode: {payload['embedding_mode']}
+- Systems: {len(payload['systems'])}
+- Final train loss: {payload['train_summary']['final_train_loss']:.6f}
+- Verification passed: {verification['n_passed']}/{verification['n_systems']}
+- Checkpoint: `{checkpoint_path}`
+- Embedding figure: `{payload['embedding_cluster_figure']['path']}`
+
+## Family rollout metrics
+{os.linesep.join(family_lines)}
+
+## Parameter-bank verification
+{os.linesep.join(verification_lines)}
+"""
+    with open(out_path, 'w', encoding='utf-8') as f:
+        f.write(text)
+    return out_path
 
 
 def summarize_offline(
@@ -1261,8 +1421,8 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["pretrain_eval", "identify"], default="pretrain_eval")
     parser.add_argument("--system-bank", choices=["mixed40", "legacy4"], default="mixed40")
-    parser.add_argument("--embedding-mode", choices=["fixed", "learned_system_id"], default="fixed")
-    parser.add_argument("--train-samples-per-system", type=int, default=5000)
+    parser.add_argument("--embedding-mode", choices=["fixed", "learned_system_id"], default="learned_system_id")
+    parser.add_argument("--train-samples-per-system", type=int, default=1500)
     parser.add_argument("--train-epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--d-embed", type=int, default=2)
@@ -1295,7 +1455,8 @@ def main():
     args = parse_args()
     global device
     device = configure_runtime(seed=0, device=device)
-    base_dir = ensure_dir(os.path.join(os.path.dirname(__file__), "../../results", args.results_subdir))
+    results_root = '/home/hyungju/Desktop/al-metadynamics/results'
+    base_dir = ensure_dir(os.path.join(results_root, args.results_subdir))
 
     if args.system_bank == "mixed40":
         bank = MIXED40_SYSTEM_SPECS
@@ -1365,6 +1526,16 @@ def main():
     )
 
     if args.mode == "pretrain_eval":
+        verification = verify_parameter_bank(
+            selected,
+            out_dir=base_dir,
+            dynamics_scale=args.dynamics_scale,
+            horizon=max(250, args.rollout_horizon),
+            dt=min(args.rollout_dt, 0.01),
+        )
+        if not verification["all_passed"]:
+            failed = [row["name"] for row in verification["rows"] if not row["passed"]]
+            raise RuntimeError(f"Parameter verification failed for: {failed}")
         payload = summarize_offline(
             bundle,
             selected,
@@ -1377,6 +1548,13 @@ def main():
             dynamics_scale=args.dynamics_scale,
             system_bank=args.system_bank,
         )
+        checkpoint_path = save_model_bundle_checkpoint(bundle, out_dir=base_dir)
+        markdown_path = write_pretrain_summary_markdown(
+            out_path=os.path.join(os.path.dirname(__file__), 'mixed_family_metadynamics_summary.md'),
+            payload=payload,
+            verification=verification,
+            checkpoint_path=checkpoint_path,
+        )
         mean_rollout_mse = float(np.mean([payload["rollout_eval"][spec.name]["rollout_mse"] for spec in selected]))
         print(
             json.dumps(
@@ -1387,7 +1565,11 @@ def main():
                     "final_train_loss": payload["train_summary"]["final_train_loss"],
                     "mean_rollout_mse": mean_rollout_mse,
                     "family_rollout_eval": payload["family_rollout_eval"],
+                    "verification_passed": verification["n_passed"],
+                    "verification_total": verification["n_systems"],
                     "embedding_cluster_figure": payload["embedding_cluster_figure"],
+                    "checkpoint_path": checkpoint_path,
+                    "summary_markdown": markdown_path,
                 },
                 indent=2,
             )
