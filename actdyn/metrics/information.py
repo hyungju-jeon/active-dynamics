@@ -299,7 +299,7 @@ class EmbeddingFisherMetric(BaseMetric):
         Fe = self.Fe_net(z, e_m.repeat(batch, T, 1)).detach()  # (batch, T, d_latent, d_emb)
         Fz = self.Fz_net(z, e_m.repeat(batch, T, 1)).detach()  # (batch, T, d_latent, d_latent)
         J = torch.zeros(batch, T, d_embedding, d_embedding, device=self.device)
-        Gt = torch.zeros(batch, d_latent, d_latent, device=self.device)
+        Gt = torch.zeros(batch, d_latent, d_embedding, device=self.device)
         # Gt = self.Fe_net(z_bel["m"], e_m).detach()
 
         if isinstance(self.model.decoder.noise, actdyn.models.decoder.PoissonNoise):

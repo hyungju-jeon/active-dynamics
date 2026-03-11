@@ -377,6 +377,12 @@ class MetaDynamics:
             out = self.out
         else:
             out, _ = self.hypernet(e)
+        if x.ndim > out.ndim:
+            expand_shape = list(out.shape)
+            while len(expand_shape) < x.ndim:
+                expand_shape.insert(1, 1)
+            out = out.reshape(*expand_shape)
+            out = out.expand(*x.shape[:-1], out.shape[-1])
         return self.mean_dynamics(x, out) * self.output_scale
 
 
@@ -889,6 +895,83 @@ def save_embedding_cluster_figure(
     return {"path": out_path, "projection": projection}
 
 
+def save_family_vectorfield_comparison_figure(
+    meta_dynamics: MetaDynamics,
+    systems: tuple[SystemSpec, ...],
+    system_embeddings: torch.Tensor,
+    out_path: str,
+    dynamics_scale: float = 10.0,
+    grid_n: int = 25,
+) -> dict[str, object]:
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ensure_dir(os.path.dirname(out_path))
+    families = sorted({spec.family for spec in systems})
+    representative_specs: list[SystemSpec] = []
+    representative_indices: list[int] = []
+    for family in families:
+        family_indices = [i for i, spec in enumerate(systems) if spec.family == family]
+        family_specs = [systems[i] for i in family_indices]
+        family_specs_sorted = sorted(family_specs, key=lambda s: s.name)
+        representative = family_specs_sorted[len(family_specs_sorted) // 2]
+        representative_specs.append(representative)
+        representative_indices.append(next(i for i, spec in enumerate(systems) if spec.name == representative.name))
+
+    x = torch.linspace(-3.0, 3.0, grid_n, device=device)
+    y = torch.linspace(-3.0, 3.0, grid_n, device=device)
+    X, Y = torch.meshgrid(x, y, indexing="ij")
+    z = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=-1)
+    x_np = x.detach().cpu().numpy()
+    y_np = y.detach().cpu().numpy()
+
+    fig, axes = plt.subplots(len(families), 2, figsize=(8.8, 2.45 * len(families)), sharex=True, sharey=True)
+    if len(families) == 1:
+        axes = np.asarray([axes])
+
+    metadata = []
+    for row_idx, (family, spec, spec_idx) in enumerate(zip(families, representative_specs, representative_indices)):
+        e = system_embeddings[spec_idx].reshape(1, -1).repeat(z.shape[0], 1)
+        true_fx = true_dynamics_from_spec(spec, z, dynamics_scale=dynamics_scale).detach().cpu().numpy()
+        pred_fx = meta_dynamics(z, e=e).detach().cpu().numpy()
+        comps = [
+            (axes[row_idx, 0], true_fx, 'True'),
+            (axes[row_idx, 1], pred_fx, 'Reconstructed'),
+        ]
+        for ax, field, label in comps:
+            U = field[:, 0].reshape(grid_n, grid_n)
+            V = field[:, 1].reshape(grid_n, grid_n)
+            speed = np.sqrt(U**2 + V**2)
+            ax.streamplot(
+                x_np,
+                y_np,
+                U,
+                V,
+                color=speed,
+                cmap='viridis',
+                density=0.9,
+                linewidth=1.0,
+                arrowsize=0.8,
+            )
+            ax.set_aspect('equal')
+            ax.grid(alpha=0.15)
+            ax.set_xlim(-3.0, 3.0)
+            ax.set_ylim(-3.0, 3.0)
+            ax.set_title(f"{family} — {label}", fontsize=10)
+        axes[row_idx, 0].set_ylabel('x2')
+        metadata.append({'family': family, 'system': spec.name, 'params': list(spec.params)})
+
+    for ax in axes[-1, :]:
+        ax.set_xlabel('x1')
+    fig.suptitle('Representative family vector fields: true vs reconstructed', fontsize=12, y=0.995)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.985))
+    fig.savefig(out_path, dpi=220, bbox_inches='tight')
+    plt.close(fig)
+    return {'path': out_path, 'representatives': metadata, 'grid_n': grid_n}
+
+
 def _rollout_dt_key(dt: float) -> str:
     return f"{dt:.6g}"
 
@@ -1032,6 +1115,59 @@ def save_model_bundle_checkpoint(bundle: ModelBundle, out_dir: str) -> str:
         ckpt_path,
     )
     return ckpt_path
+
+
+def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]) -> ModelBundle:
+    payload = torch.load(ckpt_path, map_location=device)
+    cfg = dict(payload.get('cfg', {}))
+    embedding_mode = str(payload['embedding_mode'])
+    inferred_d_embed = len(next(iter(payload['system_embeddings'].values())))
+    cfg.setdefault('d_embed', inferred_d_embed)
+    cfg.setdefault('d_hidden_dynamics', 64)
+    cfg.setdefault('d_hidden_hypernet_dynamics', 16)
+    cfg.setdefault('n_hidden', 2)
+    cfg.setdefault('d_context', max(int(cfg['d_hidden_hypernet_dynamics']), 16))
+    cfg.setdefault('d_latent', 2)
+    cfg.setdefault('update_input', True)
+    cfg.setdefault('update_output', True)
+    cfg.setdefault('update_hidden', True)
+    hypernet = build_hypernetwork(cfg, device)
+    mean_dynamics = metadyn.HyperMlpDynamics(
+        d_latent=cfg['d_latent'],
+        d_hidden=cfg['d_hidden_dynamics'],
+        n_hidden=cfg['n_hidden'],
+        update_input=cfg['update_input'],
+        update_output=cfg['update_output'],
+        update_hidden=cfg['update_hidden'],
+        du=0,
+        device=device,
+        d_context=cfg['d_context'],
+    ).to(device)
+    hypernet.load_state_dict(payload['hypernet_state_dict'])
+    mean_dynamics.load_state_dict(payload['mean_dynamics_state_dict'])
+    hypernet.eval()
+    mean_dynamics.eval()
+    meta_dynamics = MetaDynamics(
+        hypernet=hypernet,
+        mean_dynamics=mean_dynamics,
+        output_scale=float(payload.get('output_scale', cfg.get('dynamics_scale', 10.0))),
+    )
+    if embedding_mode == 'fixed':
+        system_embeddings = resolve_system_embedding_map(
+            systems=systems,
+            embedding_mode=embedding_mode,
+            learned_table=None,
+        )
+    else:
+        saved_embeddings = dict(payload.get('system_embeddings', {}))
+        system_embeddings = {spec.name: [float(x) for x in saved_embeddings[spec.name]] for spec in systems}
+    return ModelBundle(
+        meta_dynamics=meta_dynamics,
+        cfg=cfg,
+        train_summary=dict(payload.get('train_summary', {})),
+        embedding_mode=embedding_mode,
+        system_embeddings=system_embeddings,
+    )
 
 
 def write_pretrain_summary_markdown(
@@ -1431,10 +1567,15 @@ def run_identification(
 
     policy = active_policy if policy_name == "active_short" else random_policy
     agent = actdyn.Agent(env=env, model=model, buffer_length=10, policy=policy, device=device)
-    config = ExperimentConfig.from_yaml(os.path.join(os.path.dirname(__file__), "conf/config.yaml"))
+    config_path = os.path.join(os.path.dirname(__file__), "conf/config.yaml")
+    if not os.path.exists(config_path):
+        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "active_embedding", "conf", "config.yaml")
+    config = ExperimentConfig.from_yaml(config_path)
     config.results_dir = ensure_dir(results_dir)
     config.training.total_steps = total_steps
     config.training.rollout_horizon = 100
+    config.training.train_every = max(total_steps + 1, 10_000)
+    config.training.n_epochs = 0
     decoder.set_params(obs_model)
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -1557,7 +1698,7 @@ def summarize_identification_results(records: list[dict], out_path: str):
 # -------------------------
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=["pretrain_eval", "identify"], default="pretrain_eval")
+    parser.add_argument("--mode", choices=["pretrain_eval", "identify", "vectorfield_figures"], default="pretrain_eval")
     parser.add_argument("--system-bank", choices=["mixed80", "mixed40", "legacy4"], default="mixed80")
     parser.add_argument("--embedding-mode", choices=["fixed", "learned_system_id"], default="learned_system_id")
     parser.add_argument("--train-samples-per-system", type=int, default=1500)
@@ -1586,6 +1727,7 @@ def parse_args():
     parser.add_argument("--active-chunk", type=int, default=2)
     parser.add_argument("--active-action-cost-weight", type=float, default=0.01)
     parser.add_argument("--active-action-strength", type=float, default=0.3)
+    parser.add_argument("--checkpoint", type=str, default=None)
     return parser.parse_args()
 
 
@@ -1650,18 +1792,37 @@ def main():
         action_strength=args.active_action_strength,
     )
 
-    bundle = train_meta_dynamics(
-        selected,
-        d_embed=args.d_embed,
-        d_hidden_dynamics=args.d_hidden_dynamics,
-        d_hidden_hypernet_dynamics=args.d_hidden_hypernet_dynamics,
-        n_hidden=args.n_hidden,
-        embedding_mode=args.embedding_mode,
-        dynamics_scale=args.dynamics_scale,
-        n_per_system=args.train_samples_per_system,
-        batch_size=args.batch_size,
-        n_epochs=args.train_epochs,
-    )
+    if args.checkpoint:
+        bundle = load_model_bundle_checkpoint(args.checkpoint, selected)
+    else:
+        bundle = train_meta_dynamics(
+            selected,
+            d_embed=args.d_embed,
+            d_hidden_dynamics=args.d_hidden_dynamics,
+            d_hidden_hypernet_dynamics=args.d_hidden_hypernet_dynamics,
+            n_hidden=args.n_hidden,
+            embedding_mode=args.embedding_mode,
+            dynamics_scale=args.dynamics_scale,
+            n_per_system=args.train_samples_per_system,
+            batch_size=args.batch_size,
+            n_epochs=args.train_epochs,
+        )
+
+    if args.mode == "vectorfield_figures":
+        embeddings = system_embedding_tensor(bundle.system_embeddings, selected, target_device=device)
+        figure_path = os.path.join(base_dir, "vectorfield_family_comparison.png")
+        payload = save_family_vectorfield_comparison_figure(
+            meta_dynamics=bundle.meta_dynamics,
+            systems=selected,
+            system_embeddings=embeddings,
+            out_path=figure_path,
+            dynamics_scale=args.dynamics_scale,
+        )
+        json_path = os.path.join(base_dir, "vectorfield_family_comparison.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        print(json.dumps({"figure_path": figure_path, "metadata_path": json_path, "families": payload["representatives"]}, indent=2))
+        return
 
     if args.mode == "pretrain_eval":
         verification = verify_parameter_bank(
