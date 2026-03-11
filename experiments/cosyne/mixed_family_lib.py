@@ -104,6 +104,37 @@ except ModuleNotFoundError:
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+CANONICAL_VECTORFIELD_SYSTEMS: dict[str, tuple[str, ...]] = {
+    "mixed80": (
+        "double_limit_cycle_10",
+        "duffing_bistable_10",
+        "duffing_single_10",
+        "van_der_pol_10",
+    ),
+    "mixed40": (
+        "double_limit_cycle_10",
+        "duffing_bistable_10",
+        "duffing_single_10",
+        "van_der_pol_10",
+    ),
+    "legacy4": (
+        "duffing_soft",
+        "duffing_hard",
+        "vanderpol_soft",
+        "vanderpol_hard",
+    ),
+}
+CANONICAL_VECTORFIELD_GRID_RANGE: tuple[float, float] = (-3.0, 3.0)
+CANONICAL_VECTORFIELD_GRID_N: int = 25
+CANONICAL_VECTORFIELD_LAYOUT: str = "families_x_(true,reconstructed)_streamplot"
+CANONICAL_VECTORFIELD_STYLE: dict[str, float | str] = {
+    "cmap": "viridis",
+    "stream_density": 0.9,
+    "line_width": 1.0,
+    "arrow_size": 0.8,
+    "dpi": 220,
+}
+
 
 @dataclass(frozen=True)
 class SystemSpec:
@@ -914,7 +945,9 @@ def save_family_vectorfield_comparison_figure(
     system_embeddings: torch.Tensor,
     out_path: str,
     dynamics_scale: float = 10.0,
-    grid_n: int = 25,
+    grid_n: int = CANONICAL_VECTORFIELD_GRID_N,
+    grid_limits: tuple[float, float] = CANONICAL_VECTORFIELD_GRID_RANGE,
+    figure_layout: str = CANONICAL_VECTORFIELD_LAYOUT,
 ) -> dict[str, object]:
     import matplotlib
 
@@ -927,14 +960,17 @@ def save_family_vectorfield_comparison_figure(
     representative_indices: list[int] = []
     for family in families:
         family_indices = [i for i, spec in enumerate(systems) if spec.family == family]
-        family_specs = [systems[i] for i in family_indices]
-        family_specs_sorted = sorted(family_specs, key=lambda s: s.name)
-        representative = family_specs_sorted[len(family_specs_sorted) // 2]
-        representative_specs.append(representative)
-        representative_indices.append(next(i for i, spec in enumerate(systems) if spec.name == representative.name))
+        if len(family_indices) != 1:
+            raise ValueError(
+                "save_family_vectorfield_comparison_figure expects exactly one explicit representative per family; "
+                f"got {len(family_indices)} for family {family}."
+            )
+        representative_indices.append(family_indices[0])
+        representative_specs.append(systems[family_indices[0]])
 
-    x = torch.linspace(-3.0, 3.0, grid_n, device=device)
-    y = torch.linspace(-3.0, 3.0, grid_n, device=device)
+    grid_min, grid_max = grid_limits
+    x = torch.linspace(grid_min, grid_max, grid_n, device=device)
+    y = torch.linspace(grid_min, grid_max, grid_n, device=device)
     X, Y = torch.meshgrid(x, y, indexing="ij")
     z = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=-1)
     x_np = x.detach().cpu().numpy()
@@ -963,15 +999,15 @@ def save_family_vectorfield_comparison_figure(
                 U,
                 V,
                 color=speed,
-                cmap='viridis',
-                density=0.9,
-                linewidth=1.0,
-                arrowsize=0.8,
+                cmap=str(CANONICAL_VECTORFIELD_STYLE['cmap']),
+                density=float(CANONICAL_VECTORFIELD_STYLE['stream_density']),
+                linewidth=float(CANONICAL_VECTORFIELD_STYLE['line_width']),
+                arrowsize=float(CANONICAL_VECTORFIELD_STYLE['arrow_size']),
             )
             ax.set_aspect('equal')
             ax.grid(alpha=0.15)
-            ax.set_xlim(-3.0, 3.0)
-            ax.set_ylim(-3.0, 3.0)
+            ax.set_xlim(grid_min, grid_max)
+            ax.set_ylim(grid_min, grid_max)
             ax.set_title(f"{family} — {label}", fontsize=10)
         axes[row_idx, 0].set_ylabel('x2')
         metadata.append({'family': family, 'system': spec.name, 'params': list(spec.params)})
@@ -980,9 +1016,16 @@ def save_family_vectorfield_comparison_figure(
         ax.set_xlabel('x1')
     fig.suptitle('Representative family vector fields: true vs reconstructed', fontsize=12, y=0.995)
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.985))
-    fig.savefig(out_path, dpi=220, bbox_inches='tight')
+    fig.savefig(out_path, dpi=int(CANONICAL_VECTORFIELD_STYLE['dpi']), bbox_inches='tight')
     plt.close(fig)
-    return {'path': out_path, 'representatives': metadata, 'grid_n': grid_n}
+    return {
+        'path': out_path,
+        'representatives': metadata,
+        'grid_n': grid_n,
+        'grid_limits': [float(grid_min), float(grid_max)],
+        'layout': figure_layout,
+        'style': dict(CANONICAL_VECTORFIELD_STYLE),
+    }
 
 
 def _rollout_dt_key(dt: float) -> str:
@@ -1144,8 +1187,30 @@ def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]
     cfg.setdefault('update_input', True)
     cfg.setdefault('update_output', True)
     cfg.setdefault('update_hidden', True)
-    hypernet = build_hypernetwork(cfg, device)
-    mean_dynamics = metadyn.HyperMlpDynamics(
+    hypernet_state = payload['hypernet_state_dict']
+    if any(str(k).startswith('net.') for k in hypernet_state.keys()):
+        class _CheckpointFallbackLowRankHypernet(nn.Module):
+            def __init__(self, d_embed: int, d_context: int, d_hidden: int):
+                super().__init__()
+                self.net = nn.Sequential(
+                    nn.Linear(d_embed, d_hidden),
+                    nn.SiLU(),
+                    nn.Linear(d_hidden, d_hidden),
+                    nn.SiLU(),
+                    nn.Linear(d_hidden, d_context),
+                )
+            def forward(self, e: torch.Tensor):
+                ctx = self.net(e)
+                return ctx, None
+        hypernet = _CheckpointFallbackLowRankHypernet(
+            d_embed=int(cfg['d_embed']),
+            d_context=int(cfg['d_context']),
+            d_hidden=max(int(cfg.get('d_hidden_hypernet_dynamics', 16)), int(cfg['d_context'])),
+        ).to(device)
+    else:
+        hypernet = build_hypernetwork(cfg, device)
+    mean_state = payload['mean_dynamics_state_dict']
+    mean_kwargs = dict(
         d_latent=cfg['d_latent'],
         d_hidden=cfg['d_hidden_dynamics'],
         n_hidden=cfg['n_hidden'],
@@ -1154,10 +1219,34 @@ def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]
         update_hidden=cfg['update_hidden'],
         du=0,
         device=device,
-        d_context=cfg['d_context'],
-    ).to(device)
-    hypernet.load_state_dict(payload['hypernet_state_dict'])
-    mean_dynamics.load_state_dict(payload['mean_dynamics_state_dict'])
+    )
+    if any(str(k).startswith('net.') for k in mean_state.keys()):
+        class _CheckpointFallbackHyperMlpDynamics(nn.Module):
+            def __init__(self, d_latent: int, d_hidden: int, n_hidden: int, d_context: int):
+                super().__init__()
+                layers = []
+                in_dim = d_latent + d_context
+                for _ in range(max(n_hidden, 1)):
+                    layers += [nn.Linear(in_dim, d_hidden), nn.SiLU()]
+                    in_dim = d_hidden
+                layers += [nn.Linear(in_dim, d_latent)]
+                self.net = nn.Sequential(*layers)
+            def compute_param(self, z: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+                return self.net(torch.cat([z, out], dim=-1))
+            def forward(self, z: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
+                return self.compute_param(z, out)
+        mean_dynamics = _CheckpointFallbackHyperMlpDynamics(
+            d_latent=cfg['d_latent'],
+            d_hidden=cfg['d_hidden_dynamics'],
+            n_hidden=cfg['n_hidden'],
+            d_context=cfg['d_context'],
+        ).to(device)
+    else:
+        if not HAS_INTEGRATIVE_INFERENCE:
+            mean_kwargs['d_context'] = cfg['d_context']
+        mean_dynamics = metadyn.HyperMlpDynamics(**mean_kwargs).to(device)
+    hypernet.load_state_dict(hypernet_state)
+    mean_dynamics.load_state_dict(mean_state)
     hypernet.eval()
     mean_dynamics.eval()
     meta_dynamics = MetaDynamics(
@@ -1811,9 +1900,27 @@ def prepare_selected_systems(
     return selected
 
 
-def resolve_results_dir(results_root: str | None, results_subdir: str) -> str:
+def canonical_vectorfield_system_names(system_bank: str) -> tuple[str, ...]:
+    if system_bank not in CANONICAL_VECTORFIELD_SYSTEMS:
+        raise ValueError(f"No canonical vectorfield representative mapping for system bank: {system_bank}")
+    return CANONICAL_VECTORFIELD_SYSTEMS[system_bank]
+
+
+def resolve_results_dir(results_root: str | None, results_subdir: str | None) -> str:
+    if not results_subdir:
+        raise ValueError("results_subdir must be provided when resolve_results_dir is used")
     root = results_root or default_results_root()
     return ensure_dir(os.path.join(root, results_subdir))
+
+
+def resolve_output_dir(*, results_root: str | None, results_subdir: str | None, output_dir: str | None, checkpoint: str | None) -> str:
+    if output_dir:
+        return ensure_dir(output_dir)
+    if results_subdir:
+        return resolve_results_dir(results_root, results_subdir)
+    if checkpoint:
+        return ensure_dir(os.path.dirname(os.path.abspath(checkpoint)))
+    raise ValueError("Either output_dir, results_subdir, or checkpoint must be provided to resolve the figure output directory")
 
 
 def maybe_load_or_train_bundle(args, selected: tuple[SystemSpec, ...]) -> ModelBundle:
@@ -1904,33 +2011,51 @@ def run_pretrain_eval_experiment(args) -> dict[str, object]:
 
 def run_vectorfield_figure_experiment(args) -> dict[str, object]:
     configure_runtime_device(seed=int(getattr(args, "seed", 0)))
-    base_dir = resolve_results_dir(getattr(args, "results_root", None), args.results_subdir)
+    system_bank = getattr(args, "system_bank", "mixed80")
+    requested_systems = getattr(args, "systems", None) or canonical_vectorfield_system_names(system_bank)
+    base_dir = resolve_output_dir(
+        results_root=getattr(args, "results_root", None),
+        results_subdir=getattr(args, "results_subdir", None),
+        output_dir=getattr(args, "output_dir", None),
+        checkpoint=getattr(args, "checkpoint", None),
+    )
     selected = prepare_selected_systems(
-        system_bank=args.system_bank,
-        systems=args.systems,
+        system_bank=system_bank,
+        systems=requested_systems,
         embedding_mode=args.embedding_mode,
         d_embed=args.d_embed,
     )
     bundle = maybe_load_or_train_bundle(args=args, selected=selected)
     embeddings = system_embedding_tensor(bundle.system_embeddings, selected, target_device=device)
-    figure_path = os.path.join(base_dir, getattr(args, "figure_filename", "vectorfield_family_comparison.png"))
+    figure_path = os.path.join(base_dir, getattr(args, "figure_filename", "vectorfield_family_comparison_official.png"))
     payload = save_family_vectorfield_comparison_figure(
         meta_dynamics=bundle.meta_dynamics,
         systems=selected,
         system_embeddings=embeddings,
         out_path=figure_path,
         dynamics_scale=args.dynamics_scale,
-        grid_n=int(getattr(args, "grid_n", 25)),
+        grid_n=int(getattr(args, "grid_n", CANONICAL_VECTORFIELD_GRID_N)),
+        grid_limits=(float(getattr(args, "grid_min", CANONICAL_VECTORFIELD_GRID_RANGE[0])), float(getattr(args, "grid_max", CANONICAL_VECTORFIELD_GRID_RANGE[1]))),
+        figure_layout=str(getattr(args, "figure_layout", CANONICAL_VECTORFIELD_LAYOUT)),
     )
-    metadata_path = os.path.join(base_dir, getattr(args, "metadata_filename", "vectorfield_family_comparison.json"))
+    metadata_path = os.path.join(base_dir, getattr(args, "metadata_filename", "vectorfield_family_comparison_official.json"))
+    metadata_payload = {
+        **payload,
+        "system_bank": system_bank,
+        "selected_systems": [spec.name for spec in selected],
+        "checkpoint": getattr(args, "checkpoint", None),
+    }
     with open(metadata_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+        json.dump(metadata_payload, f, indent=2)
     return {
         "results_dir": base_dir,
         "figure_path": figure_path,
         "metadata_path": metadata_path,
         "families": payload["representatives"],
+        "selected_systems": [spec.name for spec in selected],
         "grid_n": payload["grid_n"],
+        "grid_limits": payload["grid_limits"],
+        "layout": payload["layout"],
     }
 
 

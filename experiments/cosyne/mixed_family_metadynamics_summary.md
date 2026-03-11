@@ -30,10 +30,12 @@
 - duffing_single: 20/20 passed, max radius 3.210, max final radius 0.280, p95 speed max 33.311, max speed 61.838, rotations cw
 - van_der_pol: 20/20 passed, max radius 3.842, max final radius 2.068, p95 speed max 81.008, max speed 117.712, rotations cw
 
-## Added vector-field comparison figure
-- Figure: `/home/hyungju/Desktop/al-metadynamics/results/mixed_family_metadynamics_pretrain_20260311_speedconstrained80_bidirectional_d4/vectorfield_family_comparison.png`
-- Metadata: `/home/hyungju/Desktop/al-metadynamics/results/mixed_family_metadynamics_pretrain_20260311_speedconstrained80_bidirectional_d4/vectorfield_family_comparison.json`
-- Layout: compact 4x2 family-wise true vs reconstructed streamplots using representative systems per family.
+## Canonical vector-field comparison figure
+- Official script: `experiments/cosyne/plot_vectorfield_reconstructions.py`
+- Figure: `/home/hyungju/Desktop/al-metadynamics/results/mixed_family_metadynamics_pretrain_20260311_speedconstrained80_bidirectional_d4/vectorfield_family_comparison_official.png`
+- Metadata: `/home/hyungju/Desktop/al-metadynamics/results/mixed_family_metadynamics_pretrain_20260311_speedconstrained80_bidirectional_d4/vectorfield_family_comparison_official.json`
+- Canonical representatives: `double_limit_cycle_10`, `duffing_bistable_10`, `duffing_single_10`, `van_der_pol_10`
+- Canonical grid/layout: range `[-3, 3]`, `grid_n=25`, layout `families_x_(true,reconstructed)_streamplot`
 
 ## Rollout-centered online ID smoke/confirmation run
 - Results dir: `/home/hyungju/Desktop/al-metadynamics/results/mixed_family_metadynamics_onlineid_20260311_rollout_smoke_from_pretrain_d4`

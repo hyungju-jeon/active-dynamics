@@ -5,6 +5,9 @@ import json
 import os
 
 from mixed_family_lib import (
+    CANONICAL_VECTORFIELD_GRID_N,
+    CANONICAL_VECTORFIELD_GRID_RANGE,
+    CANONICAL_VECTORFIELD_LAYOUT,
     default_results_root,
     run_online_identification_experiment,
     run_pretrain_eval_experiment,
@@ -46,9 +49,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--active-action-strength", type=float, default=0.3)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--summary-markdown", default=os.path.join(os.path.dirname(__file__), "mixed_family_metadynamics_summary.md"))
-    parser.add_argument("--figure-filename", default="vectorfield_family_comparison.png")
-    parser.add_argument("--metadata-filename", default="vectorfield_family_comparison.json")
-    parser.add_argument("--grid-n", type=int, default=25)
+    parser.add_argument("--figure-filename", default="vectorfield_family_comparison_official.png")
+    parser.add_argument("--metadata-filename", default="vectorfield_family_comparison_official.json")
+    parser.add_argument("--grid-n", type=int, default=CANONICAL_VECTORFIELD_GRID_N)
+    parser.add_argument("--grid-min", type=float, default=CANONICAL_VECTORFIELD_GRID_RANGE[0])
+    parser.add_argument("--grid-max", type=float, default=CANONICAL_VECTORFIELD_GRID_RANGE[1])
+    parser.add_argument("--figure-layout", default=CANONICAL_VECTORFIELD_LAYOUT)
+    parser.add_argument("--output-dir", default=None)
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
 

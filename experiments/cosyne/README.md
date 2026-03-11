@@ -40,14 +40,15 @@ python3 experiments/cosyne/run_online_id.py \
   --results-subdir mixed_family_metadynamics_online_id
 ```
 
-3. Generate family-wise vector-field reconstruction figure
+3. Generate the canonical family-wise vector-field reconstruction figure
 
 ```bash
 python3 experiments/cosyne/plot_vectorfield_reconstructions.py \
   --checkpoint results/mixed_family_metadynamics_pretrain/meta_dynamics_checkpoint.pt \
-  --results-subdir mixed_family_metadynamics_figures \
-  --grid-n 25
+  --output-dir results/mixed_family_metadynamics_pretrain
 ```
+
+Defaults are now canonical and reproducible: one explicit representative per family, grid range `[-3, 3]`, grid density `25`, and the fixed `families_x_(true,reconstructed)_streamplot` layout. The official artifact filenames are `vectorfield_family_comparison_official.png` and `vectorfield_family_comparison_official.json`.
 
 4. (Optional) Generate embedding-cluster figure only
 
