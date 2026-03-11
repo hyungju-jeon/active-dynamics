@@ -105,11 +105,23 @@ class EnvWrapper(gym.Wrapper):
         # Pass action through action_model (should output torch.Tensor)
         env_action = self.action_model(action_tensor)
 
-        # Only convert to numpy if env is not torch-native
-        if not self._torch_native and isinstance(env_action, torch.Tensor):
-            env_action = env_action.cpu().numpy()[0, 0]
+        env_action_exec: Any = env_action
+        env_action_log: Any = env_action
+        if isinstance(env_action, torch.Tensor):
+            env_action_exec = env_action
+            # Execute a single-step latent action with shape (d_latent,) in vector-field envs.
+            if env_action_exec.dim() >= 3 and env_action_exec.shape[0] == 1 and env_action_exec.shape[1] == 1:
+                env_action_exec = env_action_exec[0, 0]
+            elif env_action_exec.dim() == 2 and env_action_exec.shape[0] == 1:
+                env_action_exec = env_action_exec[0]
+            env_action_log = self._to_tensor(env_action_exec)
+            # Only convert to numpy if env is not torch-native
+            if not self._torch_native:
+                env_action_exec = env_action_exec.detach().cpu().numpy()
+        elif isinstance(env_action, (np.ndarray, list)):
+            env_action_log = self._to_tensor(env_action)
 
-        obs, reward, terminated, truncated, info = self.env.step(env_action)
+        obs, reward, terminated, truncated, info = self.env.step(env_action_exec)
 
         # Convert to tensor and apply observation model
         # if info has "latent_state", use it directly
@@ -123,11 +135,7 @@ class EnvWrapper(gym.Wrapper):
         info.update(
             {
                 "latent_state": latent_state,
-                "env_action": (
-                    self._to_tensor(env_action)
-                    if isinstance(env_action, (np.ndarray, list))
-                    else env_action
-                ),
+                "env_action": env_action_log,
             }
         )
 

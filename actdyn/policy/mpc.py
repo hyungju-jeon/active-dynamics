@@ -185,6 +185,13 @@ class MpcICem(BaseMPC):
             rollout = self.simulate(state, actions)
             with torch.no_grad():
                 costs = self.metric(rollout, **kwargs).reshape(-1)
+                costs = torch.nan_to_num(costs, nan=float("inf"), posinf=float("inf"), neginf=float("inf"))
+                if not torch.isfinite(costs).any():
+                    # If every candidate is invalid, avoid random saturated actions.
+                    # Fall back to the current mean plan (typically near-zero and bounded).
+                    fallback_action = self.mean.unsqueeze(0).clone()
+                    fallback_cost = torch.full((1,), 1e12, device=self.device)
+                    return fallback_action, fallback_cost
 
             # Keep elites from previous iteration
             if iter > 0 and self.keep_elites:

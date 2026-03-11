@@ -94,6 +94,9 @@ class ModelConfig:
     act_state_dependent: bool = False
     emb_q_theta: float = 1e-4
     emb_k_theta: int = 10
+    emb_state_init_uncertainty: float = 25.0
+    emb_q_theta_meas_coeff: float = 0.0
+    emb_q_theta_max_scale: float = 10.0
     model_type: str = "seq-vae"  # Options: "seq-vae"
 
     def get_encoder_cfg(self):

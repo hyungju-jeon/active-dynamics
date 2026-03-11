@@ -655,23 +655,39 @@ class FilteringEmbedding(BaseModel):
         Fz: Callable = None,
         q_theta: float = 1e-4,
         k_theta: int = 10,
+        e_clip: float = 5.0,
+        state_init_uncertainty: float = 1.0,
+        q_theta_meas_coeff: float = 0.0,
+        q_theta_max_scale: float = 10.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.beta = 0.0
         self.e: Belief = e
+        self.e_clip = max(float(e_clip), 1e-3)
         self._normalize_embedding_belief()
+        self.state_init_uncertainty = max(float(state_init_uncertainty), 1e-9)
+        initial_batch = self.e["m"].shape[0]
         self.z: Belief = {
             "m": torch.zeros(1, 1, self.latent_dim, device=self.device),
-            "P": torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
+            "P": self._initial_state_covariance(batch_size=initial_batch),
         }
         self.Fe = Fe
         self.Fz = Fz
         self._state = torch.zeros(1, 1, self.latent_dim, device=self.device)
         self.q_theta = float(q_theta)
+        self.q_theta_meas_coeff = max(float(q_theta_meas_coeff), 0.0)
+        self.q_theta_max_scale = max(float(q_theta_max_scale), 1.0)
         self.k_theta = max(1, int(k_theta))
         self.gn_iter = 10
         self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
+        self.last_information = {
+            "I_z_t": 0.0,
+            "I_theta_t": 0.0,
+            "Pz00": 0.0,
+            "Pz01": 0.0,
+            "Pz11": 0.0,
+        }
         self.set_params(self.e["m"])
 
     def _normalize_embedding_belief(self) -> None:
@@ -679,6 +695,9 @@ class FilteringEmbedding(BaseModel):
         e_m = self.e["m"].to(self.device)
         if e_m.dim() == 1:
             e_m = e_m.unsqueeze(0)
+        e_m = torch.nan_to_num(e_m, nan=0.0, posinf=self.e_clip, neginf=-self.e_clip).clamp(
+            -self.e_clip, self.e_clip
+        )
         batch = e_m.shape[0]
         d_embed = e_m.shape[-1]
         eye = torch.eye(d_embed, device=self.device).unsqueeze(0)
@@ -735,6 +754,12 @@ class FilteringEmbedding(BaseModel):
         self._theta_info_block = torch.zeros(batch_size, d_embed, d_embed, device=self.device)
         self._theta_sensitivity = torch.zeros(batch_size, self.latent_dim, d_embed, device=self.device)
 
+    def _initial_state_covariance(self, batch_size: int) -> torch.Tensor:
+        return (
+            self.state_init_uncertainty
+            * torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
+        ).expand(batch_size, -1, -1, -1).clone()
+
     def _apply_embedding_block_update(self) -> None:
         """Apply block-wise information-form update with drifting prior."""
         score = self._theta_score_block
@@ -749,7 +774,10 @@ class FilteringEmbedding(BaseModel):
         d_embed = self.e["m"].shape[-1]
         eye = torch.eye(d_embed, device=self.device).unsqueeze(0)
 
-        P_prior = self._project_spd(self.e["P"] + self.q_theta * eye)
+        # No measurement-error-dependent scaling: process drift uses fixed q_theta.
+        q_theta_eff = torch.full((self.e["m"].shape[0],), float(self.q_theta), device=self.device)
+
+        P_prior = self._project_spd(self.e["P"] + q_theta_eff.view(-1, 1, 1) * eye)
         try:
             chol_P_prior = safe_cholesky(P_prior)
         except Exception:
@@ -765,6 +793,9 @@ class FilteringEmbedding(BaseModel):
             chol_L_new = safe_cholesky(L_new)
         P_new = torch.cholesky_inverse(chol_L_new)
         m_new = self.e["m"] + (P_new @ score.unsqueeze(-1)).squeeze(-1)
+        m_new = torch.nan_to_num(m_new, nan=0.0, posinf=self.e_clip, neginf=-self.e_clip).clamp(
+            -self.e_clip, self.e_clip
+        )
 
         self.e = {"m": m_new.detach(), "P": P_new.detach(), "L": L_new.detach()}
         self.set_params(self.e["m"].detach())
@@ -778,8 +809,11 @@ class FilteringEmbedding(BaseModel):
         return symmetrize(eigvecs @ torch.diag_embed(eigvals) @ eigvecs.transpose(-1, -2))
 
     def set_params(self, e: torch.Tensor):
-        self.e["m"] = e.to(self.device)
-        self.dynamics.set_params(e)
+        self.e["m"] = (
+            torch.nan_to_num(e.to(self.device), nan=0.0, posinf=self.e_clip, neginf=-self.e_clip)
+            .clamp(-self.e_clip, self.e_clip)
+        )
+        self.dynamics.set_params(self.e["m"])
 
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
@@ -796,11 +830,18 @@ class FilteringEmbedding(BaseModel):
         self._normalize_embedding_belief()
         self.z = {
             "m": self._state,
-            "P": torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
+            "P": self._initial_state_covariance(batch_size=batch),
         }
         self._ensure_state_belief_shapes(batch_size=batch)
         self.set_params(self.e["m"])
         self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
+        self.last_information = {
+            "I_z_t": 0.0,
+            "I_theta_t": 0.0,
+            "Pz00": 0.0,
+            "Pz01": 0.0,
+            "Pz11": 0.0,
+        }
 
         return observation, info
 
@@ -1013,7 +1054,7 @@ class FilteringEmbedding(BaseModel):
         if self._theta_score_block.shape[0] != batch_size:
             self._reset_embedding_block_state(batch_size=batch_size)
 
-        z_prev = self.z["m"]
+        z_prev = torch.nan_to_num(self.z["m"], nan=0.0, posinf=1e6, neginf=-1e6)
         e_eval = self.e["m"]
         if e_eval.shape[0] == 1 and batch_size > 1:
             e_eval = e_eval.expand(batch_size, -1)
@@ -1030,7 +1071,7 @@ class FilteringEmbedding(BaseModel):
 
         # Predict
 
-        pred_m = torch.nan_to_num(self.predict(action=u_enc), nan=0.0, posinf=10.0, neginf=-10.0)
+        pred_m = torch.nan_to_num(self.predict(action=u_enc), nan=0.0, posinf=1e6, neginf=-1e6)
         pred_cov = dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q + 1e-6 * I
         pred_cov = torch.nan_to_num(pred_cov, nan=0.0, posinf=1e6, neginf=-1e6)
         z_pred = {
@@ -1039,7 +1080,7 @@ class FilteringEmbedding(BaseModel):
         }
 
         # Re-linearize observation and variance at new z_pred
-        z_obs = torch.nan_to_num(z_pred["m"], nan=0.0, posinf=10.0, neginf=-10.0).clamp(-10.0, 10.0)
+        z_obs = torch.nan_to_num(z_pred["m"], nan=0.0, posinf=1e6, neginf=-1e6)
         dhdz = torch.nan_to_num(self.decoder.jacobian(z_obs), nan=0.0, posinf=1e6, neginf=-1e6)
         R_diag = torch.nan_to_num(self.decoder.var(z_obs), nan=1e-6, posinf=1e6, neginf=1e-6).clamp_min(
             1e-6
@@ -1062,10 +1103,11 @@ class FilteringEmbedding(BaseModel):
         # innovation uses current y_pred; recompute for consistency
         y_pred = torch.nan_to_num(self.decoder(z_obs), nan=0.0, posinf=1e6, neginf=-1e6)
         r = y - y_pred
-
+        z_post_m = z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1)
+        z_post_m = torch.nan_to_num(z_post_m, nan=0.0, posinf=1e6, neginf=-1e6)
         z_post = {
-            "m": z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1),
-            "P": self._project_spd(P_upd + 1e-8 * I),
+            "m": z_post_m,
+            "P": self._project_spd(torch.nan_to_num(P_upd, nan=0.0, posinf=1e6, neginf=-1e6) + 1e-8 * I),
         }
 
         self.z = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
@@ -1089,6 +1131,23 @@ class FilteringEmbedding(BaseModel):
         chol_atten = safe_cholesky(atten_mat)
         atten_Iz = torch.cholesky_solve(I_z, chol_atten).squeeze(1)
         info_t = symmetrize(S_t.transpose(-1, -2) @ atten_Iz @ S_t)
+
+        # Diagnostic traces for visualization: average matrix trace over batch.
+        I_z_scalar = torch.diagonal(I_z.squeeze(1), dim1=-2, dim2=-1).sum(dim=-1).mean()
+        I_theta_scalar = torch.diagonal(info_t, dim1=-2, dim2=-1).sum(dim=-1).mean()
+        Pz_eval = z_pred["P"].squeeze(1)
+        Pz00 = Pz_eval[:, 0, 0].mean()
+        Pz01 = Pz_eval[:, 0, 1].mean()
+        Pz11 = Pz_eval[:, 1, 1].mean()
+        self.last_information = {
+            "I_z_t": float(torch.nan_to_num(I_z_scalar, nan=0.0, posinf=1e6, neginf=0.0).item()),
+            "I_theta_t": float(
+                torch.nan_to_num(I_theta_scalar, nan=0.0, posinf=1e6, neginf=0.0).item()
+            ),
+            "Pz00": float(torch.nan_to_num(Pz00, nan=0.0, posinf=1e6, neginf=0.0).item()),
+            "Pz01": float(torch.nan_to_num(Pz01, nan=0.0, posinf=1e6, neginf=0.0).item()),
+            "Pz11": float(torch.nan_to_num(Pz11, nan=0.0, posinf=1e6, neginf=0.0).item()),
+        }
 
         self._theta_score_block += score_t
         self._theta_info_block += info_t

@@ -10,7 +10,7 @@ from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from .base import BaseMetric
 from torch.nn.functional import softplus
-from actdyn.utils.helper import symmetrize
+from actdyn.utils.helper import safe_cholesky, symmetrize
 
 eps = 1e-12
 
@@ -278,7 +278,7 @@ class EmbeddingFisherMetric(BaseMetric):
         e_bel = self.model.e
         z_bel = self.model.z
 
-        z = rollout["model_state"].to(self.device)
+        z = rollout["model_state"].to(self.device).float()
 
         if len(z.shape) != 3:
             z = z.unsqueeze(0)  # Ensure z is (batch, T, d_latent)
@@ -320,22 +320,16 @@ class EmbeddingFisherMetric(BaseMetric):
             return symmetrize(R)
 
         def _spd_factor(M: torch.Tensor, min_eig: float = 1e-9) -> tuple[torch.Tensor, torch.Tensor]:
+            M = torch.nan_to_num(M.float(), nan=0.0, posinf=1e6, neginf=-1e6)
             M = symmetrize(M)
             eye = (
                 torch.eye(M.shape[-1], device=M.device, dtype=M.dtype)
                 .unsqueeze(0)
                 .expand(M.shape[0], -1, -1)
             )
-            try:
-                M_spd = symmetrize(M + min_eig * eye)
-                chol = torch.linalg.cholesky(M_spd)
-                return M_spd, chol
-            except torch.linalg.LinAlgError:
-                eigvals, eigvecs = torch.linalg.eigh(M)
-                eigvals = eigvals.clamp_min(min_eig)
-                M_spd = symmetrize(eigvecs @ torch.diag_embed(eigvals) @ eigvecs.transpose(-1, -2))
-                chol = torch.linalg.cholesky(M_spd)
-                return M_spd, chol
+            M_spd = symmetrize(M + max(float(min_eig), 1e-8) * eye)
+            chol = safe_cholesky(M_spd)
+            return M_spd, chol
 
         # Predicted-state sensitivity recursion S_{k+1}=Fz_k S_k + Fe_k.
         e_m = e_bel["m"].to(self.device)
