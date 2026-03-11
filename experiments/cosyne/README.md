@@ -1,29 +1,64 @@
-# COSYNE Action-Limit Parameter-ID Workspace
+# Cosyne Experiment Workspace
 
-This folder contains orchestration for COSYNE parameter-identification reruns
-with action-limit comparison only.
+This directory includes two experiment tracks:
 
-## Active Scope
+- CISS rerun orchestration (`run_ciss_tracks.py`, `summarize_cosyne_results.py`)
+- Mixed-family meta-dynamics workflows (training, online ID, reproducible plotting)
 
-- Tracks-only (no smoke, no ablation, no baseline comparison)
-- Model tags:
-  - `low_action` with `|u_max| = 1`
-- `high_action` with `|u_max| = 3`
-- Seeds: `0,10,20`
-- Exp IDs: `active_short,active_long,RND,random`
-- Default dynamics setting: `--dynamics-alpha 1.0`
+## Mixed-Family Meta-Dynamics Layout
 
-## Core Scripts
+- `mixed_family_lib.py`: shared data model, training, checkpoint I/O, rollout eval, online ID, plotting utilities.
+- `train_metadynamics.py`: pretrain/eval workflow; writes checkpoint + summary JSON/Markdown.
+- `run_online_id.py`: rollout-centered online identification using a checkpoint (or trains if checkpoint omitted).
+- `plot_vectorfield_reconstructions.py`: family-wise true-vs-reconstructed vector-field figure generation.
+- `plot_embedding_clusters.py`: embedding-cluster figure generation.
+- `mixed_family_metadynamics.py`: compatibility wrapper for old `--mode {pretrain_eval,identify,vectorfield_figures}` usage.
 
-- `run_ciss_tracks.py`: preflight + track execution
-- `summarize_cosyne_results.py`: metrics/figures aggregation
-- `generate_session_behavior_video.py`: video generation
-  - `info_maps`: exact Jacobian-based `I_z` and `I_theta` map video (fixed log scales)
-  - `traj_vf`: inferred/true trajectory over true/inferred vector fields (time-varying inferred params)
-  - `acq_action`: acquisition colormap with executed action overlays (for iCEM debugging)
-- `info_map_gui.py`: interactive 2x3 information-map GUI with sliders and loading controls
+## Mixed-Family Quick Start
 
-## Repro Commands
+1. Pretrain + evaluate (creates checkpoint and metrics)
+
+```bash
+python3 experiments/cosyne/train_metadynamics.py \
+  --system-bank mixed80 \
+  --embedding-mode learned_system_id \
+  --d-embed 2 \
+  --train-samples-per-system 1500 \
+  --train-epochs 80 \
+  --results-subdir mixed_family_metadynamics_pretrain
+```
+
+2. Run rollout-centered online identification from a pretrained checkpoint
+
+```bash
+python3 experiments/cosyne/run_online_id.py \
+  --checkpoint results/mixed_family_metadynamics_pretrain/meta_dynamics_checkpoint.pt \
+  --systems duffing_single_00 duffing_bistable_00 van_der_pol_00 double_limit_cycle_00 \
+  --policies active_short random \
+  --repeats 2 \
+  --total-steps 120 \
+  --results-subdir mixed_family_metadynamics_online_id
+```
+
+3. Generate the canonical family-wise vector-field reconstruction figure
+
+```bash
+python3 experiments/cosyne/plot_vectorfield_reconstructions.py \
+  --checkpoint results/mixed_family_metadynamics_pretrain/meta_dynamics_checkpoint.pt \
+  --output-dir results/mixed_family_metadynamics_pretrain
+```
+
+Defaults are canonical and reproducible: explicit representative systems, grid range `[-3, 3]`, grid density `25`, and fixed `families_x_(true,reconstructed)_streamplot` layout. The official artifact filenames are `vectorfield_family_comparison_official.png` and `vectorfield_family_comparison_official.json`.
+
+4. (Optional) Generate embedding-cluster figure only
+
+```bash
+python3 experiments/cosyne/plot_embedding_clusters.py \
+  --checkpoint results/mixed_family_metadynamics_pretrain/meta_dynamics_checkpoint.pt \
+  --results-subdir mixed_family_metadynamics_figures
+```
+
+## CISS Track
 
 1. Preflight
 
