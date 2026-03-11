@@ -246,18 +246,18 @@ def build_mixed80_system_specs() -> tuple[SystemSpec, ...]:
         ),
         (
             "double_limit_cycle",
-            "double-ring limit-cycle family (speed-constrained angular/radial sweep)",
+            "double-ring limit-cycle family (speed-constrained angular/radial sweep; bidirectional rotation, capped max radius tail)",
             [
-                (0.34, 0.78),
-                (0.38, 0.82),
-                (0.42, 0.86),
-                (0.46, 0.90),
-                (0.50, 0.94),
-                (0.54, 0.98),
-                (0.58, 1.02),
-                (0.62, 1.06),
-                (0.66, 1.10),
-                (0.70, 1.14),
+                (-0.34, 0.78),
+                (-0.38, 0.82),
+                (-0.42, 0.86),
+                (-0.46, 0.90),
+                (-0.50, 0.94),
+                (-0.54, 0.98),
+                (-0.58, 1.02),
+                (-0.62, 1.06),
+                (-0.66, 1.10),
+                (-0.70, 1.13),
                 (0.46, 0.88),
                 (0.50, 0.92),
                 (0.54, 0.96),
@@ -265,9 +265,9 @@ def build_mixed80_system_specs() -> tuple[SystemSpec, ...]:
                 (0.62, 1.04),
                 (0.66, 1.08),
                 (0.70, 1.12),
-                (0.74, 1.16),
-                (0.78, 1.20),
-                (0.82, 1.24),
+                (0.74, 1.14),
+                (0.78, 1.16),
+                (0.82, 1.18),
             ],
         ),
     ]
@@ -928,6 +928,9 @@ def verify_parameter_bank(
         mean_speed = float(speed.mean().item())
         p95_speed = float(torch.quantile(speed.reshape(-1), 0.95).item())
         max_speed = float(speed.max().item())
+        angular_velocity = (traj[:, :-1, 0] * (traj[:, 1:, 1] - traj[:, :-1, 1]) - traj[:, :-1, 1] * (traj[:, 1:, 0] - traj[:, :-1, 0])) / dt
+        median_angular_velocity = float(torch.median(angular_velocity).item())
+        rotation_direction = 'ccw' if median_angular_velocity >= 0.0 else 'cw'
         sign_diversity = int(torch.unique(torch.sign(final_xy[:, 0])).numel())
 
         family_ok = False
@@ -949,7 +952,7 @@ def verify_parameter_bank(
             speed_cap = 120.0
             p95_cap = 55.0
             family_ok = 0.5 < mean_final_radius < 4.0 and 0.12 < std_final_radius < 1.6 and max_speed < speed_cap and p95_speed < p95_cap
-            family_reason = 'bounded multi-ring radial dynamics with controlled angular speed'
+            family_reason = 'bounded multi-ring radial dynamics with controlled angular speed and bidirectional rotation support'
         generic_ok = finite_ok and max_radius < 8.0 and max_speed < speed_cap and p95_speed < p95_cap and mean_speed > 0.05
         passed = bool(generic_ok and family_ok)
         rows.append({
@@ -965,6 +968,8 @@ def verify_parameter_bank(
             'mean_speed': mean_speed,
             'p95_speed': p95_speed,
             'max_speed': max_speed,
+            'median_angular_velocity': median_angular_velocity,
+            'rotation_direction': rotation_direction,
             'speed_cap': speed_cap,
             'p95_cap': p95_cap,
             'sign_diversity': sign_diversity,
@@ -987,11 +992,13 @@ def verify_parameter_bank(
             'n_systems': len(family_rows),
             'n_passed': int(sum(1 for r in family_rows if r['passed'])),
             'max_radius_max': float(max(r['max_radius'] for r in family_rows)),
+            'max_final_radius_max': float(max(r['mean_final_radius'] for r in family_rows)),
             'mean_speed_mean': float(np.mean([r['mean_speed'] for r in family_rows])),
             'p95_speed_max': float(max(r['p95_speed'] for r in family_rows)),
             'max_speed_max': float(max(r['max_speed'] for r in family_rows)),
             'mean_final_radius_mean': float(np.mean([r['mean_final_radius'] for r in family_rows])),
             'std_final_radius_mean': float(np.mean([r['std_final_radius'] for r in family_rows])),
+            'rotation_directions': sorted({str(r['rotation_direction']) for r in family_rows}),
         }
     payload = {
         'verification_horizon': horizon,
@@ -1041,8 +1048,11 @@ def write_pretrain_summary_markdown(
         )
     verification_lines = []
     for family, stats in verification['family_summary'].items():
+        rotation_text = ''
+        if stats.get('rotation_directions'):
+            rotation_text = f", rotations {', '.join(stats['rotation_directions'])}"
         verification_lines.append(
-            f"- {family}: {stats['n_passed']}/{stats['n_systems']} passed, max radius {stats['max_radius_max']:.3f}, p95 speed max {stats['p95_speed_max']:.3f}, max speed {stats['max_speed_max']:.3f}"
+            f"- {family}: {stats['n_passed']}/{stats['n_systems']} passed, max radius {stats['max_radius_max']:.3f}, max final radius {stats.get('max_final_radius_max', float('nan')):.3f}, p95 speed max {stats['p95_speed_max']:.3f}, max speed {stats['max_speed_max']:.3f}{rotation_text}"
         )
     text = f"""# Mixed-family meta-dynamics pretraining summary
 
