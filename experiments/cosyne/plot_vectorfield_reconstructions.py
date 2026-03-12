@@ -14,15 +14,21 @@ from mixed_family_lib import (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Generate the canonical family-wise true vs reconstructed vector-field figure.")
-    parser.add_argument("--system-bank", choices=["mixed80", "mixed40", "legacy4"], default="mixed80")
+    parser = argparse.ArgumentParser(
+        description="Generate the canonical family-wise true vs reconstructed vector-field figure."
+    )
+    parser.add_argument(
+        "--system-bank", choices=["mixed80", "mixed40", "legacy4"], default="mixed80"
+    )
     parser.add_argument(
         "--systems",
         nargs="*",
         default=None,
         help="Explicit representative systems. Defaults to the canonical per-family representatives for the selected bank.",
     )
-    parser.add_argument("--embedding-mode", choices=["fixed", "learned_system_id"], default="learned_system_id")
+    parser.add_argument(
+        "--embedding-mode", choices=["fixed", "learned_system_id"], default="learned_system_id"
+    )
     parser.add_argument("--train-samples-per-system", type=int, default=1500)
     parser.add_argument("--train-epochs", type=int, default=80)
     parser.add_argument("--batch-size", type=int, default=512)
@@ -35,12 +41,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--grid-min", type=float, default=CANONICAL_VECTORFIELD_GRID_RANGE[0])
     parser.add_argument("--grid-max", type=float, default=CANONICAL_VECTORFIELD_GRID_RANGE[1])
     parser.add_argument("--figure-layout", default=CANONICAL_VECTORFIELD_LAYOUT)
-    parser.add_argument("--checkpoint", type=str, default=None)
+    parser.add_argument(
+        "--checkpoint",
+        type=str,
+        default="/home/hyungju/Desktop/active-dynamics/results/cosyne/metadynamics_training/meta_dynamics_checkpoint.pt",
+    )
     parser.add_argument("--results-root", type=str, default=default_results_root())
-    parser.add_argument("--results-subdir", default=None)
+    parser.add_argument("--results-subdir", default="cosyne/metadynamics_training")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--figure-filename", default="vectorfield_family_comparison_official.png")
-    parser.add_argument("--metadata-filename", default="vectorfield_family_comparison_official.json")
+    parser.add_argument(
+        "--metadata-filename", default="vectorfield_family_comparison_official.json"
+    )
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args()
     if args.systems is None:

@@ -31,6 +31,7 @@ from actdyn.utils.runtime import configure_runtime, ensure_dir
 try:
     import gymnasium as gym
 except ModuleNotFoundError:
+
     class _GymStub:
         class Env:
             pass
@@ -40,6 +41,7 @@ except ModuleNotFoundError:
 try:
     from external.integrative_inference.experiments.model_utils import build_hypernetwork
     import external.integrative_inference.src.modules as metadyn
+
     HAS_INTEGRATIVE_INFERENCE = True
 except ModuleNotFoundError:
     HAS_INTEGRATIVE_INFERENCE = False
@@ -452,7 +454,9 @@ class MixedDynamicsEnv(gym.Env):
         self.device = torch.device(device)
         if embedding_vector is None:
             embedding_vector = torch.tensor(spec.embedding, dtype=torch.float32)
-        self.embedding_vector = embedding_vector.detach().to(self.device, dtype=torch.float32).reshape(-1)
+        self.embedding_vector = (
+            embedding_vector.detach().to(self.device, dtype=torch.float32).reshape(-1)
+        )
         self.action_space = spaces.Box(
             low=np.full((2,), action_bounds[0], dtype=np.float32),
             high=np.full((2,), action_bounds[1], dtype=np.float32),
@@ -516,7 +520,9 @@ class ExactFz:
 # -------------------------
 # Ground-truth dynamics
 # -------------------------
-def true_dynamics_from_spec(spec: SystemSpec, z: torch.Tensor, dynamics_scale: float = 10.0) -> torch.Tensor:
+def true_dynamics_from_spec(
+    spec: SystemSpec, z: torch.Tensor, dynamics_scale: float = 10.0
+) -> torch.Tensor:
     x = z[..., 0]
     y = z[..., 1]
     p0, p1 = spec.params
@@ -557,7 +563,9 @@ def rollout_true(
     return torch.stack(traj, dim=1)
 
 
-def rollout_meta(meta_dynamics: MetaDynamics, e: torch.Tensor, z0: torch.Tensor, horizon: int, dt: float) -> torch.Tensor:
+def rollout_meta(
+    meta_dynamics: MetaDynamics, e: torch.Tensor, z0: torch.Tensor, horizon: int, dt: float
+) -> torch.Tensor:
     z = z0.clone()
     traj = [z.clone()]
     for _ in range(horizon):
@@ -576,7 +584,9 @@ def rollout_true_controlled(
     z = z0.clone()
     traj = [z.clone()]
     for t in range(actions.shape[1]):
-        z = z + dt * (true_dynamics_from_spec(spec, z, dynamics_scale=dynamics_scale) + actions[:, t, :])
+        z = z + dt * (
+            true_dynamics_from_spec(spec, z, dynamics_scale=dynamics_scale) + actions[:, t, :]
+        )
         traj.append(z.clone())
     return torch.stack(traj, dim=1)
 
@@ -645,7 +655,9 @@ def system_embedding_tensor(
     return torch.tensor(rows, dtype=torch.float32, device=target_device)
 
 
-def build_training_cfg(d_embed: int, d_hidden_dynamics: int, d_hidden_hypernet_dynamics: int, n_hidden: int):
+def build_training_cfg(
+    d_embed: int, d_hidden_dynamics: int, d_hidden_hypernet_dynamics: int, n_hidden: int
+):
     return {
         "d_latent": 2,
         "d_embed": d_embed,
@@ -759,7 +771,8 @@ def train_meta_dynamics(
                     per_system_acc[systems[int(system_i)].name].append(float(batch_err[local_i]))
         epoch_losses.append(total_loss / max(total_n, 1))
         per_system_last = {
-            name: float(np.mean(vals)) if len(vals) > 0 else None for name, vals in per_system_acc.items()
+            name: float(np.mean(vals)) if len(vals) > 0 else None
+            for name, vals in per_system_acc.items()
         }
 
     return ModelBundle(
@@ -927,7 +940,9 @@ def save_embedding_cluster_figure(
             weight="bold",
         )
 
-    axis_names = ("Embedding dim 1", "Embedding dim 2") if projection == "native_2d" else ("PC1", "PC2")
+    axis_names = (
+        ("Embedding dim 1", "Embedding dim 2") if projection == "native_2d" else ("PC1", "PC2")
+    )
     ax.set_title("Learned Non-Parametric System-ID Embeddings")
     ax.set_xlabel(axis_names[0])
     ax.set_ylabel(axis_names[1])
@@ -969,25 +984,29 @@ def save_family_vectorfield_comparison_figure(
         representative_specs.append(systems[family_indices[0]])
 
     grid_min, grid_max = grid_limits
-    x = torch.linspace(grid_min, grid_max, grid_n, device=device)
-    y = torch.linspace(grid_min, grid_max, grid_n, device=device)
-    X, Y = torch.meshgrid(x, y, indexing="ij")
-    z = torch.stack([X.reshape(-1), Y.reshape(-1)], dim=-1)
-    x_np = x.detach().cpu().numpy()
-    y_np = y.detach().cpu().numpy()
+    x_np = np.linspace(grid_min, grid_max, grid_n)
+    y_np = np.linspace(grid_min, grid_max, grid_n)
+    X, Y = np.meshgrid(x_np, y_np)
+    z = torch.tensor(np.stack([X.reshape(-1), Y.reshape(-1)], axis=-1), dtype=torch.float32, device=device)
 
-    fig, axes = plt.subplots(len(families), 2, figsize=(8.8, 2.45 * len(families)), sharex=True, sharey=True)
+    fig, axes = plt.subplots(
+        len(families), 2, figsize=(8.8, 2.45 * len(families)), sharex=True, sharey=True
+    )
     if len(families) == 1:
         axes = np.asarray([axes])
 
     metadata = []
-    for row_idx, (family, spec, spec_idx) in enumerate(zip(families, representative_specs, representative_indices)):
+    for row_idx, (family, spec, spec_idx) in enumerate(
+        zip(families, representative_specs, representative_indices)
+    ):
         e = system_embeddings[spec_idx].reshape(1, -1).repeat(z.shape[0], 1)
-        true_fx = true_dynamics_from_spec(spec, z, dynamics_scale=dynamics_scale).detach().cpu().numpy()
+        true_fx = (
+            true_dynamics_from_spec(spec, z, dynamics_scale=dynamics_scale).detach().cpu().numpy()
+        )
         pred_fx = meta_dynamics(z, e=e).detach().cpu().numpy()
         comps = [
-            (axes[row_idx, 0], true_fx, 'True'),
-            (axes[row_idx, 1], pred_fx, 'Reconstructed'),
+            (axes[row_idx, 0], true_fx, "True"),
+            (axes[row_idx, 1], pred_fx, "Reconstructed"),
         ]
         for ax, field, label in comps:
             U = field[:, 0].reshape(grid_n, grid_n)
@@ -998,33 +1017,33 @@ def save_family_vectorfield_comparison_figure(
                 y_np,
                 U,
                 V,
-                color=speed,
-                cmap=str(CANONICAL_VECTORFIELD_STYLE['cmap']),
-                density=float(CANONICAL_VECTORFIELD_STYLE['stream_density']),
-                linewidth=float(CANONICAL_VECTORFIELD_STYLE['line_width']),
-                arrowsize=float(CANONICAL_VECTORFIELD_STYLE['arrow_size']),
+                color=np.log1p(speed),
+                cmap=str(CANONICAL_VECTORFIELD_STYLE["cmap"]),
+                density=1.0,
+                linewidth=1.0,
+                arrowsize=0.8,
             )
-            ax.set_aspect('equal')
+            ax.set_aspect("equal")
             ax.grid(alpha=0.15)
             ax.set_xlim(grid_min, grid_max)
             ax.set_ylim(grid_min, grid_max)
             ax.set_title(f"{family} — {label}", fontsize=10)
-        axes[row_idx, 0].set_ylabel('x2')
-        metadata.append({'family': family, 'system': spec.name, 'params': list(spec.params)})
+        axes[row_idx, 0].set_ylabel("x2")
+        metadata.append({"family": family, "system": spec.name, "params": list(spec.params)})
 
     for ax in axes[-1, :]:
-        ax.set_xlabel('x1')
-    fig.suptitle('Representative family vector fields: true vs reconstructed', fontsize=12, y=0.995)
+        ax.set_xlabel("x1")
+    fig.suptitle("Representative family vector fields: true vs reconstructed", fontsize=12, y=0.995)
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.985))
-    fig.savefig(out_path, dpi=int(CANONICAL_VECTORFIELD_STYLE['dpi']), bbox_inches='tight')
+    fig.savefig(out_path, dpi=int(CANONICAL_VECTORFIELD_STYLE["dpi"]), bbox_inches="tight")
     plt.close(fig)
     return {
-        'path': out_path,
-        'representatives': metadata,
-        'grid_n': grid_n,
-        'grid_limits': [float(grid_min), float(grid_max)],
-        'layout': figure_layout,
-        'style': dict(CANONICAL_VECTORFIELD_STYLE),
+        "path": out_path,
+        "representatives": metadata,
+        "grid_n": grid_n,
+        "grid_limits": [float(grid_min), float(grid_max)],
+        "layout": figure_layout,
+        "style": dict(CANONICAL_VECTORFIELD_STYLE),
     }
 
 
@@ -1044,16 +1063,28 @@ def verify_parameter_bank(
     ensure_dir(out_dir)
     init_grid = torch.tensor(
         [
-            [-2.0, -2.0], [-2.0, 0.0], [-2.0, 2.0],
-            [0.0, -2.0], [0.0, -0.75], [0.0, 0.75], [0.0, 2.0],
-            [2.0, -2.0], [2.0, 0.0], [2.0, 2.0],
-            [-1.2, 1.2], [1.2, -1.2], [1.5, 0.5], [-1.5, -0.5],
+            [-2.0, -2.0],
+            [-2.0, 0.0],
+            [-2.0, 2.0],
+            [0.0, -2.0],
+            [0.0, -0.75],
+            [0.0, 0.75],
+            [0.0, 2.0],
+            [2.0, -2.0],
+            [2.0, 0.0],
+            [2.0, 2.0],
+            [-1.2, 1.2],
+            [1.2, -1.2],
+            [1.5, 0.5],
+            [-1.5, -0.5],
         ],
         dtype=torch.float32,
     )
     rows: list[dict] = []
     for spec in systems:
-        traj = rollout_true(spec, init_grid, horizon=horizon, dt=dt, dynamics_scale=dynamics_scale).cpu()
+        traj = rollout_true(
+            spec, init_grid, horizon=horizon, dt=dt, dynamics_scale=dynamics_scale
+        ).cpu()
         finite_ok = bool(torch.isfinite(traj).all().item())
         radii = torch.linalg.norm(traj, dim=-1)
         final_xy = traj[:, -1, :]
@@ -1067,106 +1098,134 @@ def verify_parameter_bank(
         mean_speed = float(speed.mean().item())
         p95_speed = float(torch.quantile(speed.reshape(-1), 0.95).item())
         max_speed = float(speed.max().item())
-        angular_velocity = (traj[:, :-1, 0] * (traj[:, 1:, 1] - traj[:, :-1, 1]) - traj[:, :-1, 1] * (traj[:, 1:, 0] - traj[:, :-1, 0])) / dt
+        angular_velocity = (
+            traj[:, :-1, 0] * (traj[:, 1:, 1] - traj[:, :-1, 1])
+            - traj[:, :-1, 1] * (traj[:, 1:, 0] - traj[:, :-1, 0])
+        ) / dt
         median_angular_velocity = float(torch.median(angular_velocity).item())
-        rotation_direction = 'ccw' if median_angular_velocity >= 0.0 else 'cw'
+        rotation_direction = "ccw" if median_angular_velocity >= 0.0 else "cw"
         sign_diversity = int(torch.unique(torch.sign(final_xy[:, 0])).numel())
 
         family_ok = False
-        family_reason = ''
+        family_reason = ""
         speed_cap = 180.0
         p95_cap = 80.0
-        if spec.family == 'duffing_single':
+        if spec.family == "duffing_single":
             family_ok = mean_final_radius < 0.8 and std_final_radius < 0.55 and max_speed < 80.0
-            family_reason = 'single-attractor convergence toward origin with modest transient speed'
-        elif spec.family == 'duffing_bistable':
-            family_ok = mean_final_radius > 0.7 and sign_diversity >= 2 and std_final_radius < 0.8 and max_speed < 40.0
-            family_reason = 'bistable settling into separated wells without steep well-crossing transients'
-        elif spec.family == 'van_der_pol':
+            family_reason = "single-attractor convergence toward origin with modest transient speed"
+        elif spec.family == "duffing_bistable":
+            family_ok = (
+                mean_final_radius > 0.7
+                and sign_diversity >= 2
+                and std_final_radius < 0.8
+                and max_speed < 40.0
+            )
+            family_reason = (
+                "bistable settling into separated wells without steep well-crossing transients"
+            )
+        elif spec.family == "van_der_pol":
             speed_cap = 130.0
             p95_cap = 82.0
-            family_ok = 0.8 < mean_final_radius < 3.2 and tail_radius_std < 0.80 and max_speed < speed_cap and p95_speed < p95_cap
-            family_reason = 'stable oscillatory limit cycle with controlled relaxation speed'
-        elif spec.family == 'double_limit_cycle':
+            family_ok = (
+                0.8 < mean_final_radius < 3.2
+                and tail_radius_std < 0.80
+                and max_speed < speed_cap
+                and p95_speed < p95_cap
+            )
+            family_reason = "stable oscillatory limit cycle with controlled relaxation speed"
+        elif spec.family == "double_limit_cycle":
             speed_cap = 120.0
             p95_cap = 55.0
-            family_ok = 0.5 < mean_final_radius < 4.0 and 0.12 < std_final_radius < 1.6 and max_speed < speed_cap and p95_speed < p95_cap
-            family_reason = 'bounded multi-ring radial dynamics with controlled angular speed and bidirectional rotation support'
-        generic_ok = finite_ok and max_radius < 8.0 and max_speed < speed_cap and p95_speed < p95_cap and mean_speed > 0.05
+            family_ok = (
+                0.5 < mean_final_radius < 4.0
+                and 0.12 < std_final_radius < 1.6
+                and max_speed < speed_cap
+                and p95_speed < p95_cap
+            )
+            family_reason = "bounded multi-ring radial dynamics with controlled angular speed and bidirectional rotation support"
+        generic_ok = (
+            finite_ok
+            and max_radius < 8.0
+            and max_speed < speed_cap
+            and p95_speed < p95_cap
+            and mean_speed > 0.05
+        )
         passed = bool(generic_ok and family_ok)
-        rows.append({
-            'name': spec.name,
-            'family': spec.family,
-            'param_0': float(spec.params[0]),
-            'param_1': float(spec.params[1]),
-            'finite_ok': finite_ok,
-            'max_radius': max_radius,
-            'mean_final_radius': mean_final_radius,
-            'std_final_radius': std_final_radius,
-            'tail_radius_std': tail_radius_std,
-            'mean_speed': mean_speed,
-            'p95_speed': p95_speed,
-            'max_speed': max_speed,
-            'median_angular_velocity': median_angular_velocity,
-            'rotation_direction': rotation_direction,
-            'speed_cap': speed_cap,
-            'p95_cap': p95_cap,
-            'sign_diversity': sign_diversity,
-            'generic_ok': generic_ok,
-            'family_ok': family_ok,
-            'passed': passed,
-            'check': family_reason,
-        })
+        rows.append(
+            {
+                "name": spec.name,
+                "family": spec.family,
+                "param_0": float(spec.params[0]),
+                "param_1": float(spec.params[1]),
+                "finite_ok": finite_ok,
+                "max_radius": max_radius,
+                "mean_final_radius": mean_final_radius,
+                "std_final_radius": std_final_radius,
+                "tail_radius_std": tail_radius_std,
+                "mean_speed": mean_speed,
+                "p95_speed": p95_speed,
+                "max_speed": max_speed,
+                "median_angular_velocity": median_angular_velocity,
+                "rotation_direction": rotation_direction,
+                "speed_cap": speed_cap,
+                "p95_cap": p95_cap,
+                "sign_diversity": sign_diversity,
+                "generic_ok": generic_ok,
+                "family_ok": family_ok,
+                "passed": passed,
+                "check": family_reason,
+            }
+        )
 
-    csv_path = os.path.join(out_dir, 'parameter_bank_verification.csv')
-    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+    csv_path = os.path.join(out_dir, "parameter_bank_verification.csv")
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
 
     family_summary = {}
-    for family in sorted({r['family'] for r in rows}):
-        family_rows = [r for r in rows if r['family'] == family]
+    for family in sorted({r["family"] for r in rows}):
+        family_rows = [r for r in rows if r["family"] == family]
         family_summary[family] = {
-            'n_systems': len(family_rows),
-            'n_passed': int(sum(1 for r in family_rows if r['passed'])),
-            'max_radius_max': float(max(r['max_radius'] for r in family_rows)),
-            'max_final_radius_max': float(max(r['mean_final_radius'] for r in family_rows)),
-            'mean_speed_mean': float(np.mean([r['mean_speed'] for r in family_rows])),
-            'p95_speed_max': float(max(r['p95_speed'] for r in family_rows)),
-            'max_speed_max': float(max(r['max_speed'] for r in family_rows)),
-            'mean_final_radius_mean': float(np.mean([r['mean_final_radius'] for r in family_rows])),
-            'std_final_radius_mean': float(np.mean([r['std_final_radius'] for r in family_rows])),
-            'rotation_directions': sorted({str(r['rotation_direction']) for r in family_rows}),
+            "n_systems": len(family_rows),
+            "n_passed": int(sum(1 for r in family_rows if r["passed"])),
+            "max_radius_max": float(max(r["max_radius"] for r in family_rows)),
+            "max_final_radius_max": float(max(r["mean_final_radius"] for r in family_rows)),
+            "mean_speed_mean": float(np.mean([r["mean_speed"] for r in family_rows])),
+            "p95_speed_max": float(max(r["p95_speed"] for r in family_rows)),
+            "max_speed_max": float(max(r["max_speed"] for r in family_rows)),
+            "mean_final_radius_mean": float(np.mean([r["mean_final_radius"] for r in family_rows])),
+            "std_final_radius_mean": float(np.mean([r["std_final_radius"] for r in family_rows])),
+            "rotation_directions": sorted({str(r["rotation_direction"]) for r in family_rows}),
         }
     payload = {
-        'verification_horizon': horizon,
-        'verification_dt': dt,
-        'dynamics_scale': dynamics_scale,
-        'n_systems': len(rows),
-        'n_passed': int(sum(1 for r in rows if r['passed'])),
-        'all_passed': bool(all(r['passed'] for r in rows)),
-        'family_summary': family_summary,
-        'csv_path': csv_path,
-        'rows': rows,
+        "verification_horizon": horizon,
+        "verification_dt": dt,
+        "dynamics_scale": dynamics_scale,
+        "n_systems": len(rows),
+        "n_passed": int(sum(1 for r in rows if r["passed"])),
+        "all_passed": bool(all(r["passed"] for r in rows)),
+        "family_summary": family_summary,
+        "csv_path": csv_path,
+        "rows": rows,
     }
-    json_path = os.path.join(out_dir, 'parameter_bank_verification.json')
-    with open(json_path, 'w', encoding='utf-8') as f:
+    json_path = os.path.join(out_dir, "parameter_bank_verification.json")
+    with open(json_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
     return payload
 
 
 def save_model_bundle_checkpoint(bundle: ModelBundle, out_dir: str) -> str:
-    ckpt_path = os.path.join(out_dir, 'meta_dynamics_checkpoint.pt')
+    ckpt_path = os.path.join(out_dir, "meta_dynamics_checkpoint.pt")
     torch.save(
         {
-            'cfg': bundle.cfg,
-            'train_summary': bundle.train_summary,
-            'embedding_mode': bundle.embedding_mode,
-            'system_embeddings': bundle.system_embeddings,
-            'hypernet_state_dict': bundle.meta_dynamics.hypernet.state_dict(),
-            'mean_dynamics_state_dict': bundle.meta_dynamics.mean_dynamics.state_dict(),
-            'output_scale': bundle.meta_dynamics.output_scale,
+            "cfg": bundle.cfg,
+            "train_summary": bundle.train_summary,
+            "embedding_mode": bundle.embedding_mode,
+            "system_embeddings": bundle.system_embeddings,
+            "hypernet_state_dict": bundle.meta_dynamics.hypernet.state_dict(),
+            "mean_dynamics_state_dict": bundle.meta_dynamics.mean_dynamics.state_dict(),
+            "output_scale": bundle.meta_dynamics.output_scale,
         },
         ckpt_path,
     )
@@ -1175,20 +1234,21 @@ def save_model_bundle_checkpoint(bundle: ModelBundle, out_dir: str) -> str:
 
 def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]) -> ModelBundle:
     payload = torch.load(ckpt_path, map_location=device)
-    cfg = dict(payload.get('cfg', {}))
-    embedding_mode = str(payload['embedding_mode'])
-    inferred_d_embed = len(next(iter(payload['system_embeddings'].values())))
-    cfg.setdefault('d_embed', inferred_d_embed)
-    cfg.setdefault('d_hidden_dynamics', 64)
-    cfg.setdefault('d_hidden_hypernet_dynamics', 16)
-    cfg.setdefault('n_hidden', 2)
-    cfg.setdefault('d_context', max(int(cfg['d_hidden_hypernet_dynamics']), 16))
-    cfg.setdefault('d_latent', 2)
-    cfg.setdefault('update_input', True)
-    cfg.setdefault('update_output', True)
-    cfg.setdefault('update_hidden', True)
-    hypernet_state = payload['hypernet_state_dict']
-    if any(str(k).startswith('net.') for k in hypernet_state.keys()):
+    cfg = dict(payload.get("cfg", {}))
+    embedding_mode = str(payload["embedding_mode"])
+    inferred_d_embed = len(next(iter(payload["system_embeddings"].values())))
+    cfg.setdefault("d_embed", inferred_d_embed)
+    cfg.setdefault("d_hidden_dynamics", 64)
+    cfg.setdefault("d_hidden_hypernet_dynamics", 16)
+    cfg.setdefault("n_hidden", 2)
+    cfg.setdefault("d_context", max(int(cfg["d_hidden_hypernet_dynamics"]), 16))
+    cfg.setdefault("d_latent", 2)
+    cfg.setdefault("update_input", True)
+    cfg.setdefault("update_output", True)
+    cfg.setdefault("update_hidden", True)
+    hypernet_state = payload["hypernet_state_dict"]
+    if any(str(k).startswith("net.") for k in hypernet_state.keys()):
+
         class _CheckpointFallbackLowRankHypernet(nn.Module):
             def __init__(self, d_embed: int, d_context: int, d_hidden: int):
                 super().__init__()
@@ -1199,28 +1259,31 @@ def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]
                     nn.SiLU(),
                     nn.Linear(d_hidden, d_context),
                 )
+
             def forward(self, e: torch.Tensor):
                 ctx = self.net(e)
                 return ctx, None
+
         hypernet = _CheckpointFallbackLowRankHypernet(
-            d_embed=int(cfg['d_embed']),
-            d_context=int(cfg['d_context']),
-            d_hidden=max(int(cfg.get('d_hidden_hypernet_dynamics', 16)), int(cfg['d_context'])),
+            d_embed=int(cfg["d_embed"]),
+            d_context=int(cfg["d_context"]),
+            d_hidden=max(int(cfg.get("d_hidden_hypernet_dynamics", 16)), int(cfg["d_context"])),
         ).to(device)
     else:
         hypernet = build_hypernetwork(cfg, device)
-    mean_state = payload['mean_dynamics_state_dict']
+    mean_state = payload["mean_dynamics_state_dict"]
     mean_kwargs = dict(
-        d_latent=cfg['d_latent'],
-        d_hidden=cfg['d_hidden_dynamics'],
-        n_hidden=cfg['n_hidden'],
-        update_input=cfg['update_input'],
-        update_output=cfg['update_output'],
-        update_hidden=cfg['update_hidden'],
+        d_latent=cfg["d_latent"],
+        d_hidden=cfg["d_hidden_dynamics"],
+        n_hidden=cfg["n_hidden"],
+        update_input=cfg["update_input"],
+        update_output=cfg["update_output"],
+        update_hidden=cfg["update_hidden"],
         du=0,
         device=device,
     )
-    if any(str(k).startswith('net.') for k in mean_state.keys()):
+    if any(str(k).startswith("net.") for k in mean_state.keys()):
+
         class _CheckpointFallbackHyperMlpDynamics(nn.Module):
             def __init__(self, d_latent: int, d_hidden: int, n_hidden: int, d_context: int):
                 super().__init__()
@@ -1231,19 +1294,22 @@ def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]
                     in_dim = d_hidden
                 layers += [nn.Linear(in_dim, d_latent)]
                 self.net = nn.Sequential(*layers)
+
             def compute_param(self, z: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
                 return self.net(torch.cat([z, out], dim=-1))
+
             def forward(self, z: torch.Tensor, out: torch.Tensor) -> torch.Tensor:
                 return self.compute_param(z, out)
+
         mean_dynamics = _CheckpointFallbackHyperMlpDynamics(
-            d_latent=cfg['d_latent'],
-            d_hidden=cfg['d_hidden_dynamics'],
-            n_hidden=cfg['n_hidden'],
-            d_context=cfg['d_context'],
+            d_latent=cfg["d_latent"],
+            d_hidden=cfg["d_hidden_dynamics"],
+            n_hidden=cfg["n_hidden"],
+            d_context=cfg["d_context"],
         ).to(device)
     else:
         if not HAS_INTEGRATIVE_INFERENCE:
-            mean_kwargs['d_context'] = cfg['d_context']
+            mean_kwargs["d_context"] = cfg["d_context"]
         mean_dynamics = metadyn.HyperMlpDynamics(**mean_kwargs).to(device)
     hypernet.load_state_dict(hypernet_state)
     mean_dynamics.load_state_dict(mean_state)
@@ -1252,9 +1318,9 @@ def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]
     meta_dynamics = MetaDynamics(
         hypernet=hypernet,
         mean_dynamics=mean_dynamics,
-        output_scale=float(payload.get('output_scale', cfg.get('dynamics_scale', 10.0))),
+        output_scale=float(payload.get("output_scale", cfg.get("dynamics_scale", 10.0))),
     )
-    if embedding_mode == 'fixed':
+    if embedding_mode == "fixed":
         aligned_systems = truncate_embedding(systems, d_embed=inferred_d_embed)
         system_embeddings = resolve_system_embedding_map(
             systems=aligned_systems,
@@ -1262,12 +1328,14 @@ def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]
             learned_table=None,
         )
     else:
-        saved_embeddings = dict(payload.get('system_embeddings', {}))
-        system_embeddings = {spec.name: [float(x) for x in saved_embeddings[spec.name]] for spec in systems}
+        saved_embeddings = dict(payload.get("system_embeddings", {}))
+        system_embeddings = {
+            spec.name: [float(x) for x in saved_embeddings[spec.name]] for spec in systems
+        }
     return ModelBundle(
         meta_dynamics=meta_dynamics,
         cfg=cfg,
-        train_summary=dict(payload.get('train_summary', {})),
+        train_summary=dict(payload.get("train_summary", {})),
         embedding_mode=embedding_mode,
         system_embeddings=system_embeddings,
     )
@@ -1281,14 +1349,14 @@ def write_pretrain_summary_markdown(
     checkpoint_path: str,
 ) -> str:
     family_lines = []
-    for family, stats in payload['family_rollout_eval'].items():
+    for family, stats in payload["family_rollout_eval"].items():
         family_lines.append(
             f"- {family}: mean rollout MSE {stats['mean_rollout_mse']:.4f}, mean final-state MSE {stats['mean_final_state_mse']:.4f}"
         )
     verification_lines = []
-    for family, stats in verification['family_summary'].items():
-        rotation_text = ''
-        if stats.get('rotation_directions'):
+    for family, stats in verification["family_summary"].items():
+        rotation_text = ""
+        if stats.get("rotation_directions"):
             rotation_text = f", rotations {', '.join(stats['rotation_directions'])}"
         verification_lines.append(
             f"- {family}: {stats['n_passed']}/{stats['n_systems']} passed, max radius {stats['max_radius_max']:.3f}, max final radius {stats.get('max_final_radius_max', float('nan')):.3f}, p95 speed max {stats['p95_speed_max']:.3f}, max speed {stats['max_speed_max']:.3f}{rotation_text}"
@@ -1312,7 +1380,7 @@ def write_pretrain_summary_markdown(
 ## Parameter-bank verification
 {os.linesep.join(verification_lines)}
 """
-    with open(out_path, 'w', encoding='utf-8') as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         f.write(text)
     return out_path
 
@@ -1353,7 +1421,8 @@ def summarize_offline(
     primary_key = _rollout_dt_key(rollout_dt)
     ro = rollout_eval_by_dt[primary_key]
     family_rollout_eval_by_dt = {
-        dt_key: summarize_eval_by_family(systems, per_system_eval) for dt_key, per_system_eval in rollout_eval_by_dt.items()
+        dt_key: summarize_eval_by_family(systems, per_system_eval)
+        for dt_key, per_system_eval in rollout_eval_by_dt.items()
     }
     family_vf = summarize_eval_by_family(systems, vf)
     cluster_plot_path = os.path.join(out_dir, "embedding_family_clusters.png")
@@ -1478,9 +1547,7 @@ def summarize_embedding_diagnostics(
     summary["embedding_path_norm"] = float(
         sum(float(r.get("embedding_step_norm", 0.0)) for r in step_history)
     )
-    summary["block_update_rate"] = float(
-        summary["n_block_updates"] / max(summary["n_steps"], 1.0)
-    )
+    summary["block_update_rate"] = float(summary["n_block_updates"] / max(summary["n_steps"], 1.0))
     summary.update(
         _scalar_stats(
             [float(r.get("embed_block_delta_norm", 0.0)) for r in block_history],
@@ -1525,7 +1592,9 @@ def evaluate_post_probe_rollout_prediction(
 
     g = torch.Generator(device="cpu")
     g.manual_seed(int(seed))
-    actions = action_low + (action_high - action_low) * torch.rand((n_rollouts, horizon, 2), generator=g)
+    actions = action_low + (action_high - action_low) * torch.rand(
+        (n_rollouts, horizon, 2), generator=g
+    )
     actions = actions.to(device=device, dtype=torch.float32)
 
     z_true = true_state.reshape(1, -1).to(device).repeat(n_rollouts, 1)
@@ -1560,7 +1629,9 @@ def evaluate_post_probe_rollout_prediction(
         "final_state_mse": float(F.mse_loss(pred_traj[:, -1], true_traj[:, -1]).item()),
         "trajectory_r2": float(trajectory_r2(pred_traj, true_traj).mean().item()),
         "rollout_mse_true_init": float(F.mse_loss(pred_traj_true_init, true_traj).item()),
-        "final_state_mse_true_init": float(F.mse_loss(pred_traj_true_init[:, -1], true_traj[:, -1]).item()),
+        "final_state_mse_true_init": float(
+            F.mse_loss(pred_traj_true_init[:, -1], true_traj[:, -1]).item()
+        ),
         "eval_rollout_count": float(n_rollouts),
         "eval_rollout_horizon": float(horizon),
         "eval_rollout_dt": float(dt),
@@ -1672,7 +1743,9 @@ def run_identification(
     agent = actdyn.Agent(env=env, model=model, buffer_length=10, policy=policy, device=device)
     config_path = os.path.join(os.path.dirname(__file__), "conf/config.yaml")
     if not os.path.exists(config_path):
-        config_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "active_embedding", "conf", "config.yaml")
+        config_path = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)), "active_embedding", "conf", "config.yaml"
+        )
     config = ExperimentConfig.from_yaml(config_path)
     config.results_dir = ensure_dir(results_dir)
     config.training.total_steps = total_steps
@@ -1732,12 +1805,24 @@ def summarize_record_group(records: list[dict]) -> dict[str, float]:
         "n": len(records),
         "mean_rollout_mse": float(np.mean([r["post_probe_eval"]["rollout_mse"] for r in records])),
         "std_rollout_mse": float(np.std([r["post_probe_eval"]["rollout_mse"] for r in records])),
-        "mean_final_state_mse": float(np.mean([r["post_probe_eval"]["final_state_mse"] for r in records])),
-        "std_final_state_mse": float(np.std([r["post_probe_eval"]["final_state_mse"] for r in records])),
-        "mean_trajectory_r2": float(np.mean([r["post_probe_eval"]["trajectory_r2"] for r in records])),
-        "std_trajectory_r2": float(np.std([r["post_probe_eval"]["trajectory_r2"] for r in records])),
-        "mean_rollout_mse_true_init": float(np.mean([r["post_probe_eval"]["rollout_mse_true_init"] for r in records])),
-        "std_rollout_mse_true_init": float(np.std([r["post_probe_eval"]["rollout_mse_true_init"] for r in records])),
+        "mean_final_state_mse": float(
+            np.mean([r["post_probe_eval"]["final_state_mse"] for r in records])
+        ),
+        "std_final_state_mse": float(
+            np.std([r["post_probe_eval"]["final_state_mse"] for r in records])
+        ),
+        "mean_trajectory_r2": float(
+            np.mean([r["post_probe_eval"]["trajectory_r2"] for r in records])
+        ),
+        "std_trajectory_r2": float(
+            np.std([r["post_probe_eval"]["trajectory_r2"] for r in records])
+        ),
+        "mean_rollout_mse_true_init": float(
+            np.mean([r["post_probe_eval"]["rollout_mse_true_init"] for r in records])
+        ),
+        "std_rollout_mse_true_init": float(
+            np.std([r["post_probe_eval"]["rollout_mse_true_init"] for r in records])
+        ),
         "mean_final_state_mse_true_init": float(
             np.mean([r["post_probe_eval"]["final_state_mse_true_init"] for r in records])
         ),
@@ -1902,7 +1987,9 @@ def prepare_selected_systems(
 
 def canonical_vectorfield_system_names(system_bank: str) -> tuple[str, ...]:
     if system_bank not in CANONICAL_VECTORFIELD_SYSTEMS:
-        raise ValueError(f"No canonical vectorfield representative mapping for system bank: {system_bank}")
+        raise ValueError(
+            f"No canonical vectorfield representative mapping for system bank: {system_bank}"
+        )
     return CANONICAL_VECTORFIELD_SYSTEMS[system_bank]
 
 
@@ -1913,14 +2000,22 @@ def resolve_results_dir(results_root: str | None, results_subdir: str | None) ->
     return ensure_dir(os.path.join(root, results_subdir))
 
 
-def resolve_output_dir(*, results_root: str | None, results_subdir: str | None, output_dir: str | None, checkpoint: str | None) -> str:
+def resolve_output_dir(
+    *,
+    results_root: str | None,
+    results_subdir: str | None,
+    output_dir: str | None,
+    checkpoint: str | None,
+) -> str:
     if output_dir:
         return ensure_dir(output_dir)
     if results_subdir:
         return resolve_results_dir(results_root, results_subdir)
     if checkpoint:
         return ensure_dir(os.path.dirname(os.path.abspath(checkpoint)))
-    raise ValueError("Either output_dir, results_subdir, or checkpoint must be provided to resolve the figure output directory")
+    raise ValueError(
+        "Either output_dir, results_subdir, or checkpoint must be provided to resolve the figure output directory"
+    )
 
 
 def maybe_load_or_train_bundle(args, selected: tuple[SystemSpec, ...]) -> ModelBundle:
@@ -1992,7 +2087,9 @@ def run_pretrain_eval_experiment(args) -> dict[str, object]:
         verification=verification,
         checkpoint_path=checkpoint_path,
     )
-    mean_rollout_mse = float(np.mean([payload["rollout_eval"][spec.name]["rollout_mse"] for spec in selected]))
+    mean_rollout_mse = float(
+        np.mean([payload["rollout_eval"][spec.name]["rollout_mse"] for spec in selected])
+    )
     return {
         "results_dir": base_dir,
         "system_bank": payload["system_bank"],
@@ -2012,7 +2109,9 @@ def run_pretrain_eval_experiment(args) -> dict[str, object]:
 def run_vectorfield_figure_experiment(args) -> dict[str, object]:
     configure_runtime_device(seed=int(getattr(args, "seed", 0)))
     system_bank = getattr(args, "system_bank", "mixed80")
-    requested_systems = getattr(args, "systems", None) or canonical_vectorfield_system_names(system_bank)
+    requested_systems = getattr(args, "systems", None) or canonical_vectorfield_system_names(
+        system_bank
+    )
     base_dir = resolve_output_dir(
         results_root=getattr(args, "results_root", None),
         results_subdir=getattr(args, "results_subdir", None),
@@ -2027,7 +2126,9 @@ def run_vectorfield_figure_experiment(args) -> dict[str, object]:
     )
     bundle = maybe_load_or_train_bundle(args=args, selected=selected)
     embeddings = system_embedding_tensor(bundle.system_embeddings, selected, target_device=device)
-    figure_path = os.path.join(base_dir, getattr(args, "figure_filename", "vectorfield_family_comparison_official.png"))
+    figure_path = os.path.join(
+        base_dir, getattr(args, "figure_filename", "vectorfield_family_comparison_official.png")
+    )
     payload = save_family_vectorfield_comparison_figure(
         meta_dynamics=bundle.meta_dynamics,
         systems=selected,
@@ -2035,10 +2136,15 @@ def run_vectorfield_figure_experiment(args) -> dict[str, object]:
         out_path=figure_path,
         dynamics_scale=args.dynamics_scale,
         grid_n=int(getattr(args, "grid_n", CANONICAL_VECTORFIELD_GRID_N)),
-        grid_limits=(float(getattr(args, "grid_min", CANONICAL_VECTORFIELD_GRID_RANGE[0])), float(getattr(args, "grid_max", CANONICAL_VECTORFIELD_GRID_RANGE[1]))),
+        grid_limits=(
+            float(getattr(args, "grid_min", CANONICAL_VECTORFIELD_GRID_RANGE[0])),
+            float(getattr(args, "grid_max", CANONICAL_VECTORFIELD_GRID_RANGE[1])),
+        ),
         figure_layout=str(getattr(args, "figure_layout", CANONICAL_VECTORFIELD_LAYOUT)),
     )
-    metadata_path = os.path.join(base_dir, getattr(args, "metadata_filename", "vectorfield_family_comparison_official.json"))
+    metadata_path = os.path.join(
+        base_dir, getattr(args, "metadata_filename", "vectorfield_family_comparison_official.json")
+    )
     metadata_payload = {
         **payload,
         "system_bank": system_bank,
@@ -2070,13 +2176,17 @@ def run_embedding_cluster_figure_experiment(args) -> dict[str, object]:
     )
     bundle = maybe_load_or_train_bundle(args=args, selected=selected)
     embeddings = system_embedding_tensor(bundle.system_embeddings, selected, target_device=device)
-    figure_path = os.path.join(base_dir, getattr(args, "figure_filename", "embedding_family_clusters.png"))
+    figure_path = os.path.join(
+        base_dir, getattr(args, "figure_filename", "embedding_family_clusters.png")
+    )
     payload = save_embedding_cluster_figure(
         systems=selected,
         system_embeddings=embeddings,
         out_path=figure_path,
     )
-    metadata_path = os.path.join(base_dir, getattr(args, "metadata_filename", "embedding_family_clusters.json"))
+    metadata_path = os.path.join(
+        base_dir, getattr(args, "metadata_filename", "embedding_family_clusters.json")
+    )
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(
             {
@@ -2122,7 +2232,9 @@ def run_online_identification_experiment(args, *, print_progress: bool = True) -
     )
     bundle = maybe_load_or_train_bundle(args=args, selected=selected)
     records: list[dict] = []
-    resolved_embeddings = system_embedding_tensor(bundle.system_embeddings, selected, target_device="cpu")
+    resolved_embeddings = system_embedding_tensor(
+        bundle.system_embeddings, selected, target_device="cpu"
+    )
     for system_idx, spec in enumerate(selected):
         for policy in args.policies:
             for rep in range(args.repeats):
