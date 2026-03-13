@@ -261,6 +261,9 @@ class EmbeddingFisherMetric(BaseMetric):
         Fe_net: Callable = None,
         Fz_net: Callable = None,
         gamma: float | None = None,
+        freeze_covariance: bool = False,
+        no_sensitivity_propagation: bool = False,
+        fully_observed: bool = False,
         **kwargs,
     ):
         super().__init__(compute_type, device)
@@ -273,6 +276,9 @@ class EmbeddingFisherMetric(BaseMetric):
         if gamma is None:
             gamma = legacy_gamma if legacy_gamma is not None else 1.0
         self.gamma = float(gamma)
+        self.freeze_covariance = bool(freeze_covariance)
+        self.no_sensitivity_propagation = bool(no_sensitivity_propagation)
+        self.fully_observed = bool(fully_observed)
 
     def compute_stepwise(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
         e_bel = self.model.e
@@ -346,6 +352,7 @@ class EmbeddingFisherMetric(BaseMetric):
         S_sens = torch.zeros(batch, d_latent, d_embedding, device=self.device, dtype=z.dtype)
 
         P_pred = _to_batch_latent_cov(z_bel["P"].to(self.device))
+        P_pred_initial = P_pred.clone()
         Q = softplus(self.model.dynamics.logvar).diag_embed().to(self.device) * dt
         if Q.dim() == 2:
             Q = Q.unsqueeze(0)
@@ -358,7 +365,10 @@ class EmbeddingFisherMetric(BaseMetric):
         for i in range(T):
             dfdz = eye_latent + Fz[:, i] * dt
             dfde = Fe[:, i] * dt
-            S_sens = dfdz @ S_sens + dfde
+            if self.no_sensitivity_propagation:
+                S_sens = dfde
+            else:
+                S_sens = dfdz @ S_sens + dfde
 
             z_i = z[:, i : i + 1]
             H_i = self.model.decoder.jacobian(z_i).to(self.device)
@@ -376,9 +386,13 @@ class EmbeddingFisherMetric(BaseMetric):
             I_z = symmetrize(H_i.transpose(-1, -2) @ invR_H)
 
             # DeltaLambda = S^T (I + P^- I_z)^{-1} I_z S.
-            atten_base, chol_atten = _spd_factor(eye_latent + P_pred @ I_z)
-            del atten_base
-            atten_Iz = torch.cholesky_solve(I_z, chol_atten)
+            if self.fully_observed:
+                atten_Iz = I_z
+            else:
+                P_for_gain = P_pred_initial if self.freeze_covariance else P_pred
+                atten_base, chol_atten = _spd_factor(eye_latent + P_for_gain @ I_z)
+                del atten_base
+                atten_Iz = torch.cholesky_solve(I_z, chol_atten)
             info_step = symmetrize(S_sens.transpose(-1, -2) @ atten_Iz @ S_sens)
             J += (self.gamma ** i) * info_step
 
@@ -391,12 +405,9 @@ class EmbeddingFisherMetric(BaseMetric):
             P_theta = P_theta.expand(batch, -1, -1)
 
         eye = torch.eye(d_embedding, device=self.device).unsqueeze(0).expand(batch, -1, -1)
-        mat = symmetrize(eye + P_theta @ J)
-        sign, logabsdet = torch.linalg.slogdet(mat)
-        invalid = (sign <= 0) | (~torch.isfinite(logabsdet))
-        if invalid.any():
-            eigvals = torch.linalg.eigvalsh(mat)
-            logabsdet = torch.log(eigvals.clamp_min(eps)).sum(dim=-1)
+        mat, chol_mat = _spd_factor(eye + P_theta @ J)
+        chol_diag = torch.diagonal(chol_mat, dim1=-2, dim2=-1).clamp_min(eps)
+        logabsdet = 2.0 * torch.log(chol_diag).sum(dim=-1)
         EIG = 0.5 * logabsdet
 
         # Explicitly delete large temporaries (helps long-running processes)

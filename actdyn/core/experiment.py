@@ -399,6 +399,7 @@ class MetaEmbeddingExperiment(Experiment):
 
     def run(self, plot_fcn: Callable[[Agent], Figure] | None = None, reset: bool = True):
         self.e_norm = []
+        self.e_trace = []
 
         def _embedding_step_hook(transition: dict) -> None:
             e_bel = self.agent.model.embedding.reshape(-1)
@@ -410,6 +411,7 @@ class MetaEmbeddingExperiment(Experiment):
                 {f"true_{i}": v for i, v in enumerate(to_np(e_true).tolist())},
                 self.env_step,
             )
+            self.e_trace.append([float(v) for v in to_np(e_bel).reshape(-1).tolist()])
             self.e_norm.append(torch.norm(e_bel.cpu() - e_true.cpu()).item())
             self.training_info["e_norm"] = self.e_norm[-1]
 
