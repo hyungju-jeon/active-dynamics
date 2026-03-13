@@ -803,10 +803,24 @@ class FilteringEmbedding(BaseModel):
 
     @staticmethod
     def _project_spd(M: torch.Tensor, min_eig: float = 1e-6) -> torch.Tensor:
-        M = symmetrize(M)
-        eigvals, eigvecs = torch.linalg.eigh(M)
-        eigvals = eigvals.clamp_min(min_eig)
-        return symmetrize(eigvecs @ torch.diag_embed(eigvals) @ eigvecs.transpose(-1, -2))
+        M = symmetrize(torch.nan_to_num(M.float(), nan=0.0, posinf=1e6, neginf=-1e6))
+        floor = max(float(min_eig), 1e-8)
+        eye = torch.eye(M.shape[-1], device=M.device, dtype=M.dtype).expand_as(M)
+        work = M
+        for _ in range(4):
+            try:
+                eigvals, eigvecs = torch.linalg.eigh((work + floor * eye).double())
+                eigvals = eigvals.clamp_min(floor)
+                proj = eigvecs @ torch.diag_embed(eigvals) @ eigvecs.transpose(-1, -2)
+                proj = torch.nan_to_num(proj, nan=0.0, posinf=1e6, neginf=-1e6).to(M.dtype)
+                return symmetrize(proj)
+            except RuntimeError:
+                work = symmetrize(work + floor * eye)
+                floor *= 10.0
+
+        diag = torch.diagonal(M, dim1=-2, dim2=-1)
+        diag = torch.nan_to_num(diag, nan=floor, posinf=1e6, neginf=floor).clamp_min(floor)
+        return torch.diag_embed(diag)
 
     def set_params(self, e: torch.Tensor):
         self.e["m"] = (

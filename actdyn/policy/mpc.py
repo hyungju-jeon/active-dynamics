@@ -102,7 +102,7 @@ class MpcICem(BaseMPC):
 
     def sample_action_sequences(self, num_samples):
         # Generate action sequences with colored noise
-        if self.noise_beta > 0:
+        if self.noise_beta > 0 and self.horizon > 1:
             samples = torch.tensor(
                 colorednoise.powerlaw_psd_gaussian(
                     self.noise_beta, size=(num_samples, self.action_dim, self.horizon)
