@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 from concurrent.futures import ProcessPoolExecutor, as_completed
-import json
 from pathlib import Path
 from typing import Any
 
@@ -16,14 +15,22 @@ from matplotlib.colors import LogNorm
 import numpy as np
 import pandas as pd
 import torch
+from cosyne_common import (
+    frame_indices as _frame_indices,
+    load_json,
+    parse_csv_ints as _parse_csv_ints,
+    parse_csv_list as _parse_csv_list,
+    resolve_artifact_path as _resolve_trace_path,
+)
 
-from actdyn.models.decoder import Decoder, LogLinearMapping, PoissonNoise
+from actdyn.models.decoder import LogLinearMapping, PoissonNoise
 from actdyn.utils import save_load
 from actdyn.utils.visualize import plot_vector_field
 
 
-DEFAULT_EXP_IDS = ["active_short", "active_long", "RND", "random"]
+DEFAULT_EXP_IDS = ["active_short", "random", "no_policy"]
 DEFAULT_SEEDS = [0, 10, 20]
+PASSIVE_EXP_IDS = {"random", "no_policy"}
 
 
 class _DuffingDynamics:
@@ -42,27 +49,6 @@ class _DuffingDynamics:
         dv = self.a * v - self.b * x - 0.1 * x**3
         return torch.stack((dx, dv), dim=-1)
 
-
-def _parse_csv_list(raw: str | None) -> list[str]:
-    if raw is None:
-        return []
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def _parse_csv_ints(raw: str | None) -> list[int]:
-    return [int(item) for item in _parse_csv_list(raw)]
-
-
-def _resolve_trace_path(run_dir: Path, metadata: dict[str, Any], key: str, fallback_name: str) -> Path:
-    trace_path = metadata.get(key)
-    if isinstance(trace_path, str) and trace_path.strip():
-        path = Path(trace_path)
-        if not path.is_absolute():
-            path = (run_dir / path).resolve()
-        return path
-    return run_dir / fallback_name
-
-
 def _trace_index(trace_steps: np.ndarray, step: int) -> int:
     if trace_steps.size == 0:
         return 0
@@ -70,32 +56,8 @@ def _trace_index(trace_steps: np.ndarray, step: int) -> int:
     return int(np.clip(idx, 0, len(trace_steps) - 1))
 
 
-def _load_decoder_from_model_state(results_path: Path, dt: float = 0.01) -> Decoder:
-    model_path = results_path / "model" / "model_final.pth"
-    if not model_path.exists():
-        raise FileNotFoundError(f"Missing model checkpoint for exact info maps: {model_path}")
-
-    state = torch.load(model_path, map_location="cpu")
-    if isinstance(state, dict) and "model_state_dict" in state:
-        state = state["model_state_dict"]
-
-    if not isinstance(state, dict):
-        raise ValueError(f"Unexpected model checkpoint format at {model_path}")
-
-    weight = state.get("decoder.mapping.network.0.weight")
-    bias = state.get("decoder.mapping.network.0.bias")
-    if weight is None or bias is None:
-        raise KeyError("decoder.mapping.network.0.{weight,bias} missing from model checkpoint")
-
-    weight = torch.as_tensor(weight, dtype=torch.float32).detach().cpu()
-    bias = torch.as_tensor(bias, dtype=torch.float32).detach().cpu()
-
-    mapping = LogLinearMapping(latent_dim=2, obs_dim=weight.shape[0], dt=float(dt), device="cpu")
-    noise = PoissonNoise(device="cpu")
-    decoder = Decoder(mapping=mapping, noise=noise, device="cpu")
-    decoder.mapping.set_weights(weight, requires_grad=False)
-    decoder.mapping.set_bias(bias, requires_grad=False)
-    return decoder
+def _exp_id_lower(metadata: dict[str, Any]) -> str:
+    return str(metadata.get("exp_id", "")).strip().lower()
 
 
 def _load_run_artifacts(
@@ -118,7 +80,7 @@ def _load_run_artifacts(
     meta_path = run_dir / "run_metadata.json"
     if not meta_path.exists():
         raise FileNotFoundError(f"Missing run metadata: {meta_path}")
-    metadata = json.loads(meta_path.read_text())
+    metadata = load_json(meta_path)
 
     results_path = Path(metadata["results_path"])
     state_action_trace_path = _resolve_trace_path(
@@ -249,6 +211,63 @@ def _load_acquisition_map_trace(
     return steps, axis, maps
 
 
+def _load_planned_trajectory_trace(
+    run_dir: Path,
+    metadata: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    trace_path = _resolve_trace_path(
+        run_dir,
+        metadata,
+        key="planned_trajectory_trace_path",
+        fallback_name="planned_trajectory_trace.npz",
+    )
+    if not trace_path.exists():
+        return None
+
+    with np.load(trace_path, allow_pickle=True) as data:
+        steps = np.asarray(data["steps"], dtype=int)
+        paths = np.asarray(data["paths"], dtype=float)
+        lengths = np.asarray(data["lengths"], dtype=int)
+
+    if steps.ndim != 1 or paths.ndim != 3 or lengths.ndim != 1:
+        raise ValueError(f"Invalid planned trajectory trace format: {trace_path}")
+    if paths.shape[0] != steps.shape[0] or lengths.shape[0] != steps.shape[0]:
+        raise ValueError(f"Planned trajectory count mismatch in: {trace_path}")
+    return steps, paths, lengths
+
+
+def _planned_xy_for_step(
+    trace: tuple[np.ndarray, np.ndarray, np.ndarray] | None,
+    step: int,
+) -> np.ndarray | None:
+    if trace is None:
+        return None
+    trace_steps, trace_paths, trace_lengths = trace
+    idx = _trace_index(trace_steps, step)
+    n_points = int(trace_lengths[idx])
+    if n_points < 2:
+        return None
+    path = np.asarray(trace_paths[idx, :n_points, :2], dtype=float)
+    valid = np.all(np.isfinite(path), axis=1)
+    path = path[valid]
+    return path if path.shape[0] >= 2 else None
+
+
+def _overlay_planned_xy(ax: plt.Axes, planned_xy: np.ndarray | None) -> None:
+    if planned_xy is None or planned_xy.shape[0] < 2:
+        return
+    ax.plot(
+        planned_xy[:, 0],
+        planned_xy[:, 1],
+        color="tab:orange",
+        linewidth=2.2,
+        linestyle="--",
+        alpha=0.32,
+        label="planned traj",
+        zorder=4,
+    )
+
+
 def _prepare_exact_info_grid(
     decoder: Decoder,
     *,
@@ -331,15 +350,6 @@ def _make_lognorm(values: list[np.ndarray]) -> LogNorm:
     return LogNorm(vmin=vmin, vmax=vmax)
 
 
-def _frame_indices(n_steps: int, stride: int) -> list[int]:
-    idxs = list(range(0, n_steps, max(1, int(stride))))
-    if not idxs:
-        return [0]
-    if idxs[-1] != n_steps - 1:
-        idxs.append(n_steps - 1)
-    return idxs
-
-
 def make_info_maps_video(
     run_dir: Path,
     output_path: Path,
@@ -352,107 +362,98 @@ def make_info_maps_video(
 ) -> Path:
     (
         metadata,
-        results_path,
+        _results_path,
         true_state,
-        _model_state,
+        model_state,
         _action,
-        _policy_cost,
+        policy_cost,
         _param_steps,
         _param_err,
-        emb_steps,
-        emb_e0,
-        emb_e1,
-        info_steps,
-        pz_cols,
+        _emb_steps,
+        _emb_e0,
+        _emb_e1,
+        _info_steps,
+        _pz_cols,
     ) = _load_run_artifacts(run_dir)
-
-    decoder = _load_decoder_from_model_state(results_path=results_path, dt=float(ig_dt))
-    grid_n = max(25, int(ig_grid))
-    _X, _V, I_z_flat, S_flat, I_z_map = _prepare_exact_info_grid(
-        decoder,
-        grid_lim=float(grid_lim),
-        n_grid=grid_n,
-        dt=float(ig_dt),
-    )
-
-    idxs = _frame_indices(true_state.shape[0], stride)
-    I_theta_frames: list[np.ndarray] = []
-    for i in idxs:
-        step = int(i + 1)
-        info_idx = _trace_index(info_steps, step)
-        _emb_idx = _trace_index(emb_steps, step)
-        _theta = np.array([float(emb_e0[_emb_idx]), float(emb_e1[_emb_idx])], dtype=float)
-        pz00, pz01, pz11 = pz_cols[info_idx]
-        I_theta_frames.append(
-            _compute_itheta_trace_map(
-                I_z=I_z_flat,
-                S=S_flat,
-                pz00=float(pz00),
-                pz01=float(pz01),
-                pz11=float(pz11),
-                n_grid=grid_n,
-            )
+    if _exp_id_lower(metadata) in PASSIVE_EXP_IDS:
+        raise ValueError(
+            f"Info-map video is disabled for passive runs ({metadata.get('exp_id', 'unknown')})."
         )
 
-    I_z_frames = [I_z_map for _ in idxs]
-    norm_iz = _make_lognorm(I_z_frames)
-    norm_itheta = _make_lognorm(I_theta_frames)
+    planned_trace = _load_planned_trajectory_trace(run_dir, metadata)
+    acq_trace = _load_acquisition_map_trace(run_dir, metadata)
+    if acq_trace is None:
+        raise FileNotFoundError(
+            f"Missing acquisition map trace for {run_dir}. "
+            "Rerun tracks with --save-acq-map to render info-map videos."
+        )
 
-    extent = [-float(grid_lim), float(grid_lim), -float(grid_lim), float(grid_lim)]
-    fig, (ax_iz, ax_itheta) = plt.subplots(1, 2, figsize=(13.5, 5.8), dpi=120)
+    acq_steps, acq_axis, acq_maps = acq_trace
+    acq_maps = np.nan_to_num(acq_maps, nan=1e-12, posinf=1e6, neginf=1e-12)
+    acq_maps = np.maximum(acq_maps, 1e-12)
+    acq_norm = _make_lognorm([acq_maps[k] for k in range(acq_maps.shape[0])])
+    extent = [
+        float(np.min(acq_axis)),
+        float(np.max(acq_axis)),
+        float(np.min(acq_axis)),
+        float(np.max(acq_axis)),
+    ]
 
-    im_iz = ax_iz.imshow(
-        I_z_frames[0],
-        extent=extent,
-        origin="lower",
-        cmap="magma",
-        norm=norm_iz,
-        interpolation="nearest",
-    )
-    im_itheta = ax_itheta.imshow(
-        I_theta_frames[0],
-        extent=extent,
-        origin="lower",
-        cmap="viridis",
-        norm=norm_itheta,
-        interpolation="nearest",
-    )
+    idxs = _frame_indices(true_state.shape[0], stride)
+    fig = plt.figure(figsize=(8.9, 6.2), dpi=120)
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 0.05], wspace=0.16)
+    ax = fig.add_subplot(gs[0, 0])
+    cax = fig.add_subplot(gs[0, 1])
 
-    for ax in (ax_iz, ax_itheta):
+    sm = plt.cm.ScalarMappable(norm=acq_norm, cmap="inferno")
+    cbar = fig.colorbar(sm, cax=cax)
+    cbar.set_label("Acquisition Objective (log scale)")
+    fig.subplots_adjust(left=0.07, right=0.92, bottom=0.10, top=0.90, wspace=0.16)
+
+    frames: list[np.ndarray] = []
+    for i in idxs:
+        cur_step = int(i + 1)
+        acq_idx = _trace_index(acq_steps, cur_step)
+        planned_xy = _planned_xy_for_step(planned_trace, cur_step)
+        cost_now = float(policy_cost[i]) if i < policy_cost.shape[0] and np.isfinite(policy_cost[i]) else np.nan
+
+        ax.clear()
+        ax.imshow(
+            acq_maps[acq_idx],
+            extent=extent,
+            origin="lower",
+            cmap="inferno",
+            norm=acq_norm,
+            interpolation="nearest",
+        )
+        ax.plot(true_state[: i + 1, 0], true_state[: i + 1, 1], color="black", linewidth=1.8, label="true traj")
+        ax.plot(
+            model_state[: i + 1, 0],
+            model_state[: i + 1, 1],
+            color="tab:blue",
+            linewidth=1.8,
+            label="inferred traj",
+        )
+        _overlay_planned_xy(ax, planned_xy)
+        ax.scatter([true_state[i, 0]], [true_state[i, 1]], color="black", s=28, zorder=5)
+        ax.scatter([model_state[i, 0]], [model_state[i, 1]], color="tab:blue", s=28, zorder=5)
         ax.set_xlim(-grid_lim, grid_lim)
         ax.set_ylim(-grid_lim, grid_lim)
         ax.set_aspect("equal", adjustable="box")
         ax.grid(alpha=0.25)
         ax.set_xlabel("x")
         ax.set_ylabel("v")
-
-    ax_iz.set_title(r"$I_{z,t}$ map (log scale)")
-    ax_itheta.set_title(r"$I_{\theta,t}$ map (log scale)")
-
-    cbar_iz = fig.colorbar(im_iz, ax=ax_iz, fraction=0.046, pad=0.02)
-    cbar_iz.set_label(r"trace($I_z$)")
-    cbar_itheta = fig.colorbar(im_itheta, ax=ax_itheta, fraction=0.046, pad=0.02)
-    cbar_itheta.set_label(r"trace($I_{\theta}$)")
-
-    step_text = fig.text(0.5, 0.02, "", ha="center", va="bottom", fontsize=10)
-    fig.subplots_adjust(left=0.06, right=0.97, bottom=0.12, top=0.90, wspace=0.24)
-
-    frames: list[np.ndarray] = []
-    for frame_k, i in enumerate(idxs):
-        cur_step = int(i + 1)
-        im_iz.set_data(I_z_frames[frame_k])
-        im_itheta.set_data(I_theta_frames[frame_k])
+        ax.set_title("Acquisition map (same trace as acq_action)")
+        ax.legend(loc="upper right")
 
         fig.suptitle(
-            f"{metadata.get('exp_id', 'unknown')} seed={metadata.get('seed', 'n/a')} | step={cur_step}",
+            (
+                f"{metadata.get('exp_id', 'unknown')} seed={metadata.get('seed', 'n/a')} | step={cur_step} | "
+                f"policy_cost={cost_now:.4f}"
+            ),
             fontsize=12,
-            y=0.96,
+            y=0.97,
         )
-        step_text.set_text(
-            f"I_z scale: [{norm_iz.vmin:.3e}, {norm_iz.vmax:.3e}] | "
-            f"I_theta scale: [{norm_itheta.vmin:.3e}, {norm_itheta.vmax:.3e}]"
-        )
-
         fig.canvas.draw()
         frames.append(np.asarray(fig.canvas.buffer_rgba())[..., :3].copy())
 
@@ -485,6 +486,7 @@ def make_traj_vf_video(
         _info_steps,
         _pz_cols,
     ) = _load_run_artifacts(run_dir)
+    planned_trace = _load_planned_trajectory_trace(run_dir, metadata)
 
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=float)
     dyn_true = _DuffingDynamics(a=float(theta_true[0]), b=float(theta_true[1]))
@@ -496,7 +498,7 @@ def make_traj_vf_video(
     ax_est = fig.add_subplot(gs[0, 1])
     fig.subplots_adjust(left=0.05, right=0.98, bottom=0.09, top=0.90, wspace=0.22)
 
-    def _draw_panel(ax, dynamics_obj, title: str, i: int) -> None:
+    def _draw_panel(ax, dynamics_obj, title: str, i: int, planned_xy: np.ndarray | None) -> None:
         ax.clear()
         plot_vector_field(dynamics_obj, ax=ax, x_range=grid_lim, n_grid=26, is_residual=True, device="cpu")
         ax.plot(true_state[: i + 1, 0], true_state[: i + 1, 1], color="black", linewidth=1.8, label="true traj")
@@ -507,6 +509,7 @@ def make_traj_vf_video(
             linewidth=1.8,
             label="inferred traj",
         )
+        _overlay_planned_xy(ax, planned_xy)
         ax.scatter([true_state[i, 0]], [true_state[i, 1]], color="black", s=28, zorder=5)
         ax.scatter([model_state[i, 0]], [model_state[i, 1]], color="tab:blue", s=28, zorder=5)
         ax.set_xlim(-grid_lim, grid_lim)
@@ -524,18 +527,21 @@ def make_traj_vf_video(
         emb_idx = _trace_index(emb_steps, cur_step)
         theta_est = np.asarray([float(emb_e0[emb_idx]), float(emb_e1[emb_idx])], dtype=float)
         dyn_est = _DuffingDynamics(a=float(theta_est[0]), b=float(theta_est[1]))
+        planned_xy = _planned_xy_for_step(planned_trace, cur_step)
 
         _draw_panel(
             ax_true,
             dyn_true,
             f"True VF [a,b]=[{float(theta_true[0]):.3f}, {float(theta_true[1]):.3f}]",
             i,
+            planned_xy,
         )
         _draw_panel(
             ax_est,
             dyn_est,
             f"Inferred VF [a,b]=[{float(theta_est[0]):.3f}, {float(theta_est[1]):.3f}]",
             i,
+            planned_xy,
         )
 
         fig.suptitle(
@@ -575,44 +581,53 @@ def make_acq_action_video(
         _info_steps,
         _pz_cols,
     ) = _load_run_artifacts(run_dir)
+    planned_trace = _load_planned_trajectory_trace(run_dir, metadata)
+    exp_id = _exp_id_lower(metadata)
 
     acq_trace = _load_acquisition_map_trace(run_dir, metadata)
-    if acq_trace is None:
-        if str(metadata.get("exp_id", "")).lower() == "random":
-            acq_steps = np.asarray([1], dtype=int)
-            acq_axis = np.linspace(-float(grid_lim), float(grid_lim), 61, dtype=np.float32)
-            acq_maps = np.full((1, 61, 61), 1e-8, dtype=np.float32)
-        else:
+    show_acq_map = exp_id not in PASSIVE_EXP_IDS
+    if show_acq_map:
+        if acq_trace is None:
             raise FileNotFoundError(
                 f"Missing acquisition map trace for {run_dir}. "
                 "Rerun tracks with --save-acq-map to render acquisition overlays."
             )
-    else:
         acq_steps, acq_axis, acq_maps = acq_trace
-    acq_maps = np.nan_to_num(acq_maps, nan=1e-12, posinf=1e6, neginf=1e-12)
-    acq_maps = np.maximum(acq_maps, 1e-12)
-    acq_norm = _make_lognorm([acq_maps[k] for k in range(acq_maps.shape[0])])
+        acq_maps = np.nan_to_num(acq_maps, nan=1e-12, posinf=1e6, neginf=1e-12)
+        acq_maps = np.maximum(acq_maps, 1e-12)
+        acq_norm = _make_lognorm([acq_maps[k] for k in range(acq_maps.shape[0])])
+        extent = [
+            float(np.min(acq_axis)),
+            float(np.max(acq_axis)),
+            float(np.min(acq_axis)),
+            float(np.max(acq_axis)),
+        ]
+    else:
+        acq_steps = np.asarray([], dtype=int)
+        acq_maps = np.zeros((0, 0, 0), dtype=float)
+        acq_norm = None
+        extent = None
 
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=float)
     dyn_true = _DuffingDynamics(a=float(theta_true[0]), b=float(theta_true[1]))
     idxs = _frame_indices(true_state.shape[0], stride)
-    extent = [
-        float(np.min(acq_axis)),
-        float(np.max(acq_axis)),
-        float(np.min(acq_axis)),
-        float(np.max(acq_axis)),
-    ]
 
-    fig = plt.figure(figsize=(15.8, 6.2), dpi=120)
-    gs = fig.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 0.05], wspace=0.18)
-    ax_true = fig.add_subplot(gs[0, 0])
-    ax_est = fig.add_subplot(gs[0, 1])
-    cax = fig.add_subplot(gs[0, 2])
-
-    sm = plt.cm.ScalarMappable(norm=acq_norm, cmap="inferno")
-    cbar = fig.colorbar(sm, cax=cax)
-    cbar.set_label("Acquisition Objective (log scale)")
-    fig.subplots_adjust(left=0.05, right=0.93, bottom=0.09, top=0.90, wspace=0.18)
+    if show_acq_map:
+        fig = plt.figure(figsize=(15.8, 6.2), dpi=120)
+        gs = fig.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 0.05], wspace=0.18)
+        ax_true = fig.add_subplot(gs[0, 0])
+        ax_est = fig.add_subplot(gs[0, 1])
+        cax = fig.add_subplot(gs[0, 2])
+        sm = plt.cm.ScalarMappable(norm=acq_norm, cmap="inferno")
+        cbar = fig.colorbar(sm, cax=cax)
+        cbar.set_label("Acquisition Objective (log scale)")
+        fig.subplots_adjust(left=0.05, right=0.93, bottom=0.09, top=0.90, wspace=0.18)
+    else:
+        fig = plt.figure(figsize=(14.2, 6.2), dpi=120)
+        gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.0], wspace=0.18)
+        ax_true = fig.add_subplot(gs[0, 0])
+        ax_est = fig.add_subplot(gs[0, 1])
+        fig.subplots_adjust(left=0.05, right=0.97, bottom=0.09, top=0.90, wspace=0.18)
 
     def _decorate_axis(ax, *, title: str) -> None:
         ax.set_xlim(-grid_lim, grid_lim)
@@ -624,7 +639,7 @@ def make_acq_action_video(
         ax.set_title(title)
         ax.legend(loc="upper right")
 
-    def _draw_true_panel(i: int) -> None:
+    def _draw_true_panel(i: int, planned_xy: np.ndarray | None) -> None:
         ax_true.clear()
         plot_vector_field(dyn_true, ax=ax_true, x_range=grid_lim, n_grid=26, is_residual=True, device="cpu")
         ax_true.plot(
@@ -641,6 +656,7 @@ def make_acq_action_video(
             linewidth=1.8,
             label="inferred traj",
         )
+        _overlay_planned_xy(ax_true, planned_xy)
         ax_true.scatter([true_state[i, 0]], [true_state[i, 1]], color="black", s=28, zorder=5)
         ax_true.scatter([model_state[i, 0]], [model_state[i, 1]], color="tab:blue", s=28, zorder=5)
         _decorate_axis(
@@ -648,17 +664,23 @@ def make_acq_action_video(
             title=f"True VF [a,b]=[{float(theta_true[0]):.3f}, {float(theta_true[1]):.3f}]",
         )
 
-    def _draw_acquisition_panel(i: int, acq_map: np.ndarray, theta_est: np.ndarray) -> None:
+    def _draw_acquisition_panel(
+        i: int,
+        acq_map: np.ndarray | None,
+        theta_est: np.ndarray,
+        planned_xy: np.ndarray | None,
+    ) -> None:
         ax_est.clear()
-        ax_est.imshow(
-            acq_map,
-            extent=extent,
-            origin="lower",
-            cmap="inferno",
-            norm=acq_norm,
-            alpha=0.74,
-            interpolation="nearest",
-        )
+        if show_acq_map and acq_map is not None and extent is not None and acq_norm is not None:
+            ax_est.imshow(
+                acq_map,
+                extent=extent,
+                origin="lower",
+                cmap="inferno",
+                norm=acq_norm,
+                alpha=0.74,
+                interpolation="nearest",
+            )
         dyn_est = _DuffingDynamics(a=float(theta_est[0]), b=float(theta_est[1]))
         plot_vector_field(dyn_est, ax=ax_est, x_range=grid_lim, n_grid=26, is_residual=True, device="cpu")
         ax_est.plot(
@@ -675,6 +697,7 @@ def make_acq_action_video(
             linewidth=1.8,
             label="inferred traj",
         )
+        _overlay_planned_xy(ax_est, planned_xy)
         ax_est.scatter([true_state[i, 0]], [true_state[i, 1]], color="black", s=28, zorder=6)
         ax_est.scatter([model_state[i, 0]], [model_state[i, 1]], color="tab:blue", s=28, zorder=6)
 
@@ -713,19 +736,23 @@ def make_acq_action_video(
 
         _decorate_axis(
             ax_est,
-            title=f"Acq + inferred VF [a,b]=[{float(theta_est[0]):.3f}, {float(theta_est[1]):.3f}]",
+            title=(
+                f"Acq + inferred VF [a,b]=[{float(theta_est[0]):.3f}, {float(theta_est[1]):.3f}]"
+                if show_acq_map
+                else f"Inferred VF + action [a,b]=[{float(theta_est[0]):.3f}, {float(theta_est[1]):.3f}]"
+            ),
         )
 
     frames: list[np.ndarray] = []
     for i in idxs:
         cur_step = int(i + 1)
-        acq_idx = _trace_index(acq_steps, cur_step)
         emb_idx = _trace_index(emb_steps, cur_step)
-        acq_map = acq_maps[acq_idx]
+        acq_map = acq_maps[_trace_index(acq_steps, cur_step)] if show_acq_map else None
         theta_est = np.asarray([float(emb_e0[emb_idx]), float(emb_e1[emb_idx])], dtype=float)
+        planned_xy = _planned_xy_for_step(planned_trace, cur_step)
 
-        _draw_true_panel(i)
-        _draw_acquisition_panel(i, acq_map=acq_map, theta_est=theta_est)
+        _draw_true_panel(i, planned_xy)
+        _draw_acquisition_panel(i, acq_map=acq_map, theta_est=theta_est, planned_xy=planned_xy)
 
         action_norm = float(np.linalg.norm(action[i])) if i < action.shape[0] else 0.0
         cost_now = float(policy_cost[i]) if i < policy_cost.shape[0] and np.isfinite(policy_cost[i]) else np.nan
@@ -759,15 +786,19 @@ def _output_for_kind(base_output: Path, video_kind: str) -> Path:
 def _render_task(task: dict[str, Any]) -> list[str]:
     run_dir = Path(task["run_dir"])
     base_output = Path(task["output"])
+    metadata = load_json(run_dir / "run_metadata.json")
+    exp_id = _exp_id_lower(metadata)
 
     kinds: list[str]
     if task["video_kind"] == "all":
-        kinds = ["info_maps", "traj_vf", "acq_action"]
+        kinds = ["acq_action"] if exp_id in PASSIVE_EXP_IDS else ["info_maps", "acq_action"]
     else:
         kinds = [str(task["video_kind"])]
 
     outputs: list[str] = []
     for kind in kinds:
+        if kind == "info_maps" and exp_id in PASSIVE_EXP_IDS:
+            continue
         out = _output_for_kind(base_output, kind)
         if kind == "info_maps":
             saved = make_info_maps_video(
@@ -820,6 +851,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--video-kind",
         choices=["info_maps", "traj_vf", "acq_action", "all"],
         default="all",
+        help="Render a single video type, or use 'all' for the default batch set: info_maps + acq_action.",
     )
     parser.add_argument("--stride", type=int, default=5)
     parser.add_argument("--fps", type=int, default=15)

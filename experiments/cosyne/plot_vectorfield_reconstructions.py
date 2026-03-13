@@ -18,7 +18,9 @@ def parse_args() -> argparse.Namespace:
         description="Generate the canonical family-wise true vs reconstructed vector-field figure."
     )
     parser.add_argument(
-        "--system-bank", choices=["mixed80", "mixed40", "legacy4"], default="mixed80"
+        "--system-bank",
+        choices=["mixed200", "mixed80", "mixed40", "legacy4", "known_duffing40"],
+        default="mixed80",
     )
     parser.add_argument(
         "--systems",
@@ -27,7 +29,9 @@ def parse_args() -> argparse.Namespace:
         help="Explicit representative systems. Defaults to the canonical per-family representatives for the selected bank.",
     )
     parser.add_argument(
-        "--embedding-mode", choices=["fixed", "learned_system_id"], default="learned_system_id"
+        "--embedding-mode",
+        choices=["fixed", "learned_system_id", "family_param"],
+        default="learned_system_id",
     )
     parser.add_argument("--train-samples-per-system", type=int, default=1500)
     parser.add_argument("--train-epochs", type=int, default=80)
@@ -36,6 +40,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--d-hidden-dynamics", type=int, default=64)
     parser.add_argument("--d-hidden-hypernet-dynamics", type=int, default=16)
     parser.add_argument("--n-hidden", type=int, default=2)
+    parser.add_argument("--geometry-reg-weight", type=float, default=0.05)
+    parser.add_argument("--geometry-anchor-samples", type=int, default=512)
+    parser.add_argument("--geometry-neighbor-k", type=int, default=4)
+    parser.add_argument("--interpolation-aug-weight", type=float, default=0.25)
+    parser.add_argument("--interpolation-aug-samples", type=int, default=128)
+    parser.add_argument("--train-state-low", type=float, default=-3.0)
+    parser.add_argument("--train-state-high", type=float, default=3.0)
     parser.add_argument("--dynamics-scale", type=float, default=10.0)
     parser.add_argument("--grid-n", type=int, default=CANONICAL_VECTORFIELD_GRID_N)
     parser.add_argument("--grid-min", type=float, default=CANONICAL_VECTORFIELD_GRID_RANGE[0])
@@ -47,7 +58,7 @@ def parse_args() -> argparse.Namespace:
         default="/home/hyungju/Desktop/active-dynamics/results/cosyne/metadynamics_training/meta_dynamics_checkpoint.pt",
     )
     parser.add_argument("--results-root", type=str, default=default_results_root())
-    parser.add_argument("--results-subdir", default="cosyne/metadynamics_training")
+    parser.add_argument("--results-subdir", default="metadynamics_training")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--figure-filename", default="vectorfield_family_comparison_official.png")
     parser.add_argument(

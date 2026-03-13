@@ -4,19 +4,30 @@ import argparse
 import json
 import os
 
-from mixed_family_lib import default_results_root, run_online_identification_experiment
+from mixed_family_lib import (
+    default_results_root,
+    run_online_identification_debug_experiment,
+)
+
+
+DEFAULT_SYSTEMS = [
+    "duffing_single_00",
+    "duffing_bistable_00",
+    "van_der_pol_00",
+    "double_limit_cycle_00",
+]
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run rollout-centered online system identification."
+        description="Run metadynamics_online_id_debug ablations for firing rate, action strength, and Gaussian-posterior diagnostics."
     )
     parser.add_argument(
         "--system-bank",
         choices=["mixed200", "mixed80", "mixed40", "legacy4", "known_duffing40"],
         default="mixed80",
     )
-    parser.add_argument("--systems", nargs="*", default=None)
+    parser.add_argument("--systems", nargs="*", default=DEFAULT_SYSTEMS)
     parser.add_argument(
         "--embedding-mode",
         choices=["fixed", "learned_system_id", "family_param"],
@@ -36,31 +47,47 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--interpolation-aug-samples", type=int, default=128)
     parser.add_argument("--train-state-low", type=float, default=-3.0)
     parser.add_argument("--train-state-high", type=float, default=3.0)
-    parser.add_argument("--total-steps", type=int, default=2000)
+    parser.add_argument("--total-steps", type=int, default=1000)
     parser.add_argument("--repeats", type=int, default=1)
+
     parser.add_argument("--policies", nargs="*", default=["active_short", "random", "no_policy"])
+    parser.add_argument("--firing-policies", nargs="*", default=["active_short", "random", "no_policy"])
+    parser.add_argument("--action-policies", nargs="*", default=["active_short"])
+    parser.add_argument("--baseline-mean-firing", type=float, default=1000.0)
+    parser.add_argument("--baseline-action-strength", type=float, default=1.0)
+    parser.add_argument("--mean-firing-sweep", nargs="*", type=float, default=[50.0, 200.0, 1000.0])
+    parser.add_argument("--action-strength-sweep", nargs="*", type=float, default=[0.25, 1.0, 4.0])
+
     parser.add_argument("--rollout-horizon", type=int, default=200)
     parser.add_argument("--rollout-inits", type=int, default=32)
     parser.add_argument("--rollout-dt", type=float, default=0.01)
     parser.add_argument("--rollout-init-low", type=float, default=-1.2)
     parser.add_argument("--rollout-init-high", type=float, default=1.2)
-    parser.add_argument("--dynamics-scale", type=float, default=5)
+    parser.add_argument("--dynamics-scale", type=float, default=5.0)
+
     parser.add_argument("--active-horizon", type=int, default=10)
     parser.add_argument("--active-num-iterations", type=int, default=10)
     parser.add_argument("--active-num-samples", type=int, default=24)
     parser.add_argument("--active-num-elite", type=int, default=4)
     parser.add_argument("--active-chunk", type=int, default=2)
-    parser.add_argument("--active-action-cost-weight", type=float, default=0.00)
-    parser.add_argument("--active-action-strength", type=float, default=1)
+    parser.add_argument("--active-action-cost-weight", type=float, default=0.0)
     parser.add_argument(
         "--save-acq-map",
         action=argparse.BooleanOptionalAction,
-        default=True,
+        default=False,
         help="Save acquisition-objective map traces for active-learning sessions.",
     )
     parser.add_argument("--acq-map-interval", type=int, default=5)
     parser.add_argument("--acq-map-grid", type=int, default=61)
     parser.add_argument("--acq-map-lim", type=float, default=3.0)
+    parser.add_argument("--bank-landscape-max-steps", type=int, default=400)
+
+    parser.add_argument("--q-theta", type=float, default=1e-4)
+    parser.add_argument("--k-theta", type=int, default=10)
+    parser.add_argument("--q-theta-meas-coeff", type=float, default=0.0)
+    parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
+    parser.add_argument("--state-init-uncertainty", type=float, default=1.0)
+
     parser.add_argument(
         "--checkpoint",
         type=str,
@@ -69,21 +96,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--results-root", type=str, default=default_results_root())
-    parser.add_argument("--results-subdir", default="metadynamics_online_id")
-    parser.add_argument(
-        "--resume",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Reuse existing online_id_record.json files in the target results directory.",
-    )
+    parser.add_argument("--results-subdir", default="metadynamics_online_id_debug")
     parser.add_argument("--seed", type=int, default=0)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    payload = run_online_identification_experiment(args, print_progress=True)
-    print(json.dumps(payload["summary"], indent=2))
+    payload = run_online_identification_debug_experiment(args, print_progress=True)
+    print(json.dumps(payload, indent=2))
 
 
 if __name__ == "__main__":

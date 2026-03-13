@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 import math
 import os
@@ -27,6 +28,7 @@ from actdyn.config import ExperimentConfig
 from actdyn.models.dynamics import FunctionDynamics
 from actdyn.utils.helper import jacobian_wrt_param, make_uniform_sampler
 from actdyn.utils.runtime import configure_runtime, ensure_dir
+from actdyn.utils.save_load import load_and_concatenate_rollouts, save_rollout
 
 try:
     import gymnasium as gym
@@ -107,6 +109,12 @@ except ModuleNotFoundError:
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
 CANONICAL_VECTORFIELD_SYSTEMS: dict[str, tuple[str, ...]] = {
+    "mixed200": (
+        "double_limit_cycle_00",
+        "duffing_bistable_00",
+        "duffing_single_00",
+        "van_der_pol_00",
+    ),
     "mixed80": (
         "double_limit_cycle_10",
         "duffing_bistable_10",
@@ -124,6 +132,10 @@ CANONICAL_VECTORFIELD_SYSTEMS: dict[str, tuple[str, ...]] = {
         "duffing_hard",
         "vanderpol_soft",
         "vanderpol_hard",
+    ),
+    "known_duffing40": (
+        "duffing_bistable_10",
+        "duffing_single_10",
     ),
 }
 CANONICAL_VECTORFIELD_GRID_RANGE: tuple[float, float] = (-3.0, 3.0)
@@ -204,8 +216,8 @@ def _make_family_embedding(
     )
 
 
-def build_mixed80_system_specs() -> tuple[SystemSpec, ...]:
-    family_param_bank: list[tuple[str, str, list[tuple[float, float]]]] = [
+def build_mixed80_family_param_bank() -> list[tuple[str, str, list[tuple[float, float]]]]:
+    return [
         (
             "duffing_single",
             "Duffing single-attractor regime (positive linear stiffness, damped)",
@@ -312,10 +324,19 @@ def build_mixed80_system_specs() -> tuple[SystemSpec, ...]:
         ),
     ]
 
+
+def build_system_specs_from_family_param_bank(
+    family_param_bank: list[tuple[str, str, list[tuple[float, float]]]],
+    *,
+    expected_per_family: int | None = None,
+    expected_total: int | None = None,
+) -> tuple[SystemSpec, ...]:
     specs: list[SystemSpec] = []
     for family, note, params in family_param_bank:
-        if len(params) != 20:
-            raise ValueError(f"Family {family} must define exactly 20 parameter sets.")
+        if expected_per_family is not None and len(params) != int(expected_per_family):
+            raise ValueError(
+                f"Family {family} must define exactly {expected_per_family} parameter sets."
+            )
         for i, pair in enumerate(params):
             specs.append(
                 SystemSpec(
@@ -326,12 +347,85 @@ def build_mixed80_system_specs() -> tuple[SystemSpec, ...]:
                     note=note,
                 )
             )
-    if len(specs) != 80:
-        raise ValueError(f"Expected 80 systems, got {len(specs)}.")
+    if expected_total is not None and len(specs) != int(expected_total):
+        raise ValueError(f"Expected {expected_total} systems, got {len(specs)}.")
     return tuple(specs)
 
 
+def build_mixed80_system_specs() -> tuple[SystemSpec, ...]:
+    return build_system_specs_from_family_param_bank(
+        build_mixed80_family_param_bank(),
+        expected_per_family=20,
+        expected_total=80,
+    )
+
+
+def build_mixed200_system_specs() -> tuple[SystemSpec, ...]:
+    base_bank = build_mixed80_family_param_bank()
+    extra_bank: dict[str, list[tuple[float, float]]] = {
+        "duffing_single": [
+            (p0, p1)
+            for p0 in (-0.71, -0.65, -0.59, -0.53, -0.47, -0.41)
+            for p1 in (0.36, 0.79, 1.13, 1.57, 2.01)
+        ],
+        "duffing_bistable": [
+            (p0, p1)
+            for p0 in (-0.665, -0.605, -0.545, -0.485, -0.425, -0.385)
+            for p1 in (-0.11, -0.19, -0.29, -0.41, -0.53)
+        ],
+        "van_der_pol": [
+            (p0, p1)
+            for p0 in (0.38, 0.64, 0.90, 1.14, 1.38, 1.62)
+            for p1 in (0.90, 0.98, 1.06, 1.14, 1.20)
+        ],
+        "double_limit_cycle": (
+            [(p0, p1) for p0 in (-0.86, -0.75, -0.64, -0.53, -0.42) for p1 in (0.74, 0.91, 1.08)]
+            + [(p0, p1) for p0 in (0.44, 0.57, 0.70, 0.83, 0.96) for p1 in (0.74, 0.91, 1.08)]
+        ),
+    }
+    family_param_bank: list[tuple[str, str, list[tuple[float, float]]]] = []
+    for family, note, base_params in base_bank:
+        params = list(base_params) + list(extra_bank[family])
+        if len(params) != 50:
+            raise ValueError(f"Family {family} must define exactly 50 parameter sets for mixed200.")
+        family_param_bank.append(
+            (
+                family,
+                f"{note}; expanded mixed200 coverage with broader parameter support",
+                params,
+            )
+        )
+    return build_system_specs_from_family_param_bank(
+        family_param_bank,
+        expected_per_family=50,
+        expected_total=200,
+    )
+
+
+MIXED200_SYSTEM_SPECS: tuple[SystemSpec, ...] = build_mixed200_system_specs()
 MIXED80_SYSTEM_SPECS: tuple[SystemSpec, ...] = build_mixed80_system_specs()
+
+
+def build_known_duffing40_system_specs() -> tuple[SystemSpec, ...]:
+    specs: list[SystemSpec] = []
+    for spec in MIXED80_SYSTEM_SPECS:
+        if spec.family not in {"duffing_single", "duffing_bistable"}:
+            continue
+        specs.append(
+            SystemSpec(
+                name=spec.name,
+                family=spec.family,
+                embedding=(float(spec.params[0]), float(spec.params[1])),
+                params=spec.params,
+                note=f"{spec.note}; fixed embedding equals true Duffing parameters (a, b)",
+            )
+        )
+    if len(specs) != 40:
+        raise ValueError(f"Expected 40 known-Duffing systems, got {len(specs)}.")
+    return tuple(specs)
+
+
+KNOWN_DUFFING40_SYSTEM_SPECS: tuple[SystemSpec, ...] = build_known_duffing40_system_specs()
 BASE_SYSTEM_SPECS: tuple[SystemSpec, ...] = MIXED80_SYSTEM_SPECS
 
 
@@ -342,6 +436,7 @@ class ModelBundle:
     train_summary: dict
     embedding_mode: str
     system_embeddings: dict[str, list[float]]
+    embedding_metadata: dict[str, object]
 
 
 @dataclass(frozen=True)
@@ -355,6 +450,85 @@ class ActivePolicyConfig:
     action_strength: float = 0.3
 
 
+ONLINE_ID_ACTIVE_POLICIES: tuple[str, ...] = (
+    "active_long",
+    "active_short",
+    "active_chunk",
+    "async_windowed_update",
+)
+
+
+def resolve_online_id_policy_config(
+    policy_name: str,
+    active_cfg: ActivePolicyConfig,
+) -> dict[str, object]:
+    if policy_name == "active_long":
+        return {
+            "name": policy_name,
+            "planning_horizon": 20,
+            "planning_chunk": 1,
+            "num_iterations": max(10, int(active_cfg.num_iterations)),
+            "num_samples": max(40, int(active_cfg.num_samples)),
+            "num_elite": max(10, int(active_cfg.num_elite)),
+            "update_scheme": "active_long",
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "k_theta": 1,
+        }
+    if policy_name == "active_short":
+        return {
+            "name": policy_name,
+            "planning_horizon": 1,
+            "planning_chunk": 1,
+            "num_iterations": max(10, int(active_cfg.num_iterations)),
+            "num_samples": max(40, int(active_cfg.num_samples)),
+            "num_elite": max(10, int(active_cfg.num_elite)),
+            "update_scheme": "active_short",
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "k_theta": 1,
+        }
+    if policy_name == "active_chunk":
+        return {
+            "name": policy_name,
+            "planning_horizon": 20,
+            "planning_chunk": 5,
+            "num_iterations": max(10, int(active_cfg.num_iterations)),
+            "num_samples": max(40, int(active_cfg.num_samples)),
+            "num_elite": max(10, int(active_cfg.num_elite)),
+            "update_scheme": "active_chunk",
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "k_theta": 1,
+        }
+    if policy_name == "async_windowed_update":
+        return {
+            "name": policy_name,
+            "planning_horizon": max(20, int(active_cfg.horizon)),
+            # Keep a longer open-loop plan while the embedding filter updates every k_theta steps.
+            "planning_chunk": 5,
+            "num_iterations": max(10, int(active_cfg.num_iterations)),
+            "num_samples": max(40, int(active_cfg.num_samples)),
+            "num_elite": max(10, int(active_cfg.num_elite)),
+            "update_scheme": "async_windowed_update",
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "k_theta": 5,
+        }
+    return {
+        "name": policy_name,
+        "planning_horizon": int(active_cfg.horizon),
+        "planning_chunk": int(active_cfg.chunk),
+        "num_iterations": int(active_cfg.num_iterations),
+        "num_samples": int(active_cfg.num_samples),
+        "num_elite": int(active_cfg.num_elite),
+        "update_scheme": "step_update" if int(active_cfg.chunk) == 1 else "standard_online_id",
+        "state_update_interval": 1,
+        "predictive_only_window": False,
+        "k_theta": 1,
+    }
+
+
 class MixedSystemDataset(Dataset):
     def __init__(
         self,
@@ -362,25 +536,30 @@ class MixedSystemDataset(Dataset):
         n_per_system: int,
         z_sampler: Callable,
         d_embed: int,
-        embedding_mode: Literal["fixed", "learned_system_id"] = "fixed",
+        embedding_map: dict[str, list[float]] | None = None,
+        embedding_mode: Literal["fixed", "learned_system_id", "family_param"] = "fixed",
         dynamics_scale: float = 10.0,
     ):
         if d_embed <= 0:
             raise ValueError("d_embed must be >= 1")
-        if embedding_mode not in {"fixed", "learned_system_id"}:
+        if embedding_mode not in {"fixed", "learned_system_id", "family_param"}:
             raise ValueError(f"Unsupported embedding_mode: {embedding_mode}")
         self.records: list[tuple[torch.Tensor, torch.Tensor, torch.Tensor, int]] = []
         for spec_idx, spec in enumerate(systems):
             z = z_sampler(n_per_system).float()
-            if embedding_mode == "fixed":
-                if len(spec.embedding) != d_embed:
-                    raise ValueError(
-                        f"System {spec.name} has embedding length {len(spec.embedding)} but d_embed={d_embed}."
-                    )
-                base_e = torch.tensor(spec.embedding, dtype=torch.float32)
-            else:
+            if embedding_mode == "learned_system_id":
                 # Pure non-parametric mode: no hand-coded coordinates are used as model input.
                 base_e = torch.zeros(d_embed, dtype=torch.float32)
+            else:
+                if embedding_map is None or spec.name not in embedding_map:
+                    raise ValueError(
+                        f"embedding_map must contain {spec.name} for {embedding_mode} mode"
+                    )
+                base_e = torch.tensor(embedding_map[spec.name], dtype=torch.float32)
+                if base_e.numel() != d_embed:
+                    raise ValueError(
+                        f"System {spec.name} resolves to embedding length {base_e.numel()} but d_embed={d_embed}."
+                    )
             e = base_e.repeat(n_per_system, 1)
             fx = true_dynamics_from_spec(spec, z, dynamics_scale=dynamics_scale)
             for zi, ei, fi in zip(z, e, fx):
@@ -410,6 +589,32 @@ class MetaDynamics:
         self.e = torch.tensor(args, device=device, dtype=torch.float32).unsqueeze(0)
         self.out, _ = self.hypernet(self.e)
 
+    def _expand_hyper_tensor(self, x: torch.Tensor, value: torch.Tensor, trailing_dims: int):
+        target_prefix = list(x.shape[:-1])
+        value = value.to(device=x.device, dtype=x.dtype)
+        prefix_ndim = max(value.ndim - trailing_dims, 0)
+        value_prefix = list(value.shape[:prefix_ndim])
+        trailing_shape = list(value.shape[prefix_ndim:])
+        if len(value_prefix) > len(target_prefix):
+            raise ValueError(
+                f"Cannot broadcast hyper output with prefix shape {value_prefix} to target prefix {target_prefix}."
+            )
+        reshape_shape = value_prefix + [1] * (len(target_prefix) - len(value_prefix)) + trailing_shape
+        value = value.reshape(*reshape_shape)
+        return value.expand(*target_prefix, *trailing_shape)
+
+    def _broadcast_hyper_output(self, x: torch.Tensor, out):
+        if isinstance(out, torch.Tensor):
+            return self._expand_hyper_tensor(x, out, trailing_dims=1)
+        if isinstance(out, (list, tuple)):
+            expanded = []
+            for param in out:
+                if not isinstance(param, torch.Tensor):
+                    param = torch.as_tensor(param, dtype=x.dtype, device=x.device)
+                expanded.append(self._expand_hyper_tensor(x, param, trailing_dims=2))
+            return expanded
+        raise TypeError(f"Unsupported hypernet output type: {type(out)!r}")
+
     def __call__(self, x, e=None):
         if e is None:
             if self.e is None or self.out is None:
@@ -417,13 +622,8 @@ class MetaDynamics:
             out = self.out
         else:
             out, _ = self.hypernet(e)
-        if x.ndim > out.ndim:
-            expand_shape = list(out.shape)
-            while len(expand_shape) < x.ndim:
-                expand_shape.insert(1, 1)
-            out = out.reshape(*expand_shape)
-            out = out.expand(*x.shape[:-1], out.shape[-1])
-        return self.mean_dynamics(x, out) * self.output_scale
+        out = self._broadcast_hyper_output(x, out)
+        return self.mean_dynamics.compute_param(x, out) * self.output_scale
 
 
 class MixedDynamicsEnv(gym.Env):
@@ -526,7 +726,7 @@ def true_dynamics_from_spec(
     x = z[..., 0]
     y = z[..., 1]
     p0, p1 = spec.params
-    if spec.family in {"duffing_single", "duffing_bistable"}:
+    if spec.family in {"duffing", "duffing_single", "duffing_bistable"}:
         dx = y
         dy = p0 * y - x * (p1 + 0.1 * x**2)
     elif spec.family == "van_der_pol":
@@ -633,13 +833,92 @@ def truncate_embedding(specs: tuple[SystemSpec, ...], d_embed: int) -> tuple[Sys
     )
 
 
+def build_family_param_embedding_metadata(
+    systems: tuple[SystemSpec, ...],
+) -> dict[str, object]:
+    family_order = tuple(dict.fromkeys(spec.family for spec in systems))
+    param_stats: dict[str, dict[str, list[float]]] = {}
+    for family in family_order:
+        params = np.asarray(
+            [spec.params for spec in systems if spec.family == family],
+            dtype=np.float32,
+        )
+        if params.size == 0:
+            continue
+        param_min = params.min(axis=0)
+        param_max = params.max(axis=0)
+        param_center = 0.5 * (param_min + param_max)
+        param_scale = np.maximum(0.5 * (param_max - param_min), 1e-3)
+        param_stats[family] = {
+            "min": param_min.tolist(),
+            "max": param_max.tolist(),
+            "center": param_center.tolist(),
+            "scale": param_scale.tolist(),
+        }
+    return {
+        "family_order": list(family_order),
+        "param_stats": param_stats,
+        "embedding_dim": int(len(family_order) + 2),
+    }
+
+
+def family_param_embedding_vector(
+    spec: SystemSpec,
+    embedding_metadata: dict[str, object],
+) -> list[float]:
+    family_order = [str(x) for x in embedding_metadata.get("family_order", [])]
+    if spec.family not in family_order:
+        raise ValueError(f"Family {spec.family} is not present in family_order: {family_order}")
+    param_stats = dict(embedding_metadata.get("param_stats", {}))
+    if spec.family not in param_stats:
+        raise ValueError(f"Missing param_stats for family {spec.family}")
+    family_idx = family_order.index(spec.family)
+    one_hot = np.zeros(len(family_order), dtype=np.float32)
+    one_hot[family_idx] = 1.0
+    center = np.asarray(param_stats[spec.family]["center"], dtype=np.float32)
+    scale = np.asarray(param_stats[spec.family]["scale"], dtype=np.float32)
+    normed_params = (np.asarray(spec.params, dtype=np.float32) - center) / scale
+    return np.concatenate([one_hot, normed_params], axis=0).astype(np.float32).tolist()
+
+
+def resolve_effective_d_embed(
+    *,
+    systems: tuple[SystemSpec, ...],
+    embedding_mode: str,
+    requested_d_embed: int,
+    embedding_metadata: dict[str, object] | None = None,
+) -> int:
+    if embedding_mode == "family_param":
+        if embedding_metadata is None:
+            raise ValueError("embedding_metadata is required for family_param mode")
+        return int(embedding_metadata["embedding_dim"])
+    return int(requested_d_embed)
+
+
+def build_embedding_metadata(
+    systems: tuple[SystemSpec, ...],
+    embedding_mode: str,
+) -> dict[str, object]:
+    if embedding_mode == "family_param":
+        return build_family_param_embedding_metadata(systems)
+    return {}
+
+
 def resolve_system_embedding_map(
     systems: tuple[SystemSpec, ...],
-    embedding_mode: Literal["fixed", "learned_system_id"],
+    embedding_mode: Literal["fixed", "learned_system_id", "family_param"],
     learned_table: nn.Embedding | None = None,
+    embedding_metadata: dict[str, object] | None = None,
 ) -> dict[str, list[float]]:
     if embedding_mode == "fixed":
         return {spec.name: [float(x) for x in spec.embedding] for spec in systems}
+    if embedding_mode == "family_param":
+        if embedding_metadata is None:
+            raise ValueError("embedding_metadata must be provided for family_param mode")
+        return {
+            spec.name: family_param_embedding_vector(spec, embedding_metadata)
+            for spec in systems
+        }
     if learned_table is None:
         raise ValueError("learned_table must be provided for learned_system_id mode")
     weights = learned_table.weight.detach().cpu()
@@ -678,32 +957,192 @@ def build_training_cfg(
     }
 
 
+def build_system_geometry_targets(
+    *,
+    systems: tuple[SystemSpec, ...],
+    n_anchor_samples: int,
+    dynamics_scale: float,
+    z_sampler: Callable,
+    neighbor_k: int,
+) -> dict[str, torch.Tensor]:
+    if len(systems) < 2:
+        empty_long = torch.empty(0, dtype=torch.long)
+        empty_float = torch.empty(0, dtype=torch.float32)
+        return {
+            "anchor_z": z_sampler(max(int(n_anchor_samples), 1)).float(),
+            "anchor_fx": torch.empty((len(systems), max(int(n_anchor_samples), 1), 2), dtype=torch.float32),
+            "distance_matrix": torch.zeros((len(systems), len(systems)), dtype=torch.float32),
+            "edge_i": empty_long,
+            "edge_j": empty_long,
+            "edge_target": empty_float,
+        }
+
+    anchor_z = z_sampler(max(int(n_anchor_samples), 1)).float()
+    anchor_fx = torch.stack(
+        [
+            true_dynamics_from_spec(spec, anchor_z, dynamics_scale=dynamics_scale).detach().cpu()
+            for spec in systems
+        ],
+        dim=0,
+    )
+    flat_fx = anchor_fx.reshape(len(systems), -1)
+    distance_matrix = torch.cdist(flat_fx, flat_fx, p=2)
+    if flat_fx.shape[-1] > 0:
+        distance_matrix = distance_matrix / math.sqrt(float(flat_fx.shape[-1]))
+    positive = distance_matrix[distance_matrix > 0]
+    scale = float(positive.mean().item()) if positive.numel() > 0 else 1.0
+    distance_matrix = distance_matrix / max(scale, 1e-6)
+
+    edge_set: set[tuple[int, int]] = set()
+    max_neighbors = max(int(neighbor_k), 0)
+    for i, spec in enumerate(systems):
+        same_family = [
+            j for j, other in enumerate(systems) if j != i and other.family == spec.family
+        ]
+        global_neighbors = [j for j in range(len(systems)) if j != i]
+        preferred = same_family if same_family else global_neighbors
+        preferred = sorted(preferred, key=lambda j: float(distance_matrix[i, j].item()))
+        if len(preferred) < max_neighbors:
+            extras = [j for j in global_neighbors if j not in preferred]
+            extras = sorted(extras, key=lambda j: float(distance_matrix[i, j].item()))
+            preferred = preferred + extras
+        for j in preferred[:max_neighbors]:
+            edge_set.add(tuple(sorted((i, j))))
+
+    if edge_set:
+        edge_pairs = sorted(edge_set)
+        edge_i = torch.tensor([i for i, _ in edge_pairs], dtype=torch.long)
+        edge_j = torch.tensor([j for _, j in edge_pairs], dtype=torch.long)
+        edge_target = distance_matrix[edge_i, edge_j].to(dtype=torch.float32)
+    else:
+        edge_i = torch.empty(0, dtype=torch.long)
+        edge_j = torch.empty(0, dtype=torch.long)
+        edge_target = torch.empty(0, dtype=torch.float32)
+
+    return {
+        "anchor_z": anchor_z,
+        "anchor_fx": anchor_fx,
+        "distance_matrix": distance_matrix.to(dtype=torch.float32),
+        "edge_i": edge_i,
+        "edge_j": edge_j,
+        "edge_target": edge_target,
+    }
+
+
+def geometry_regularizer_loss(
+    learned_table: nn.Embedding,
+    geometry_targets: dict[str, torch.Tensor],
+    target_device: str | torch.device,
+) -> torch.Tensor:
+    edge_i = geometry_targets["edge_i"].to(device=target_device, dtype=torch.long)
+    edge_j = geometry_targets["edge_j"].to(device=target_device, dtype=torch.long)
+    edge_target = geometry_targets["edge_target"].to(device=target_device, dtype=torch.float32)
+    if edge_i.numel() == 0 or edge_target.numel() == 0:
+        return learned_table.weight.sum() * 0.0
+    emb = learned_table.weight
+    edge_dist = torch.norm(emb[edge_i] - emb[edge_j], dim=-1)
+    edge_dist = edge_dist / edge_dist.mean().clamp_min(1e-6)
+    edge_target = edge_target / edge_target.mean().clamp_min(1e-6)
+    return F.mse_loss(edge_dist, edge_target)
+
+
+def interpolation_augmentation_loss(
+    *,
+    learned_table: nn.Embedding,
+    hypernet,
+    mean_dynamics,
+    geometry_targets: dict[str, torch.Tensor],
+    n_aug_samples: int,
+    dynamics_scale: float,
+    target_device: str | torch.device,
+) -> torch.Tensor:
+    edge_i = geometry_targets["edge_i"].to(device=target_device, dtype=torch.long)
+    edge_j = geometry_targets["edge_j"].to(device=target_device, dtype=torch.long)
+    if edge_i.numel() == 0 or int(n_aug_samples) <= 0:
+        return learned_table.weight.sum() * 0.0
+
+    sample_idx = torch.randint(edge_i.shape[0], (int(n_aug_samples),), device=target_device)
+    sys_i = edge_i[sample_idx]
+    sys_j = edge_j[sample_idx]
+    anchor_z = geometry_targets["anchor_z"].to(device=target_device, dtype=torch.float32)
+    anchor_fx = geometry_targets["anchor_fx"].to(device=target_device, dtype=torch.float32)
+    anchor_idx = torch.randint(anchor_z.shape[0], (int(n_aug_samples),), device=target_device)
+    lam = torch.rand(int(n_aug_samples), 1, device=target_device, dtype=torch.float32)
+
+    z_aug = anchor_z[anchor_idx]
+    target_fx = lam * anchor_fx[sys_i, anchor_idx] + (1.0 - lam) * anchor_fx[sys_j, anchor_idx]
+    e_i = learned_table(sys_i)
+    e_j = learned_table(sys_j)
+    e_aug = lam * e_i + (1.0 - lam) * e_j
+    out_aug, _ = hypernet(e_aug)
+    pred_fx = mean_dynamics.compute_param(z_aug, out_aug) * dynamics_scale
+    return F.mse_loss(pred_fx, target_fx)
+
+
 def train_meta_dynamics(
     systems: tuple[SystemSpec, ...],
     d_embed: int,
     d_hidden_dynamics: int,
     d_hidden_hypernet_dynamics: int,
     n_hidden: int,
-    embedding_mode: Literal["fixed", "learned_system_id"] = "fixed",
+    embedding_mode: Literal["fixed", "learned_system_id", "family_param"] = "fixed",
     dynamics_scale: float = 10.0,
     n_per_system: int = 5000,
     batch_size: int = 512,
     n_epochs: int = 80,
+    embedding_reference_systems: tuple[SystemSpec, ...] | None = None,
+    geometry_reg_weight: float = 0.05,
+    geometry_anchor_samples: int = 512,
+    geometry_neighbor_k: int = 4,
+    interpolation_aug_weight: float = 0.25,
+    interpolation_aug_samples: int = 128,
+    train_state_bounds: tuple[float, float] = (-3.0, 3.0),
 ) -> ModelBundle:
     global device
-    z_sampler = make_uniform_sampler(-3.0, 3.0, 2)
+    reference_systems = embedding_reference_systems or systems
+    embedding_metadata = build_embedding_metadata(
+        systems=reference_systems,
+        embedding_mode=embedding_mode,
+    )
+    effective_d_embed = resolve_effective_d_embed(
+        systems=systems,
+        embedding_mode=embedding_mode,
+        requested_d_embed=d_embed,
+        embedding_metadata=embedding_metadata,
+    )
+    static_embedding_map = None
+    if embedding_mode != "learned_system_id":
+        static_embedding_map = resolve_system_embedding_map(
+            systems=systems,
+            embedding_mode=embedding_mode,
+            learned_table=None,
+            embedding_metadata=embedding_metadata,
+        )
+    z_sampler = make_uniform_sampler(float(train_state_bounds[0]), float(train_state_bounds[1]), 2)
+    geometry_targets: dict[str, torch.Tensor] | None = None
+    if embedding_mode == "learned_system_id" and (
+        float(geometry_reg_weight) > 0.0 or float(interpolation_aug_weight) > 0.0
+    ):
+        geometry_targets = build_system_geometry_targets(
+            systems=systems,
+            n_anchor_samples=int(geometry_anchor_samples),
+            dynamics_scale=dynamics_scale,
+            z_sampler=z_sampler,
+            neighbor_k=int(geometry_neighbor_k),
+        )
     ds = MixedSystemDataset(
         systems,
         n_per_system=n_per_system,
         z_sampler=z_sampler,
-        d_embed=d_embed,
+        d_embed=effective_d_embed,
+        embedding_map=static_embedding_map,
         embedding_mode=embedding_mode,
         dynamics_scale=dynamics_scale,
     )
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0)
 
     cfg = build_training_cfg(
-        d_embed=d_embed,
+        d_embed=effective_d_embed,
         d_hidden_dynamics=d_hidden_dynamics,
         d_hidden_hypernet_dynamics=d_hidden_hypernet_dynamics,
         n_hidden=n_hidden,
@@ -712,8 +1151,15 @@ def train_meta_dynamics(
     cfg["train_samples_per_system"] = int(n_per_system)
     cfg["train_epochs"] = int(n_epochs)
     cfg["batch_size"] = int(batch_size)
+    cfg["conditioning_type"] = "one_hot_system_id_lookup"
+    cfg["geometry_reg_weight"] = float(geometry_reg_weight)
+    cfg["geometry_anchor_samples"] = int(geometry_anchor_samples)
+    cfg["geometry_neighbor_k"] = int(geometry_neighbor_k)
+    cfg["interpolation_aug_weight"] = float(interpolation_aug_weight)
+    cfg["interpolation_aug_samples"] = int(interpolation_aug_samples)
+    cfg["train_state_bounds"] = [float(train_state_bounds[0]), float(train_state_bounds[1])]
     hypernet = build_hypernetwork(cfg, device)
-    mean_dynamics = metadyn.HyperMlpDynamics(
+    mean_kwargs = dict(
         d_latent=cfg["d_latent"],
         d_hidden=cfg["d_hidden_dynamics"],
         n_hidden=cfg["n_hidden"],
@@ -722,11 +1168,13 @@ def train_meta_dynamics(
         update_hidden=cfg["update_hidden"],
         du=0,
         device=device,
-        d_context=cfg["d_context"],
-    ).to(device)
+    )
+    if not HAS_INTEGRATIVE_INFERENCE:
+        mean_kwargs["d_context"] = cfg["d_context"]
+    mean_dynamics = metadyn.HyperMlpDynamics(**mean_kwargs).to(device)
     learned_table: nn.Embedding | None = None
     if embedding_mode == "learned_system_id":
-        learned_table = nn.Embedding(len(systems), d_embed, device=device)
+        learned_table = nn.Embedding(len(systems), effective_d_embed, device=device)
         nn.init.normal_(learned_table.weight, mean=0.0, std=0.5)
     params = list(hypernet.parameters()) + list(mean_dynamics.parameters())
     if learned_table is not None:
@@ -738,9 +1186,15 @@ def train_meta_dynamics(
     )
 
     epoch_losses: list[float] = []
+    epoch_primary_losses: list[float] = []
+    epoch_geometry_losses: list[float] = []
+    epoch_interp_losses: list[float] = []
     per_system_last = {spec.name: None for spec in systems}
     for _ in tqdm(range(n_epochs), desc="meta-train"):
         total_loss = 0.0
+        total_primary_loss = 0.0
+        total_geometry_loss = 0.0
+        total_interp_loss = 0.0
         total_n = 0
         per_system_acc = {spec.name: [] for spec in systems}
         for z, e, fx, spec_idx in dl:
@@ -754,7 +1208,31 @@ def train_meta_dynamics(
                 e = e.to(device)
             out, _ = hypernet(e)
             pred = mean_dynamics.compute_param(z, out) * dynamics_scale
-            loss = F.mse_loss(pred, fx)
+            primary_loss = F.mse_loss(pred, fx)
+            geometry_loss = primary_loss * 0.0
+            interp_loss = primary_loss * 0.0
+            if embedding_mode == "learned_system_id" and learned_table is not None and geometry_targets is not None:
+                if float(geometry_reg_weight) > 0.0:
+                    geometry_loss = geometry_regularizer_loss(
+                        learned_table=learned_table,
+                        geometry_targets=geometry_targets,
+                        target_device=device,
+                    )
+                if float(interpolation_aug_weight) > 0.0 and int(interpolation_aug_samples) > 0:
+                    interp_loss = interpolation_augmentation_loss(
+                        learned_table=learned_table,
+                        hypernet=hypernet,
+                        mean_dynamics=mean_dynamics,
+                        geometry_targets=geometry_targets,
+                        n_aug_samples=int(interpolation_aug_samples),
+                        dynamics_scale=dynamics_scale,
+                        target_device=device,
+                    )
+            loss = (
+                primary_loss
+                + float(geometry_reg_weight) * geometry_loss
+                + float(interpolation_aug_weight) * interp_loss
+            )
             opt.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(
@@ -763,6 +1241,9 @@ def train_meta_dynamics(
             )
             opt.step()
             total_loss += loss.item() * z.shape[0]
+            total_primary_loss += primary_loss.item() * z.shape[0]
+            total_geometry_loss += geometry_loss.item() * z.shape[0]
+            total_interp_loss += interp_loss.item() * z.shape[0]
             total_n += z.shape[0]
             with torch.no_grad():
                 batch_err = ((pred - fx) ** 2).mean(dim=-1).detach().cpu().numpy()
@@ -770,6 +1251,9 @@ def train_meta_dynamics(
                 for local_i, system_i in enumerate(spec_idx_np):
                     per_system_acc[systems[int(system_i)].name].append(float(batch_err[local_i]))
         epoch_losses.append(total_loss / max(total_n, 1))
+        epoch_primary_losses.append(total_primary_loss / max(total_n, 1))
+        epoch_geometry_losses.append(total_geometry_loss / max(total_n, 1))
+        epoch_interp_losses.append(total_interp_loss / max(total_n, 1))
         per_system_last = {
             name: float(np.mean(vals)) if len(vals) > 0 else None
             for name, vals in per_system_acc.items()
@@ -780,15 +1264,24 @@ def train_meta_dynamics(
         cfg=cfg,
         train_summary={
             "epoch_losses": epoch_losses,
+            "epoch_primary_losses": epoch_primary_losses,
+            "epoch_geometry_losses": epoch_geometry_losses,
+            "epoch_interpolation_losses": epoch_interp_losses,
             "final_train_loss": epoch_losses[-1] if epoch_losses else None,
+            "final_primary_loss": epoch_primary_losses[-1] if epoch_primary_losses else None,
+            "final_geometry_loss": epoch_geometry_losses[-1] if epoch_geometry_losses else None,
+            "final_interpolation_loss": epoch_interp_losses[-1] if epoch_interp_losses else None,
             "final_per_system_train_mse": per_system_last,
+            "effective_d_embed": effective_d_embed,
         },
         embedding_mode=embedding_mode,
         system_embeddings=resolve_system_embedding_map(
             systems=systems,
             embedding_mode=embedding_mode,
             learned_table=learned_table,
+            embedding_metadata=embedding_metadata,
         ),
+        embedding_metadata=embedding_metadata,
     )
 
 
@@ -943,7 +1436,7 @@ def save_embedding_cluster_figure(
     axis_names = (
         ("Embedding dim 1", "Embedding dim 2") if projection == "native_2d" else ("PC1", "PC2")
     )
-    ax.set_title("Learned Non-Parametric System-ID Embeddings")
+    ax.set_title("Meta-Dynamics Conditioning Embeddings")
     ax.set_xlabel(axis_names[0])
     ax.set_ylabel(axis_names[1])
     ax.grid(True, alpha=0.25)
@@ -987,7 +1480,9 @@ def save_family_vectorfield_comparison_figure(
     x_np = np.linspace(grid_min, grid_max, grid_n)
     y_np = np.linspace(grid_min, grid_max, grid_n)
     X, Y = np.meshgrid(x_np, y_np)
-    z = torch.tensor(np.stack([X.reshape(-1), Y.reshape(-1)], axis=-1), dtype=torch.float32, device=device)
+    z = torch.tensor(
+        np.stack([X.reshape(-1), Y.reshape(-1)], axis=-1), dtype=torch.float32, device=device
+    )
 
     fig, axes = plt.subplots(
         len(families), 2, figsize=(8.8, 2.45 * len(families)), sharex=True, sharey=True
@@ -1223,6 +1718,7 @@ def save_model_bundle_checkpoint(bundle: ModelBundle, out_dir: str) -> str:
             "train_summary": bundle.train_summary,
             "embedding_mode": bundle.embedding_mode,
             "system_embeddings": bundle.system_embeddings,
+            "embedding_metadata": bundle.embedding_metadata,
             "hypernet_state_dict": bundle.meta_dynamics.hypernet.state_dict(),
             "mean_dynamics_state_dict": bundle.meta_dynamics.mean_dynamics.state_dict(),
             "output_scale": bundle.meta_dynamics.output_scale,
@@ -1232,11 +1728,53 @@ def save_model_bundle_checkpoint(bundle: ModelBundle, out_dir: str) -> str:
     return ckpt_path
 
 
+def resolve_checkpoint_embedding_map(
+    *,
+    systems: tuple[SystemSpec, ...],
+    embedding_mode: str,
+    inferred_d_embed: int,
+    saved_embeddings: dict[str, list[float]],
+    embedding_metadata: dict[str, object] | None,
+) -> dict[str, list[float]]:
+    if embedding_mode == "fixed":
+        aligned_systems = truncate_embedding(systems, d_embed=inferred_d_embed)
+        return resolve_system_embedding_map(
+            systems=aligned_systems,
+            embedding_mode="fixed",
+            learned_table=None,
+        )
+    if embedding_mode == "family_param" and embedding_metadata:
+        resolved = resolve_system_embedding_map(
+            systems=systems,
+            embedding_mode="family_param",
+            learned_table=None,
+            embedding_metadata=embedding_metadata,
+        )
+        for spec in systems:
+            if spec.name in saved_embeddings:
+                resolved[spec.name] = [float(x) for x in saved_embeddings[spec.name]]
+        return resolved
+    resolved: dict[str, list[float]] = {}
+    for spec in systems:
+        if spec.name in saved_embeddings:
+            resolved[spec.name] = [float(x) for x in saved_embeddings[spec.name]]
+        else:
+            resolved[spec.name] = [float(x) for x in spec.embedding[:inferred_d_embed]]
+    return resolved
+
+
 def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]) -> ModelBundle:
     payload = torch.load(ckpt_path, map_location=device)
     cfg = dict(payload.get("cfg", {}))
     embedding_mode = str(payload["embedding_mode"])
-    inferred_d_embed = len(next(iter(payload["system_embeddings"].values())))
+    saved_embeddings = dict(payload.get("system_embeddings", {}))
+    embedding_metadata = dict(payload.get("embedding_metadata", {}))
+    if saved_embeddings:
+        inferred_d_embed = len(next(iter(saved_embeddings.values())))
+    elif embedding_mode == "family_param" and embedding_metadata.get("embedding_dim") is not None:
+        inferred_d_embed = int(embedding_metadata["embedding_dim"])
+    else:
+        inferred_d_embed = int(cfg.get("d_embed", len(systems[0].embedding)))
     cfg.setdefault("d_embed", inferred_d_embed)
     cfg.setdefault("d_hidden_dynamics", 64)
     cfg.setdefault("d_hidden_hypernet_dynamics", 16)
@@ -1320,24 +1858,20 @@ def load_model_bundle_checkpoint(ckpt_path: str, systems: tuple[SystemSpec, ...]
         mean_dynamics=mean_dynamics,
         output_scale=float(payload.get("output_scale", cfg.get("dynamics_scale", 10.0))),
     )
-    if embedding_mode == "fixed":
-        aligned_systems = truncate_embedding(systems, d_embed=inferred_d_embed)
-        system_embeddings = resolve_system_embedding_map(
-            systems=aligned_systems,
-            embedding_mode=embedding_mode,
-            learned_table=None,
-        )
-    else:
-        saved_embeddings = dict(payload.get("system_embeddings", {}))
-        system_embeddings = {
-            spec.name: [float(x) for x in saved_embeddings[spec.name]] for spec in systems
-        }
+    system_embeddings = resolve_checkpoint_embedding_map(
+        systems=systems,
+        embedding_mode=embedding_mode,
+        inferred_d_embed=inferred_d_embed,
+        saved_embeddings=saved_embeddings,
+        embedding_metadata=embedding_metadata,
+    )
     return ModelBundle(
         meta_dynamics=meta_dynamics,
         cfg=cfg,
         train_summary=dict(payload.get("train_summary", {})),
         embedding_mode=embedding_mode,
         system_embeddings=system_embeddings,
+        embedding_metadata=embedding_metadata,
     )
 
 
@@ -1435,6 +1969,7 @@ def summarize_offline(
         "mode": "pretrain_eval",
         "system_bank": system_bank,
         "embedding_mode": bundle.embedding_mode,
+        "embedding_metadata": bundle.embedding_metadata,
         "train_summary": bundle.train_summary,
         "model_cfg": bundle.cfg,
         "train_cfg": {
@@ -1481,7 +2016,12 @@ def summarize_offline(
 # -------------------------
 # Online identification (existing prototype)
 # -------------------------
-def build_observation_model(dy: int, dt: float, noise_scale: float):
+def build_observation_model(
+    dy: int,
+    dt: float,
+    noise_scale: float,
+    mean_firing: float = 1000.0,
+):
     obs_model = actdyn.environment.observation.LogLinearObservation(
         d_obs=dy,
         d_latent=2,
@@ -1491,9 +2031,9 @@ def build_observation_model(dy: int, dt: float, noise_scale: float):
         device=device,
     )
     C = obs_model.network[0].weight.detach()
-    C[:, 0] = torch.abs(C[:, 0])
-    C[:, 1] = C[:, 1] * 2.0
-    mean_firing = 30.0
+    # C[:, 0] = torch.abs(C[:, 0])
+    # C[:, 1] = C[:, 1] * 2.0
+    mean_firing = max(float(mean_firing), 1e-6)
     bias = torch.log(mean_firing * torch.ones(dy, device=device)) - 0.5 * torch.diag(C @ C.T)
     obs_model.network[0].weight = nn.Parameter(C)
     obs_model.network[0].bias = nn.Parameter(bias)
@@ -1569,6 +2109,186 @@ def summarize_embedding_diagnostics(
     return summary
 
 
+def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    a = np.asarray(a, dtype=np.float64).reshape(-1)
+    b = np.asarray(b, dtype=np.float64).reshape(-1)
+    denom = float(np.linalg.norm(a) * np.linalg.norm(b))
+    if denom <= 1e-12:
+        return 0.0
+    return float(np.dot(a, b) / denom)
+
+
+def _mahalanobis_distance_sq(
+    target: torch.Tensor,
+    mean: torch.Tensor,
+    covariance: torch.Tensor | None,
+) -> float:
+    if covariance is None:
+        return 0.0
+    diff = (target.reshape(-1) - mean.reshape(-1)).to(dtype=torch.float64)
+    cov = covariance.detach().reshape(diff.numel(), diff.numel()).to(dtype=torch.float64)
+    eye = torch.eye(diff.numel(), dtype=torch.float64, device=cov.device)
+    cov = 0.5 * (cov + cov.T) + 1e-6 * eye
+    try:
+        chol = torch.linalg.cholesky(cov)
+        solved = torch.cholesky_solve(diff.unsqueeze(-1), chol).squeeze(-1)
+    except RuntimeError:
+        solved = torch.linalg.pinv(cov) @ diff
+    return float(torch.dot(diff, solved).item())
+
+
+def _covariance_logdet(covariance: torch.Tensor | None) -> float:
+    if covariance is None:
+        return 0.0
+    cov = covariance.detach().to(dtype=torch.float64)
+    eye = torch.eye(cov.shape[-1], dtype=torch.float64, device=cov.device)
+    cov = 0.5 * (cov + cov.transpose(-1, -2)) + 1e-6 * eye
+    sign, logdet = torch.linalg.slogdet(cov)
+    if float(sign.item()) <= 0:
+        return float("-inf")
+    return float(logdet.item())
+
+
+def summarize_online_id_debug_traces(
+    *,
+    observed_rate_hz: list[float],
+    observed_zero_fraction: list[float],
+    action_norm: list[float],
+    field_norm: list[float],
+    action_to_field_ratio: list[float],
+    action_field_cosine: list[float],
+    posterior_mahalanobis_sq: list[float],
+    posterior_cov_trace: list[float],
+    posterior_cov_logdet: list[float],
+    info_theta_trace: list[float],
+    info_state_trace: list[float],
+    action_at_bound: list[float],
+) -> dict[str, float]:
+    summary: dict[str, float] = {}
+    summary.update(_scalar_stats(observed_rate_hz, "observed_rate_hz"))
+    summary.update(_scalar_stats(observed_zero_fraction, "observed_zero_fraction"))
+    summary.update(_scalar_stats(action_norm, "action_norm"))
+    summary.update(_scalar_stats(field_norm, "field_norm"))
+    summary.update(_scalar_stats(action_to_field_ratio, "action_to_field_ratio"))
+    summary.update(_scalar_stats(action_field_cosine, "action_field_cosine"))
+    summary.update(_scalar_stats(posterior_mahalanobis_sq, "posterior_mahalanobis_sq"))
+    summary.update(_scalar_stats(posterior_cov_trace, "posterior_cov_trace"))
+    summary.update(_scalar_stats(posterior_cov_logdet, "posterior_cov_logdet"))
+    summary.update(_scalar_stats(info_theta_trace, "info_theta_trace"))
+    summary.update(_scalar_stats(info_state_trace, "info_state_trace"))
+    summary.update(_scalar_stats(action_at_bound, "action_at_bound"))
+    return summary
+
+
+def evaluate_embedding_bank_landscape(
+    *,
+    spec: SystemSpec,
+    meta_dynamics: MetaDynamics,
+    rollout,
+    bank_specs: tuple[SystemSpec, ...],
+    bank_embeddings: torch.Tensor,
+    dt: float,
+    posterior_mean: torch.Tensor,
+    posterior_covariance: torch.Tensor | None,
+    max_steps: int = 400,
+) -> dict[str, object]:
+    if len(bank_specs) == 0 or bank_embeddings.numel() == 0:
+        return {}
+
+    env_state = rollout["env_state"]
+    next_env_state = rollout["next_env_state"]
+    env_action = rollout.get("env_action")
+
+    if env_state.ndim != 3 or next_env_state.ndim != 3:
+        return {}
+
+    z_t = env_state[:, :, :2].to(device)
+    z_next = next_env_state[:, :, :2].to(device)
+    if env_action is None:
+        u_t = torch.zeros_like(z_t)
+    else:
+        u_t = env_action[:, :, :2].to(device)
+
+    n_steps = int(z_t.shape[1])
+    if n_steps <= 0:
+        return {}
+    if n_steps > max_steps:
+        idx = torch.linspace(0, n_steps - 1, steps=max_steps, device=z_t.device).round().long()
+        z_t = z_t[:, idx, :]
+        z_next = z_next[:, idx, :]
+        u_t = u_t[:, idx, :]
+
+    bank_embeddings = bank_embeddings.to(device=device, dtype=torch.float32)
+    n_bank = int(bank_embeddings.shape[0])
+    z_batch = z_t.expand(n_bank, -1, -1)
+    z_next_batch = z_next.expand(n_bank, -1, -1)
+    u_batch = u_t.expand(n_bank, -1, -1)
+
+    with torch.no_grad():
+        pred_dyn = meta_dynamics(z_batch, e=bank_embeddings)
+        pred_next = z_batch + dt * (pred_dyn + u_batch)
+        mse = ((pred_next - z_next_batch) ** 2).mean(dim=(1, 2))
+
+    mse_np = mse.detach().cpu().numpy().astype(np.float64, copy=False)
+    if mse_np.size == 0 or not np.isfinite(mse_np).any():
+        return {}
+
+    order = np.argsort(mse_np)
+    true_idx = next((idx for idx, bank_spec in enumerate(bank_specs) if bank_spec.name == spec.name), None)
+    true_rank = int(np.where(order == true_idx)[0][0] + 1) if true_idx is not None else None
+
+    topk = order[: min(5, len(order))]
+    top1_idx = int(order[0])
+    top2_gap = (
+        float(mse_np[order[1]] - mse_np[order[0]])
+        if len(order) > 1 and np.isfinite(mse_np[order[1]])
+        else None
+    )
+
+    emb_np = bank_embeddings.detach().cpu().numpy()
+    shifted = mse_np - float(np.nanmin(mse_np))
+    temp = float(np.nanmedian(shifted[np.isfinite(shifted)]))
+    if not np.isfinite(temp) or temp <= 1e-8:
+        temp = max(float(np.nanstd(mse_np)), 1e-3)
+    logits = -shifted / temp
+    logits = logits - float(np.max(logits))
+    weights = np.exp(logits)
+    weights = weights / max(float(np.sum(weights)), 1e-12)
+    discrete_mean = np.sum(weights[:, None] * emb_np, axis=0)
+    centered = emb_np - discrete_mean[None, :]
+    discrete_cov = np.einsum("n,ni,nj->ij", weights, centered, centered)
+    posterior_mean_np = posterior_mean.detach().cpu().numpy().reshape(-1)
+    if posterior_covariance is None:
+        posterior_cov_np = np.eye(posterior_mean_np.shape[0], dtype=np.float64)
+    else:
+        posterior_cov_np = posterior_covariance.detach().cpu().numpy().reshape(
+            posterior_mean_np.shape[0], posterior_mean_np.shape[0]
+        )
+    entropy = float(-np.sum(weights * np.log(np.clip(weights, 1e-12, None))))
+    effective_support = float(np.exp(entropy))
+
+    return {
+        "landscape_n_steps": int(z_t.shape[1]),
+        "true_candidate_rank": true_rank,
+        "top1_system": bank_specs[top1_idx].name,
+        "top1_family": bank_specs[top1_idx].family,
+        "top1_mse": float(mse_np[top1_idx]),
+        "top2_gap": top2_gap,
+        "top5_unique_families": int(len({bank_specs[idx].family for idx in topk})),
+        "top5_systems": [bank_specs[idx].name for idx in topk],
+        "discrete_posterior_entropy": entropy,
+        "discrete_posterior_effective_support": effective_support,
+        "discrete_posterior_mean": [float(x) for x in discrete_mean.tolist()],
+        "discrete_posterior_cov_trace": float(np.trace(discrete_cov)),
+        "discrete_gaussian_mean_gap": float(np.linalg.norm(discrete_mean - posterior_mean_np)),
+        "discrete_gaussian_cov_gap_fro": float(
+            np.linalg.norm(discrete_cov - posterior_cov_np, ord="fro")
+        ),
+        "true_weight": float(weights[true_idx]) if true_idx is not None else None,
+        "top1_weight": float(weights[top1_idx]),
+    }
+
+
 def evaluate_post_probe_rollout_prediction(
     spec: SystemSpec,
     meta_dynamics: MetaDynamics,
@@ -1624,6 +2344,24 @@ def evaluate_post_probe_rollout_prediction(
             dt=dt,
         )
 
+    if not (
+        torch.isfinite(true_traj).all()
+        and torch.isfinite(pred_traj).all()
+        and torch.isfinite(pred_traj_true_init).all()
+    ):
+        return {
+            "rollout_mse": float("inf"),
+            "final_state_mse": float("inf"),
+            "trajectory_r2": float("-inf"),
+            "rollout_mse_true_init": float("inf"),
+            "final_state_mse_true_init": float("inf"),
+            "eval_rollout_count": float(n_rollouts),
+            "eval_rollout_horizon": float(horizon),
+            "eval_rollout_dt": float(dt),
+            "eval_action_low": float(action_low),
+            "eval_action_high": float(action_high),
+        }
+
     return {
         "rollout_mse": float(F.mse_loss(pred_traj, true_traj).item()),
         "final_state_mse": float(F.mse_loss(pred_traj[:, -1], true_traj[:, -1]).item()),
@@ -1640,6 +2378,158 @@ def evaluate_post_probe_rollout_prediction(
     }
 
 
+def persist_online_id_run_artifacts(
+    *,
+    experiment: actdyn.core.experiment.MetaEmbeddingExperiment,
+    record: dict,
+) -> dict:
+    session_dir = str(experiment.results_path)
+    rollout_path = os.path.join(session_dir, "rollouts", f"rollout_{int(experiment.env_step)}.pkl")
+    save_rollout(experiment.rollout, rollout_path)
+    rollouts_dir = os.path.join(session_dir, "rollouts")
+    if os.path.isdir(rollouts_dir):
+        full_rollout = load_and_concatenate_rollouts(rollouts_dir, device="cpu")
+        save_rollout(full_rollout, rollout_path)
+    record_path = os.path.join(session_dir, "online_id_record.json")
+    payload = {
+        **record,
+        "n_steps": int(experiment.env_step),
+        "session_dir": session_dir,
+        "rollout_path": rollout_path,
+        "record_path": record_path,
+    }
+    with open(record_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+    return payload
+
+
+def load_existing_online_id_record(
+    run_dir: str,
+    *,
+    system: str,
+    policy: str,
+    seed: int,
+) -> dict[str, object] | None:
+    if not os.path.isdir(run_dir):
+        return None
+
+    record_paths: list[str] = []
+    for root, _dirs, files in os.walk(run_dir):
+        if "online_id_record.json" in files:
+            record_paths.append(os.path.join(root, "online_id_record.json"))
+    if not record_paths:
+        return None
+
+    record_paths.sort(key=lambda path: (os.path.getmtime(path), path))
+    record_path = record_paths[-1]
+    with open(record_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Expected JSON object in {record_path}")
+
+    loaded_system = str(payload.get("system", ""))
+    loaded_policy = str(payload.get("policy", ""))
+    try:
+        loaded_seed = int(payload.get("seed", -1))
+    except (TypeError, ValueError):
+        loaded_seed = -1
+    if loaded_system != system or loaded_policy != policy or loaded_seed != int(seed):
+        raise ValueError(
+            "Existing online-ID record does not match requested run: "
+            f"{record_path} has system={loaded_system!r}, policy={loaded_policy!r}, seed={loaded_seed}"
+        )
+
+    return dict(payload)
+
+
+def _current_plan_index(policy) -> int:
+    chunk = max(1, int(getattr(policy, "chunk", 1)))
+    count = max(0, int(getattr(policy, "count", 0)))
+    if count <= 0:
+        return 0
+    return (count - 1) % chunk
+
+
+def _extract_remaining_plan_actions(policy):
+    plan = None
+    elite_actions = getattr(policy, "elite_actions", None)
+    if elite_actions is not None:
+        elite_actions = torch.as_tensor(elite_actions).detach()
+        if elite_actions.ndim == 3 and elite_actions.shape[0] > 0:
+            plan = elite_actions[0]
+
+    if plan is None:
+        mean_actions = getattr(policy, "mean", None)
+        if mean_actions is not None:
+            mean_actions = torch.as_tensor(mean_actions).detach()
+            if mean_actions.ndim == 2:
+                plan = mean_actions
+            elif mean_actions.ndim == 3 and mean_actions.shape[0] > 0:
+                plan = mean_actions[0]
+
+    if plan is None or plan.ndim != 2 or plan.shape[0] == 0:
+        return None
+
+    start = min(_current_plan_index(policy), int(plan.shape[0] - 1))
+    return plan[start:].unsqueeze(0)
+
+
+def _predict_planned_xy_trajectory(*, model, policy, transition: dict[str, object]):
+    if getattr(policy, "metric", None) is None:
+        return None
+
+    planned_actions = _extract_remaining_plan_actions(policy)
+    if planned_actions is None:
+        return None
+
+    model_state = transition.get("model_state")
+    if model_state is None:
+        return None
+
+    state = torch.as_tensor(model_state).detach()
+    if state.ndim == 1:
+        state = state.reshape(1, 1, -1)
+    elif state.ndim == 2:
+        state = state.unsqueeze(0)
+    if state.ndim != 3 or state.shape[-1] == 0:
+        return None
+
+    model_device = getattr(model, "device", state.device)
+    state = state.to(model_device)
+    planned_actions = planned_actions.to(model_device)
+
+    prev_state = None
+    try:
+        current_state = model.get_state()
+        if current_state is not None:
+            prev_state = current_state.detach().clone()
+    except Exception:
+        prev_state = None
+
+    try:
+        with torch.no_grad():
+            model.set_state(state)
+            if model.action_encoder is not None:
+                encoded_actions = model.action_encoder(planned_actions)
+            else:
+                encoded_actions = planned_actions
+            predicted = model.predict(encoded_actions)
+            trajectory = torch.cat([state, predicted], dim=-2)
+    except Exception:
+        return None
+    finally:
+        if prev_state is not None:
+            model.set_state(prev_state)
+
+    trajectory = trajectory.detach().cpu().reshape(-1, trajectory.shape[-1]).numpy()
+    xy = np.zeros((trajectory.shape[0], 2), dtype=np.float32)
+    if trajectory.shape[1] > 0:
+        xy[:, 0] = trajectory[:, 0].astype(np.float32, copy=False)
+    if trajectory.shape[1] > 1:
+        xy[:, 1] = trajectory[:, 1].astype(np.float32, copy=False)
+    return xy
+
+
 def run_identification(
     spec: SystemSpec,
     meta_dynamics: MetaDynamics,
@@ -1654,32 +2544,54 @@ def run_identification(
     eval_rollout_dt: float,
     eval_rollout_count: int,
     dynamics_scale: float,
+    save_acq_map: bool,
+    acq_map_interval: int,
+    acq_map_grid: int,
+    acq_map_lim: float,
+    observation_mean_firing: float = 1000.0,
+    q_theta: float = 1e-4,
+    k_theta: int = 10,
+    q_theta_meas_coeff: float = 0.0,
+    q_theta_max_scale: float = 10.0,
+    state_init_uncertainty: float = 1.0,
+    reference_bank_specs: tuple[SystemSpec, ...] | None = None,
+    reference_bank_embeddings: torch.Tensor | None = None,
+    bank_landscape_max_steps: int = 400,
+    record_metadata: dict[str, object] | None = None,
 ):
-    dt = 0.005
+    dt = float(eval_rollout_dt)
     dy = 30
     e_true = system_embedding.detach().cpu().reshape(-1).to(torch.float32)
     de = int(e_true.numel())
     du = 2
     noise_scale = 0.02
     action_strength = float(active_cfg.action_strength)
+    initial_state_bounds = (-2.0, 2.0)
 
     action_model = actdyn.environment.action.IdentityActionEncoder(
         d_action=du,
         d_latent=2,
-        action_bounds=[-action_strength * 10.0, action_strength * 10.0],
+        action_bounds=[-action_strength, action_strength],
         device=device,
     )
-    obs_model = build_observation_model(dy=dy, dt=dt, noise_scale=noise_scale)
+    obs_model = build_observation_model(
+        dy=dy,
+        dt=dt,
+        noise_scale=noise_scale,
+        mean_firing=observation_mean_firing,
+    )
     env = actdyn.environment.EnvWrapper(
         MixedDynamicsEnv(
             spec=spec,
             embedding_vector=e_true,
             dt=dt,
             Q=noise_scale,
+            state_bounds=initial_state_bounds,
             action_bounds=(
                 float(action_model.action_space.low.min()),
                 float(action_model.action_space.high.max()),
             ),
+            dynamics_scale=dynamics_scale,
             device=device,
         ),
         obs_model,
@@ -1700,6 +2612,8 @@ def run_identification(
         "P": sigma_0 * torch.eye(de, device=device).unsqueeze(0),
         "L": (1.0 / sigma_0) * torch.eye(de, device=device).unsqueeze(0),
     }
+    policy_cfg = resolve_online_id_policy_config(policy_name=policy_name, active_cfg=active_cfg)
+    resolved_k_theta = int(policy_cfg.get("k_theta", k_theta))
     model = actdyn.models.FilteringEmbedding(
         dynamics=dynamics,
         decoder=decoder,
@@ -1707,10 +2621,35 @@ def run_identification(
         action_encoder=action_model,
         Fe=ExactFe(meta_dynamics),
         Fz=ExactFz(meta_dynamics),
+        q_theta=q_theta,
+        k_theta=resolved_k_theta,
+        q_theta_meas_coeff=q_theta_meas_coeff,
+        q_theta_max_scale=q_theta_max_scale,
+        state_init_uncertainty=state_init_uncertainty,
         device=device,
     )
     model.set_params(e_bel["m"])
     e_init = model.embedding.reshape(-1).detach().cpu().clone()
+    acq_interval = max(1, int(acq_map_interval))
+    acq_grid_n = max(25, int(acq_map_grid))
+    acq_grid_lim = float(acq_map_lim)
+    acq_map_steps: list[int] = []
+    acq_map_frames: list[np.ndarray] = []
+    planned_traj_steps: list[int] = []
+    planned_traj_frames: list[np.ndarray] = []
+    observed_rate_hz_trace: list[float] = []
+    observed_zero_fraction_trace: list[float] = []
+    action_norm_trace: list[float] = []
+    field_norm_trace: list[float] = []
+    action_to_field_ratio_trace: list[float] = []
+    action_field_cosine_trace: list[float] = []
+    posterior_mahalanobis_sq_trace: list[float] = []
+    posterior_cov_trace_trace: list[float] = []
+    posterior_cov_logdet_trace: list[float] = []
+    info_theta_trace: list[float] = []
+    info_state_trace: list[float] = []
+    action_at_bound_trace: list[float] = []
+    acq_axis = np.linspace(-acq_grid_lim, acq_grid_lim, acq_grid_n, dtype=np.float32)
 
     emb_metric = actdyn.metrics.information.EmbeddingFisherMetric(
         model=model,
@@ -1727,26 +2666,43 @@ def run_identification(
         device=device,
     )
     random_policy = actdyn.policy.RandomPolicy(action_space=env.action_space, device=device)
-    active_policy = actdyn.policy.mpc.MpcICem(
+    no_policy = actdyn.policy.OffPolicy(action_space=env.action_space, device=device)
+    ciss_active_policy = actdyn.policy.mpc.MpcICem(
         metric=composite_metric,
         model=model,
         device=device,
-        horizon=int(active_cfg.horizon),
-        num_iterations=int(active_cfg.num_iterations),
-        num_samples=int(active_cfg.num_samples),
-        num_elite=int(active_cfg.num_elite),
-        chunk=int(active_cfg.chunk),
+        horizon=int(policy_cfg["planning_horizon"]),
+        num_iterations=int(policy_cfg["num_iterations"]),
+        num_samples=int(policy_cfg["num_samples"]),
+        num_elite=int(policy_cfg["num_elite"]),
+        chunk=int(policy_cfg["planning_chunk"]),
         verbose=False,
     )
-
-    policy = active_policy if policy_name == "active_short" else random_policy
-    agent = actdyn.Agent(env=env, model=model, buffer_length=10, policy=policy, device=device)
-    config_path = os.path.join(os.path.dirname(__file__), "conf/config.yaml")
-    if not os.path.exists(config_path):
-        config_path = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)), "active_embedding", "conf", "config.yaml"
+    policy_map = {
+        "active_long": ciss_active_policy,
+        "active_short": ciss_active_policy,
+        "active_chunk": ciss_active_policy,
+        "async_windowed_update": ciss_active_policy,
+        "random": random_policy,
+        "no_policy": no_policy,
+    }
+    if policy_name not in policy_map:
+        raise ValueError(
+            f"Unknown online-ID policy: {policy_name}. Expected one of {sorted(policy_map)}"
         )
-    config = ExperimentConfig.from_yaml(config_path)
+    policy = policy_map[policy_name]
+    capture_acq_map = bool(save_acq_map and policy_name in ONLINE_ID_ACTIVE_POLICIES)
+    if capture_acq_map:
+        acq_X, acq_Y = np.meshgrid(acq_axis, acq_axis, indexing="xy")
+        acq_points = torch.as_tensor(
+            np.stack([acq_X.reshape(-1), acq_Y.reshape(-1)], axis=1),
+            dtype=torch.float32,
+            device=device,
+        ).unsqueeze(1)
+    else:
+        acq_points = None
+    agent = actdyn.Agent(env=env, model=model, buffer_length=10, policy=policy, device=device)
+    config = ExperimentConfig.from_yaml(resolve_online_id_config_path())
     config.results_dir = ensure_dir(results_dir)
     config.training.total_steps = total_steps
     config.training.rollout_horizon = 100
@@ -1756,7 +2712,93 @@ def run_identification(
     torch.manual_seed(seed)
     np.random.seed(seed)
     experiment = actdyn.core.experiment.MetaEmbeddingExperiment(agent=agent, config=config)
-    experiment.run()
+    experiment.e_norm = []
+    experiment.e_trace = []
+
+    def _on_step_end(_transition: dict) -> None:
+        e_bel = experiment.agent.model.embedding.reshape(-1)
+        experiment.training_info["e"] = e_bel
+
+        e_true_step = experiment.agent.env.env.get_params().detach().cpu().reshape(-1)
+        if experiment.writer is not None:
+            experiment.writer.add_scalars(
+                "e",
+                {f"true_{i}": float(v) for i, v in enumerate(e_true_step.tolist())},
+                experiment.env_step,
+            )
+        experiment.e_trace.append([float(v) for v in e_bel.detach().cpu().reshape(-1).tolist()])
+        experiment.e_norm.append(float(torch.norm(e_bel.detach().cpu() - e_true_step).item()))
+        experiment.training_info["e_norm"] = experiment.e_norm[-1]
+
+        next_obs = torch.as_tensor(_transition.get("next_obs", torch.zeros(dy))).detach().cpu().reshape(-1)
+        if next_obs.numel() > 0:
+            observed_rate_hz_trace.append(float(next_obs.mean().item() / max(dt, 1e-8)))
+            observed_zero_fraction_trace.append(float((next_obs <= 0).float().mean().item()))
+
+        env_state = torch.as_tensor(_transition.get("env_state", torch.zeros(2))).detach().cpu().reshape(-1)[:2]
+        env_action = torch.as_tensor(_transition.get("env_action", torch.zeros(2))).detach().cpu().reshape(-1)[:2]
+        true_field = true_dynamics_from_spec(
+            spec,
+            env_state.to(device=device, dtype=torch.float32).reshape(1, 2),
+            dynamics_scale=dynamics_scale,
+        ).detach().cpu().reshape(-1)[:2]
+        action_norm = float(torch.linalg.norm(env_action).item())
+        field_norm = float(torch.linalg.norm(true_field).item())
+        action_norm_trace.append(action_norm)
+        field_norm_trace.append(field_norm)
+        action_to_field_ratio_trace.append(action_norm / max(field_norm, 1e-6))
+        action_field_cosine_trace.append(
+            _cosine_similarity(env_action.numpy(), true_field.numpy())
+        )
+        action_at_bound_trace.append(
+            float(
+                max(float(torch.abs(env_action[0]).item()), float(torch.abs(env_action[1]).item()))
+                >= action_strength - 1e-6
+            )
+        )
+
+        cov = model.e.get("P")
+        cov_step = cov[0].detach().cpu() if cov is not None and cov.ndim >= 3 else None
+        posterior_mahalanobis_sq_trace.append(
+            _mahalanobis_distance_sq(e_true_step, e_bel.detach().cpu(), cov_step)
+        )
+        posterior_cov_trace_trace.append(
+            float(torch.trace(cov_step).item()) if cov_step is not None else 0.0
+        )
+        posterior_cov_logdet_trace.append(_covariance_logdet(cov_step))
+
+        info_diag = getattr(model, "last_information", {}) or {}
+        info_theta_trace.append(float(info_diag.get("I_theta_t", 0.0)))
+        info_state_trace.append(float(info_diag.get("I_z_t", 0.0)))
+
+        if capture_acq_map and acq_points is not None and experiment.env_step % acq_interval == 0:
+            with torch.no_grad():
+                map_rollout = {
+                    "model_state": acq_points,
+                    "next_model_state": acq_points,
+                }
+                acq_cost = emb_metric(map_rollout).detach().reshape(-1)
+            acq_map = (-acq_cost).cpu().numpy().reshape(acq_grid_n, acq_grid_n)
+            acq_map = np.nan_to_num(acq_map, nan=0.0, posinf=1e6, neginf=0.0).astype(np.float32)
+            acq_map_frames.append(acq_map)
+            acq_map_steps.append(int(experiment.env_step))
+
+        planned_traj_xy = _predict_planned_xy_trajectory(
+            model=model,
+            policy=policy,
+            transition=_transition,
+        )
+        if planned_traj_xy is not None and planned_traj_xy.shape[0] >= 2:
+            planned_traj_steps.append(int(experiment.env_step))
+            planned_traj_frames.append(planned_traj_xy)
+
+    experiment._run_online_loop(
+        train_cfg=config.training,
+        pbar_desc="Embedding",
+        plot_fcn=None,
+        reset=True,
+        on_step_end=_on_step_end,
+    )
 
     e_hat = model.embedding.reshape(-1).detach().cpu()
     step_trace = [dict(item) for item in getattr(model, "embedding_diag_history", [])]
@@ -1767,7 +2809,26 @@ def run_identification(
         e_init=e_init,
         e_final=e_hat,
     )
+    debug_diag_summary = summarize_online_id_debug_traces(
+        observed_rate_hz=observed_rate_hz_trace,
+        observed_zero_fraction=observed_zero_fraction_trace,
+        action_norm=action_norm_trace,
+        field_norm=field_norm_trace,
+        action_to_field_ratio=action_to_field_ratio_trace,
+        action_field_cosine=action_field_cosine_trace,
+        posterior_mahalanobis_sq=posterior_mahalanobis_sq_trace,
+        posterior_cov_trace=posterior_cov_trace_trace,
+        posterior_cov_logdet=posterior_cov_logdet_trace,
+        info_theta_trace=info_theta_trace,
+        info_state_trace=info_state_trace,
+        action_at_bound=action_at_bound_trace,
+    )
     final_error = float(torch.norm(e_hat - e_true).item())
+    posterior_covariance = model.e.get("P")
+    posterior_covariance = (
+        posterior_covariance[0].detach().cpu() if posterior_covariance is not None and posterior_covariance.ndim >= 3 else None
+    )
+    final_posterior_mahalanobis_sq = _mahalanobis_distance_sq(e_true, e_hat, posterior_covariance)
     post_probe_eval = evaluate_post_probe_rollout_prediction(
         spec=spec,
         meta_dynamics=meta_dynamics,
@@ -1782,22 +2843,98 @@ def run_identification(
         dynamics_scale=dynamics_scale,
         seed=int(seed) + 10_000,
     )
-    return {
+    landscape_summary = {}
+    if reference_bank_specs and reference_bank_embeddings is not None:
+        landscape_summary = evaluate_embedding_bank_landscape(
+            spec=spec,
+            meta_dynamics=meta_dynamics,
+            rollout=experiment.rollout,
+            bank_specs=reference_bank_specs,
+            bank_embeddings=reference_bank_embeddings,
+            dt=dt,
+            posterior_mean=e_hat,
+            posterior_covariance=posterior_covariance,
+            max_steps=bank_landscape_max_steps,
+        )
+    acquisition_map_trace_path = None
+    if capture_acq_map and acq_map_frames:
+        acquisition_map_trace_path = os.path.join(
+            str(experiment.results_path), "acquisition_map_trace.npz"
+        )
+        np.savez_compressed(
+            acquisition_map_trace_path,
+            steps=np.asarray(acq_map_steps, dtype=np.int64),
+            axis=acq_axis.astype(np.float32),
+            maps=np.asarray(acq_map_frames, dtype=np.float32),
+            policy=np.asarray([policy_name], dtype=object),
+            system=np.asarray([spec.name], dtype=object),
+        )
+    planned_trajectory_trace_path = None
+    if planned_traj_frames:
+        planned_trajectory_trace_path = os.path.join(
+            str(experiment.results_path), "planned_trajectory_trace.npz"
+        )
+        max_points = max(frame.shape[0] for frame in planned_traj_frames)
+        paths = np.full((len(planned_traj_frames), max_points, 2), np.nan, dtype=np.float32)
+        lengths = np.zeros((len(planned_traj_frames),), dtype=np.int64)
+        for idx, frame in enumerate(planned_traj_frames):
+            n_points = int(frame.shape[0])
+            paths[idx, :n_points, :] = frame[:, :2]
+            lengths[idx] = n_points
+        np.savez_compressed(
+            planned_trajectory_trace_path,
+            steps=np.asarray(planned_traj_steps, dtype=np.int64),
+            paths=paths,
+            lengths=lengths,
+            policy=np.asarray([policy_name], dtype=object),
+            system=np.asarray([spec.name], dtype=object),
+        )
+    record = {
         "system": spec.name,
         "family": spec.family,
         "policy": policy_name,
         "seed": seed,
         "embedding_mode": embedding_mode,
-        "active_policy_cfg": asdict(active_cfg),
+        "active_policy_cfg": {**asdict(active_cfg), **policy_cfg},
         "embedding_true": e_true.tolist(),
         "embedding_est": e_hat.tolist(),
+        "embedding_trace": list(getattr(experiment, "e_trace", [])),
         "final_error": final_error,
         "error_trace": [float(x) for x in experiment.e_norm],
         "post_probe_eval": post_probe_eval,
         "diagnostics": diag_summary,
+        "debug_diagnostics": debug_diag_summary,
         "diagnostic_step_trace": step_trace,
         "diagnostic_block_trace": block_trace,
+        "final_posterior_mahalanobis_sq": final_posterior_mahalanobis_sq,
+        "final_posterior_cov_trace": (
+            float(torch.trace(posterior_covariance).item()) if posterior_covariance is not None else 0.0
+        ),
+        "final_posterior_cov_logdet": _covariance_logdet(posterior_covariance),
+        "observation_mean_firing": float(observation_mean_firing),
+        "filter_q_theta": float(q_theta),
+        "filter_k_theta": int(resolved_k_theta),
+        "filter_q_theta_meas_coeff": float(q_theta_meas_coeff),
+        "filter_q_theta_max_scale": float(q_theta_max_scale),
+        "filter_state_init_uncertainty": float(state_init_uncertainty),
+        "update_scheme": str(policy_cfg["update_scheme"]),
+        "state_update_interval": int(policy_cfg["state_update_interval"]),
+        "predictive_only_window": bool(policy_cfg["predictive_only_window"]),
+        "planning_horizon": int(policy_cfg["planning_horizon"]),
+        "planning_chunk": int(policy_cfg["planning_chunk"]),
+        "online_id_dt": float(dt),
+        "initial_state_bounds": [float(initial_state_bounds[0]), float(initial_state_bounds[1])],
+        "save_acq_map": bool(capture_acq_map),
+        "acq_map_interval": int(acq_interval),
+        "acq_map_grid": int(acq_grid_n),
+        "acq_map_lim": float(acq_grid_lim),
+        "acquisition_map_trace_path": acquisition_map_trace_path,
+        "planned_trajectory_trace_path": planned_trajectory_trace_path,
+        "embedding_bank_landscape": landscape_summary,
     }
+    if record_metadata:
+        record.update(dict(record_metadata))
+    return persist_online_id_run_artifacts(experiment=experiment, record=record)
 
 
 def summarize_record_group(records: list[dict]) -> dict[str, float]:
@@ -1863,6 +3000,338 @@ def summarize_by_group(records: list[dict], field: str) -> dict[str, dict[str, d
     return grouped
 
 
+def _finite_metric(value: object, *, cutoff: float = 1e308) -> float | None:
+    try:
+        scalar = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(scalar):
+        return None
+    if abs(scalar) >= float(cutoff):
+        return None
+    return scalar
+
+
+def _mean_std(values: list[float]) -> tuple[float | None, float | None]:
+    if not values:
+        return None, None
+    arr = np.asarray(values, dtype=np.float64)
+    return float(np.mean(arr)), float(np.std(arr))
+
+
+def build_online_id_metrics_rows(records: list[dict]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    systems = sorted({str(r["system"]) for r in records})
+    policies = sorted({str(r["policy"]) for r in records})
+    for system in systems:
+        for policy in policies:
+            subset = [r for r in records if str(r["system"]) == system and str(r["policy"]) == policy]
+            if not subset:
+                continue
+            family = str(subset[0]["family"])
+            final_error_values = [float(r["final_error"]) for r in subset]
+            rollout_values = [
+                _finite_metric(r.get("post_probe_eval", {}).get("rollout_mse")) for r in subset
+            ]
+            final_state_values = [
+                _finite_metric(r.get("post_probe_eval", {}).get("final_state_mse")) for r in subset
+            ]
+            traj_r2_values = [
+                _finite_metric(r.get("post_probe_eval", {}).get("trajectory_r2")) for r in subset
+            ]
+            rollout_values_finite = [v for v in rollout_values if v is not None]
+            final_state_values_finite = [v for v in final_state_values if v is not None]
+            traj_r2_values_finite = [v for v in traj_r2_values if v is not None]
+            final_error_mean, final_error_std = _mean_std(final_error_values)
+            rollout_mean, rollout_std = _mean_std(rollout_values_finite)
+            final_state_mean, final_state_std = _mean_std(final_state_values_finite)
+            traj_r2_mean, traj_r2_std = _mean_std(traj_r2_values_finite)
+            best_rollout_record = min(
+                (
+                    r
+                    for r in subset
+                    if _finite_metric(r.get("post_probe_eval", {}).get("rollout_mse")) is not None
+                ),
+                key=lambda r: float(r["post_probe_eval"]["rollout_mse"]),
+                default=None,
+            )
+            rows.append(
+                {
+                    "system": system,
+                    "family": family,
+                    "policy": policy,
+                    "n_runs": len(subset),
+                    "n_finite_rollout": len(rollout_values_finite),
+                    "rollout_mse_mean": rollout_mean,
+                    "rollout_mse_std": rollout_std,
+                    "final_state_mse_mean": final_state_mean,
+                    "final_state_mse_std": final_state_std,
+                    "trajectory_r2_mean": traj_r2_mean,
+                    "trajectory_r2_std": traj_r2_std,
+                    "final_error_mean": final_error_mean,
+                    "final_error_std": final_error_std,
+                    "best_rollout_mse": (
+                        float(best_rollout_record["post_probe_eval"]["rollout_mse"])
+                        if best_rollout_record is not None
+                        else None
+                    ),
+                    "best_seed": int(best_rollout_record["seed"]) if best_rollout_record is not None else None,
+                    "best_session_dir": (
+                        str(best_rollout_record.get("session_dir")) if best_rollout_record is not None else None
+                    ),
+                }
+            )
+    return rows
+
+
+def build_online_id_error_trace_rows(records: list[dict]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for policy in sorted({str(r["policy"]) for r in records}):
+        traces: list[np.ndarray] = []
+        for record in records:
+            if str(record["policy"]) != policy:
+                continue
+            trace = np.asarray(record.get("error_trace", []), dtype=np.float64)
+            if trace.size == 0:
+                continue
+            trace = np.where(np.isfinite(trace), trace, np.nan)
+            traces.append(trace)
+        if not traces:
+            continue
+        max_len = max(trace.shape[0] for trace in traces)
+        mat = np.full((len(traces), max_len), np.nan, dtype=np.float64)
+        for idx, trace in enumerate(traces):
+            mat[idx, : trace.shape[0]] = trace
+        means = np.nanmean(mat, axis=0)
+        stds = np.nanstd(mat, axis=0)
+        counts = np.sum(np.isfinite(mat), axis=0)
+        for step_idx in range(max_len):
+            if int(counts[step_idx]) == 0:
+                continue
+            rows.append(
+                {
+                    "policy": policy,
+                    "step": step_idx,
+                    "value_mean": float(means[step_idx]),
+                    "value_std": float(stds[step_idx]),
+                    "n": int(counts[step_idx]),
+                }
+            )
+    return rows
+
+
+def write_online_id_metrics_csv(path: str, rows: list[dict[str, object]]) -> str:
+    ensure_dir(os.path.dirname(path))
+    fields = [
+        "system",
+        "family",
+        "policy",
+        "n_runs",
+        "n_finite_rollout",
+        "rollout_mse_mean",
+        "rollout_mse_std",
+        "final_state_mse_mean",
+        "final_state_mse_std",
+        "trajectory_r2_mean",
+        "trajectory_r2_std",
+        "final_error_mean",
+        "final_error_std",
+        "best_rollout_mse",
+        "best_seed",
+        "best_session_dir",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def write_online_id_error_trace_csv(path: str, rows: list[dict[str, object]]) -> str:
+    ensure_dir(os.path.dirname(path))
+    fields = ["policy", "step", "value_mean", "value_std", "n"]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def write_online_id_summary_markdown(
+    out_path: str,
+    *,
+    records: list[dict],
+    metric_rows: list[dict[str, object]],
+    figure_paths: list[str],
+) -> str:
+    def _fmt_metric(value: object) -> str:
+        scalar = _finite_metric(value)
+        if scalar is None:
+            return "NA"
+        return f"{scalar:.6f}"
+
+    ensure_dir(os.path.dirname(out_path))
+    policies = sorted({str(r["policy"]) for r in records})
+    systems = sorted({str(r["system"]) for r in records})
+    finite_rollout_records = [
+        r for r in records if _finite_metric(r.get("post_probe_eval", {}).get("rollout_mse")) is not None
+    ]
+    lines: list[str] = []
+    lines.append("# Cosyne Online-ID Summary")
+    lines.append("")
+    lines.append("## Coverage")
+    lines.append("")
+    lines.append(f"- Records: {len(records)}")
+    lines.append(f"- Systems: {len(systems)}")
+    lines.append(f"- Policies: {', '.join(policies)}")
+    lines.append(f"- Finite rollout records: {len(finite_rollout_records)} / {len(records)}")
+    lines.append("")
+    lines.append("## Per-System Metrics")
+    lines.append("")
+    lines.append(
+        "| system | policy | n_runs | finite_rollout | rollout_mse_mean | final_error_mean | best_seed |"
+    )
+    lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
+    for row in metric_rows:
+        rollout_val = row["rollout_mse_mean"]
+        final_error_val = row["final_error_mean"]
+        best_seed = row["best_seed"]
+        lines.append(
+            "| "
+            f"{row['system']} | {row['policy']} | {int(row['n_runs'])} | {int(row['n_finite_rollout'])} | "
+            f"{_fmt_metric(rollout_val)} | "
+            f"{_fmt_metric(final_error_val)} | "
+            f"{best_seed if best_seed is not None else 'NA'} |"
+        )
+    lines.append("")
+    lines.append("## Best Finite Record by Policy")
+    lines.append("")
+    lines.append("| policy | system | seed | rollout_mse | session_dir |")
+    lines.append("| --- | --- | ---: | ---: | --- |")
+    for policy in policies:
+        best_record = min(
+            (
+                r
+                for r in records
+                if str(r["policy"]) == policy
+                and _finite_metric(r.get("post_probe_eval", {}).get("rollout_mse")) is not None
+            ),
+            key=lambda r: float(r["post_probe_eval"]["rollout_mse"]),
+            default=None,
+        )
+        if best_record is None:
+            lines.append(f"| {policy} | NA | NA | NA | NA |")
+            continue
+        lines.append(
+            f"| {policy} | {best_record['system']} | {int(best_record['seed'])} | "
+            f"{float(best_record['post_probe_eval']['rollout_mse']):.6f} | "
+            f"`{best_record.get('session_dir', 'NA')}` |"
+        )
+    if figure_paths:
+        lines.append("")
+        lines.append("## Figures")
+        lines.append("")
+        for figure_path in figure_paths:
+            lines.append(f"- `{os.path.basename(figure_path)}`")
+    text = "\n".join(lines)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return out_path
+
+
+def save_online_id_summary_figures(
+    out_dir: str,
+    *,
+    metric_rows: list[dict[str, object]],
+    error_trace_rows: list[dict[str, object]],
+) -> list[str]:
+    ensure_dir(out_dir)
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return []
+
+    figure_paths: list[str] = []
+    policies = sorted({str(row["policy"]) for row in metric_rows})
+    systems = sorted({str(row["system"]) for row in metric_rows})
+
+    if metric_rows:
+        x = np.arange(len(systems), dtype=np.float64)
+        width = 0.8 / max(len(policies), 1)
+
+        fig, ax = plt.subplots(figsize=(10.5, 5.2))
+        for idx, policy in enumerate(policies):
+            subset = {str(row["system"]): row for row in metric_rows if str(row["policy"]) == policy}
+            ys = []
+            yerr = []
+            for system in systems:
+                row = subset.get(system)
+                ys.append(np.nan if row is None or row["final_error_mean"] is None else float(row["final_error_mean"]))
+                yerr.append(np.nan if row is None or row["final_error_std"] is None else float(row["final_error_std"]))
+            offset = (idx - (len(policies) - 1) / 2.0) * width
+            ax.bar(x + offset, ys, width=width, yerr=yerr, capsize=3, label=policy)
+        ax.set_xticks(x)
+        ax.set_xticklabels(systems, rotation=20)
+        ax.set_ylabel("Final embedding error (mean +/- std)")
+        ax.set_title("Online-ID final embedding error by system and policy")
+        ax.grid(axis="y", alpha=0.2)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        final_error_path = os.path.join(out_dir, "final_error_by_system_policy.png")
+        fig.savefig(final_error_path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(final_error_path)
+
+        fig, ax = plt.subplots(figsize=(10.5, 5.2))
+        for idx, policy in enumerate(policies):
+            subset = {str(row["system"]): row for row in metric_rows if str(row["policy"]) == policy}
+            ys = []
+            yerr = []
+            for system in systems:
+                row = subset.get(system)
+                ys.append(np.nan if row is None or row["rollout_mse_mean"] is None else float(row["rollout_mse_mean"]))
+                yerr.append(np.nan if row is None or row["rollout_mse_std"] is None else float(row["rollout_mse_std"]))
+            offset = (idx - (len(policies) - 1) / 2.0) * width
+            ax.bar(x + offset, ys, width=width, yerr=yerr, capsize=3, label=policy)
+        ax.set_xticks(x)
+        ax.set_xticklabels(systems, rotation=20)
+        ax.set_ylabel("Post-probe rollout MSE (mean +/- std)")
+        ax.set_title("Online-ID rollout MSE by system and policy")
+        ax.grid(axis="y", alpha=0.2)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        rollout_path = os.path.join(out_dir, "rollout_mse_by_system_policy.png")
+        fig.savefig(rollout_path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(rollout_path)
+
+    if error_trace_rows:
+        fig, ax = plt.subplots(figsize=(9.5, 5.0))
+        for policy in policies:
+            series = [row for row in error_trace_rows if str(row["policy"]) == policy]
+            series.sort(key=lambda row: int(row["step"]))
+            xs = [int(row["step"]) for row in series]
+            ys = np.asarray([float(row["value_mean"]) for row in series], dtype=np.float64)
+            std = np.asarray([float(row["value_std"]) for row in series], dtype=np.float64)
+            ax.plot(xs, ys, label=policy)
+            ax.fill_between(xs, ys - std, ys + std, alpha=0.18)
+        ax.set_xlabel("Environment step")
+        ax.set_ylabel("Embedding error norm (mean +/- std)")
+        ax.set_title("Online-ID embedding error over steps")
+        ax.grid(alpha=0.2)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        trace_path = os.path.join(out_dir, "embedding_error_over_steps.png")
+        fig.savefig(trace_path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(trace_path)
+
+    return figure_paths
+
+
 def summarize_identification_results(records: list[dict], out_path: str):
     summary: dict[str, dict[str, float]] = {}
     for policy in sorted({r["policy"] for r in records}):
@@ -1878,11 +3347,651 @@ def summarize_identification_results(records: list[dict], out_path: str):
     }
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
+    out_dir = os.path.dirname(out_path)
+    metric_rows = build_online_id_metrics_rows(records)
+    error_trace_rows = build_online_id_error_trace_rows(records)
+    metrics_csv_path = write_online_id_metrics_csv(os.path.join(out_dir, "metrics.csv"), metric_rows)
+    error_trace_csv_path = write_online_id_error_trace_csv(
+        os.path.join(out_dir, "embedding_error_over_steps.csv"),
+        error_trace_rows,
+    )
+    figure_paths = save_online_id_summary_figures(
+        os.path.join(out_dir, "figures"),
+        metric_rows=metric_rows,
+        error_trace_rows=error_trace_rows,
+    )
+    markdown_path = write_online_id_summary_markdown(
+        os.path.join(out_dir, "summary.md"),
+        records=records,
+        metric_rows=metric_rows,
+        figure_paths=figure_paths,
+    )
+    payload["metrics_csv"] = metrics_csv_path
+    payload["embedding_error_trace_csv"] = error_trace_csv_path
+    payload["summary_markdown"] = markdown_path
+    payload["figure_paths"] = figure_paths
+    return payload
+
+
+def _format_variant_value(value: float) -> str:
+    text = f"{float(value):g}"
+    return text.replace("-", "m").replace(".", "p")
+
+
+def load_reference_embedding_bank(
+    *,
+    checkpoint_path: str | None,
+    system_bank: str,
+    fallback_systems: tuple[SystemSpec, ...],
+    target_device: str | torch.device = "cpu",
+) -> tuple[tuple[SystemSpec, ...], torch.Tensor]:
+    if checkpoint_path:
+        bank_specs = resolve_system_bank(system_bank)
+        payload = torch.load(checkpoint_path, map_location="cpu")
+        saved_embeddings = dict(payload.get("system_embeddings", {}))
+        embedding_metadata = dict(payload.get("embedding_metadata", {}))
+        embedding_mode = str(payload.get("embedding_mode", "learned_system_id"))
+        if saved_embeddings:
+            inferred_d_embed = len(next(iter(saved_embeddings.values())))
+        elif embedding_mode == "family_param" and embedding_metadata.get("embedding_dim") is not None:
+            inferred_d_embed = int(embedding_metadata["embedding_dim"])
+        else:
+            inferred_d_embed = len(fallback_systems[0].embedding)
+        if embedding_mode == "fixed":
+            aligned_specs = truncate_embedding(bank_specs, d_embed=inferred_d_embed)
+            embedding_map = resolve_system_embedding_map(
+                systems=aligned_specs,
+                embedding_mode="fixed",
+                learned_table=None,
+            )
+            bank_specs = aligned_specs
+        elif embedding_mode == "family_param" and embedding_metadata:
+            embedding_map = resolve_system_embedding_map(
+                systems=bank_specs,
+                embedding_mode="family_param",
+                learned_table=None,
+                embedding_metadata=embedding_metadata,
+            )
+            for spec in bank_specs:
+                if spec.name in saved_embeddings:
+                    embedding_map[spec.name] = [float(x) for x in saved_embeddings[spec.name]]
+        else:
+            embedding_map = {}
+            for spec in bank_specs:
+                if spec.name in saved_embeddings:
+                    embedding_map[spec.name] = [float(x) for x in saved_embeddings[spec.name]]
+                else:
+                    embedding_map[spec.name] = [float(x) for x in spec.embedding[:inferred_d_embed]]
+        return bank_specs, system_embedding_tensor(embedding_map, bank_specs, target_device=target_device)
+
+    fallback_map = {spec.name: [float(x) for x in spec.embedding] for spec in fallback_systems}
+    return fallback_systems, system_embedding_tensor(
+        fallback_map, fallback_systems, target_device=target_device
+    )
+
+
+def build_online_id_debug_scenarios(args) -> list[dict[str, object]]:
+    baseline_mean_firing = float(getattr(args, "baseline_mean_firing", 1000.0))
+    baseline_action_strength = float(getattr(args, "baseline_action_strength", 1.0))
+    baseline_policies = [str(p) for p in getattr(args, "policies", ["active_short", "random", "no_policy"])]
+    firing_policies = [str(p) for p in getattr(args, "firing_policies", baseline_policies)]
+    action_policies = [str(p) for p in getattr(args, "action_policies", ["active_short"])]
+
+    scenarios: list[dict[str, object]] = [
+        {
+            "hypothesis": "baseline",
+            "variant": "baseline",
+            "scenario_label": "baseline",
+            "observation_mean_firing": baseline_mean_firing,
+            "action_strength": baseline_action_strength,
+            "policies": baseline_policies,
+        }
+    ]
+
+    for mean_firing in [float(x) for x in getattr(args, "mean_firing_sweep", [])]:
+        if math.isclose(mean_firing, baseline_mean_firing, rel_tol=0.0, abs_tol=1e-12):
+            continue
+        variant = f"mean_firing_{_format_variant_value(mean_firing)}"
+        scenarios.append(
+            {
+                "hypothesis": "firing_rate",
+                "variant": variant,
+                "scenario_label": variant,
+                "observation_mean_firing": mean_firing,
+                "action_strength": baseline_action_strength,
+                "policies": firing_policies,
+            }
+        )
+
+    for action_strength in [float(x) for x in getattr(args, "action_strength_sweep", [])]:
+        if math.isclose(action_strength, baseline_action_strength, rel_tol=0.0, abs_tol=1e-12):
+            continue
+        variant = f"action_strength_{_format_variant_value(action_strength)}"
+        scenarios.append(
+            {
+                "hypothesis": "action_strength",
+                "variant": variant,
+                "scenario_label": variant,
+                "observation_mean_firing": baseline_mean_firing,
+                "action_strength": action_strength,
+                "policies": action_policies,
+            }
+        )
+    return scenarios
+
+
+def build_online_id_debug_run_rows(records: list[dict]) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for record in records:
+        debug = dict(record.get("debug_diagnostics", {}))
+        landscape = dict(record.get("embedding_bank_landscape", {}))
+        post_probe = dict(record.get("post_probe_eval", {}))
+        rows.append(
+            {
+                "hypothesis": str(record.get("hypothesis", "baseline")),
+                "variant": str(record.get("variant", "baseline")),
+                "scenario_label": str(record.get("scenario_label", record.get("variant", "baseline"))),
+                "system": str(record["system"]),
+                "family": str(record["family"]),
+                "policy": str(record["policy"]),
+                "seed": int(record["seed"]),
+                "configured_mean_firing": float(record.get("observation_mean_firing", 0.0)),
+                "configured_action_strength": float(
+                    record.get("active_policy_cfg", {}).get("action_strength", 0.0)
+                ),
+                "rollout_mse": _finite_metric(post_probe.get("rollout_mse")),
+                "final_state_mse": _finite_metric(post_probe.get("final_state_mse")),
+                "trajectory_r2": _finite_metric(post_probe.get("trajectory_r2")),
+                "final_error": float(record.get("final_error", 0.0)),
+                "observed_rate_hz_mean": _finite_metric(debug.get("observed_rate_hz_mean")),
+                "observed_zero_fraction_mean": _finite_metric(
+                    debug.get("observed_zero_fraction_mean")
+                ),
+                "action_norm_mean": _finite_metric(debug.get("action_norm_mean")),
+                "field_norm_mean": _finite_metric(debug.get("field_norm_mean")),
+                "action_to_field_ratio_mean": _finite_metric(
+                    debug.get("action_to_field_ratio_mean")
+                ),
+                "action_field_cosine_mean": _finite_metric(debug.get("action_field_cosine_mean")),
+                "action_at_bound_mean": _finite_metric(debug.get("action_at_bound_mean")),
+                "info_theta_trace_mean": _finite_metric(debug.get("info_theta_trace_mean")),
+                "info_state_trace_mean": _finite_metric(debug.get("info_state_trace_mean")),
+                "final_posterior_mahalanobis_sq": _finite_metric(
+                    record.get("final_posterior_mahalanobis_sq")
+                ),
+                "final_posterior_cov_trace": _finite_metric(record.get("final_posterior_cov_trace")),
+                "final_posterior_cov_logdet": _finite_metric(
+                    record.get("final_posterior_cov_logdet")
+                ),
+                "embedding_bank_true_candidate_rank": landscape.get("true_candidate_rank"),
+                "embedding_bank_top1_system": landscape.get("top1_system"),
+                "embedding_bank_top1_family": landscape.get("top1_family"),
+                "embedding_bank_top1_mse": _finite_metric(landscape.get("top1_mse")),
+                "embedding_bank_top2_gap": _finite_metric(landscape.get("top2_gap")),
+                "embedding_bank_top5_unique_families": landscape.get("top5_unique_families"),
+                "embedding_bank_discrete_posterior_effective_support": _finite_metric(
+                    landscape.get("discrete_posterior_effective_support")
+                ),
+                "embedding_bank_discrete_gaussian_mean_gap": _finite_metric(
+                    landscape.get("discrete_gaussian_mean_gap")
+                ),
+                "embedding_bank_discrete_gaussian_cov_gap_fro": _finite_metric(
+                    landscape.get("discrete_gaussian_cov_gap_fro")
+                ),
+                "session_dir": str(record.get("session_dir", "")),
+                "record_path": str(record.get("record_path", "")),
+            }
+        )
+    return rows
+
+
+def aggregate_online_id_debug_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    groups: dict[tuple[str, str, str], list[dict[str, object]]] = {}
+    for row in rows:
+        key = (str(row["hypothesis"]), str(row["variant"]), str(row["policy"]))
+        groups.setdefault(key, []).append(row)
+
+    agg_rows: list[dict[str, object]] = []
+    for (hypothesis, variant, policy), subset in sorted(groups.items()):
+        metric_names = [
+            "rollout_mse",
+            "final_state_mse",
+            "trajectory_r2",
+            "final_error",
+            "observed_rate_hz_mean",
+            "observed_zero_fraction_mean",
+            "action_norm_mean",
+            "field_norm_mean",
+            "action_to_field_ratio_mean",
+            "action_field_cosine_mean",
+            "action_at_bound_mean",
+            "info_theta_trace_mean",
+            "info_state_trace_mean",
+            "final_posterior_mahalanobis_sq",
+            "final_posterior_cov_trace",
+            "final_posterior_cov_logdet",
+            "embedding_bank_top1_mse",
+            "embedding_bank_top2_gap",
+            "embedding_bank_discrete_posterior_effective_support",
+            "embedding_bank_discrete_gaussian_mean_gap",
+            "embedding_bank_discrete_gaussian_cov_gap_fro",
+        ]
+        row_out: dict[str, object] = {
+            "hypothesis": hypothesis,
+            "variant": variant,
+            "policy": policy,
+            "n_runs": len(subset),
+            "n_finite_rollout": sum(1 for row in subset if row.get("rollout_mse") is not None),
+            "configured_mean_firing": float(subset[0]["configured_mean_firing"]),
+            "configured_action_strength": float(subset[0]["configured_action_strength"]),
+            "mean_true_candidate_rank": None,
+            "mean_top5_unique_families": None,
+        }
+        for metric_name in metric_names:
+            values = [float(row[metric_name]) for row in subset if row.get(metric_name) is not None]
+            mean_val, std_val = _mean_std(values)
+            row_out[f"{metric_name}_mean"] = mean_val
+            row_out[f"{metric_name}_std"] = std_val
+
+        rank_values = [
+            float(row["embedding_bank_true_candidate_rank"])
+            for row in subset
+            if row.get("embedding_bank_true_candidate_rank") is not None
+        ]
+        family_values = [
+            float(row["embedding_bank_top5_unique_families"])
+            for row in subset
+            if row.get("embedding_bank_top5_unique_families") is not None
+        ]
+        rank_mean, _ = _mean_std(rank_values)
+        family_mean, _ = _mean_std(family_values)
+        row_out["mean_true_candidate_rank"] = rank_mean
+        row_out["mean_top5_unique_families"] = family_mean
+        agg_rows.append(row_out)
+    return agg_rows
+
+
+def _write_csv_rows(path: str, rows: list[dict[str, object]], fieldnames: list[str]) -> str:
+    ensure_dir(os.path.dirname(path))
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    return path
+
+
+def write_online_id_debug_csvs(
+    out_dir: str,
+    *,
+    run_rows: list[dict[str, object]],
+    aggregate_rows: list[dict[str, object]],
+) -> dict[str, str]:
+    run_fields = list(run_rows[0].keys()) if run_rows else []
+    agg_fields = list(aggregate_rows[0].keys()) if aggregate_rows else []
+    paths: dict[str, str] = {}
+    if run_fields:
+        paths["run_metrics_csv"] = _write_csv_rows(
+            os.path.join(out_dir, "debug_run_metrics.csv"), run_rows, run_fields
+        )
+    if agg_fields:
+        paths["aggregate_metrics_csv"] = _write_csv_rows(
+            os.path.join(out_dir, "debug_aggregate_metrics.csv"),
+            aggregate_rows,
+            agg_fields,
+        )
+    return paths
+
+
+def save_online_id_debug_figures(
+    out_dir: str,
+    *,
+    run_rows: list[dict[str, object]],
+    aggregate_rows: list[dict[str, object]],
+) -> list[str]:
+    ensure_dir(out_dir)
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+    except Exception:
+        return []
+
+    figure_paths: list[str] = []
+
+    firing_rows = [
+        row
+        for row in aggregate_rows
+        if row["hypothesis"] in {"baseline", "firing_rate"}
+        and row.get("configured_mean_firing") is not None
+    ]
+    if firing_rows:
+        fig, ax = plt.subplots(figsize=(8.8, 4.8))
+        for policy in sorted({str(row["policy"]) for row in firing_rows}):
+            subset = [row for row in firing_rows if str(row["policy"]) == policy]
+            subset.sort(key=lambda row: float(row["configured_mean_firing"]))
+            xs = [float(row["configured_mean_firing"]) for row in subset]
+            ys = [
+                np.nan
+                if row.get("rollout_mse_mean") is None
+                else float(row["rollout_mse_mean"])
+                for row in subset
+            ]
+            ax.plot(xs, ys, marker="o", label=policy)
+        ax.set_xscale("log")
+        ax.set_xlabel("Configured mean firing rate")
+        ax.set_ylabel("Rollout MSE")
+        ax.set_title("Online-ID sensitivity to observation firing rate")
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        path = os.path.join(out_dir, "rollout_mse_vs_mean_firing.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(path)
+
+        fig, ax = plt.subplots(figsize=(8.8, 4.8))
+        for policy in sorted({str(row["policy"]) for row in firing_rows}):
+            subset = [row for row in firing_rows if str(row["policy"]) == policy]
+            subset.sort(key=lambda row: float(row["configured_mean_firing"]))
+            xs = [float(row["configured_mean_firing"]) for row in subset]
+            ys = [
+                np.nan
+                if row.get("observed_rate_hz_mean_mean") is None
+                else float(row["observed_rate_hz_mean_mean"])
+                for row in subset
+            ]
+            ax.plot(xs, ys, marker="o", label=policy)
+        ax.set_xscale("log")
+        ax.set_xlabel("Configured mean firing rate")
+        ax.set_ylabel("Observed mean firing rate (Hz)")
+        ax.set_title("Observed firing rate under firing-rate sweep")
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        path = os.path.join(out_dir, "observed_rate_vs_mean_firing.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(path)
+
+    action_rows = [
+        row
+        for row in aggregate_rows
+        if row["hypothesis"] in {"baseline", "action_strength"}
+        and str(row["policy"]) == "active_short"
+    ]
+    if action_rows:
+        action_rows.sort(key=lambda row: float(row["configured_action_strength"]))
+        xs = [float(row["configured_action_strength"]) for row in action_rows]
+
+        fig, ax = plt.subplots(figsize=(8.2, 4.8))
+        ys = [
+            np.nan if row.get("rollout_mse_mean") is None else float(row["rollout_mse_mean"])
+            for row in action_rows
+        ]
+        ax.plot(xs, ys, marker="o", color="#0b6e4f")
+        ax.set_xscale("log")
+        ax.set_xlabel("Active action strength")
+        ax.set_ylabel("Rollout MSE")
+        ax.set_title("Active-short performance vs action strength")
+        ax.grid(alpha=0.25)
+        fig.tight_layout()
+        path = os.path.join(out_dir, "rollout_mse_vs_action_strength.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(path)
+
+        fig, ax = plt.subplots(figsize=(8.2, 4.8))
+        ys = [
+            np.nan
+            if row.get("action_to_field_ratio_mean_mean") is None
+            else float(row["action_to_field_ratio_mean_mean"])
+            for row in action_rows
+        ]
+        ax.plot(xs, ys, marker="o", color="#b74f2a")
+        ax.set_xscale("log")
+        ax.set_xlabel("Active action strength")
+        ax.set_ylabel("Action / vector-field norm")
+        ax.set_title("Action strength relative to native dynamics")
+        ax.grid(alpha=0.25)
+        fig.tight_layout()
+        path = os.path.join(out_dir, "action_to_field_ratio_vs_action_strength.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(path)
+
+    gaussian_rows = [
+        row
+        for row in run_rows
+        if row.get("final_posterior_mahalanobis_sq") is not None and row.get("rollout_mse") is not None
+    ]
+    if gaussian_rows:
+        fig, ax = plt.subplots(figsize=(8.8, 4.8))
+        for policy in sorted({str(row["policy"]) for row in gaussian_rows}):
+            subset = [row for row in gaussian_rows if str(row["policy"]) == policy]
+            ax.scatter(
+                [float(row["final_posterior_mahalanobis_sq"]) for row in subset],
+                [float(row["rollout_mse"]) for row in subset],
+                s=28,
+                alpha=0.8,
+                label=policy,
+            )
+        ax.set_xlabel("Final posterior Mahalanobis distance squared")
+        ax.set_ylabel("Rollout MSE")
+        ax.set_title("Posterior Gaussian fit vs online-ID performance")
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        path = os.path.join(out_dir, "gaussian_fit_vs_rollout_mse.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(path)
+
+    landscape_rows = [
+        row
+        for row in run_rows
+        if row.get("embedding_bank_true_candidate_rank") is not None
+        and row.get("embedding_bank_discrete_gaussian_mean_gap") is not None
+    ]
+    if landscape_rows:
+        fig, ax = plt.subplots(figsize=(8.8, 4.8))
+        for policy in sorted({str(row["policy"]) for row in landscape_rows}):
+            subset = [row for row in landscape_rows if str(row["policy"]) == policy]
+            ax.scatter(
+                [float(row["embedding_bank_true_candidate_rank"]) for row in subset],
+                [float(row["embedding_bank_discrete_gaussian_mean_gap"]) for row in subset],
+                s=28,
+                alpha=0.8,
+                label=policy,
+            )
+        ax.set_xlabel("True-system rank in discrete bank landscape")
+        ax.set_ylabel("Discrete posterior / Gaussian mean gap")
+        ax.set_title("Discrete bank posterior vs local Gaussian belief")
+        ax.grid(alpha=0.25)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        path = os.path.join(out_dir, "discrete_bank_vs_gaussian_gap.png")
+        fig.savefig(path, dpi=150)
+        plt.close(fig)
+        figure_paths.append(path)
+
+    return figure_paths
+
+
+def write_online_id_debug_summary_markdown(
+    out_path: str,
+    *,
+    records: list[dict],
+    aggregate_rows: list[dict[str, object]],
+    figure_paths: list[str],
+) -> str:
+    ensure_dir(os.path.dirname(out_path))
+
+    def _fmt(value: object) -> str:
+        scalar = _finite_metric(value)
+        return "NA" if scalar is None else f"{scalar:.4f}"
+
+    lines: list[str] = []
+    lines.append("# Cosyne Online-ID Debug Summary")
+    lines.append("")
+    lines.append("## Coverage")
+    lines.append("")
+    lines.append(f"- Records: {len(records)}")
+    lines.append(f"- Hypotheses: {', '.join(sorted({str(r.get('hypothesis', 'baseline')) for r in records}))}")
+    lines.append(f"- Systems: {', '.join(sorted({str(r['system']) for r in records}))}")
+    lines.append("")
+
+    firing_rows = [row for row in aggregate_rows if row["hypothesis"] in {"baseline", "firing_rate"}]
+    if firing_rows:
+        lines.append("## Firing-Rate Check")
+        lines.append("")
+        lines.append(
+            "| variant | policy | mean_firing | rollout_mse | observed_rate_hz | info_theta | final_error |"
+        )
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
+        for row in sorted(firing_rows, key=lambda r: (float(r["configured_mean_firing"]), str(r["policy"]))):
+            lines.append(
+                f"| {row['variant']} | {row['policy']} | {float(row['configured_mean_firing']):.1f} | "
+                f"{_fmt(row.get('rollout_mse_mean'))} | "
+                f"{_fmt(row.get('observed_rate_hz_mean_mean'))} | "
+                f"{_fmt(row.get('info_theta_trace_mean_mean'))} | "
+                f"{_fmt(row.get('final_error_mean'))} |"
+            )
+        lines.append("")
+
+    action_rows = [
+        row for row in aggregate_rows if row["hypothesis"] in {"baseline", "action_strength"}
+    ]
+    if action_rows:
+        lines.append("## Action-Strength Check")
+        lines.append("")
+        lines.append(
+            "| variant | policy | action_strength | rollout_mse | action/field | at_bound | final_error |"
+        )
+        lines.append("| --- | --- | ---: | ---: | ---: | ---: | ---: |")
+        for row in sorted(action_rows, key=lambda r: (float(r["configured_action_strength"]), str(r["policy"]))):
+            lines.append(
+                f"| {row['variant']} | {row['policy']} | {float(row['configured_action_strength']):.3f} | "
+                f"{_fmt(row.get('rollout_mse_mean'))} | "
+                f"{_fmt(row.get('action_to_field_ratio_mean_mean'))} | "
+                f"{_fmt(row.get('action_at_bound_mean_mean'))} | "
+                f"{_fmt(row.get('final_error_mean'))} |"
+            )
+        lines.append("")
+
+    gaussian_records = []
+    for record in records:
+        landscape = dict(record.get("embedding_bank_landscape", {}))
+        gaussian_records.append(
+            {
+                "system": record["system"],
+                "policy": record["policy"],
+                "variant": record.get("variant", "baseline"),
+                "mahal": record.get("final_posterior_mahalanobis_sq"),
+                "rank": landscape.get("true_candidate_rank"),
+                "gap": landscape.get("discrete_gaussian_mean_gap"),
+                "top1": landscape.get("top1_system"),
+            }
+        )
+    if gaussian_records:
+        lines.append("## Gaussian-Approximation Check")
+        lines.append("")
+        lines.append("| system | policy | variant | mahal_sq | true_rank | mean_gap | top1_system |")
+        lines.append("| --- | --- | --- | ---: | ---: | ---: | --- |")
+        for row in sorted(gaussian_records, key=lambda r: (str(r["system"]), str(r["policy"]), str(r["variant"]))):
+            lines.append(
+                f"| {row['system']} | {row['policy']} | {row['variant']} | "
+                f"{_fmt(row['mahal'])} | "
+                f"{row['rank'] if row['rank'] is not None else 'NA'} | "
+                f"{_fmt(row['gap'])} | "
+                f"{row['top1'] if row['top1'] is not None else 'NA'} |"
+            )
+        lines.append("")
+
+    if figure_paths:
+        lines.append("## Figures")
+        lines.append("")
+        for figure_path in figure_paths:
+            lines.append(f"- `{os.path.basename(figure_path)}`")
+    lines.append("")
+
+    high_mahal = [
+        r for r in records if _finite_metric(r.get("final_posterior_mahalanobis_sq")) is not None
+        and float(r["final_posterior_mahalanobis_sq"]) > 5.99
+    ]
+    rank_miss = [
+        r for r in records
+        if r.get("embedding_bank_landscape", {}).get("true_candidate_rank") not in {None, 1}
+    ]
+    lines.append("## Headline Diagnostics")
+    lines.append("")
+    lines.append(
+        f"- Final Gaussian posterior misses the true embedding at 95% ellipse level in {len(high_mahal)} / {len(records)} records."
+    )
+    lines.append(
+        f"- Discrete bank landscape top-1 differs from the true system in {len(rank_miss)} / {len(records)} records."
+    )
+
+    text = "\n".join(lines)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    return out_path
+
+
+def summarize_online_id_debug_results(records: list[dict], out_path: str) -> dict[str, object]:
+    summary_by_variant = aggregate_online_id_debug_rows(build_online_id_debug_run_rows(records))
+    payload = {
+        "primary_metric": "rollout_mse",
+        "records": records,
+        "summary_by_variant": summary_by_variant,
+    }
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+    out_dir = os.path.dirname(out_path)
+    run_rows = build_online_id_debug_run_rows(records)
+    aggregate_rows = aggregate_online_id_debug_rows(run_rows)
+    csv_paths = write_online_id_debug_csvs(
+        out_dir,
+        run_rows=run_rows,
+        aggregate_rows=aggregate_rows,
+    )
+    figure_paths = save_online_id_debug_figures(
+        os.path.join(out_dir, "figures"),
+        run_rows=run_rows,
+        aggregate_rows=aggregate_rows,
+    )
+    markdown_path = write_online_id_debug_summary_markdown(
+        os.path.join(out_dir, "summary.md"),
+        records=records,
+        aggregate_rows=aggregate_rows,
+        figure_paths=figure_paths,
+    )
+    payload["run_metrics_csv"] = csv_paths.get("run_metrics_csv")
+    payload["aggregate_metrics_csv"] = csv_paths.get("aggregate_metrics_csv")
+    payload["summary_markdown"] = markdown_path
+    payload["figure_paths"] = figure_paths
     return payload
 
 
 def default_results_root() -> str:
-    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "results"))
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "results", "cosyne"))
+
+
+def resolve_online_id_config_path() -> str:
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    candidates = (
+        os.path.join(os.path.dirname(__file__), "conf", "config.yaml"),
+        os.path.join(repo_root, "experiments", "active_embedding", "conf", "config.yaml"),
+        os.path.join(repo_root, "experiments", "ciss", "conf", "config.yaml"),
+    )
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+    raise FileNotFoundError(
+        "Could not locate an experiment config for online identification. "
+        f"Checked: {list(candidates)}"
+    )
 
 
 def configure_runtime_device(seed: int = 0) -> str:
@@ -1892,8 +4001,12 @@ def configure_runtime_device(seed: int = 0) -> str:
 
 
 def resolve_system_bank(system_bank: str) -> tuple[SystemSpec, ...]:
+    if system_bank == "mixed200":
+        return MIXED200_SYSTEM_SPECS
     if system_bank in {"mixed80", "mixed40"}:
         return MIXED80_SYSTEM_SPECS
+    if system_bank == "known_duffing40":
+        return KNOWN_DUFFING40_SYSTEM_SPECS
     if system_bank == "legacy4":
         return LEGACY_SYSTEM_SPECS
     raise ValueError(f"Unknown system bank: {system_bank}")
@@ -1978,6 +4091,11 @@ def prepare_selected_systems(
     embedding_mode: str,
     d_embed: int,
 ) -> tuple[SystemSpec, ...]:
+    if system_bank == "known_duffing40" and embedding_mode == "fixed" and int(d_embed) != 2:
+        raise ValueError(
+            "known_duffing40 with fixed embeddings requires d_embed=2 because the embedding "
+            "is the true Duffing parameter pair (a, b)."
+        )
     bank = resolve_system_bank(system_bank)
     selected = select_systems(bank=bank, requested_systems=systems, system_bank=system_bank)
     if embedding_mode == "fixed":
@@ -2021,6 +4139,7 @@ def resolve_output_dir(
 def maybe_load_or_train_bundle(args, selected: tuple[SystemSpec, ...]) -> ModelBundle:
     if getattr(args, "checkpoint", None):
         return load_model_bundle_checkpoint(args.checkpoint, selected)
+    embedding_reference_systems = resolve_system_bank(getattr(args, "system_bank", "mixed80"))
     return train_meta_dynamics(
         selected,
         d_embed=args.d_embed,
@@ -2032,6 +4151,16 @@ def maybe_load_or_train_bundle(args, selected: tuple[SystemSpec, ...]) -> ModelB
         n_per_system=args.train_samples_per_system,
         batch_size=args.batch_size,
         n_epochs=args.train_epochs,
+        embedding_reference_systems=embedding_reference_systems,
+        geometry_reg_weight=float(getattr(args, "geometry_reg_weight", 0.05)),
+        geometry_anchor_samples=int(getattr(args, "geometry_anchor_samples", 512)),
+        geometry_neighbor_k=int(getattr(args, "geometry_neighbor_k", 4)),
+        interpolation_aug_weight=float(getattr(args, "interpolation_aug_weight", 0.25)),
+        interpolation_aug_samples=int(getattr(args, "interpolation_aug_samples", 128)),
+        train_state_bounds=(
+            float(getattr(args, "train_state_low", -3.0)),
+            float(getattr(args, "train_state_high", 3.0)),
+        ),
     )
 
 
@@ -2224,6 +4353,10 @@ def run_online_identification_experiment(args, *, print_progress: bool = True) -
         active_action_strength=args.active_action_strength,
     )
     base_dir = resolve_results_dir(getattr(args, "results_root", None), args.results_subdir)
+    checkpoint_path = getattr(args, "checkpoint", None)
+    if checkpoint_path is not None:
+        checkpoint_path = os.path.abspath(str(checkpoint_path))
+    resume_existing = bool(getattr(args, "resume", False))
     selected = prepare_selected_systems(
         system_bank=args.system_bank,
         systems=args.systems,
@@ -2239,6 +4372,29 @@ def run_online_identification_experiment(args, *, print_progress: bool = True) -
         for policy in args.policies:
             for rep in range(args.repeats):
                 run_dir = os.path.join(base_dir, spec.name, policy, f"seed_{rep}")
+                if resume_existing:
+                    existing_record = load_existing_online_id_record(
+                        run_dir,
+                        system=spec.name,
+                        policy=str(policy),
+                        seed=rep,
+                    )
+                    if existing_record is not None:
+                        records.append(existing_record)
+                        if print_progress:
+                            post_probe_eval = dict(existing_record.get("post_probe_eval", {}))
+                            rollout_mse = float(post_probe_eval.get("rollout_mse", float("nan")))
+                            final_state_mse = float(
+                                post_probe_eval.get("final_state_mse", float("nan"))
+                            )
+                            final_error = float(existing_record.get("final_error", float("nan")))
+                            print(
+                                f"[{spec.name}][{policy}][seed={rep}] "
+                                f"resumed rollout_mse={rollout_mse:.4f} "
+                                f"final_state_mse={final_state_mse:.4f} "
+                                f"final_error={final_error:.4f}"
+                            )
+                        continue
                 record = run_identification(
                     spec=spec,
                     meta_dynamics=bundle.meta_dynamics,
@@ -2253,6 +4409,25 @@ def run_online_identification_experiment(args, *, print_progress: bool = True) -
                     eval_rollout_dt=args.rollout_dt,
                     eval_rollout_count=args.rollout_inits,
                     dynamics_scale=args.dynamics_scale,
+                    save_acq_map=bool(getattr(args, "save_acq_map", False)),
+                    acq_map_interval=int(getattr(args, "acq_map_interval", 5)),
+                    acq_map_grid=int(getattr(args, "acq_map_grid", 61)),
+                    acq_map_lim=float(getattr(args, "acq_map_lim", 3.0)),
+                    observation_mean_firing=float(
+                        getattr(args, "observation_mean_firing", 1000.0)
+                    ),
+                    q_theta=float(getattr(args, "q_theta", 1e-4)),
+                    k_theta=int(getattr(args, "k_theta", 10)),
+                    q_theta_meas_coeff=float(getattr(args, "q_theta_meas_coeff", 0.0)),
+                    q_theta_max_scale=float(getattr(args, "q_theta_max_scale", 10.0)),
+                    state_init_uncertainty=float(
+                        getattr(args, "state_init_uncertainty", 1.0)
+                    ),
+                    record_metadata={
+                        "checkpoint": checkpoint_path,
+                        "system_bank": str(args.system_bank),
+                        "dynamics_scale": float(args.dynamics_scale),
+                    },
                 )
                 records.append(record)
                 if print_progress:
@@ -2271,4 +4446,125 @@ def run_online_identification_experiment(args, *, print_progress: bool = True) -
         "summary": payload["summary"],
         "n_records": len(records),
         "embedding_modes": payload["embedding_modes"],
+    }
+
+
+def run_online_identification_debug_experiment(
+    args,
+    *,
+    print_progress: bool = True,
+) -> dict[str, object]:
+    configure_runtime_device(seed=int(getattr(args, "seed", 0)))
+    validate_rollout_args(
+        rollout_init_low=args.rollout_init_low,
+        rollout_init_high=args.rollout_init_high,
+        rollout_horizon=args.rollout_horizon,
+        rollout_inits=args.rollout_inits,
+        rollout_dt=args.rollout_dt,
+    )
+    base_dir = resolve_results_dir(getattr(args, "results_root", None), args.results_subdir)
+    checkpoint_path = getattr(args, "checkpoint", None)
+    if checkpoint_path is not None:
+        checkpoint_path = os.path.abspath(str(checkpoint_path))
+
+    selected = prepare_selected_systems(
+        system_bank=args.system_bank,
+        systems=args.systems,
+        embedding_mode=args.embedding_mode,
+        d_embed=args.d_embed,
+    )
+    bundle = maybe_load_or_train_bundle(args=args, selected=selected)
+    resolved_embeddings = system_embedding_tensor(
+        bundle.system_embeddings, selected, target_device="cpu"
+    )
+    reference_bank_specs, reference_bank_embeddings = load_reference_embedding_bank(
+        checkpoint_path=checkpoint_path,
+        system_bank=str(args.system_bank),
+        fallback_systems=selected,
+        target_device="cpu",
+    )
+    scenarios = build_online_id_debug_scenarios(args)
+    records: list[dict] = []
+
+    for scenario_idx, scenario in enumerate(scenarios):
+        active_cfg = build_active_policy_cfg(
+            active_horizon=args.active_horizon,
+            active_num_iterations=args.active_num_iterations,
+            active_num_samples=args.active_num_samples,
+            active_num_elite=args.active_num_elite,
+            active_chunk=args.active_chunk,
+            active_action_cost_weight=args.active_action_cost_weight,
+            active_action_strength=float(scenario["action_strength"]),
+        )
+        for system_idx, spec in enumerate(selected):
+            for policy in scenario["policies"]:
+                for rep in range(args.repeats):
+                    run_dir = os.path.join(
+                        base_dir,
+                        str(scenario["scenario_label"]),
+                        spec.name,
+                        str(policy),
+                        f"seed_{rep}",
+                    )
+                    seed = 10_000 * scenario_idx + 100 * system_idx + rep
+                    record = run_identification(
+                        spec=spec,
+                        meta_dynamics=bundle.meta_dynamics,
+                        system_embedding=resolved_embeddings[system_idx],
+                        embedding_mode=bundle.embedding_mode,
+                        policy_name=str(policy),
+                        results_dir=run_dir,
+                        total_steps=args.total_steps,
+                        seed=seed,
+                        active_cfg=active_cfg,
+                        eval_rollout_horizon=args.rollout_horizon,
+                        eval_rollout_dt=args.rollout_dt,
+                        eval_rollout_count=args.rollout_inits,
+                        dynamics_scale=args.dynamics_scale,
+                        save_acq_map=bool(getattr(args, "save_acq_map", False)),
+                        acq_map_interval=int(getattr(args, "acq_map_interval", 5)),
+                        acq_map_grid=int(getattr(args, "acq_map_grid", 61)),
+                        acq_map_lim=float(getattr(args, "acq_map_lim", 3.0)),
+                        observation_mean_firing=float(scenario["observation_mean_firing"]),
+                        q_theta=float(getattr(args, "q_theta", 1e-4)),
+                        k_theta=int(getattr(args, "k_theta", 10)),
+                        q_theta_meas_coeff=float(getattr(args, "q_theta_meas_coeff", 0.0)),
+                        q_theta_max_scale=float(getattr(args, "q_theta_max_scale", 10.0)),
+                        state_init_uncertainty=float(
+                            getattr(args, "state_init_uncertainty", 1.0)
+                        ),
+                        reference_bank_specs=reference_bank_specs,
+                        reference_bank_embeddings=reference_bank_embeddings,
+                        bank_landscape_max_steps=int(
+                            getattr(args, "bank_landscape_max_steps", 400)
+                        ),
+                        record_metadata={
+                            "checkpoint": checkpoint_path,
+                            "system_bank": str(args.system_bank),
+                            "dynamics_scale": float(args.dynamics_scale),
+                            "hypothesis": str(scenario["hypothesis"]),
+                            "variant": str(scenario["variant"]),
+                            "scenario_label": str(scenario["scenario_label"]),
+                            "scenario_index": int(scenario_idx),
+                            "configured_mean_firing": float(scenario["observation_mean_firing"]),
+                            "configured_action_strength": float(scenario["action_strength"]),
+                        },
+                    )
+                    records.append(record)
+                    if print_progress:
+                        print(
+                            f"[{scenario['scenario_label']}][{spec.name}][{policy}][seed={rep}] "
+                            f"rollout_mse={record['post_probe_eval']['rollout_mse']:.4f} "
+                            f"final_error={record['final_error']:.4f} "
+                            f"mahal={record['final_posterior_mahalanobis_sq']:.4f}"
+                        )
+
+    summary_path = os.path.join(base_dir, "summary.json")
+    payload = summarize_online_id_debug_results(records, summary_path)
+    return {
+        "results_dir": base_dir,
+        "summary_path": summary_path,
+        "n_records": len(records),
+        "n_scenarios": len(scenarios),
+        "figure_paths": payload.get("figure_paths", []),
     }

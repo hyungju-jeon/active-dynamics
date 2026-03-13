@@ -9,16 +9,41 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 from datetime import datetime, timezone
 import importlib
 import inspect
-import json
 from pathlib import Path
 import subprocess
 import time
 from typing import Any
 
 import numpy as np
+from cosyne_common import (
+    parse_csv_ints as _parse_csv_ints,
+    parse_csv_list as _parse_csv_list,
+    write_json as _write_json,
+)
 
-DEFAULT_EXP_IDS = ["active_short", "active_long", "RND", "random"]
+DEFAULT_EXP_IDS = ["active_short", "random", "no_policy"]
 DEFAULT_SEEDS = [0, 10, 20]
+APPROXIMATION_EXP_IDS = {"frozen_cov", "no_sensitivity", "fully_observed"}
+FIXED_ACTIVE_EXP_IDS = {
+    "active_long",
+    "active_short",
+    "active_chunk",
+    "async_window",
+    "async_chunk",
+    "window_update",
+}
+LEGACY_EXP_ID_ALIASES = {
+    "step_update": "active_long",
+}
+SUPPORTED_EXP_IDS = {
+    *FIXED_ACTIVE_EXP_IDS,
+    *LEGACY_EXP_ID_ALIASES,
+    "RND",
+    "random",
+    "no_policy",
+    *APPROXIMATION_EXP_IDS,
+}
+PASSIVE_EXP_IDS = {"random", "no_policy"}
 
 REQUIRED_CONFIGS = [
     "experiments/ciss/conf/config.yaml",
@@ -51,18 +76,207 @@ def _current_commit() -> str:
         return "unknown"
 
 
-def _parse_csv_list(raw: str) -> list[str]:
-    values = [item.strip() for item in raw.split(",")]
-    return [item for item in values if item]
-
-
-def _parse_csv_ints(raw: str) -> list[int]:
-    return [int(item) for item in _parse_csv_list(raw)]
-
-
 def _ensure_dir(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def _validate_exp_id(exp_id: str) -> None:
+    if exp_id not in SUPPORTED_EXP_IDS:
+        raise ValueError(f"Unsupported exp_id={exp_id}. Expected one of {sorted(SUPPORTED_EXP_IDS)}")
+
+
+def _canonical_exp_id(exp_id: str) -> str:
+    return LEGACY_EXP_ID_ALIASES.get(exp_id, exp_id)
+
+
+def _resolve_schedule_from_request(
+    *,
+    exp_id: str,
+    requested_k_theta: int,
+    requested_planning_horizon: int | None,
+) -> dict[str, Any]:
+    requested_k_theta = max(1, int(requested_k_theta))
+    effective_k_theta = 1 if exp_id == "step_update" else requested_k_theta
+    state_update_interval = requested_k_theta if exp_id == "window_update" else 1
+    predictive_only_window = exp_id == "window_update"
+    effective_horizon = requested_planning_horizon
+    canonical_exp_id = _canonical_exp_id(exp_id)
+    if effective_horizon is None and exp_id not in PASSIVE_EXP_IDS:
+        if canonical_exp_id in {"active_long", "active_chunk", "async_window", "async_chunk", "window_update"}:
+            effective_horizon = 20
+        elif canonical_exp_id == "active_short":
+            effective_horizon = 1
+        elif exp_id in APPROXIMATION_EXP_IDS:
+            effective_horizon = 20
+        else:
+            effective_horizon = 5
+
+    if exp_id in PASSIVE_EXP_IDS:
+        planning_chunk = 1
+    elif exp_id == "window_update":
+        planning_chunk = max(1, int(requested_k_theta))
+    elif exp_id in {"step_update", "async_window"}:
+        planning_chunk = 1
+    elif exp_id in {"active_chunk", "async_chunk"}:
+        planning_chunk = 5
+    else:
+        planning_chunk = (
+            1 if int(effective_horizon) <= 1 else (5 if int(effective_horizon) >= 10 else 3)
+        )
+
+    if effective_horizon is not None:
+        planning_chunk = min(int(planning_chunk), int(effective_horizon))
+
+    resolved_window_size = max(int(effective_k_theta), int(state_update_interval))
+    return {
+        "planning_horizon": int(effective_horizon) if effective_horizon is not None else None,
+        "k_theta": int(effective_k_theta),
+        "planning_chunk": int(planning_chunk),
+        "state_update_interval": int(state_update_interval),
+        "predictive_only_window": bool(predictive_only_window),
+        "window_size": int(resolved_window_size),
+        "update_scheme": exp_id,
+        "metric_variant": exp_id if exp_id in APPROXIMATION_EXP_IDS else None,
+    }
+
+
+def _resolve_schedule_config(
+    *,
+    exp_id: str,
+    requested_k_theta: int,
+    requested_planning_horizon: int | None,
+    use_explicit_schedule: bool = False,
+) -> dict[str, Any]:
+    if use_explicit_schedule:
+        return _resolve_schedule_from_request(
+            exp_id=exp_id,
+            requested_k_theta=requested_k_theta,
+            requested_planning_horizon=requested_planning_horizon,
+        )
+
+    canonical_exp_id = _canonical_exp_id(exp_id)
+    if canonical_exp_id in PASSIVE_EXP_IDS:
+        return {
+            "planning_horizon": None,
+            "k_theta": 1,
+            "planning_chunk": 1,
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "window_size": 1,
+            "update_scheme": canonical_exp_id,
+            "metric_variant": None,
+        }
+
+    if canonical_exp_id == "active_long":
+        config = {
+            "planning_horizon": 20,
+            "k_theta": 1,
+            "planning_chunk": 1,
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "window_size": 1,
+            "metric_variant": "exact",
+        }
+    elif canonical_exp_id == "active_short":
+        config = {
+            "planning_horizon": 1,
+            "k_theta": 1,
+            "planning_chunk": 1,
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "window_size": 1,
+            "metric_variant": "exact",
+        }
+    elif canonical_exp_id == "active_chunk":
+        config = {
+            "planning_horizon": 20,
+            "k_theta": 1,
+            "planning_chunk": 5,
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "window_size": 1,
+            "metric_variant": "exact",
+        }
+    elif canonical_exp_id == "async_window":
+        config = {
+            "planning_horizon": 20,
+            "k_theta": 5,
+            "planning_chunk": 1,
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "window_size": 5,
+            "metric_variant": "exact",
+        }
+    elif canonical_exp_id == "async_chunk":
+        config = {
+            "planning_horizon": 20,
+            "k_theta": 5,
+            "planning_chunk": 5,
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "window_size": 5,
+            "metric_variant": "exact",
+        }
+    elif canonical_exp_id == "window_update":
+        config = {
+            "planning_horizon": 20,
+            "k_theta": 5,
+            "planning_chunk": 5,
+            "state_update_interval": 5,
+            "predictive_only_window": True,
+            "window_size": 5,
+            "metric_variant": "exact",
+        }
+    elif exp_id in APPROXIMATION_EXP_IDS:
+        config = {
+            "planning_horizon": 20,
+            "k_theta": 1,
+            "planning_chunk": 1,
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "window_size": 1,
+            "metric_variant": exp_id,
+        }
+    elif exp_id == "RND":
+        config = {
+            "planning_horizon": 20,
+            "k_theta": 1,
+            "planning_chunk": 1,
+            "state_update_interval": 1,
+            "predictive_only_window": False,
+            "window_size": 1,
+            "metric_variant": None,
+        }
+    else:
+        config = _resolve_schedule_from_request(
+            exp_id=exp_id,
+            requested_k_theta=requested_k_theta,
+            requested_planning_horizon=requested_planning_horizon,
+        )
+
+    if requested_planning_horizon is not None and config["planning_horizon"] is not None:
+        config["planning_horizon"] = max(1, int(requested_planning_horizon))
+        config["planning_chunk"] = min(int(config["planning_chunk"]), int(config["planning_horizon"]))
+
+    config["update_scheme"] = exp_id
+    return config
+
+
+def _embedding_metric_variant(exp_id: str) -> dict[str, bool]:
+    if exp_id == "frozen_cov":
+        return {"freeze_covariance": True}
+    if exp_id == "no_sensitivity":
+        return {"no_sensitivity_propagation": True}
+    if exp_id == "fully_observed":
+        return {"fully_observed": True}
+    return {}
+
+
+def _parameter_update_applied(*, prev_block_steps: int, model: Any) -> bool:
+    k_theta = max(1, int(getattr(model, "k_theta", 1)))
+    next_block_steps = int(getattr(model, "_theta_block_steps", 0))
+    return prev_block_steps + 1 >= k_theta and next_block_steps == 0
 
 
 def _sample_true_embedding(seed: int) -> np.ndarray:
@@ -71,11 +285,6 @@ def _sample_true_embedding(seed: int) -> np.ndarray:
     low = np.asarray([-3.0, -2.0], dtype=np.float64)
     high = np.asarray([-0.1, 2.0], dtype=np.float64)
     return (low + (high - low) * rng.random(2)).astype(np.float32)
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _write_trace_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
@@ -117,6 +326,202 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "y", "t"}
     return bool(value)
+
+
+def _current_plan_index(policy: Any) -> int:
+    """Current action index within the most recent chunked MPC plan."""
+    chunk = max(1, int(getattr(policy, "chunk", 1)))
+    count = max(0, int(getattr(policy, "count", 0)))
+    if count <= 0:
+        return 0
+    return (count - 1) % chunk
+
+
+def _extract_remaining_plan_actions(policy: Any):
+    """Return the remaining planned action sequence for the current step."""
+    import torch
+
+    plan = None
+    elite_actions = getattr(policy, "elite_actions", None)
+    if elite_actions is not None:
+        elite_actions = torch.as_tensor(elite_actions).detach()
+        if elite_actions.ndim == 3 and elite_actions.shape[0] > 0:
+            plan = elite_actions[0]
+
+    if plan is None:
+        mean_actions = getattr(policy, "mean", None)
+        if mean_actions is not None:
+            mean_actions = torch.as_tensor(mean_actions).detach()
+            if mean_actions.ndim == 2:
+                plan = mean_actions
+            elif mean_actions.ndim == 3 and mean_actions.shape[0] > 0:
+                plan = mean_actions[0]
+
+    if plan is None or plan.ndim != 2 or plan.shape[0] == 0:
+        return None
+
+    start = min(_current_plan_index(policy), int(plan.shape[0] - 1))
+    return plan[start:].unsqueeze(0)
+
+
+def _clone_filter_belief_state(model: Any) -> dict[str, Any]:
+    def _clone_value(value: Any) -> Any:
+        if isinstance(value, dict):
+            return {str(k): _clone_value(v) for k, v in value.items()}
+        if hasattr(value, "detach"):
+            return value.detach().clone()
+        return value
+
+    return {
+        "e": _clone_value(getattr(model, "e", None)),
+        "z": _clone_value(getattr(model, "z", None)),
+        "_state": _clone_value(getattr(model, "_state", None)),
+        "last_information": dict(getattr(model, "last_information", {}) or {}),
+        "_theta_score_block": _clone_value(getattr(model, "_theta_score_block", None)),
+        "_theta_info_block": _clone_value(getattr(model, "_theta_info_block", None)),
+        "_theta_sensitivity": _clone_value(getattr(model, "_theta_sensitivity", None)),
+        "_theta_block_steps": int(getattr(model, "_theta_block_steps", 0)),
+    }
+
+
+def _restore_filter_belief_state(model: Any, snapshot: dict[str, Any]) -> None:
+    if snapshot.get("e") is not None:
+        model.e = snapshot["e"]
+    if snapshot.get("z") is not None:
+        model.z = snapshot["z"]
+    if snapshot.get("_state") is not None:
+        model._state = snapshot["_state"]
+    model.last_information = dict(snapshot.get("last_information", {}) or {})
+    if snapshot.get("_theta_score_block") is not None:
+        model._theta_score_block = snapshot["_theta_score_block"]
+    if snapshot.get("_theta_info_block") is not None:
+        model._theta_info_block = snapshot["_theta_info_block"]
+    if snapshot.get("_theta_sensitivity") is not None:
+        model._theta_sensitivity = snapshot["_theta_sensitivity"]
+    model._theta_block_steps = int(snapshot.get("_theta_block_steps", 0))
+    if hasattr(model, "set_params") and getattr(model, "e", None) is not None:
+        model.set_params(model.e["m"])
+
+
+def _ensure_batch_time_tensor(value: Any, *, device: Any):
+    import torch
+
+    if value is None:
+        return None
+    tensor = torch.as_tensor(value, device=device)
+    if tensor.ndim == 1:
+        tensor = tensor.reshape(1, 1, -1)
+    elif tensor.ndim == 2:
+        if tensor.shape[0] == 1:
+            tensor = tensor.unsqueeze(1)
+        else:
+            tensor = tensor.unsqueeze(0)
+    return tensor
+
+
+def _predictive_only_embedding_step(model: Any, action: Any) -> dict[str, Any]:
+    import torch
+    import torch.nn.functional as F
+
+    if not hasattr(model, "z") or not hasattr(model, "Fz"):
+        raise TypeError("Predictive-only window updates require a FilteringEmbedding-style model.")
+
+    model._normalize_embedding_belief()
+    model._ensure_state_belief_shapes(batch_size=model.e["m"].shape[0])
+
+    Q = F.softplus(model.dynamics.logvar).diag_embed().unsqueeze(0) * model.dt
+    I = torch.eye(model.latent_dim, device=model.device).unsqueeze(0).unsqueeze(0)
+
+    action_bt = _ensure_batch_time_tensor(action, device=model.device)
+    if action_bt is not None and model.action_encoder is not None:
+        u_enc = model.action_encoder(action_bt, model.z["m"])
+    else:
+        u_enc = action_bt
+
+    Fz = model.Fz(model.z["m"], model.e["m"])
+    dfdz = Fz * model.dt + I
+    pred_m = model.predict(action=u_enc)
+    pred_cov = dfdz @ model.z["P"] @ dfdz.transpose(-1, -2) + Q + 1e-6 * I
+    pred_cov = model._project_spd(pred_cov)
+
+    model.z = {"m": pred_m.detach(), "P": pred_cov.detach()}
+    model._state = pred_m.detach()
+    model.last_information = {
+        "I_z_t": 0.0,
+        "I_theta_t": 0.0,
+        "Pz00": float(pred_cov[..., 0, 0].mean().item()),
+        "Pz01": float(pred_cov[..., 0, 1].mean().item()) if pred_cov.shape[-1] > 1 else 0.0,
+        "Pz11": float(pred_cov[..., 1, 1].mean().item()) if pred_cov.shape[-1] > 1 else 0.0,
+    }
+
+    return {
+        "env_action": u_enc[..., -1:, :] if u_enc is not None else None,
+        "latent_state": model._state,
+    }
+
+
+def _predict_planned_xy_trajectory(
+    *,
+    model: Any,
+    policy: Any,
+    transition: dict[str, Any],
+) -> np.ndarray | None:
+    """Predict the remaining latent trajectory for MPC-based active policies."""
+    import torch
+
+    if getattr(policy, "metric", None) is None:
+        return None
+
+    planned_actions = _extract_remaining_plan_actions(policy)
+    if planned_actions is None:
+        return None
+
+    model_state = transition.get("model_state")
+    if model_state is None:
+        return None
+
+    state = torch.as_tensor(model_state).detach()
+    if state.ndim == 1:
+        state = state.reshape(1, 1, -1)
+    elif state.ndim == 2:
+        state = state.unsqueeze(0)
+    if state.ndim != 3 or state.shape[-1] == 0:
+        return None
+
+    device = getattr(model, "device", state.device)
+    state = state.to(device)
+    planned_actions = planned_actions.to(device)
+
+    prev_state = None
+    try:
+        current_state = model.get_state()
+        if current_state is not None:
+            prev_state = current_state.detach().clone()
+    except Exception:
+        prev_state = None
+
+    try:
+        with torch.no_grad():
+            model.set_state(state)
+            if model.action_encoder is not None:
+                encoded_actions = model.action_encoder(planned_actions)
+            else:
+                encoded_actions = planned_actions
+            predicted = model.predict(encoded_actions)
+            trajectory = torch.cat([state, predicted], dim=-2)
+    except Exception:
+        return None
+    finally:
+        if prev_state is not None:
+            model.set_state(prev_state)
+
+    trajectory = trajectory.detach().cpu().reshape(-1, trajectory.shape[-1]).numpy()
+    xy = np.zeros((trajectory.shape[0], 2), dtype=np.float32)
+    if trajectory.shape[1] > 0:
+        xy[:, 0] = trajectory[:, 0].astype(np.float32, copy=False)
+    if trajectory.shape[1] > 1:
+        xy[:, 1] = trajectory[:, 1].astype(np.float32, copy=False)
+    return xy
 
 
 def _check_configs(repo_root: Path) -> None:
@@ -398,6 +803,7 @@ def _run_single_parameter_identification(
     action_max: float,
     dynamics_alpha: float,
     state_init_uncertainty: float,
+    firing_rate_scale: float,
     dry_run: bool,
     planning_horizon: int | None,
     traj_eval_interval: int,
@@ -408,6 +814,7 @@ def _run_single_parameter_identification(
     acq_map_grid: int = 61,
     acq_map_lim: float = 10.0,
     extra_metadata: dict[str, Any] | None = None,
+    use_explicit_schedule: bool = False,
 ) -> dict[str, Any]:
     import torch
     import torch.nn as nn
@@ -428,6 +835,21 @@ def _run_single_parameter_identification(
     from actdyn.utils.runtime import configure_runtime
     from actdyn.utils.visualize import set_matplotlib_style
 
+    schedule_config = _resolve_schedule_config(
+        exp_id=exp_id,
+        requested_k_theta=k_theta,
+        requested_planning_horizon=planning_horizon,
+        use_explicit_schedule=use_explicit_schedule,
+    )
+    effective_k_theta = int(schedule_config["k_theta"])
+    state_update_interval = int(schedule_config["state_update_interval"])
+    predictive_only_window = bool(schedule_config["predictive_only_window"])
+    effective_horizon = schedule_config["planning_horizon"]
+    planning_chunk = int(schedule_config["planning_chunk"])
+    resolved_window_size = int(schedule_config["window_size"])
+    update_scheme = str(schedule_config["update_scheme"])
+    metric_variant = schedule_config["metric_variant"]
+
     ctx = {
         "model_tag": model_tag,
         "commit": _current_commit(),
@@ -437,6 +859,7 @@ def _run_single_parameter_identification(
         "base_dir": str(run_dir),
         "start_time": _utc_now(),
     }
+    _validate_exp_id(exp_id)
     if dry_run:
         payload = _build_metadata(
             ctx=ctx,
@@ -446,7 +869,12 @@ def _run_single_parameter_identification(
             results_path=run_dir,
             extra={
                 "q_theta": float(q_theta),
-                "k_theta": int(k_theta),
+                "k_theta": int(effective_k_theta),
+                "requested_k_theta": int(k_theta),
+                "window_size": int(resolved_window_size),
+                "state_update_interval": int(state_update_interval),
+                "parameter_update_interval": int(effective_k_theta),
+                "predictive_only_window": bool(predictive_only_window),
                 "q_theta_meas_coeff": float(q_theta_meas_coeff),
                 "q_theta_max_scale": float(q_theta_max_scale),
                 "eig_gamma": float(eig_gamma),
@@ -454,7 +882,13 @@ def _run_single_parameter_identification(
                 "action_max": float(action_max),
                 "dynamics_alpha": float(dynamics_alpha),
                 "state_init_uncertainty": float(state_init_uncertainty),
-                "planning_horizon": planning_horizon,
+                "firing_rate_scale": float(firing_rate_scale),
+                "mean_firing_rate_target": float(50.0 * firing_rate_scale),
+                "max_firing_rate_target": float(100.0 * firing_rate_scale),
+                "planning_horizon": int(effective_horizon) if effective_horizon is not None else None,
+                "planning_chunk": int(planning_chunk),
+                "metric_variant": metric_variant,
+                "update_scheme": update_scheme,
                 "traj_eval_interval": int(traj_eval_interval),
                 "traj_eval_horizon": int(traj_eval_horizon),
                 "traj_eval_samples": int(traj_eval_samples),
@@ -488,6 +922,7 @@ def _run_single_parameter_identification(
     alpha = float(dynamics_alpha)
     noise_scale = max(1e-8, float(state_noise))
     action_max = float(max(1e-6, action_max))
+    firing_rate_scale = max(1e-6, float(firing_rate_scale))
 
     action_model = actdyn.environment.action.IdentityActionEncoder(
         d_action=du,
@@ -511,8 +946,8 @@ def _run_single_parameter_identification(
     C = obs_model.network[0].weight.detach()
     C[:, 0] = torch.abs(C[:, 0])
     C[:, 1] = C[:, 1] * 2
-    mean_firing = 50
-    max_firing_rate = 100.0
+    mean_firing = 50.0 * firing_rate_scale
+    max_firing_rate = 100.0 * firing_rate_scale
     state_range_for_cap = 5.0
 
     mean_log_rate = torch.log(torch.full((dy,), mean_firing, device=device))
@@ -592,7 +1027,7 @@ def _run_single_parameter_identification(
     if "q_theta" in fe_init.parameters:
         model_kwargs["q_theta"] = q_theta
     if "k_theta" in fe_init.parameters:
-        model_kwargs["k_theta"] = k_theta
+        model_kwargs["k_theta"] = effective_k_theta
     if "q_theta_meas_coeff" in fe_init.parameters:
         model_kwargs["q_theta_meas_coeff"] = q_theta_meas_coeff
     if "q_theta_max_scale" in fe_init.parameters:
@@ -607,16 +1042,16 @@ def _run_single_parameter_identification(
         Fe_net=_fe_true,
         Fz_net=_fz_true,
         gamma=eig_gamma,
+        **_embedding_metric_variant(exp_id),
         device=device,
     )
     rnd_metric = actdyn.metrics.uncertainty.RandomNetworkDistillation(device=device)
 
-    effective_horizon = planning_horizon
-    if effective_horizon is None and exp_id != "random":
-        effective_horizon = 10 if exp_id == "active_long" else 5
-
     if exp_id == "random":
         policy = actdyn.policy.RandomPolicy(action_space=env.action_space, device=device)
+        metric = None
+    elif exp_id == "no_policy":
+        policy = actdyn.policy.OffPolicy(action_space=env.action_space, device=device)
         metric = None
     else:
         if exp_id == "RND":
@@ -636,9 +1071,120 @@ def _run_single_parameter_identification(
             num_iterations=10,
             num_samples=40,
             num_elite=10,
-            chunk=5 if int(effective_horizon) >= 10 else 3,
+            chunk=int(planning_chunk),
             verbose=False,
         )
+
+    class _CadencedCissAgent(actdyn.Agent):
+        def __init__(
+            self,
+            *,
+            env: Any,
+            model: Any,
+            policy: Any,
+            buffer_length: int,
+            state_update_interval: int,
+            predictive_only_window: bool,
+            device: str,
+        ) -> None:
+            super().__init__(
+                env=env,
+                model=model,
+                policy=policy,
+                buffer_length=buffer_length,
+                device=device,
+            )
+            self.state_update_interval = max(1, int(state_update_interval))
+            self.predictive_only_window = bool(predictive_only_window)
+            self._window_buffer: list[dict[str, Any]] = []
+            self._window_start_snapshot: dict[str, Any] | None = None
+
+        def reset(self, seed: int | None = None):
+            obs = super().reset(seed=seed)
+            self._window_buffer = []
+            self._window_start_snapshot = (
+                _clone_filter_belief_state(self.model) if self.predictive_only_window else None
+            )
+            return obs
+
+        def step(self, action: torch.Tensor | None = None):
+            obs, reward, terminated, truncated, env_info = self.env.step(action)
+            done = terminated or truncated
+
+            env_transition = {
+                "obs": self._observation,
+                "next_obs": obs,
+                "action": action,
+                "env_action": env_info["env_action"],
+                "reward": reward,
+                "env_state": self._env_state,
+                "next_env_state": env_info["latent_state"],
+                "model_state": self._model_state,
+            }
+            self.recent.add(**env_transition)
+
+            state_posterior_updated = False
+            parameter_posterior_updated = False
+
+            if self.predictive_only_window and self.state_update_interval > 1:
+                model_info = _predictive_only_embedding_step(self.model, action)
+                self._window_buffer.append(
+                    {
+                        "next_obs": _ensure_batch_time_tensor(obs, device=self.device),
+                        "action": _ensure_batch_time_tensor(action, device=self.device),
+                    }
+                )
+                if len(self._window_buffer) >= self.state_update_interval:
+                    if self._window_start_snapshot is None:
+                        self._window_start_snapshot = _clone_filter_belief_state(self.model)
+                    _restore_filter_belief_state(self.model, self._window_start_snapshot)
+                    for buffered in self._window_buffer:
+                        prev_block_steps = int(getattr(self.model, "_theta_block_steps", 0))
+                        self.model.update_posterior_embedding(
+                            y=buffered["next_obs"],
+                            u=buffered["action"],
+                        )
+                        parameter_posterior_updated = (
+                            parameter_posterior_updated
+                            or _parameter_update_applied(
+                                prev_block_steps=prev_block_steps,
+                                model=self.model,
+                            )
+                        )
+                    model_info["latent_state"] = self.model.get_state()
+                    state_posterior_updated = True
+                    self._window_buffer = []
+                    self._window_start_snapshot = _clone_filter_belief_state(self.model)
+            else:
+                prev_block_steps = int(getattr(self.model, "_theta_block_steps", 0))
+                model_info = self.model.update(self.recent)
+                state_posterior_updated = True
+                parameter_posterior_updated = _parameter_update_applied(
+                    prev_block_steps=prev_block_steps,
+                    model=self.model,
+                )
+
+            model_transition = {
+                "model_action": model_info["env_action"],
+                "next_model_state": model_info["latent_state"],
+            }
+            self.recent.add(**model_transition)
+            transition = {
+                **env_transition,
+                **model_transition,
+                "state_posterior_updated": state_posterior_updated,
+                "parameter_posterior_updated": parameter_posterior_updated,
+                "window_buffer_length": len(self._window_buffer),
+                "state_update_interval": self.state_update_interval,
+            }
+
+            self.update_policy(self.recent)
+
+            self._observation = obs
+            self._env_state = env_info["latent_state"]
+            self._model_state = self.model.get_state()
+
+            return transition, done
 
     exp_config = ExperimentConfig.from_yaml(str(_repo_root() / "experiments/ciss/conf/config.yaml"))
     exp_config.results_dir = str(run_dir)
@@ -646,7 +1192,15 @@ def _run_single_parameter_identification(
     exp_config.training.train_every = total_steps + 1
     exp_config.run_analysis = False
 
-    agent = actdyn.Agent(env=env, model=model, buffer_length=10, policy=policy, device=device)
+    agent = _CadencedCissAgent(
+        env=env,
+        model=model,
+        buffer_length=10,
+        policy=policy,
+        state_update_interval=state_update_interval,
+        predictive_only_window=predictive_only_window,
+        device=device,
+    )
     experiment = actdyn.core.experiment.Experiment(agent=agent, config=exp_config)
 
     decoder.set_params(obs_model)
@@ -658,6 +1212,8 @@ def _run_single_parameter_identification(
     state_action_rows: list[dict[str, Any]] = []
     acq_map_steps: list[int] = []
     acq_map_frames: list[np.ndarray] = []
+    planned_traj_steps: list[int] = []
+    planned_traj_frames: list[np.ndarray] = []
     perf_start = time.perf_counter()
     trace_rng = np.random.default_rng(seed + 137)
     e_true_flat = e_true.detach().reshape(-1)
@@ -717,6 +1273,11 @@ def _run_single_parameter_identification(
                 "Pz00": float(info_diag.get("Pz00", 0.0)),
                 "Pz01": float(info_diag.get("Pz01", 0.0)),
                 "Pz11": float(info_diag.get("Pz11", 0.0)),
+                "state_posterior_updated": _as_bool(transition.get("state_posterior_updated", True)),
+                "parameter_posterior_updated": _as_bool(
+                    transition.get("parameter_posterior_updated", True)
+                ),
+                "window_buffer_length": int(transition.get("window_buffer_length", 0)),
             }
         )
 
@@ -790,8 +1351,22 @@ def _run_single_parameter_identification(
                 "policy_at_bound": policy_sat,
                 "env_action_at_bound": env_sat,
                 "policy_cost": float(policy_cost) if policy_cost is not None else None,
+                "state_posterior_updated": _as_bool(transition.get("state_posterior_updated", True)),
+                "parameter_posterior_updated": _as_bool(
+                    transition.get("parameter_posterior_updated", True)
+                ),
+                "window_buffer_length": int(transition.get("window_buffer_length", 0)),
             }
         )
+
+        planned_traj_xy = _predict_planned_xy_trajectory(
+            model=model,
+            policy=policy,
+            transition=transition,
+        )
+        if planned_traj_xy is not None and planned_traj_xy.shape[0] >= 2:
+            planned_traj_steps.append(step)
+            planned_traj_frames.append(planned_traj_xy)
 
         if save_acq_map and metric is not None and step % acq_interval == 0:
             map_rollout = {
@@ -842,6 +1417,7 @@ def _run_single_parameter_identification(
     info_trace_path = run_dir / "information_trace.csv"
     state_action_trace_path = run_dir / "state_action_trace.csv"
     acq_map_trace_path = run_dir / "acquisition_map_trace.npz"
+    planned_traj_trace_path = run_dir / "planned_trajectory_trace.npz"
     _write_trace_csv(
         param_trace_path,
         trace_rows,
@@ -860,7 +1436,18 @@ def _run_single_parameter_identification(
     _write_trace_csv(
         info_trace_path,
         info_rows,
-        fields=["step", "cpu_time_sec", "I_z_t", "I_theta_t", "Pz00", "Pz01", "Pz11"],
+        fields=[
+            "step",
+            "cpu_time_sec",
+            "I_z_t",
+            "I_theta_t",
+            "Pz00",
+            "Pz01",
+            "Pz11",
+            "state_posterior_updated",
+            "parameter_posterior_updated",
+            "window_buffer_length",
+        ],
     )
     _write_trace_csv(
         state_action_trace_path,
@@ -892,6 +1479,9 @@ def _run_single_parameter_identification(
             "policy_at_bound",
             "env_action_at_bound",
             "policy_cost",
+            "state_posterior_updated",
+            "parameter_posterior_updated",
+            "window_buffer_length",
         ],
     )
     if save_acq_map and acq_map_frames:
@@ -900,6 +1490,22 @@ def _run_single_parameter_identification(
             steps=np.asarray(acq_map_steps, dtype=np.int64),
             axis=acq_axis.astype(np.float32),
             maps=np.asarray(acq_map_frames, dtype=np.float32),
+            exp_id=np.asarray([exp_id], dtype=object),
+            model_tag=np.asarray([model_tag], dtype=object),
+        )
+    if planned_traj_frames:
+        max_points = max(frame.shape[0] for frame in planned_traj_frames)
+        paths = np.full((len(planned_traj_frames), max_points, 2), np.nan, dtype=np.float32)
+        lengths = np.zeros((len(planned_traj_frames),), dtype=np.int64)
+        for idx, frame in enumerate(planned_traj_frames):
+            n_points = int(frame.shape[0])
+            paths[idx, :n_points, :] = frame[:, :2]
+            lengths[idx] = n_points
+        np.savez_compressed(
+            planned_traj_trace_path,
+            steps=np.asarray(planned_traj_steps, dtype=np.int64),
+            paths=paths,
+            lengths=lengths,
             exp_id=np.asarray([exp_id], dtype=object),
             model_tag=np.asarray([model_tag], dtype=object),
         )
@@ -949,7 +1555,12 @@ def _run_single_parameter_identification(
             "embedding_error_mean": embedding_error_mean,
             "embedding_error_final": embedding_error_final,
             "q_theta": float(q_theta),
-            "k_theta": int(k_theta),
+            "k_theta": int(effective_k_theta),
+            "requested_k_theta": int(k_theta),
+            "window_size": int(resolved_window_size),
+            "state_update_interval": int(state_update_interval),
+            "parameter_update_interval": int(effective_k_theta),
+            "predictive_only_window": bool(predictive_only_window),
             "q_theta_meas_coeff": float(q_theta_meas_coeff),
             "q_theta_max_scale": float(q_theta_max_scale),
             "eig_gamma": float(eig_gamma),
@@ -957,7 +1568,13 @@ def _run_single_parameter_identification(
             "action_max": float(action_max),
             "dynamics_alpha": float(alpha),
             "state_init_uncertainty": float(state_init_uncertainty),
+            "firing_rate_scale": float(firing_rate_scale),
+            "mean_firing_rate_target": float(mean_firing),
+            "max_firing_rate_target": float(max_firing_rate),
             "planning_horizon": int(effective_horizon) if effective_horizon is not None else None,
+            "planning_chunk": int(planning_chunk),
+            "metric_variant": metric_variant,
+            "update_scheme": update_scheme,
             "traj_eval_interval": int(traj_eval_interval),
             "traj_eval_horizon": int(traj_eval_horizon),
             "traj_eval_samples": int(traj_eval_samples),
@@ -970,6 +1587,9 @@ def _run_single_parameter_identification(
             "embedding_estimate_trace_path": str(emb_trace_path),
             "information_trace_path": str(info_trace_path),
             "state_action_trace_path": str(state_action_trace_path),
+            "planned_trajectory_trace_path": (
+                str(planned_traj_trace_path) if planned_traj_frames else None
+            ),
             "policy_action_delta_mean": (
                 float(policy_delta.mean()) if policy_delta.size > 0 else None
             ),
@@ -996,7 +1616,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="tracks",
         help="Execution scope",
     )
-    parser.add_argument("--exp-ids", type=str, default=",".join(DEFAULT_EXP_IDS))
+    parser.add_argument(
+        "--exp-ids",
+        type=str,
+        default=",".join(DEFAULT_EXP_IDS),
+        help="Comma-separated experiment IDs. Default comparison set is active_short,random,no_policy.",
+    )
     parser.add_argument("--seeds", type=str, default=",".join(str(s) for s in DEFAULT_SEEDS))
     parser.add_argument("--total-steps", type=int, default=500, help="Track run steps")
     parser.add_argument("--smoke-steps", type=int, default=500, help="Smoke run steps")
@@ -1005,7 +1630,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--jobs", type=int, default=1, help="Parallel workers for track mode")
     parser.add_argument("--q-theta", type=float, default=5e-4)
-    parser.add_argument("--k-theta", type=int, default=10)
+    parser.add_argument(
+        "--k-theta",
+        type=int,
+        default=10,
+        help="Requested parameter-update interval for explicit-schedule runs; fixed policy presets ignore this unless overridden internally.",
+    )
     parser.add_argument("--q-theta-meas-coeff", type=float, default=0.0)
     parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
     parser.add_argument("--eig-gamma", type=float, default=1.0)
@@ -1013,7 +1643,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-max", type=float, default=2.0)
     parser.add_argument("--dynamics-alpha", type=float, default=1.0)
     parser.add_argument("--state-init-uncertainty", type=float, default=25.0)
-    parser.add_argument("--planning-horizon", type=int, default=None)
+    parser.add_argument(
+        "--firing-rate-scale",
+        type=float,
+        default=1.0,
+        help="Scale factor applied to the default mean/max observation firing rates (50 Hz / 100 Hz).",
+    )
+    parser.add_argument(
+        "--planning-horizon",
+        type=int,
+        default=None,
+        help="Optional explicit planning horizon override for the selected experiment preset.",
+    )
     parser.add_argument("--traj-eval-interval", type=int, default=100)
     parser.add_argument("--traj-eval-horizon", type=int, default=100)
     parser.add_argument("--traj-eval-samples", type=int, default=16)
@@ -1047,6 +1688,7 @@ def _run_smoke(
     action_max: float,
     dynamics_alpha: float,
     state_init_uncertainty: float,
+    firing_rate_scale: float,
     dry_run: bool,
     planning_horizon: int | None,
     traj_eval_interval: int,
@@ -1075,6 +1717,7 @@ def _run_smoke(
         action_max=action_max,
         dynamics_alpha=dynamics_alpha,
         state_init_uncertainty=state_init_uncertainty,
+        firing_rate_scale=firing_rate_scale,
         dry_run=dry_run,
         planning_horizon=planning_horizon,
         traj_eval_interval=traj_eval_interval,
@@ -1105,6 +1748,7 @@ def _run_track_matrix(
     action_max: float,
     dynamics_alpha: float,
     state_init_uncertainty: float,
+    firing_rate_scale: float,
     dry_run: bool,
     planning_horizon: int | None,
     traj_eval_interval: int,
@@ -1143,6 +1787,7 @@ def _run_track_matrix(
                         "action_max": action_max,
                         "dynamics_alpha": dynamics_alpha,
                         "state_init_uncertainty": state_init_uncertainty,
+                        "firing_rate_scale": firing_rate_scale,
                         "dry_run": dry_run,
                         "planning_horizon": planning_horizon,
                         "traj_eval_interval": traj_eval_interval,
@@ -1205,6 +1850,7 @@ def _run_track_task(task: dict[str, Any]) -> dict[str, Any]:
             action_max=float(task["action_max"]),
             dynamics_alpha=float(task["dynamics_alpha"]),
             state_init_uncertainty=float(task["state_init_uncertainty"]),
+            firing_rate_scale=float(task["firing_rate_scale"]),
             dry_run=bool(task["dry_run"]),
             planning_horizon=(
                 int(task["planning_horizon"]) if task["planning_horizon"] is not None else None
@@ -1242,6 +1888,7 @@ def _run_ablation_suite(
     action_max: float,
     dynamics_alpha: float,
     state_init_uncertainty: float,
+    firing_rate_scale: float,
     dry_run: bool,
     exp_id: str,
     planning_windows: list[int],
@@ -1285,6 +1932,7 @@ def _run_ablation_suite(
                         action_max=action_max,
                         dynamics_alpha=dynamics_alpha,
                         state_init_uncertainty=state_init_uncertainty,
+                        firing_rate_scale=firing_rate_scale,
                         dry_run=dry_run,
                         planning_horizon=planning_horizon,
                         traj_eval_interval=traj_eval_interval,
@@ -1294,6 +1942,7 @@ def _run_ablation_suite(
                         acq_map_interval=acq_map_interval,
                         acq_map_grid=acq_map_grid,
                         acq_map_lim=acq_map_lim,
+                        use_explicit_schedule=True,
                         extra_metadata={
                             "ablation_axis": "planning_window",
                             "ablation_value": int(planning_horizon),
@@ -1347,6 +1996,7 @@ def _run_ablation_suite(
                         action_max=action_max,
                         dynamics_alpha=dynamics_alpha,
                         state_init_uncertainty=state_init_uncertainty,
+                        firing_rate_scale=firing_rate_scale,
                         dry_run=dry_run,
                         planning_horizon=fixed_planning_window,
                         traj_eval_interval=traj_eval_interval,
@@ -1356,6 +2006,7 @@ def _run_ablation_suite(
                         acq_map_interval=acq_map_interval,
                         acq_map_grid=acq_map_grid,
                         acq_map_lim=acq_map_lim,
+                        use_explicit_schedule=True,
                         extra_metadata={
                             "ablation_axis": "update_frequency",
                             "ablation_value": int(k_theta),
@@ -1417,6 +2068,7 @@ def main(argv: list[str] | None = None) -> int:
             action_max=args.action_max,
             dynamics_alpha=args.dynamics_alpha,
             state_init_uncertainty=args.state_init_uncertainty,
+            firing_rate_scale=args.firing_rate_scale,
             dry_run=args.dry_run,
             planning_horizon=args.planning_horizon,
             traj_eval_interval=args.traj_eval_interval,
@@ -1446,6 +2098,7 @@ def main(argv: list[str] | None = None) -> int:
             action_max=args.action_max,
             dynamics_alpha=args.dynamics_alpha,
             state_init_uncertainty=args.state_init_uncertainty,
+            firing_rate_scale=args.firing_rate_scale,
             dry_run=args.dry_run,
             planning_horizon=args.planning_horizon,
             traj_eval_interval=args.traj_eval_interval,
@@ -1474,6 +2127,7 @@ def main(argv: list[str] | None = None) -> int:
             action_max=args.action_max,
             dynamics_alpha=args.dynamics_alpha,
             state_init_uncertainty=args.state_init_uncertainty,
+            firing_rate_scale=args.firing_rate_scale,
             dry_run=args.dry_run,
             exp_id=args.ablation_exp_id,
             planning_windows=planning_windows,

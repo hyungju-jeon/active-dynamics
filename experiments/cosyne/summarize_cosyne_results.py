@@ -5,47 +5,22 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+from cosyne_common import (
+    find_nested_metadata_paths as _find_repeat_metadata_paths,
+    load_json as _load_json,
+    parse_csv_ints as _parse_csv_ints,
+    parse_csv_list as _parse_csv_list,
+    resolve_artifact_path as _resolve_artifact_path,
+    safe_float as _safe_float,
+)
 
-DEFAULT_EXP_IDS = ["active_short", "active_long", "RND", "random"]
+DEFAULT_EXP_IDS = ["active_short", "random", "no_policy"]
 DEFAULT_SEEDS = [0, 10, 20]
 DEFAULT_MODEL_TAGS = ["updated"]
-
-
-def _parse_csv_list(raw: str) -> list[str]:
-    values = [item.strip() for item in raw.split(",")]
-    return [item for item in values if item]
-
-
-def _parse_csv_ints(raw: str) -> list[int]:
-    return [int(item) for item in _parse_csv_list(raw)]
-
-
-def _safe_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        return float(value)
-    except Exception:
-        return None
-
-
-def _load_json(path: Path) -> dict[str, Any]:
-    with path.open("r", encoding="utf-8") as f:
-        return json.load(f)
-
-
-def _find_repeat_metadata_paths(seed_dir: Path) -> list[Path]:
-    paths = sorted(seed_dir.glob("repeat_*/run_metadata.json"))
-    if (seed_dir / "run_metadata.json").exists():
-        paths.append(seed_dir / "run_metadata.json")
-    return paths
 
 
 def collect_track_records(
@@ -163,14 +138,12 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _trace_path(record: dict[str, Any], metadata_key: str, fallback_name: str) -> Path | None:
-    metadata = record["metadata"]
-    raw = metadata.get(metadata_key)
-    if isinstance(raw, str) and raw.strip():
-        path = Path(raw)
-        if not path.is_absolute():
-            path = (record["run_dir"] / path).resolve()
-        return path
-    fallback = record["run_dir"] / fallback_name
+    fallback = _resolve_artifact_path(
+        record["run_dir"],
+        record["metadata"],
+        key=metadata_key,
+        fallback_name=fallback_name,
+    )
     return fallback if fallback.exists() else None
 
 
@@ -276,7 +249,7 @@ def _reconstruct_observation_params(
 def _aggregate_mean_firing_trace(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out_rows: list[dict[str, Any]] = []
     group_keys = sorted({(str(r["model_tag"]), str(r["exp_id"])) for r in records})
-    obs_cache: dict[int, tuple[np.ndarray, np.ndarray] | None] = {}
+    obs_cache: dict[tuple[int, float, float], tuple[np.ndarray, np.ndarray] | None] = {}
 
     for model_tag, exp_id in group_keys:
         subgroup = [
@@ -286,9 +259,16 @@ def _aggregate_mean_firing_trace(records: list[dict[str, Any]]) -> list[dict[str
 
         for record in subgroup:
             seed = int(record["seed"])
-            if seed not in obs_cache:
-                obs_cache[seed] = _reconstruct_observation_params(seed)
-            params = obs_cache[seed]
+            mean_firing = float(record.get("mean_firing_rate_target", 50.0))
+            max_firing_rate = float(record.get("max_firing_rate_target", 100.0))
+            cache_key = (seed, mean_firing, max_firing_rate)
+            if cache_key not in obs_cache:
+                obs_cache[cache_key] = _reconstruct_observation_params(
+                    seed,
+                    mean_firing=mean_firing,
+                    max_firing_rate=max_firing_rate,
+                )
+            params = obs_cache[cache_key]
             if params is None:
                 continue
             C, bias = params
