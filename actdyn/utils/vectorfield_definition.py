@@ -342,6 +342,62 @@ class Duffing(VectorField):
         return torch.stack([U, V], dim=-1)
 
 
+class DampedPendulum(VectorField):
+    """Damped pendulum with learnable damping and gravity scale."""
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        if dyn_param is None:
+            self.damping = -0.35
+            self.gravity = 1.2
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, damping=-0.35, gravity=1.2):
+        self.damping = damping
+        self.gravity = gravity
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        U = x[..., 1]
+        V = self.damping * x[..., 1] - self.gravity * torch.sin(x[..., 0])
+        U = self.alpha * U
+        V = self.alpha * V
+        return torch.stack([U, V], dim=-1)
+
+
+class DoubleIntegrator(VectorField):
+    """Controlled double-integrator with unknown drift bias and damping."""
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        if dyn_param is None:
+            self.bias = 0.15
+            self.damping = 0.55
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, bias=0.15, damping=0.55):
+        self.bias = bias
+        self.damping = damping
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        U = x[..., 1]
+        V = self.bias - self.damping * x[..., 1]
+        U = self.alpha * U
+        V = self.alpha * V
+        return torch.stack([U, V], dim=-1)
+
+
 class FitzHughNagumo(VectorField):
     """FitzHugh-Nagumo excitable dynamics."""
 

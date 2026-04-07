@@ -48,11 +48,31 @@ PLANAR_SYSTEM_SPECS: dict[str, PlanarSystemSpec] = {
         state_low=(-2.5, -2.5),
         state_high=(2.5, 2.5),
     ),
+    "damped_pendulum": PlanarSystemSpec(
+        system_id="damped_pendulum",
+        label="damped pendulum",
+        dynamics_type="damped_pendulum",
+        true_params=(-0.35, 1.20),
+        state_low=(-2.5, -2.5),
+        state_high=(2.5, 2.5),
+    ),
+    "double_integrator": PlanarSystemSpec(
+        system_id="double_integrator",
+        label="double integrator",
+        dynamics_type="double_integrator",
+        true_params=(0.15, 0.55),
+        state_low=(-2.5, -2.5),
+        state_high=(2.5, 2.5),
+    ),
 }
 
 
 def get_planar_system_spec(system_id: str) -> PlanarSystemSpec:
     return PLANAR_SYSTEM_SPECS[system_id]
+
+
+def has_planar_system_spec(system_id: str) -> bool:
+    return str(system_id) in PLANAR_SYSTEM_SPECS
 
 
 def sample_initial_state(system_id: str, seed: int) -> np.ndarray:
@@ -116,6 +136,14 @@ def residual_torch(
         return _bistable_limitcycle_residual_torch(
             state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
         )
+    if system_id == "damped_pendulum":
+        return _damped_pendulum_residual_torch(
+            state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
+        )
+    if system_id == "double_integrator":
+        return _double_integrator_residual_torch(
+            state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
+        )
     raise ValueError(f"Unknown system_id={system_id!r}")
 
 
@@ -132,6 +160,14 @@ def jacobian_state_torch(
         return _duffing_jacobian_state_torch(state_t, embed_t, dynamics_alpha=float(dynamics_alpha))
     if system_id == "bistable_limitcycle":
         return _bistable_limitcycle_jacobian_state_torch(
+            state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
+        )
+    if system_id == "damped_pendulum":
+        return _damped_pendulum_jacobian_state_torch(
+            state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
+        )
+    if system_id == "double_integrator":
+        return _double_integrator_jacobian_state_torch(
             state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
         )
     raise ValueError(f"Unknown system_id={system_id!r}")
@@ -152,6 +188,14 @@ def jacobian_param_torch(
         return _bistable_limitcycle_jacobian_param_torch(
             state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
         )
+    if system_id == "damped_pendulum":
+        return _damped_pendulum_jacobian_param_torch(
+            state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
+        )
+    if system_id == "double_integrator":
+        return _double_integrator_jacobian_param_torch(
+            state_t, embed_t, dynamics_alpha=float(dynamics_alpha)
+        )
     raise ValueError(f"Unknown system_id={system_id!r}")
 
 
@@ -164,6 +208,14 @@ def residual_np(
         return _duffing_residual_np(state_np, embed_np, dynamics_alpha=float(dynamics_alpha))
     if system_id == "bistable_limitcycle":
         return _bistable_limitcycle_residual_np(
+            state_np, embed_np, dynamics_alpha=float(dynamics_alpha)
+        )
+    if system_id == "damped_pendulum":
+        return _damped_pendulum_residual_np(
+            state_np, embed_np, dynamics_alpha=float(dynamics_alpha)
+        )
+    if system_id == "double_integrator":
+        return _double_integrator_residual_np(
             state_np, embed_np, dynamics_alpha=float(dynamics_alpha)
         )
     raise ValueError(f"Unknown system_id={system_id!r}")
@@ -407,4 +459,137 @@ def _bistable_limitcycle_residual_np(
     )
     return float(dynamics_alpha) * (
         w_left[..., None] * left_field + w_right[..., None] * right_field
+    )
+
+
+def _damped_pendulum_residual_torch(
+    state: torch.Tensor,
+    embedding: torch.Tensor,
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    theta = state[..., 0]
+    omega = state[..., 1]
+    damping = embedding[..., 0]
+    gravity = embedding[..., 1]
+    return torch.stack(
+        (
+            float(dynamics_alpha) * omega,
+            float(dynamics_alpha) * (damping * omega - gravity * torch.sin(theta)),
+        ),
+        dim=-1,
+    )
+
+
+def _damped_pendulum_jacobian_state_torch(
+    state: torch.Tensor,
+    embedding: torch.Tensor,
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    theta = state[..., 0]
+    damping = embedding[..., 0]
+    gravity = embedding[..., 1]
+    out = torch.zeros(*state.shape[:-1], 2, 2, dtype=state.dtype, device=state.device)
+    out[..., 0, 1] = 1.0
+    out[..., 1, 0] = -gravity * torch.cos(theta)
+    out[..., 1, 1] = damping
+    return float(dynamics_alpha) * out
+
+
+def _damped_pendulum_jacobian_param_torch(
+    state: torch.Tensor,
+    embedding: torch.Tensor,
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    del embedding
+    theta = state[..., 0]
+    omega = state[..., 1]
+    out = torch.zeros(*state.shape[:-1], 2, 2, dtype=state.dtype, device=state.device)
+    out[..., 1, 0] = omega
+    out[..., 1, 1] = -torch.sin(theta)
+    return float(dynamics_alpha) * out
+
+
+def _damped_pendulum_residual_np(
+    state: np.ndarray,
+    embedding: np.ndarray,
+    *,
+    dynamics_alpha: float,
+) -> np.ndarray:
+    theta = state[..., 0]
+    omega = state[..., 1]
+    damping = embedding[..., 0]
+    gravity = embedding[..., 1]
+    return np.stack(
+        (
+            float(dynamics_alpha) * omega,
+            float(dynamics_alpha) * (damping * omega - gravity * np.sin(theta)),
+        ),
+        axis=-1,
+    )
+
+
+def _double_integrator_residual_torch(
+    state: torch.Tensor,
+    embedding: torch.Tensor,
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    vel = state[..., 1]
+    bias = embedding[..., 0]
+    damping = embedding[..., 1]
+    return torch.stack(
+        (
+            float(dynamics_alpha) * vel,
+            float(dynamics_alpha) * (bias - damping * vel),
+        ),
+        dim=-1,
+    )
+
+
+def _double_integrator_jacobian_state_torch(
+    state: torch.Tensor,
+    embedding: torch.Tensor,
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    del state
+    damping = embedding[..., 1]
+    out = torch.zeros(*embedding.shape[:-1], 2, 2, dtype=embedding.dtype, device=embedding.device)
+    out[..., 0, 1] = 1.0
+    out[..., 1, 1] = -damping
+    return float(dynamics_alpha) * out
+
+
+def _double_integrator_jacobian_param_torch(
+    state: torch.Tensor,
+    embedding: torch.Tensor,
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    del embedding
+    vel = state[..., 1]
+    out = torch.zeros(*state.shape[:-1], 2, 2, dtype=state.dtype, device=state.device)
+    out[..., 1, 0] = 1.0
+    out[..., 1, 1] = -vel
+    return float(dynamics_alpha) * out
+
+
+def _double_integrator_residual_np(
+    state: np.ndarray,
+    embedding: np.ndarray,
+    *,
+    dynamics_alpha: float,
+) -> np.ndarray:
+    vel = state[..., 1]
+    bias = embedding[..., 0]
+    damping = embedding[..., 1]
+    return np.stack(
+        (
+            float(dynamics_alpha) * vel,
+            float(dynamics_alpha) * (bias - damping * vel),
+        ),
+        axis=-1,
     )

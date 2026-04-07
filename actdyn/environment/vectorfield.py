@@ -8,9 +8,11 @@ import gymnasium as gym
 from gymnasium import spaces
 from actdyn.utils.vectorfield_definition import (
     BistableLimitCycle,
+    DampedPendulum,
     LimitCycle,
     MultiAttractor,
     DoubleLimitCycle,
+    DoubleIntegrator,
     VanDerPol,
     Duffing,
     FitzHughNagumo,
@@ -28,6 +30,8 @@ vf_from_string = {
     "multi_attractor": MultiAttractor,
     "van_der_pol": VanDerPol,
     "duffing": Duffing,
+    "damped_pendulum": DampedPendulum,
+    "double_integrator": DoubleIntegrator,
     "fitzhugh_nagumo": FitzHughNagumo,
     "hopf": Hopf,
     "snowman": SnowMan,
