@@ -160,6 +160,27 @@ def test_experiment_specs_define_expected_matrices():
         "random",
         "off_policy",
     )
+    assert module.ENVIRONMENT_PRESETS["tbme_pendulum_damped"].system_id == "damped_pendulum"
+    assert module.ENVIRONMENT_PRESETS["tbme_double_integrator"].system_id == "double_integrator"
+    assert (
+        module.ENVIRONMENT_PRESETS["tbme_duffing_family_mismatch"].estimator_system_id
+        == "damped_pendulum"
+    )
+    assert module.ENVIRONMENT_PRESETS["tbme_mcrtt_spikes"].real_data is True
+    assert module.POLICY_SPECS["baseline_prbs"].policy_type == "baseline-prbs"
+    assert module.POLICY_SPECS["e_optimality"].objective_kind == "e_optimality"
+    assert module.EXPERIMENT_SPECS["tbme_exp1_duffing_policy"].policy_ids == (
+        "active_myopic",
+        "active_planning",
+        "baseline_prbs",
+        "random",
+        "off_policy",
+    )
+    assert (
+        module.EXPERIMENT_SPECS["tbme_exp2_robustness_duffing"].env_preset_id
+        == "tbme_duffing_family_mismatch"
+    )
+    assert module.EXPERIMENT_SPECS["tbme_exp3_realdata_policy"].experiment_kind == "realdata"
     assert module.EXPERIMENT_SPECS["exp01_1"].model_ids == module.EXPERIMENT_SPECS["exp01_1"].policy_ids
 
 
@@ -187,6 +208,25 @@ def test_runtime_experiment_config_is_built_from_catalog_defaults(tmp_path: Path
     assert cfg.training.total_steps == 123
     assert cfg.training.train_every == 124
     assert cfg.policy.policy_type == "mpc-icem"
+
+
+def test_runtime_config_respects_catalog_policy_type_for_prbs(tmp_path: Path):
+    specs = _load_module("cosyne_specs_runtime_prbs", "experiments/cosyne/experiment_specs.py")
+    runner = _load_module("cosyne_runner_runtime_prbs", "experiments/cosyne/run_experiments.py")
+    env_preset = specs.get_environment_preset("tbme_duffing_easy")
+    schedule_spec = specs.get_schedule_spec("u1_r1_h1")
+    policy_spec = specs.get_policy_spec("baseline_prbs")
+    cfg = runner._build_runtime_experiment_config(
+        run_dir=tmp_path / "run",
+        seed=3,
+        total_steps=50,
+        experiment_kind="duffing",
+        policy_id="baseline_prbs",
+        env_preset=env_preset,
+        schedule_spec=schedule_spec,
+        policy_spec=policy_spec,
+    )
+    assert cfg.policy.policy_type == "baseline-prbs"
 
 
 def test_rbf_active_indices_use_manhattan_radius():

@@ -130,6 +130,17 @@ def test_parameter_eig_and_fully_observable_match_manual_one_step():
     assert fo_value < value
 
 
+def test_e_optimality_matches_manual_one_step():
+    module = _load_module("cosyne_objectives_v2_eopt", "experiments/cosyne/objectives.py")
+    model = _make_model()
+    rollout = {"model_state": torch.zeros(1, 1, 2)}
+    metric = module.e_optimality(model=model, Fe_net=_fe, Fz_net=_fz, gamma=1.0, device="cpu")
+    value = float(metric(rollout).item())
+    atten = torch.linalg.solve(torch.eye(2) + torch.diag(torch.tensor([4.0, 5.0])), torch.eye(2))
+    expected = -float(torch.min(torch.linalg.eigvalsh(torch.diag(torch.tensor([2.0, 3.0])) @ atten)))
+    assert torch.isclose(torch.tensor(value), torch.tensor(expected), atol=1e-5)
+
+
 def test_state_information_matches_manual_one_step():
     module = _load_module("cosyne_objectives_v2_state", "experiments/cosyne/objectives.py")
     model = _make_model()
