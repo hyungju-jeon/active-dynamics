@@ -1,0 +1,77 @@
+environments:
+  tbme_duffing_easy:
+    extends: easy_duffing
+    system_label: Duffing oscillator
+    observation_dim: 64
+    mean_firing_rate_target: 35.0
+
+  tbme_pendulum_damped:
+    extends: single_duffing
+    system_id: damped_pendulum
+    system_label: damped pendulum
+    observation_dim: 64
+    action_max: 1.2
+    x_range: 4.0
+    mean_firing_rate_target: 30.0
+
+  tbme_double_integrator:
+    extends: single_duffing
+    system_id: double_integrator
+    system_label: double integrator
+    observation_dim: 64
+    action_max: 1.4
+    state_noise: 0.1
+    x_range: 4.0
+    mean_firing_rate_target: 20.0
+
+  tbme_duffing_obs_mismatch:
+    extends: tbme_duffing_easy
+    observation_dim: 24
+    observation_noise_scale: 0.2
+    firing_rate_scale: 0.6
+
+  tbme_duffing_family_mismatch:
+    extends: tbme_duffing_easy
+    estimator_system_id: damped_pendulum
+    system_label: Duffing oscillator / pendulum model mismatch
+    state_noise: 0.35
+
+  tbme_duffing_noise_mismatch:
+    extends: tbme_duffing_easy
+    state_noise: 0.6
+    observation_noise_scale: 0.2
+
+  tbme_pendulum_param_mismatch:
+    extends: tbme_pendulum_damped
+    state_noise: 0.35
+    state_init_uncertainty: 16.0
+
+  tbme_double_integrator_mismatch:
+    extends: tbme_double_integrator
+    state_noise: 0.25
+    observation_noise_scale: 0.15
+    mean_firing_rate_target: 12.0
+
+  tbme_mcrtt_spikes:
+    extends: single_duffing
+    system_id: mcrtt_replay
+    system_label: MC_RTT neural replay
+    real_data: true
+    dataset_id: mc_rtt
+    dataset_path: data/mcrtt/mcrtt_replay.npz
+    state_key: behavior
+    observation_key: spikes
+    train_fraction: 0.7
+    time_bin_ms: 20.0
+    action_dim: 1
+    latent_dim: 2
+    embedding_dim: 4
+    observation_dim: 128
+    max_observation_dim: 128
+    action_max: 0.0
+    state_noise: 0.0
+    state_init_uncertainty: 1.0
+    x_range: 3.0
+    observation_noise_scale: 1.0
+    mean_firing_rate_target: 15.0
+    max_firing_rate_target: 120.0

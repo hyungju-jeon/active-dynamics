@@ -1,0 +1,104 @@
+suites:
+  tbme_exp1_duffing_policy:
+    experiment_kind: duffing
+    total_steps: 600
+    env_preset_id: tbme_duffing_easy
+    model_ids:
+      - active_myopic
+      - active_planning
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_pendulum_policy:
+    experiment_kind: duffing
+    total_steps: 600
+    env_preset_id: tbme_pendulum_damped
+    model_ids:
+      - active_myopic
+      - active_planning
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_double_integrator_policy:
+    experiment_kind: duffing
+    total_steps: 600
+    env_preset_id: tbme_double_integrator
+    model_ids:
+      - active_myopic
+      - active_planning
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_objective_duffing:
+    experiment_kind: duffing
+    total_steps: 600
+    env_preset_id: tbme_duffing_easy
+    model_ids:
+      - active_planning
+      - e_optimality
+      - state_information
+      - dynamics
+      - sampling_variance
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp2_robustness_duffing:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_duffing_family_mismatch
+    model_ids:
+      - active_planning
+      - e_optimality
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp2_robustness_pendulum:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_pendulum_param_mismatch
+    model_ids:
+      - active_planning
+      - e_optimality
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp2_robustness_double_integrator:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_double_integrator_mismatch
+    model_ids:
+      - active_planning
+      - e_optimality
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp3_realdata_policy:
+    experiment_kind: realdata
+    total_steps: 256
+    env_preset_id: tbme_mcrtt_spikes
+    model_ids:
+      - active_myopic
+      - active_planning
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: dynamics_mse
+    summary_value_label: Held-out Prediction MSE

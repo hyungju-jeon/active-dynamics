@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from pathlib import Path
+import sys
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from _run_family import run_family
+else:
+    from ._run_family import run_family
+
+
+EXP1_SUITES = [
+    "tbme_exp1_duffing_policy",
+    "tbme_exp1_pendulum_policy",
+    "tbme_exp1_double_integrator_policy",
+    "tbme_exp1_objective_duffing",
+]
+
+
+def main(argv: list[str] | None = None) -> int:
+    return run_family(argv=argv, suite_ids=EXP1_SUITES, default_base_dir="results/tbme/exp1")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -113,7 +113,7 @@ def test_realdata_split_and_ridge_helpers(tmp_path: Path):
 
 
 def test_video_renderer_skips_realdata_experiment(tmp_path: Path):
-    module = _load_module("cosyne_video_tbme", "experiments/cosyne/render_experiment_videos.py")
+    module = _load_module("tbme_video_tbme", "experiments/tbme/render_experiment_videos.py")
     exit_code = module.main(
         [
             "--base-dir",
