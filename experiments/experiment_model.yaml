@@ -111,14 +111,6 @@ models:
     extends: dynamics
     schedule_id: u5_r5_h40
 
-  e_optimality:
-    objective_kind: e_optimality
-    schedule_id: u1_r1_h20
-
-  e_optimality_u5_r5_h40:
-    extends: e_optimality
-    schedule_id: u5_r5_h40
-
   sampling_variance:
     objective_kind: sampling_variance
     schedule_id: u10_r10_h100
@@ -135,18 +127,6 @@ models:
   random:
     schedule_id: u1_r1_h1
     policy_type: random
-    passive: true
-    save_acq_map: false
-
-  baseline_random:
-    schedule_id: u1_r1_h1
-    policy_type: baseline-random
-    passive: true
-    save_acq_map: false
-
-  baseline_prbs:
-    schedule_id: u1_r1_h1
-    policy_type: baseline-prbs
     passive: true
     save_acq_map: false
 

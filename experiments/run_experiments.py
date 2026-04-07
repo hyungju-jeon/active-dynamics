@@ -19,7 +19,7 @@ import numpy as np
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from cosyne_common import (
+    from experiment_common import (
         load_json,
         parse_csv_ints,
         parse_csv_list,
@@ -27,6 +27,7 @@ if __package__ in {None, ""}:
         write_json,
     )
     from experiment_specs import (
+        configure_catalogs,
         describe_catalogs,
         get_environment_preset,
         get_experiment_spec,
@@ -34,7 +35,7 @@ if __package__ in {None, ""}:
         get_schedule_spec,
         list_experiment_ids,
     )
-    from planar_systems import (
+    from cosyne.planar_systems import (
         env_params_from_embedding,
         get_planar_system_spec,
         has_planar_system_spec,
@@ -46,7 +47,7 @@ if __package__ in {None, ""}:
         step_np,
         true_embedding,
     )
-    from realdata_spiking import (
+    from cosyne.realdata_spiking import (
         build_transition_matrices,
         evaluate_prediction_mse,
         evaluate_prediction_r2,
@@ -54,13 +55,13 @@ if __package__ in {None, ""}:
         load_replay_dataset,
         split_replay_dataset,
     )
-    from rbf_filtering import (
+    from cosyne.rbf_filtering import (
         SparseRbfDynamics,
         SparseRbfFilteringModel,
         StructuredLocalRbfParameterMetric,
     )
 else:
-    from .cosyne_common import (
+    from .experiment_common import (
         load_json,
         parse_csv_ints,
         parse_csv_list,
@@ -68,6 +69,7 @@ else:
         write_json,
     )
     from .experiment_specs import (
+        configure_catalogs,
         describe_catalogs,
         get_environment_preset,
         get_experiment_spec,
@@ -75,7 +77,7 @@ else:
         get_schedule_spec,
         list_experiment_ids,
     )
-    from .planar_systems import (
+    from .cosyne.planar_systems import (
         env_params_from_embedding,
         get_planar_system_spec,
         has_planar_system_spec,
@@ -87,7 +89,7 @@ else:
         step_np,
         true_embedding,
     )
-    from .realdata_spiking import (
+    from .cosyne.realdata_spiking import (
         build_transition_matrices,
         evaluate_prediction_mse,
         evaluate_prediction_r2,
@@ -95,7 +97,7 @@ else:
         load_replay_dataset,
         split_replay_dataset,
     )
-    from .rbf_filtering import (
+    from .cosyne.rbf_filtering import (
         SparseRbfDynamics,
         SparseRbfFilteringModel,
         StructuredLocalRbfParameterMetric,
@@ -105,7 +107,7 @@ WRITING_REFERENCE = "docs/active-dynamics-writing/methods.tex"
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[1]
 
 
 def _utc_now() -> str:
@@ -1088,7 +1090,7 @@ def _build_metric(
     sampling_variance_seed: int | None,
 ):
     if __package__ in {None, ""}:
-        from objectives import (
+        from cosyne.objectives import (
             dynamics as build_dynamics_metric,
             e_optimality as build_e_optimality_metric,
             fully_observable_parameter_eig,
@@ -1097,7 +1099,7 @@ def _build_metric(
             state_information as build_state_information_metric,
         )
     else:
-        from .objectives import (
+        from .cosyne.objectives import (
             dynamics as build_dynamics_metric,
             e_optimality as build_e_optimality_metric,
             fully_observable_parameter_eig,
@@ -3265,12 +3267,19 @@ def _write_session_metadata(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run COSYNE v2 experiments")
+    parser = argparse.ArgumentParser(
+        description="Run experiments from configured catalogs",
+        allow_abbrev=False,
+    )
+    parser.add_argument("--env-catalog", action="append", dest="env_catalogs")
+    parser.add_argument("--model-catalog", action="append", dest="model_catalogs")
+    parser.add_argument("--suite-catalog", action="append", dest="suite_catalogs")
     parser.add_argument("--exp-id", choices=[*list_experiment_ids(), "all"], default="all")
+    parser.add_argument("--exp-ids", type=str, default=None)
     parser.add_argument("--mode", choices=["run", "summary", "video", "all"], default="run")
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
     parser.add_argument("--repeats", type=int, default=1)
-    parser.add_argument("--base-dir", type=str, default="results/cosyne")
+    parser.add_argument("--base-dir", type=str, default="results/experiments")
     parser.add_argument("--total-steps", type=int, default=None)
     parser.add_argument("--q-theta", type=float, default=5e-4)
     parser.add_argument("--q-theta-meas-coeff", type=float, default=0.0)
@@ -3287,10 +3296,46 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    raw_argv = [str(x) for x in (sys.argv if argv is None else [Path(__file__).resolve(), *argv])]
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    catalog_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    catalog_parser.add_argument("--env-catalog", action="append", dest="env_catalogs")
+    catalog_parser.add_argument("--model-catalog", action="append", dest="model_catalogs")
+    catalog_parser.add_argument("--suite-catalog", action="append", dest="suite_catalogs")
+    catalog_args, _unknown = catalog_parser.parse_known_args(argv_list)
+    configure_catalogs(
+        env_catalog_paths=catalog_args.env_catalogs,
+        model_catalog_paths=catalog_args.model_catalogs,
+        suite_catalog_paths=catalog_args.suite_catalogs,
+    )
+    catalog_desc = describe_catalogs()
+    env_catalogs = catalog_desc.get("environment")
+    model_catalogs = catalog_desc.get("model")
+    suite_catalogs = catalog_desc.get("suite")
+    os.environ["ACTDYN_ENV_CATALOGS"] = (
+        str(env_catalogs)
+        if isinstance(env_catalogs, str)
+        else os.pathsep.join(str(item) for item in env_catalogs)
+    )
+    os.environ["ACTDYN_MODEL_CATALOGS"] = (
+        str(model_catalogs)
+        if isinstance(model_catalogs, str)
+        else os.pathsep.join(str(item) for item in model_catalogs)
+    )
+    os.environ["ACTDYN_SUITE_CATALOGS"] = (
+        str(suite_catalogs)
+        if isinstance(suite_catalogs, str)
+        else os.pathsep.join(str(item) for item in suite_catalogs)
+    )
+    raw_argv = [str(Path(__file__).resolve()), *argv_list]
     parser = build_parser()
-    args = parser.parse_args(argv)
-    exp_ids = list_experiment_ids() if args.exp_id == "all" else [str(args.exp_id)]
+    args = parser.parse_args(argv_list)
+    if args.exp_ids is not None and str(args.exp_ids).strip():
+        exp_ids = parse_csv_list(args.exp_ids)
+        unknown = [exp_id for exp_id in exp_ids if exp_id not in set(list_experiment_ids())]
+        if unknown:
+            parser.error(f"Unknown experiment ids: {', '.join(unknown)}")
+    else:
+        exp_ids = list_experiment_ids() if args.exp_id == "all" else [str(args.exp_id)]
     base_dir = resolve_session_root(
         Path(args.base_dir),
         create=args.mode in {"run", "all"},
@@ -3311,7 +3356,7 @@ def main(argv: list[str] | None = None) -> int:
     log_dir = base_dir
     log_dir.mkdir(parents=True, exist_ok=True)
     redirect_output = not sys.stdout.isatty() or not sys.stderr.isatty()
-    log_path = log_dir / "cosyne_v2_driver.log"
+    log_path = log_dir / "experiment_driver.log"
     with (
         log_path.open("a", encoding="utf-8") if redirect_output else contextlib.nullcontext()
     ) as log_stream:
