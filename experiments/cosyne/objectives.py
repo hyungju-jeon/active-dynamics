@@ -48,6 +48,135 @@ def fully_observable_parameter_eig(
     )
 
 
+class EOptimalityMetric(BaseMetric):
+    def __init__(
+        self,
+        *,
+        model: FilteringEmbedding,
+        Fe_net: Callable,
+        Fz_net: Callable,
+        gamma: float,
+        device: str,
+    ) -> None:
+        super().__init__(compute_type="sum", device=device)
+        self.model = model
+        self.Fe_net = Fe_net
+        self.Fz_net = Fz_net
+        self.gamma = float(gamma)
+
+    def compute_stepwise(self, rollout: dict) -> torch.Tensor:
+        z = rollout["model_state"].to(self.device).float()
+        if z.ndim != 3:
+            z = z.unsqueeze(0)
+        batch, steps, d_latent = z.shape
+        e_bel = self.model.e
+        z_bel = self.model.z
+        d_embedding = int(e_bel["m"].shape[-1])
+
+        e_m = e_bel["m"].to(self.device)
+        if e_m.ndim == 1:
+            e_m = e_m.unsqueeze(0)
+        if e_m.shape[0] == 1 and batch > 1:
+            e_rep = e_m.expand(batch, -1)
+        else:
+            e_rep = e_m
+        e_rep_time = e_rep.unsqueeze(1).expand(batch, steps, -1)
+        Fe = self.Fe_net(z, e_rep_time).detach()
+        Fz = self.Fz_net(z, e_rep_time).detach()
+
+        p_pred = z_bel["P"].to(self.device)
+        if p_pred.ndim == 4:
+            p_pred = p_pred.squeeze(1)
+        elif p_pred.ndim == 2:
+            p_pred = p_pred.unsqueeze(0)
+        if p_pred.shape[0] == 1 and batch > 1:
+            p_pred = p_pred.expand(batch, -1, -1)
+        p_pred = symmetrize(p_pred)
+
+        dt = float(getattr(self.model, "dt", 1.0))
+        q = softplus(self.model.dynamics.logvar).diag_embed().to(self.device) * dt
+        if q.ndim == 2:
+            q = q.unsqueeze(0)
+        if q.shape[0] == 1 and batch > 1:
+            q = q.expand(batch, -1, -1)
+        q = symmetrize(q)
+
+        eye_latent = torch.eye(d_latent, device=self.device).unsqueeze(0).expand(batch, -1, -1)
+        eye_embed = torch.eye(d_embedding, device=self.device).unsqueeze(0).expand(batch, -1, -1)
+        s_sens = torch.zeros(batch, d_latent, d_embedding, device=self.device, dtype=z.dtype)
+        j_total = torch.zeros(batch, d_embedding, d_embedding, device=self.device, dtype=z.dtype)
+
+        for i in range(steps):
+            dfdz = eye_latent + Fz[:, i] * dt
+            dfde = Fe[:, i] * dt
+            s_sens = dfdz @ s_sens + dfde
+
+            z_i = z[:, i : i + 1]
+            H_i = self.model.decoder.jacobian(z_i).to(self.device)
+            if H_i.ndim == 4:
+                H_i = H_i.squeeze(1)
+            elif H_i.ndim == 2:
+                H_i = H_i.unsqueeze(0)
+            if H_i.shape[0] == 1 and batch > 1:
+                H_i = H_i.expand(batch, -1, -1)
+
+            if hasattr(self.model.decoder.noise, "__class__") and self.model.decoder.noise.__class__.__name__ == "PoissonNoise":
+                r_diag = self.model.decoder(z_i).to(self.device)
+            else:
+                r_diag = self.model.decoder.var(z_i).to(self.device)
+            if r_diag.ndim == 4:
+                r = r_diag.squeeze(1)
+            else:
+                if r_diag.ndim == 2:
+                    r_diag = r_diag.unsqueeze(0).unsqueeze(0)
+                elif r_diag.ndim == 3 and r_diag.shape[1] != 1:
+                    r_diag = r_diag.unsqueeze(1)
+                if r_diag.shape[0] == 1 and batch > 1:
+                    r_diag = r_diag.expand(batch, -1, -1)
+                r = r_diag.diag_embed().squeeze(1)
+            r = symmetrize(r)
+            eye_obs = torch.eye(r.shape[-1], device=self.device).unsqueeze(0).expand(batch, -1, -1)
+            chol_r = safe_cholesky(r + 1e-8 * eye_obs)
+            invr_h = torch.cholesky_solve(H_i, chol_r)
+            i_z = symmetrize(H_i.transpose(-1, -2) @ invr_h)
+
+            atten = symmetrize(eye_latent + p_pred @ i_z)
+            chol_atten = safe_cholesky(atten + 1e-8 * eye_latent)
+            atten_i_z = torch.cholesky_solve(i_z, chol_atten)
+            info_step = symmetrize(s_sens.transpose(-1, -2) @ atten_i_z @ s_sens)
+            j_total = j_total + (self.gamma**i) * info_step
+
+            p_pred = symmetrize(dfdz @ p_pred @ dfdz.transpose(-1, -2) + q)
+
+        p_theta = e_bel["P"].to(self.device)
+        if p_theta.ndim == 2:
+            p_theta = p_theta.unsqueeze(0)
+        if p_theta.shape[0] == 1 and batch > 1:
+            p_theta = p_theta.expand(batch, -1, -1)
+        scaled_info = symmetrize(p_theta @ j_total)
+        eigvals = torch.linalg.eigvalsh(scaled_info + 1e-8 * eye_embed)
+        e_opt = eigvals[..., 0]
+        self.current_cost = (-e_opt).unsqueeze(-1)
+        return self.current_cost
+
+
+def e_optimality(
+    *,
+    model: FilteringEmbedding,
+    Fe_net: Callable,
+    Fz_net: Callable,
+    gamma: float,
+    device: str,
+) -> EOptimalityMetric:
+    return EOptimalityMetric(
+        model=model,
+        Fe_net=Fe_net,
+        Fz_net=Fz_net,
+        gamma=gamma,
+        device=device,
+    )
+
+
 class _FilteringObjectiveBase(BaseMetric):
     def __init__(
         self,

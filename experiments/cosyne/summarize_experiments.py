@@ -24,7 +24,7 @@ if __package__ in {None, ""}:
         safe_float,
     )
     from experiment_specs import get_experiment_spec, list_experiment_ids
-    from planar_systems import get_planar_system_spec, residual_torch
+    from planar_systems import get_planar_system_spec, has_planar_system_spec, residual_torch
 else:
     from .cosyne_common import (
         expected_loglinear_rate_hz,
@@ -39,7 +39,7 @@ else:
         safe_float,
     )
     from .experiment_specs import get_experiment_spec, list_experiment_ids
-    from .planar_systems import get_planar_system_spec, residual_torch
+    from .planar_systems import get_planar_system_spec, has_planar_system_spec, residual_torch
 from actdyn.utils.visualize import (
     PlanarResidualDynamics,
     decorate_phase_space_axis,
@@ -410,6 +410,9 @@ def _plot_neuron_tuning_curve_colormap(
     seed_refs = _seed_reference_records(records)
     if not seed_refs:
         return
+    metadata = dict(seed_refs[0]["metadata"])
+    if not has_planar_system_spec(str(metadata.get("system_id", "")).strip()):
+        return
     try:
         import matplotlib.pyplot as plt
     except Exception:
@@ -468,6 +471,9 @@ def _plot_information_colormap(
 ) -> None:
     seed_refs = _seed_reference_records(records)
     if not seed_refs:
+        return
+    metadata = dict(seed_refs[0]["metadata"])
+    if not has_planar_system_spec(str(metadata.get("system_id", "")).strip()):
         return
     try:
         import matplotlib.pyplot as plt
@@ -554,6 +560,8 @@ def _plot_trajectory_coverage(
         if isinstance(system_id_raw, str) and str(system_id_raw).strip()
         else ("bistable_attractor" if metadata.get("hard_setup") else "single_attractor")
     )
+    if not has_planar_system_spec(system_id):
+        return
     system_spec = get_planar_system_spec(system_id)
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=np.float32)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 0.7))

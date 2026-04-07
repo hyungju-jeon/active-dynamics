@@ -37,6 +37,7 @@ if __package__ in {None, ""}:
     from planar_systems import (
         env_params_from_embedding,
         get_planar_system_spec,
+        has_planar_system_spec,
         jacobian_param_torch,
         jacobian_state_torch,
         residual_np,
@@ -44,6 +45,14 @@ if __package__ in {None, ""}:
         sample_initial_state,
         step_np,
         true_embedding,
+    )
+    from realdata_spiking import (
+        build_transition_matrices,
+        evaluate_prediction_mse,
+        evaluate_prediction_r2,
+        fit_linear_dynamics_ridge,
+        load_replay_dataset,
+        split_replay_dataset,
     )
     from rbf_filtering import (
         SparseRbfDynamics,
@@ -69,6 +78,7 @@ else:
     from .planar_systems import (
         env_params_from_embedding,
         get_planar_system_spec,
+        has_planar_system_spec,
         jacobian_param_torch,
         jacobian_state_torch,
         residual_np,
@@ -76,6 +86,14 @@ else:
         sample_initial_state,
         step_np,
         true_embedding,
+    )
+    from .realdata_spiking import (
+        build_transition_matrices,
+        evaluate_prediction_mse,
+        evaluate_prediction_r2,
+        fit_linear_dynamics_ridge,
+        load_replay_dataset,
+        split_replay_dataset,
     )
     from .rbf_filtering import (
         SparseRbfDynamics,
@@ -111,6 +129,50 @@ def _ensure_dir(path: Path) -> Path:
     return path
 
 
+def _resolved_policy_type(policy_id: str, policy_spec: Any | None) -> str:
+    configured = None if policy_spec is None else getattr(policy_spec, "policy_type", None)
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    if str(policy_id) == "random":
+        return "random"
+    if str(policy_id) == "off_policy":
+        return "off-policy"
+    return "mpc-icem"
+
+
+def _resolved_estimator_system_id(env_preset: Any) -> str:
+    configured = getattr(env_preset, "estimator_system_id", None)
+    if isinstance(configured, str) and configured.strip():
+        return configured.strip()
+    return str(env_preset.system_id)
+
+
+def _environment_summary(env_preset: Any) -> dict[str, Any]:
+    system_id = str(env_preset.system_id)
+    estimator_system_id = _resolved_estimator_system_id(env_preset)
+    if has_planar_system_spec(system_id):
+        system_spec = get_planar_system_spec(system_id)
+        estimator_spec = get_planar_system_spec(estimator_system_id)
+        return {
+            "system_id": str(system_spec.system_id),
+            "system_label": str(system_spec.label),
+            "dynamics_type": str(system_spec.dynamics_type),
+            "estimator_system_id": str(estimator_spec.system_id),
+            "estimator_system_label": str(estimator_spec.label),
+            "estimator_dynamics_type": str(estimator_spec.dynamics_type),
+            "true_embedding": [float(x) for x in true_embedding(system_spec.system_id).tolist()],
+        }
+    return {
+        "system_id": system_id,
+        "system_label": str(getattr(env_preset, "system_label", None) or system_id),
+        "dynamics_type": "replay_dataset" if bool(getattr(env_preset, "real_data", False)) else "unknown",
+        "estimator_system_id": estimator_system_id,
+        "estimator_system_label": None,
+        "estimator_dynamics_type": None,
+        "true_embedding": None,
+    }
+
+
 def _build_runtime_experiment_config(
     *,
     run_dir: Path,
@@ -120,6 +182,7 @@ def _build_runtime_experiment_config(
     policy_id: str,
     env_preset: Any,
     schedule_spec: Any,
+    policy_spec: Any | None = None,
 ):
     from actdyn.config import ExperimentConfig
 
@@ -154,11 +217,9 @@ def _build_runtime_experiment_config(
     exp_config.model.emb_k_theta = int(schedule_spec.update_interval)
     exp_config.model.emb_state_init_uncertainty = float(env_preset.state_init_uncertainty)
 
-    if policy_id == "random":
-        exp_config.policy.policy_type = "random"
-    elif policy_id == "off_policy":
-        exp_config.policy.policy_type = "off-policy"
-    else:
+    policy_type = _resolved_policy_type(policy_id, policy_spec)
+    exp_config.policy.policy_type = policy_type
+    if policy_type == "mpc-icem":
         exp_config.policy.policy_type = "mpc-icem"
         exp_config.policy.mpc_horizon = int(schedule_spec.planning_horizon)
 
@@ -1029,6 +1090,7 @@ def _build_metric(
     if __package__ in {None, ""}:
         from objectives import (
             dynamics as build_dynamics_metric,
+            e_optimality as build_e_optimality_metric,
             fully_observable_parameter_eig,
             parameter_eig,
             sampling_variance as build_sampling_variance_metric,
@@ -1037,6 +1099,7 @@ def _build_metric(
     else:
         from .objectives import (
             dynamics as build_dynamics_metric,
+            e_optimality as build_e_optimality_metric,
             fully_observable_parameter_eig,
             parameter_eig,
             sampling_variance as build_sampling_variance_metric,
@@ -1045,6 +1108,14 @@ def _build_metric(
 
     if objective_kind == "parameter_eig":
         return parameter_eig(model=model, Fe_net=Fe_net, Fz_net=Fz_net, gamma=gamma, device=device)
+    if objective_kind == "e_optimality":
+        return build_e_optimality_metric(
+            model=model,
+            Fe_net=Fe_net,
+            Fz_net=Fz_net,
+            gamma=gamma,
+            device=device,
+        )
     if objective_kind == "fully_observable_parameter_eig":
         return fully_observable_parameter_eig(
             model=model,
@@ -1080,6 +1151,55 @@ def _build_metric(
             sample_seed=sampling_variance_seed,
         )
     raise ValueError(f"Unsupported objective_kind={objective_kind}")
+
+
+def _instantiate_synthetic_policy(
+    *,
+    actdyn_module: Any,
+    env: Any,
+    model: Any,
+    metric: Any,
+    device: str,
+    policy_id: str,
+    policy_spec: Any,
+    schedule_spec: Any,
+    seed: int,
+    mpc_num_iterations: int = 10,
+    mpc_num_samples: int = 40,
+    mpc_num_elite: int = 10,
+) -> Any:
+    policy_type = _resolved_policy_type(policy_id, policy_spec)
+    if policy_type == "random":
+        return actdyn_module.policy.RandomPolicy(action_space=env.action_space, device=device)
+    if policy_type == "baseline-random":
+        return actdyn_module.policy.BaselineRandomPolicy(
+            action_space=env.action_space,
+            device=device,
+            seed=int(seed),
+        )
+    if policy_type == "baseline-prbs":
+        return actdyn_module.policy.BaselinePRBSPolicy(
+            action_space=env.action_space,
+            device=device,
+            seed=int(seed),
+            hold_steps=max(1, int(getattr(schedule_spec, "planning_chunk", 1))),
+            amplitude=1.0,
+        )
+    if policy_type == "off-policy":
+        return actdyn_module.policy.OffPolicy(action_space=env.action_space, device=device)
+    if policy_type != "mpc-icem":
+        raise ValueError(f"Unsupported policy_type={policy_type!r} for synthetic experiments")
+    return actdyn_module.policy.mpc.MpcICem(
+        metric=metric,
+        model=model,
+        device=device,
+        horizon=int(schedule_spec.planning_horizon),
+        num_iterations=int(mpc_num_iterations),
+        num_samples=int(mpc_num_samples),
+        num_elite=int(mpc_num_elite),
+        chunk=int(schedule_spec.planning_chunk),
+        verbose=False,
+    )
 
 
 def _run_single_duffing_identification(
@@ -1122,6 +1242,7 @@ def _run_single_duffing_identification(
     schedule_spec = get_schedule_spec(policy_spec.schedule_id)
     env_preset = get_environment_preset(exp_spec.env_preset_id)
     system_spec = get_planar_system_spec(env_preset.system_id)
+    estimator_system_spec = get_planar_system_spec(_resolved_estimator_system_id(env_preset))
 
     start_time = _utc_now()
     set_matplotlib_style()
@@ -1140,7 +1261,7 @@ def _run_single_duffing_identification(
     dt = float(env_preset.dt)
     alpha = float(env_preset.dynamics_alpha)
     fe_true, fz_true = _build_system_jacobians(
-        system_id=system_spec.system_id,
+        system_id=estimator_system_spec.system_id,
         dynamics_alpha=alpha,
     )
     noise_scale = max(1e-8, float(env_preset.state_noise))
@@ -1215,7 +1336,7 @@ def _run_single_duffing_identification(
     decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
 
     sim_vec_env = actdyn.VectorFieldEnv(
-        system_spec.dynamics_type,
+        estimator_system_spec.dynamics_type,
         x_range=5,
         dyn_params=None,
         dt=dt,
@@ -1226,13 +1347,17 @@ def _run_single_duffing_identification(
     _set_vectorfield_params(
         sim_vec_env,
         torch.as_tensor(
-            env_params_from_embedding(system_spec.system_id, torch.zeros(2, device=device)),
+            env_params_from_embedding(
+                estimator_system_spec.system_id, torch.zeros(2, device=device)
+            ),
             device=device,
         ),
     )
     dynamics_fn = _VectorFieldDynamicsAdapter(
         sim_vec_env.dynamics,
-        param_formatter=lambda params: env_params_from_embedding(system_spec.system_id, params),
+        param_formatter=lambda params: env_params_from_embedding(
+            estimator_system_spec.system_id, params
+        ),
     )
     dynamics = actdyn.models.dynamics.FunctionDynamics(
         state_dim=dz, dt=dt, dynamics_fn=dynamics_fn, device=device
@@ -1284,22 +1409,20 @@ def _run_single_duffing_identification(
             metrics=[base_metric], compute_type="sum", weights=[1.0], device=device
         )
 
-    if policy_id == "random":
-        policy = actdyn.policy.RandomPolicy(action_space=env.action_space, device=device)
-    elif policy_id == "off_policy":
-        policy = actdyn.policy.OffPolicy(action_space=env.action_space, device=device)
-    else:
-        policy = actdyn.policy.mpc.MpcICem(
-            metric=metric,
-            model=model,
-            device=device,
-            horizon=int(schedule_spec.planning_horizon),
-            num_iterations=10,
-            num_samples=40,
-            num_elite=10,
-            chunk=int(schedule_spec.planning_chunk),
-            verbose=False,
-        )
+    policy = _instantiate_synthetic_policy(
+        actdyn_module=actdyn,
+        env=env,
+        model=model,
+        metric=metric,
+        device=device,
+        policy_id=policy_id,
+        policy_spec=policy_spec,
+        schedule_spec=schedule_spec,
+        seed=seed,
+        mpc_num_iterations=4,
+        mpc_num_samples=24,
+        mpc_num_elite=6,
+    )
 
     class _CadencedAgent(actdyn.Agent):
         def __init__(
@@ -1398,6 +1521,7 @@ def _run_single_duffing_identification(
         policy_id=policy_id,
         env_preset=env_preset,
         schedule_spec=schedule_spec,
+        policy_spec=policy_spec,
     )
     exp_config.device = str(device)
     agent = _CadencedAgent(env=env, model=model, buffer_length=10, policy=policy, device=device)
@@ -1692,6 +1816,9 @@ def _run_single_duffing_identification(
             "system_id": str(system_spec.system_id),
             "system_label": str(system_spec.label),
             "dynamics_type": str(system_spec.dynamics_type),
+            "estimator_system_id": str(estimator_system_spec.system_id),
+            "estimator_system_label": str(estimator_system_spec.label),
+            "estimator_dynamics_type": str(estimator_system_spec.dynamics_type),
             "initial_state_true": [float(x) for x in init_state.tolist()],
             "embedding_true": [float(x) for x in e_true_flat.tolist()],
             "embedding_estimate": [float(x) for x in model.e["m"].detach().reshape(-1).tolist()],
@@ -1905,25 +2032,17 @@ def _run_single_rbf_identification(
     if not policy_spec.passive:
         metric = StructuredLocalRbfParameterMetric(model=model, gamma=eig_gamma, device=device)
 
-    if policy_id == "random":
-        policy = actdyn.policy.RandomPolicy(action_space=env.action_space, device=device)
-    elif policy_id == "off_policy":
-        policy = actdyn.policy.OffPolicy(action_space=env.action_space, device=device)
-    else:
-        mpc_num_iterations = 4
-        mpc_num_samples = 24
-        mpc_num_elite = 6
-        policy = actdyn.policy.mpc.MpcICem(
-            metric=metric,
-            model=model,
-            device=device,
-            horizon=int(schedule_spec.planning_horizon),
-            num_iterations=mpc_num_iterations,
-            num_samples=mpc_num_samples,
-            num_elite=mpc_num_elite,
-            chunk=int(schedule_spec.planning_chunk),
-            verbose=False,
-        )
+    policy = _instantiate_synthetic_policy(
+        actdyn_module=actdyn,
+        env=env,
+        model=model,
+        metric=metric,
+        device=device,
+        policy_id=policy_id,
+        policy_spec=policy_spec,
+        schedule_spec=schedule_spec,
+        seed=seed,
+    )
 
     class _CadencedAgent(actdyn.Agent):
         def __init__(
@@ -2022,6 +2141,7 @@ def _run_single_rbf_identification(
         policy_id=policy_id,
         env_preset=env_preset,
         schedule_spec=schedule_spec,
+        policy_spec=policy_spec,
     )
     exp_config.device = str(device)
     agent = _CadencedAgent(env=env, model=model, buffer_length=10, policy=policy, device=device)
@@ -2414,6 +2534,411 @@ def _run_single_rbf_identification(
     return payload
 
 
+def _replay_parameter_info(state: np.ndarray, state_dim: int) -> np.ndarray:
+    x = np.asarray(state, dtype=np.float64).reshape(-1)
+    xx = np.outer(x, x)
+    return np.kron(xx, np.eye(int(state_dim), dtype=np.float64))
+
+
+def _replay_candidate_score(
+    *,
+    objective_kind: str | None,
+    state: np.ndarray,
+    next_state: np.ndarray,
+    spikes: np.ndarray,
+    info_accum: np.ndarray,
+    planning_mode: bool,
+) -> tuple[float, np.ndarray]:
+    state_vec = np.asarray(state, dtype=np.float64).reshape(-1)
+    next_vec = np.asarray(next_state, dtype=np.float64).reshape(-1)
+    delta = next_vec - state_vec
+    info_step = _replay_parameter_info(state_vec, state_vec.shape[0])
+    reference = info_accum + info_step if planning_mode else info_step
+    ref_eye = np.eye(reference.shape[0], dtype=np.float64)
+
+    if objective_kind in {None, "parameter_eig", "fully_observable_parameter_eig"}:
+        sign, logdet = np.linalg.slogdet(ref_eye + reference)
+        score = float(logdet if sign > 0 else -1e12)
+    elif objective_kind == "e_optimality":
+        score = float(np.min(np.linalg.eigvalsh(reference + 1e-8 * ref_eye)))
+    elif objective_kind == "state_information":
+        score = float(np.dot(state_vec, state_vec))
+    elif objective_kind == "dynamics":
+        score = float(np.dot(delta, delta))
+    elif objective_kind == "sampling_variance":
+        score = float(np.var(np.asarray(spikes, dtype=np.float64)))
+    else:
+        raise ValueError(f"Unsupported replay objective_kind={objective_kind!r}")
+    return score, info_step
+
+
+def _prbs_selection_order(num_items: int, budget: int) -> np.ndarray:
+    if num_items <= 0 or budget <= 0:
+        return np.zeros((0,), dtype=np.int64)
+    anchors = np.linspace(0.0, float(num_items - 1), int(budget))
+    order: list[int] = []
+    seen: set[int] = set()
+    for idx in np.round(anchors).astype(int).tolist():
+        idx_i = int(np.clip(idx, 0, num_items - 1))
+        if idx_i not in seen:
+            seen.add(idx_i)
+            order.append(idx_i)
+    for idx in range(num_items):
+        if idx not in seen:
+            order.append(idx)
+    return np.asarray(order[: min(num_items, budget)], dtype=np.int64)
+
+
+def _run_single_realdata_replay(
+    *,
+    exp_id: str,
+    policy_id: str,
+    seed: int,
+    total_steps: int,
+    run_dir: Path,
+) -> dict[str, Any]:
+    exp_spec = get_experiment_spec(exp_id)
+    policy_spec = get_policy_spec(policy_id)
+    schedule_spec = get_schedule_spec(policy_spec.schedule_id)
+    env_preset = get_environment_preset(exp_spec.env_preset_id)
+
+    start_time = _utc_now()
+    np.random.seed(seed)
+    rng = np.random.default_rng(seed)
+
+    dataset = load_replay_dataset(
+        dataset_id=str(env_preset.dataset_id or env_preset.system_id),
+        dataset_path=str(env_preset.dataset_path or ""),
+        state_key=str(env_preset.state_key),
+        observation_key=str(env_preset.observation_key),
+        latent_dim=int(env_preset.latent_dim),
+        max_observation_dim=env_preset.max_observation_dim,
+        time_bin_ms=float(env_preset.time_bin_ms),
+    )
+    x_all, y_all = build_transition_matrices(dataset)
+    spike_all = np.asarray(dataset.spikes[:-1], dtype=np.float64)
+    train_idx, eval_idx = split_replay_dataset(
+        dataset,
+        train_fraction=float(env_preset.train_fraction),
+    )
+    if eval_idx.size == 0:
+        raise ValueError("Real-data replay split produced an empty evaluation set")
+
+    budget = min(int(total_steps), int(train_idx.size))
+    if budget <= 0:
+        raise ValueError("No replay transitions available for selection")
+
+    policy_type = _resolved_policy_type(policy_id, policy_spec)
+    planning_mode = policy_type == "mpc-icem" and int(schedule_spec.planning_horizon) > 2
+    prbs_order = _prbs_selection_order(int(train_idx.size), budget)
+
+    state_dim = int(x_all.shape[1])
+    info_dim = int(state_dim * state_dim)
+    info_accum = np.zeros((info_dim, info_dim), dtype=np.float64)
+    ridge = 1e-3
+    selected_positions: list[int] = []
+    remaining: list[int] = list(range(int(train_idx.size)))
+    dynamics_rows: list[dict[str, Any]] = []
+    info_rows: list[dict[str, Any]] = []
+    traj_rows: list[dict[str, Any]] = []
+    state_action_rows: list[dict[str, Any]] = []
+    perf_start = time.perf_counter()
+    coef = np.zeros((state_dim, state_dim), dtype=np.float64)
+
+    def _pop_selected_position(step: int) -> tuple[int, float, np.ndarray]:
+        nonlocal info_accum
+        if policy_type == "off-policy":
+            pos = remaining.pop(0)
+            score, info_step = _replay_candidate_score(
+                objective_kind="parameter_eig",
+                state=x_all[train_idx[pos]],
+                next_state=y_all[train_idx[pos]],
+                spikes=spike_all[train_idx[pos]],
+                info_accum=info_accum,
+                planning_mode=False,
+            )
+            return pos, score, info_step
+        if policy_type in {"random", "baseline-random"}:
+            rem_idx = int(rng.integers(0, len(remaining)))
+            pos = remaining.pop(rem_idx)
+            score, info_step = _replay_candidate_score(
+                objective_kind="parameter_eig",
+                state=x_all[train_idx[pos]],
+                next_state=y_all[train_idx[pos]],
+                spikes=spike_all[train_idx[pos]],
+                info_accum=info_accum,
+                planning_mode=False,
+            )
+            return pos, score, info_step
+        if policy_type == "baseline-prbs":
+            for candidate in prbs_order.tolist():
+                if candidate in remaining:
+                    remaining.remove(candidate)
+                    score, info_step = _replay_candidate_score(
+                        objective_kind="parameter_eig",
+                        state=x_all[train_idx[candidate]],
+                        next_state=y_all[train_idx[candidate]],
+                        spikes=spike_all[train_idx[candidate]],
+                        info_accum=info_accum,
+                        planning_mode=False,
+                    )
+                    return int(candidate), score, info_step
+            pos = remaining.pop(0)
+            score, info_step = _replay_candidate_score(
+                objective_kind="parameter_eig",
+                state=x_all[train_idx[pos]],
+                next_state=y_all[train_idx[pos]],
+                spikes=spike_all[train_idx[pos]],
+                info_accum=info_accum,
+                planning_mode=False,
+            )
+            return pos, score, info_step
+
+        best_pos = remaining[0]
+        best_score = -np.inf
+        best_info = np.zeros_like(info_accum)
+        for pos in remaining:
+            score, info_step = _replay_candidate_score(
+                objective_kind=policy_spec.objective_kind,
+                state=x_all[train_idx[pos]],
+                next_state=y_all[train_idx[pos]],
+                spikes=spike_all[train_idx[pos]],
+                info_accum=info_accum,
+                planning_mode=planning_mode,
+            )
+            if score > best_score:
+                best_pos = int(pos)
+                best_score = float(score)
+                best_info = info_step
+        remaining.remove(best_pos)
+        return best_pos, best_score, best_info
+
+    for step in range(1, budget + 1):
+        pos, score, info_step = _pop_selected_position(step)
+        selected_positions.append(int(pos))
+        selected_idx = train_idx[np.asarray(selected_positions, dtype=np.int64)]
+        coef = fit_linear_dynamics_ridge(x_all[selected_idx], y_all[selected_idx], ridge=ridge)
+        info_accum = info_accum + info_step
+
+        cpu_time_sec = float(time.perf_counter() - perf_start)
+        dynamics_mse = evaluate_prediction_mse(x_all[eval_idx], y_all[eval_idx], coef)
+        trajectory_r2 = evaluate_prediction_r2(x_all[eval_idx], y_all[eval_idx], coef)
+
+        cov_state = (
+            np.cov(x_all[selected_idx].T).astype(np.float64, copy=False)
+            if selected_idx.size > 1
+            else np.eye(state_dim, dtype=np.float64)
+        )
+        cov_state = np.atleast_2d(cov_state)
+        eigvals = np.linalg.eigvalsh(info_accum + 1e-8 * np.eye(info_dim, dtype=np.float64))
+        sign, logdet = np.linalg.slogdet(np.eye(info_dim, dtype=np.float64) + info_accum)
+        info_rows.append(
+            {
+                "step": step,
+                "cpu_time_sec": cpu_time_sec,
+                "I_z_t": float(score),
+                "I_theta_t": float(logdet if sign > 0 else np.nan),
+                "Pz00": float(cov_state[0, 0]),
+                "Pz01": float(cov_state[0, 1]) if cov_state.shape[1] > 1 else 0.0,
+                "Pz11": float(cov_state[1, 1]) if cov_state.shape[0] > 1 else float(cov_state[0, 0]),
+                "state_posterior_updated": True,
+                "parameter_posterior_updated": True,
+                "window_buffer_length": 0,
+                "eigmin_info": float(eigvals[0]),
+            }
+        )
+        dynamics_rows.append(
+            {
+                "step": step,
+                "cpu_time_sec": cpu_time_sec,
+                "dynamics_mse": float(dynamics_mse),
+            }
+        )
+        traj_rows.append(
+            {
+                "step": step,
+                "cpu_time_sec": cpu_time_sec,
+                "trajectory_r2": float(trajectory_r2),
+                "traj_eval_horizon": 1,
+                "traj_eval_samples": int(eval_idx.size),
+            }
+        )
+
+        sample_idx = int(train_idx[pos])
+        state = np.asarray(x_all[sample_idx], dtype=np.float64)
+        target = np.asarray(y_all[sample_idx], dtype=np.float64)
+        pred = np.asarray(state @ coef, dtype=np.float64)
+        zero_action = np.zeros((1,), dtype=np.float64)
+        state_action_rows.append(
+            {
+                "step": step,
+                "cpu_time_sec": cpu_time_sec,
+                "true_x": float(state[0]),
+                "true_v": float(state[1]) if state.shape[0] > 1 else 0.0,
+                "model_x": float(state[0]),
+                "model_v": float(state[1]) if state.shape[0] > 1 else 0.0,
+                "next_model_x": float(pred[0]),
+                "next_model_v": float(pred[1]) if pred.shape[0] > 1 else 0.0,
+                "action_x": float(zero_action[0]),
+                "action_v": 0.0,
+                "action_norm": 0.0,
+                "policy_action_x": float(zero_action[0]),
+                "policy_action_v": 0.0,
+                "policy_action_norm": 0.0,
+                "env_action_x": float(zero_action[0]),
+                "env_action_v": 0.0,
+                "env_action_norm": 0.0,
+                "policy_action_delta_norm": 0.0,
+                "execution_delta_norm": 0.0,
+                "action_total_delta_norm": 0.0,
+                "action_clipped": False,
+                "env_action_clipped": False,
+                "planned_at_bound": False,
+                "policy_at_bound": False,
+                "env_action_at_bound": False,
+                "policy_cost": -float(score),
+                "state_posterior_updated": True,
+                "parameter_posterior_updated": True,
+                "window_buffer_length": 0,
+                "true_next_x": float(target[0]),
+                "true_next_v": float(target[1]) if target.shape[0] > 1 else 0.0,
+            }
+        )
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    dynamics_trace_path = run_dir / "dynamics_mse_trace.csv"
+    traj_trace_path = run_dir / "trajectory_r2_trace.csv"
+    info_trace_path = run_dir / "information_trace.csv"
+    state_action_trace_path = run_dir / "state_action_trace.csv"
+    _write_trace_csv(dynamics_trace_path, dynamics_rows, ["step", "cpu_time_sec", "dynamics_mse"])
+    _write_trace_csv(
+        traj_trace_path,
+        traj_rows,
+        ["step", "cpu_time_sec", "trajectory_r2", "traj_eval_horizon", "traj_eval_samples"],
+    )
+    _write_trace_csv(
+        info_trace_path,
+        info_rows,
+        [
+            "step",
+            "cpu_time_sec",
+            "I_z_t",
+            "I_theta_t",
+            "Pz00",
+            "Pz01",
+            "Pz11",
+            "state_posterior_updated",
+            "parameter_posterior_updated",
+            "window_buffer_length",
+            "eigmin_info",
+        ],
+    )
+    _write_trace_csv(
+        state_action_trace_path,
+        state_action_rows,
+        [
+            "step",
+            "cpu_time_sec",
+            "true_x",
+            "true_v",
+            "model_x",
+            "model_v",
+            "next_model_x",
+            "next_model_v",
+            "action_x",
+            "action_v",
+            "action_norm",
+            "policy_action_x",
+            "policy_action_v",
+            "policy_action_norm",
+            "env_action_x",
+            "env_action_v",
+            "env_action_norm",
+            "policy_action_delta_norm",
+            "execution_delta_norm",
+            "action_total_delta_norm",
+            "action_clipped",
+            "env_action_clipped",
+            "planned_at_bound",
+            "policy_at_bound",
+            "env_action_at_bound",
+            "policy_cost",
+            "state_posterior_updated",
+            "parameter_posterior_updated",
+            "window_buffer_length",
+            "true_next_x",
+            "true_next_v",
+        ],
+    )
+
+    ended = datetime.now(timezone.utc)
+    result_dir = run_dir
+    rollout_metrics = _extract_rollout_metrics(result_dir)
+    final_coef = coef.reshape(-1)
+    payload = _build_metadata(
+        exp_id=exp_id,
+        policy_id=policy_id,
+        seed=seed,
+        total_steps=budget,
+        run_dir=run_dir,
+        status="completed",
+        start_time=start_time,
+        end_time=ended.isoformat().replace("+00:00", "Z"),
+        runtime_sec=(
+            ended - datetime.fromisoformat(start_time.replace("Z", "+00:00"))
+        ).total_seconds(),
+        results_path=result_dir,
+        extra={
+            **rollout_metrics,
+            "system_id": str(env_preset.system_id),
+            "system_label": str(env_preset.system_label or env_preset.system_id),
+            "dynamics_type": "replay_dataset",
+            "dataset_id": str(dataset.dataset_id),
+            "dataset_path": str(dataset.source_path),
+            "real_data": True,
+            "replay_protocol": "offline_counterfactual_selection",
+            "observation_key": str(env_preset.observation_key),
+            "state_key": str(env_preset.state_key),
+            "train_fraction": float(env_preset.train_fraction),
+            "time_bin_ms": float(env_preset.time_bin_ms),
+            "selection_budget": int(budget),
+            "num_train_transitions": int(train_idx.size),
+            "num_eval_transitions": int(eval_idx.size),
+            "observation_dim": int(dataset.spikes.shape[1]),
+            "latent_dim": int(dataset.states.shape[1]),
+            "embedding_estimate": [float(x) for x in final_coef.tolist()],
+            "dynamics_mse_final": (
+                float(dynamics_rows[-1]["dynamics_mse"]) if dynamics_rows else None
+            ),
+            "dynamics_mse_mean": (
+                float(np.mean([row["dynamics_mse"] for row in dynamics_rows]))
+                if dynamics_rows
+                else None
+            ),
+            "trajectory_r2_final": float(traj_rows[-1]["trajectory_r2"]) if traj_rows else None,
+            "objective_variant": (
+                str(policy_spec.objective_kind)
+                if policy_spec.objective_kind is not None
+                else "uniform_replay"
+            ),
+            "policy_type": str(policy_type),
+            "schedule_id": str(schedule_spec.schedule_id),
+            "update_interval": int(schedule_spec.update_interval),
+            "replan_interval": int(schedule_spec.replan_interval),
+            "planning_horizon": int(schedule_spec.planning_horizon),
+            "planning_chunk": int(schedule_spec.planning_chunk),
+            "predictive_only_window": False,
+            "dynamics_mse_trace_path": str(dynamics_trace_path),
+            "trajectory_r2_trace_path": str(traj_trace_path),
+            "information_trace_path": str(info_trace_path),
+            "state_action_trace_path": str(state_action_trace_path),
+            "writing_ref": WRITING_REFERENCE,
+            "dataset_metadata": dict(dataset.metadata),
+        },
+    )
+    return payload
+
+
 def _run_one(
     *, exp_id: str, policy_id: str, seed: int, repeat: int, base_dir: Path, args: argparse.Namespace
 ) -> dict[str, Any]:
@@ -2440,6 +2965,14 @@ def _run_one(
                 acq_map_grid=int(args.acq_map_grid),
                 acq_map_lim=float(args.acq_map_lim),
                 sampling_variance_samples=int(args.sampling_variance_samples),
+            )
+        elif exp_spec.experiment_kind == "realdata":
+            payload = _run_single_realdata_replay(
+                exp_id=exp_id,
+                policy_id=policy_id,
+                seed=seed,
+                total_steps=total_steps,
+                run_dir=run_dir,
             )
         else:
             payload = _run_single_rbf_identification(
@@ -2502,6 +3035,8 @@ def _runner_model_name(experiment_kind: str) -> str:
         return "FilteringEmbedding"
     if experiment_kind == "rbf":
         return "SparseRbfFilteringModel"
+    if experiment_kind == "realdata":
+        return "ReplayLinearDynamics"
     return "unknown"
 
 
@@ -2510,6 +3045,8 @@ def _dynamics_model_name(experiment_kind: str) -> str:
         return "FunctionDynamics"
     if experiment_kind == "rbf":
         return "SparseRbfDynamics"
+    if experiment_kind == "realdata":
+        return "LinearReplayFit"
     return "unknown"
 
 
@@ -2522,7 +3059,7 @@ def _build_session_experiment_entry(
 ) -> dict[str, Any]:
     exp_spec = get_experiment_spec(exp_id)
     env_preset = get_environment_preset(exp_spec.env_preset_id)
-    system_spec = get_planar_system_spec(env_preset.system_id)
+    env_summary = _environment_summary(env_preset)
     policies: list[dict[str, Any]] = []
     for policy_id in exp_spec.policy_ids:
         policy_spec = get_policy_spec(policy_id)
@@ -2531,6 +3068,7 @@ def _build_session_experiment_entry(
             {
                 "policy_id": str(policy_id),
                 "passive": bool(policy_spec.passive),
+                "policy_type": _resolved_policy_type(policy_id, policy_spec),
                 "objective_kind": (
                     str(policy_spec.objective_kind)
                     if policy_spec.objective_kind is not None
@@ -2565,9 +3103,12 @@ def _build_session_experiment_entry(
         "trajectory_eval_samples": int(exp_spec.trajectory_eval_samples),
         "environment": {
             "preset_id": str(env_preset.preset_id),
-            "system_id": str(system_spec.system_id),
-            "system_label": str(system_spec.label),
-            "dynamics_type": str(system_spec.dynamics_type),
+            "system_id": str(env_summary["system_id"]),
+            "system_label": str(env_summary["system_label"]),
+            "dynamics_type": str(env_summary["dynamics_type"]),
+            "estimator_system_id": env_summary.get("estimator_system_id"),
+            "estimator_system_label": env_summary.get("estimator_system_label"),
+            "estimator_dynamics_type": env_summary.get("estimator_dynamics_type"),
             "dt": float(env_preset.dt),
             "action_dim": int(env_preset.action_dim),
             "latent_dim": int(env_preset.latent_dim),
@@ -2584,7 +3125,15 @@ def _build_session_experiment_entry(
             "max_firing_rate_target": float(env_preset.max_firing_rate_target),
             "asymmetric_loading": bool(env_preset.asymmetric_loading),
             "x_range": float(env_preset.x_range),
-            "true_embedding": [float(x) for x in true_embedding(system_spec.system_id).tolist()],
+            "real_data": bool(getattr(env_preset, "real_data", False)),
+            "dataset_id": getattr(env_preset, "dataset_id", None),
+            "dataset_path": getattr(env_preset, "dataset_path", None),
+            "state_key": getattr(env_preset, "state_key", None),
+            "observation_key": getattr(env_preset, "observation_key", None),
+            "train_fraction": float(getattr(env_preset, "train_fraction", 0.7)),
+            "time_bin_ms": float(getattr(env_preset, "time_bin_ms", 20.0)),
+            "max_observation_dim": getattr(env_preset, "max_observation_dim", None),
+            "true_embedding": env_summary["true_embedding"],
         },
         "policies": policies,
         "seeds": [int(seed) for seed in seeds],

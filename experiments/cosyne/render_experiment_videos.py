@@ -53,7 +53,7 @@ from actdyn.utils.visualize import (
 )
 
 
-PASSIVE_POLICIES = {"random", "off_policy"}
+PASSIVE_POLICIES = {"random", "off_policy", "baseline_prbs", "baseline_random"}
 
 
 def _load_run_artifacts(run_dir: Path) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -603,6 +603,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     exp_spec = get_experiment_spec(str(args.exp_id))
+    if str(exp_spec.experiment_kind) == "realdata":
+        print(f"Skipping video rendering for {exp_spec.exp_id}: planar-only renderer")
+        return 0
     base_dir = resolve_session_root(Path(args.base_dir), create=False, exp_ids=[exp_spec.exp_id])
     seeds = parse_csv_ints(args.seeds) or [0, 10, 20, 30]
     out_dir = base_dir / exp_spec.exp_id / "videos"
