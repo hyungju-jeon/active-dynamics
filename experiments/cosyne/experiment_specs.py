@@ -10,12 +10,13 @@ import yaml
 
 ObjectiveKind = Literal[
     "parameter_eig",
+    "e_optimality",
     "fully_observable_parameter_eig",
     "state_information",
     "dynamics",
     "sampling_variance",
 ]
-ExperimentKind = Literal["duffing", "rbf"]
+ExperimentKind = Literal["duffing", "rbf", "realdata"]
 SummaryValueKind = Literal["parameter_error", "dynamics_mse"]
 
 
@@ -26,6 +27,8 @@ class EnvironmentPreset:
     asymmetric_loading: bool
     firing_rate_scale: float
     action_max: float
+    system_label: str | None = None
+    estimator_system_id: str | None = None
     dynamics_alpha: float = 1.0
     state_noise: float = 0.2
     state_init_uncertainty: float = 25.0
@@ -39,6 +42,14 @@ class EnvironmentPreset:
     observation_noise_type: str = "poisson"
     mean_firing_rate_target: float = 25.0
     max_firing_rate_target: float = 100.0
+    real_data: bool = False
+    dataset_id: str | None = None
+    dataset_path: str | None = None
+    state_key: str = "behavior"
+    observation_key: str = "spikes"
+    train_fraction: float = 0.7
+    time_bin_ms: float = 20.0
+    max_observation_dim: int | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +67,7 @@ class PolicySpec:
     policy_id: str
     objective_kind: ObjectiveKind | None
     schedule_id: str
+    policy_type: str | None = None
     passive: bool = False
     save_acq_map: bool = True
 
@@ -173,6 +185,14 @@ ENVIRONMENT_PRESETS: dict[str, EnvironmentPreset] = {
     preset_id: EnvironmentPreset(
         preset_id=str(spec.get("preset_id", preset_id)),
         system_id=str(spec["system_id"]),
+        system_label=(
+            None if spec.get("system_label") is None else str(spec.get("system_label"))
+        ),
+        estimator_system_id=(
+            None
+            if spec.get("estimator_system_id") is None
+            else str(spec.get("estimator_system_id"))
+        ),
         asymmetric_loading=bool(spec.get("asymmetric_loading", False)),
         firing_rate_scale=float(spec.get("firing_rate_scale", 1.0)),
         action_max=float(spec.get("action_max", 1.0)),
@@ -189,6 +209,22 @@ ENVIRONMENT_PRESETS: dict[str, EnvironmentPreset] = {
         observation_noise_type=str(spec.get("observation_noise_type", "poisson")),
         mean_firing_rate_target=float(spec.get("mean_firing_rate_target", 25.0)),
         max_firing_rate_target=float(spec.get("max_firing_rate_target", 100.0)),
+        real_data=bool(spec.get("real_data", False)),
+        dataset_id=(
+            None if spec.get("dataset_id") is None else str(spec.get("dataset_id"))
+        ),
+        dataset_path=(
+            None if spec.get("dataset_path") is None else str(spec.get("dataset_path"))
+        ),
+        state_key=str(spec.get("state_key", "behavior")),
+        observation_key=str(spec.get("observation_key", "spikes")),
+        train_fraction=float(spec.get("train_fraction", 0.7)),
+        time_bin_ms=float(spec.get("time_bin_ms", 20.0)),
+        max_observation_dim=(
+            None
+            if spec.get("max_observation_dim") is None
+            else int(spec.get("max_observation_dim"))
+        ),
     )
     for preset_id, spec in _ENVIRONMENT_RAW.items()
 }
@@ -214,6 +250,9 @@ POLICY_SPECS: dict[str, PolicySpec] = {
             else str(spec.get("objective_kind"))
         ),
         schedule_id=str(spec["schedule_id"]),
+        policy_type=(
+            None if spec.get("policy_type") is None else str(spec.get("policy_type"))
+        ),
         passive=bool(spec.get("passive", False)),
         save_acq_map=bool(spec.get("save_acq_map", True)),
     )
