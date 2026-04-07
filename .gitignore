@@ -66,6 +66,7 @@ results/
 external/
 data/
 logs/
+.worktrees/
 */_OLD/
 *.log
 *.pkl
@@ -95,3 +96,5 @@ site/
 dist/
 build/
 *.egg-info/
+
+.venv/

@@ -33,19 +33,47 @@ class VectorField:
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("compute method must be implemented in subclasses.")
 
-    def set_params(self, dyn_params: torch.Tensor | list[float] | Dict[str, float]):
-        if isinstance(dyn_params, dict):
-            self._set_params(**dyn_params)
-        else:
-            if isinstance(dyn_params, list):
-                _dyn_params = torch.tensor(dyn_params, device=self.device, dtype=torch.float16)
+    def set_params(self, *dyn_params: torch.Tensor | list[float] | Dict[str, float]):
+        """Set model parameters from a tensor, list, dict, or expanded arguments."""
+
+        def _format_param_args(params_tensor: torch.Tensor) -> tuple[torch.Tensor, ...]:
+            param_args = []
+            for param in params_tensor.mT:
+                if params_tensor.shape[0] > 1 and param.ndim == 1:
+                    param = param.unsqueeze(-1)
+                param_args.append(param)
+            return tuple(param_args)
+
+        if len(dyn_params) == 1 and isinstance(dyn_params[0], dict):
+            self._set_params(**dyn_params[0])
+            return
+
+        if len(dyn_params) == 1:
+            raw_params = dyn_params[0]
+            if isinstance(raw_params, list):
+                params_tensor = torch.tensor(raw_params, device=self.device, dtype=torch.float32)
             else:
-                _dyn_params = dyn_params.to(self.device)
+                params_tensor = raw_params.to(self.device, dtype=torch.float32)
 
-            if _dyn_params.ndim == 1:
-                _dyn_params = _dyn_params.unsqueeze(0)
+            if params_tensor.ndim == 1:
+                params_tensor = params_tensor.unsqueeze(0)
+            self.dyn_params = params_tensor
+            self._set_params(*_format_param_args(params_tensor))
+            return
 
-            self._set_params(*_dyn_params.mT)
+        params_list = []
+        for param in dyn_params:
+            if isinstance(param, torch.Tensor):
+                param_tensor = param.to(self.device, dtype=torch.float32)
+            else:
+                param_tensor = torch.as_tensor(param, device=self.device, dtype=torch.float32)
+            params_list.append(param_tensor)
+
+        params_tensor = torch.stack(params_list, dim=-1)
+        if params_tensor.ndim == 1:
+            params_tensor = params_tensor.unsqueeze(0)
+        self.dyn_params = params_tensor
+        self._set_params(*_format_param_args(params_tensor))
 
     def _set_params(self, *args, **kwargs):
         raise NotImplementedError("_set_params method must be implemented in subclasses.")
@@ -55,7 +83,7 @@ class VectorField:
         if x.dim() == 1:
             x = x.unsqueeze(0)  # Add batch dimension
             result = self.compute(x)
-            return result.view_as(x)  # Remove batch dimension
+            return result.squeeze(0)
         return self.compute(x)
 
 
@@ -114,6 +142,45 @@ class DoubleLimitCycle(VectorField):
         U = self.alpha * U
         V = self.alpha * V
         return torch.stack([U, V], dim=-1)
+
+
+class BistableLimitCycle(VectorField):
+    """Smoothly blends two local limit cycles into a left/right bistable system."""
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.center_offset = float(kwargs.get("center_offset", 1.6))
+        self.gate_sharpness = float(kwargs.get("gate_sharpness", 3.0))
+        if dyn_param is None:
+            self.omega = 1.0
+            self.radius = 0.9
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, omega=1.0, radius=0.9):
+        self.omega = omega
+        self.radius = radius
+
+    def _local_cycle(self, x: torch.Tensor, center_x: float) -> torch.Tensor:
+        px = x[..., 0] - float(center_x)
+        py = x[..., 1]
+        r = torch.sqrt(px**2 + py**2).clamp_min(1e-6)
+        k = self.radius - r
+        u = px * k - self.omega * py
+        v = py * k + self.omega * px
+        return torch.stack([u, v], dim=-1)
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        gate = torch.sigmoid(self.gate_sharpness * x[..., 0])
+        left = self._local_cycle(x, center_x=-self.center_offset)
+        right = self._local_cycle(x, center_x=self.center_offset)
+        field = (1.0 - gate).unsqueeze(-1) * left + gate.unsqueeze(-1) * right
+        return self.alpha * field
 
 
 # TODO: Fix the code to match the new structure
@@ -272,6 +339,69 @@ class Duffing(VectorField):
         U = self.alpha * U
         V = self.alpha * V
 
+        return torch.stack([U, V], dim=-1)
+
+
+class FitzHughNagumo(VectorField):
+    """FitzHugh-Nagumo excitable dynamics."""
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        if dyn_param is None:
+            self.set_params([0.7, 0.8, 12.5, 0.5])
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, a=0.7, b=0.8, tau=12.5, i_ext=0.5):
+        self.a = a
+        self.b = b
+        self.tau = tau
+        self.i_ext = i_ext
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute FitzHugh-Nagumo velocity for state shape (..., 2)."""
+
+        U = x[..., 0] - (x[..., 0] ** 3) / 3.0 - x[..., 1] + self.i_ext
+        V = (x[..., 0] + self.a - self.b * x[..., 1]) / self.tau
+        U = self.alpha * U
+        V = self.alpha * V
+        return torch.stack([U, V], dim=-1)
+
+
+class Hopf(VectorField):
+    """Generalized Hopf normal form with optional nonlinear frequency shift."""
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        if dyn_param is None:
+            self.set_params([1.0, 1.0, 0.0])
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, mu=1.0, omega=1.0, beta=0.0):
+        self.mu = mu
+        self.omega = omega
+        self.beta = beta
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute Hopf velocity for state shape (..., 2)."""
+
+        radius_sq = x[..., 0] ** 2 + x[..., 1] ** 2
+        omega_eff = self.omega + self.beta * radius_sq
+        U = (self.mu - radius_sq) * x[..., 0] - omega_eff * x[..., 1]
+        V = omega_eff * x[..., 0] + (self.mu - radius_sq) * x[..., 1]
+        U = self.alpha * U
+        V = self.alpha * V
         return torch.stack([U, V], dim=-1)
 
 

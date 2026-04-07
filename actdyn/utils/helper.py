@@ -88,15 +88,37 @@ def to_np(x: torch.Tensor) -> np.ndarray:
     return x.cpu().detach().numpy()
 
 
-def safe_cholesky(M, jitter=1e-6, max_tries=5, growth=10.0):
+def safe_cholesky(M, jitter=1e-6, max_tries=7, growth=10.0):
+    M = symmetrize(torch.nan_to_num(M, nan=0.0, posinf=1e6, neginf=-1e6))
     I = torch.eye(M.size(-1), device=M.device).expand_as(M)
     j = 0.0
     for _ in range(max_tries):
-        try:
-            return torch.linalg.cholesky(M + j * I)
-        except RuntimeError:
-            j = jitter if j == 0.0 else j * growth
-    return torch.linalg.cholesky(M + j * I)
+        chol, info = torch.linalg.cholesky_ex(M + j * I)
+        if torch.count_nonzero(info).item() == 0:
+            return chol
+        j = jitter if j == 0.0 else j * growth
+
+    # Final fallback: iterative SPD projection with escalating eigenvalue floor.
+    floor = max(float(j), 1e-4)
+    M_work = M
+    for _ in range(4):
+        evals, evecs = torch.linalg.eigh((M_work + floor * I).double())
+        evals = evals.clamp_min(floor)
+        M_spd = evecs @ torch.diag_embed(evals) @ evecs.transpose(-1, -2)
+        M_spd = symmetrize(torch.nan_to_num(M_spd, nan=0.0, posinf=1e6, neginf=-1e6)).to(M.dtype)
+        chol, info = torch.linalg.cholesky_ex(M_spd + floor * I)
+        if torch.count_nonzero(info).item() == 0:
+            return chol
+        floor *= growth
+        M_work = M_spd
+
+    try:
+        return torch.linalg.cholesky(M_spd + floor * I)
+    except RuntimeError:
+        # Conservative final fallback: keep only positive diagonal mass.
+        diag = torch.diagonal(M, dim1=-2, dim2=-1)
+        diag = torch.nan_to_num(diag, nan=floor, posinf=1e6, neginf=floor).clamp_min(floor)
+        return torch.linalg.cholesky(torch.diag_embed(diag + floor))
 
 
 def symmetrize(M):

@@ -5,9 +5,24 @@ to resolve policies by short names.
 """
 
 from .base import BasePolicy, BaseMPC
+from .baseline_ce_mpc import BaselineCEMPCPolicy
+from .baseline_prbs import BaselinePRBSPolicy
+from .baseline_random import BaselineRandomPolicy
+from .baseline_thompson import BaselineThompsonPolicy
+from .baseline_ucb import BaselineUCBPolicy
 from .policy import OffPolicy, RandomPolicy, StepPolicy
 
-__all__ = ["policy_from_str", "RandomPolicy", "StepPolicy", "OffPolicy"]
+__all__ = [
+    "policy_from_str",
+    "RandomPolicy",
+    "StepPolicy",
+    "OffPolicy",
+    "BaselineRandomPolicy",
+    "BaselinePRBSPolicy",
+    "BaselineCEMPCPolicy",
+    "BaselineThompsonPolicy",
+    "BaselineUCBPolicy",
+]
 
 import importlib
 
@@ -15,6 +30,11 @@ _policy_map = {
     "mpc-icem": (".mpc", "MpcICem"),
     "random": (".policy", "RandomPolicy"),
     "off-policy": (".policy", "OffPolicy"),
+    "baseline-random": (".baseline_random", "BaselineRandomPolicy"),
+    "baseline-prbs": (".baseline_prbs", "BaselinePRBSPolicy"),
+    "baseline-ce-mpc": (".baseline_ce_mpc", "BaselineCEMPCPolicy"),
+    "baseline-thompson": (".baseline_thompson", "BaselineThompsonPolicy"),
+    "baseline-ucb": (".baseline_ucb", "BaselineUCBPolicy"),
 }
 
 

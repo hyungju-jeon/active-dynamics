@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from cycler import cycler
 from matplotlib.collections import LineCollection
+from matplotlib.colors import LogNorm
 from matplotlib.colors import to_rgba
 
 from actdyn.utils.helper import to_np
@@ -116,6 +117,225 @@ def plot_vector_field(dynamics, ax=None, title=None, **kwargs):
         # plt.axis("off")
         plt.axis("equal")
         plt.tight_layout()
+        plt.colorbar(label="Speed", aspect=20)
+
+
+class PlanarResidualDynamics:
+    """Wrap a planar residual function so it can be passed to plot_vector_field."""
+
+    def __init__(
+        self,
+        *,
+        system_id: str,
+        embedding,
+        residual_fn,
+        dynamics_alpha: float = 1.0,
+        device: str = "cpu",
+    ) -> None:
+        self.system_id = str(system_id)
+        self.embedding = torch.as_tensor(embedding, dtype=torch.float32)
+        self.residual_fn = residual_fn
+        self.dynamics_alpha = float(dynamics_alpha)
+        self.device = torch.device(device)
+
+    def __call__(self, state: torch.Tensor) -> torch.Tensor:
+        state = torch.as_tensor(state, device=self.device, dtype=torch.float32)
+        embedding = self.embedding.to(self.device)
+        return self.residual_fn(
+            self.system_id,
+            state,
+            embedding,
+            dynamics_alpha=self.dynamics_alpha,
+        )
+
+
+class RbfVectorFieldDynamics:
+    """Evaluate a sparse local RBF vector field on arbitrary query points."""
+
+    def __init__(
+        self,
+        *,
+        centers,
+        axis,
+        weights,
+        width: float,
+        support_radius: int,
+        device: str = "cpu",
+    ) -> None:
+        self.device = torch.device(device)
+        self.centers = torch.as_tensor(centers, dtype=torch.float32, device=self.device)
+        self.axis = torch.as_tensor(axis, dtype=torch.float32, device=self.device)
+        self.weights = torch.nan_to_num(
+            torch.as_tensor(weights, dtype=torch.float32, device=self.device),
+            nan=0.0,
+            posinf=1e3,
+            neginf=-1e3,
+        ).clamp(-1e3, 1e3)
+        self.width = float(max(width, 1e-6))
+        self.support_radius = int(support_radius)
+        n_axis = int(self.axis.numel())
+        grid_i, grid_j = torch.meshgrid(
+            torch.arange(n_axis, device=self.device),
+            torch.arange(n_axis, device=self.device),
+            indexing="ij",
+        )
+        self.center_i = grid_i.reshape(-1)
+        self.center_j = grid_j.reshape(-1)
+
+    def __call__(self, state: torch.Tensor) -> torch.Tensor:
+        state = torch.as_tensor(state, device=self.device, dtype=torch.float32)
+        flat = state.reshape(-1, state.shape[-1])
+        dx = torch.abs(flat[:, 0:1] - self.axis.view(1, -1))
+        dy = torch.abs(flat[:, 1:2] - self.axis.view(1, -1))
+        x_idx = torch.argmin(dx, dim=1)
+        y_idx = torch.argmin(dy, dim=1)
+        mask = (
+            torch.abs(self.center_i.view(1, -1) - x_idx.view(-1, 1))
+            + torch.abs(self.center_j.view(1, -1) - y_idx.view(-1, 1))
+        ) <= self.support_radius
+        scaled = (flat.unsqueeze(1) - self.centers.unsqueeze(0)) / self.width
+        phi = torch.exp(-0.5 * torch.sum(scaled * scaled, dim=-1)) * mask.to(torch.float32)
+        out = torch.nan_to_num(
+            phi @ self.weights,
+            nan=0.0,
+            posinf=1e3,
+            neginf=-1e3,
+        ).clamp(-1e3, 1e3)
+        return out.reshape(*state.shape[:-1], self.weights.shape[-1])
+
+
+def trace_index(trace_steps: np.ndarray, step: int) -> int:
+    if trace_steps.size == 0:
+        return 0
+    idx = int(np.searchsorted(trace_steps, step, side="right") - 1)
+    return int(np.clip(idx, 0, len(trace_steps) - 1))
+
+
+def planned_xy_for_step(trace: tuple[np.ndarray, ...] | None, step: int) -> np.ndarray | None:
+    if trace is None:
+        return None
+    steps, paths, lengths = trace
+    idx = trace_index(np.asarray(steps, dtype=int), int(step))
+    n_points = int(lengths[idx])
+    if n_points < 2:
+        return None
+    path = np.asarray(paths[idx, :n_points, :2], dtype=float)
+    valid = np.all(np.isfinite(path), axis=1)
+    path = path[valid]
+    return path if path.shape[0] >= 2 else None
+
+
+def overlay_planned_xy(
+    ax,
+    planned_xy: np.ndarray | None,
+    *,
+    color: str = "tab:orange",
+    linewidth: float = 2.2,
+    linestyle: str = "--",
+    alpha: float = 0.32,
+    label: str = "planned traj",
+    zorder: int = 4,
+) -> None:
+    if planned_xy is None or planned_xy.shape[0] < 2:
+        return
+    ax.plot(
+        planned_xy[:, 0],
+        planned_xy[:, 1],
+        color=color,
+        linewidth=linewidth,
+        linestyle=linestyle,
+        alpha=alpha,
+        label=label,
+        zorder=zorder,
+    )
+
+
+def make_lognorm(values: list[np.ndarray]) -> LogNorm:
+    flat = np.concatenate([np.ravel(np.asarray(value, dtype=float)) for value in values], axis=0)
+    positive = flat[np.isfinite(flat) & (flat > 0)]
+    if positive.size == 0:
+        return LogNorm(vmin=1e-8, vmax=1.0)
+    min_positive = float(np.min(positive))
+    p1 = float(np.percentile(positive, 1.0))
+    p99 = float(np.percentile(positive, 99.0))
+    vmin = max(min_positive, p1)
+    vmax = max(p99, vmin * 1.01)
+    return LogNorm(vmin=vmin, vmax=vmax)
+
+
+def decorate_phase_space_axis(
+    ax,
+    *,
+    xlim: tuple[float, float],
+    ylim: tuple[float, float],
+    title: str,
+    xlabel: str = "x",
+    ylabel: str = "v",
+    legend_loc: str = "upper right",
+    grid_alpha: float = 0.25,
+) -> None:
+    ax.set_xlim(*xlim)
+    ax.set_ylim(*ylim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.grid(alpha=grid_alpha)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(ylabel)
+    ax.set_title(title)
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(loc=legend_loc)
+
+
+def annotate_action_arrow(
+    ax,
+    *,
+    origin,
+    action,
+    max_display_len: float = 2.5,
+    scale: float = 0.45,
+    color: str = "white",
+    width: float = 0.03,
+    head_width: float = 0.28,
+    zorder: int = 7,
+) -> float:
+    origin_xy = np.asarray(origin, dtype=float).reshape(-1)
+    action_xy = np.asarray(action, dtype=float).reshape(-1)
+    if origin_xy.size < 2 or action_xy.size < 2 or not np.all(np.isfinite(action_xy[:2])):
+        return float("nan")
+    action_xy = action_xy[:2]
+    act_norm = float(np.linalg.norm(action_xy))
+    if act_norm > 1e-12:
+        display_len = min(float(max_display_len), float(scale) * act_norm)
+        direction = action_xy / act_norm
+        ax.arrow(
+            float(origin_xy[0]),
+            float(origin_xy[1]),
+            float(display_len * direction[0]),
+            float(display_len * direction[1]),
+            color=color,
+            width=width,
+            head_width=head_width,
+            length_includes_head=True,
+            alpha=0.95,
+            zorder=zorder,
+        )
+    ax.text(
+        0.02,
+        0.02,
+        f"u=({action_xy[0]:.2f}, {action_xy[1]:.2f})  |u|={act_norm:.2f}",
+        transform=ax.transAxes,
+        color=color,
+        fontsize=9,
+        ha="left",
+        va="bottom",
+        bbox=dict(
+            boxstyle="round,pad=0.2",
+            facecolor="black",
+            alpha=0.45,
+            edgecolor="none",
+        ),
+    )
+    return act_norm
 
 
 @torch.no_grad()

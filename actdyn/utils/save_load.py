@@ -1,8 +1,11 @@
 import os
+import io
 import json
 import pickle
 from typing import Dict, List, Any, Optional
 from pathlib import Path
+
+import torch
 
 from actdyn.config import ExperimentConfig
 from actdyn.utils.rollout import Rollout, RolloutBuffer
@@ -41,11 +44,33 @@ def save_rollout(rollout, path="checkpoints/rollout.pkl"):
         pickle.dump(rollout_copy, f)
 
 
-def load_rollout(path="checkpoints/rollout.pkl") -> Rollout:
+def load_rollout(path="checkpoints/rollout.pkl", device: Optional[str] = None) -> Rollout:
     """Load rollout buffer from disk."""
     p = Path(path)
     with p.open("rb") as f:
-        return pickle.load(f)
+        if device is None:
+            return pickle.load(f)
+        try:
+            import torch
+        except ImportError:
+            return pickle.load(f)
+
+        original_loader = getattr(torch.storage, "_load_from_bytes", None)
+        if original_loader is None:
+            return pickle.load(f)
+
+        def _load_from_bytes_cpu(blob):
+            return torch.load(
+                io.BytesIO(blob),
+                map_location=torch.device(device),
+                weights_only=False,
+            )
+
+        torch.storage._load_from_bytes = _load_from_bytes_cpu
+        try:
+            return pickle.load(f)
+        finally:
+            torch.storage._load_from_bytes = original_loader
 
 
 def save_config(config: ExperimentConfig, path=None):
@@ -56,6 +81,41 @@ def save_config(config: ExperimentConfig, path=None):
         p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
     config.to_yaml(str(p / "config.yaml"))
+
+
+def _rollout_time_length(rollout: Rollout) -> int:
+    lengths: list[int] = []
+    for value in rollout._data.values():
+        if isinstance(value, torch.Tensor):
+            if value.ndim >= 2:
+                lengths.append(int(value.shape[1]))
+            elif value.ndim == 1:
+                lengths.append(int(value.shape[0]))
+        elif isinstance(value, list):
+            lengths.append(len(value))
+    return max(lengths) if lengths else 0
+
+
+def _rollout_end_step(path: Path) -> int | None:
+    try:
+        return int(path.stem.split("_", 1)[1])
+    except Exception:
+        return None
+
+
+def _slice_rollout_dict(data: Dict[str, torch.Tensor], skip: int) -> Dict[str, torch.Tensor]:
+    if skip <= 0:
+        return {key: value.clone() for key, value in data.items()}
+
+    sliced: Dict[str, torch.Tensor] = {}
+    for key, value in data.items():
+        if not isinstance(value, torch.Tensor):
+            continue
+        if value.ndim >= 2:
+            sliced[key] = value[:, skip:].clone()
+        else:
+            sliced[key] = value[skip:].clone()
+    return sliced
 
 
 def load_and_concatenate_rollouts(
@@ -77,9 +137,26 @@ def load_and_concatenate_rollouts(
         rollout_files.sort()
 
     rollout = Rollout(device=device)
+    prev_end_step: int | None = None
     for rf in rollout_files:
-        _r = load_rollout(rf)
-        rollout.add(**_r.to(device)._data)
+        _r = load_rollout(rf, device=device)
+        _r = _r.to(device)
+        chunk_len = _rollout_time_length(_r)
+        end_step = _rollout_end_step(rf)
+
+        skip = 0
+        if prev_end_step is not None and end_step is not None and chunk_len > 0:
+            start_step = end_step - chunk_len + 1
+            skip = max(0, prev_end_step - start_step + 1)
+
+        chunk = _slice_rollout_dict(_r._data, skip=skip)
+        if chunk:
+            rollout.add(**chunk)
+
+        if end_step is not None:
+            prev_end_step = end_step
+        elif chunk_len > 0:
+            prev_end_step = (prev_end_step or 0) + chunk_len - skip
 
     rollout.finalize()
 

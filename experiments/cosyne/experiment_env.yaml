@@ -1,0 +1,43 @@
+environments:
+  single_duffing:
+    system_id: single_attractor
+    asymmetric_loading: false
+    firing_rate_scale: 1.0
+    action_max: 1.0
+    dynamics_alpha: 1.0
+    state_noise: 0.2
+    state_init_uncertainty: 25.0
+    x_range: 5.0
+    dt: 0.01
+    action_dim: 2
+    latent_dim: 2
+    embedding_dim: 2
+    observation_dim: 50
+    observation_noise_scale: 0.1
+    observation_noise_type: poisson
+    mean_firing_rate_target: 25.0
+    max_firing_rate_target: 100.0
+
+  easy_duffing:
+    extends: single_duffing
+    system_id: bistable_attractor
+
+  bistable_duffing:
+    extends: easy_duffing
+
+  hard_duffing:
+    extends: easy_duffing
+    asymmetric_loading: true
+    firing_rate_scale: 0.2
+    action_max: 1.5
+    state_noise: 1.0
+    state_init_uncertainty: 10.0
+
+  bistable_h_duffing:
+    extends: hard_duffing
+
+  rbf_duffing:
+    extends: easy_duffing
+    system_id: bistable_limitcycle
+    asymmetric_loading: true
+    mean_firing_rate_target: 50.0

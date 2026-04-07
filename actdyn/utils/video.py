@@ -5,6 +5,70 @@ import imageio.v3 as iio
 import matplotlib.pyplot as plt
 
 
+def figure_to_rgb_array(fig) -> np.ndarray:
+    """Render a matplotlib figure into an RGB uint8 frame."""
+    fig.canvas.draw()
+    return np.asarray(fig.canvas.buffer_rgba(), dtype=np.uint8)[..., :3].copy()
+
+
+def write_video_frames(
+    frames: list[np.ndarray],
+    path: str | pathlib.Path,
+    *,
+    fps: int = 60,
+    codec: str = "h264",
+) -> None:
+    """Persist a list of RGB frames using the shared actdyn video settings."""
+    if not frames:
+        raise ValueError("No frames to write.")
+
+    out_path = pathlib.Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if codec == "prores":
+        iio.imwrite(
+            out_path,
+            np.stack(frames),
+            fps=fps,
+            codec="prores_ks",
+            output_params=["-profile:v", "3", "-pix_fmt", "yuv422p10le"],
+            plugin="ffmpeg",
+        )
+        return
+
+    if codec == "h264":
+        iio.imwrite(
+            out_path,
+            np.stack(frames),
+            fps=fps,
+            codec="libx264",
+            output_params=[
+                "-pix_fmt",
+                "yuv420p",
+                "-profile:v",
+                "high",
+                "-crf",
+                "12",
+                "-movflags",
+                "+faststart",
+            ],
+        )
+        return
+
+    if codec == "lossless":
+        iio.imwrite(
+            out_path,
+            np.stack(frames),
+            fps=fps,
+            codec="libx264rgb",
+            output_params=["-crf", "0", "-preset", "veryslow", "-pix_fmt", "rgb24"],
+            plugin="ffmpeg",
+        )
+        return
+
+    iio.imwrite(out_path, np.stack(frames), fps=fps)
+
+
 class VideoRecorder:
     """
     Utility class to record videos from matplotlib figures.
@@ -34,48 +98,6 @@ class VideoRecorder:
             return
 
         print(f"[INFO] Writing {len(self.frames)} frames → {self.path}")
-
-        if self.codec == "prores":
-            # Apple Keynote-safe, visually lossless
-            iio.imwrite(
-                self.path,
-                np.stack(self.frames),
-                fps=self.fps,
-                codec="prores_ks",
-                output_params=["-profile:v", "3", "-pix_fmt", "yuv422p10le"],
-                plugin="ffmpeg",
-            )
-        elif self.codec == "h264":
-            # Smaller, good quality H.264 baseline
-            iio.imwrite(
-                self.path,
-                np.stack(self.frames),
-                fps=self.fps,
-                codec="libx264",
-                output_params=[
-                    "-pix_fmt",
-                    "yuv420p",
-                    "-profile:v",
-                    "high",
-                    "-crf",
-                    "12",
-                    "-movflags",
-                    "+faststart",
-                ],
-            )
-        elif self.codec == "lossless":
-            # True lossless RGB (not Keynote compatible)
-            iio.imwrite(
-                self.path,
-                np.stack(self.frames),
-                fps=self.fps,
-                codec="libx264rgb",
-                output_params=["-crf", "0", "-preset", "veryslow", "-pix_fmt", "rgb24"],
-                plugin="ffmpeg",
-            )
-        else:
-            # fallback: simple imageio default (quick, generic)
-            iio.imwrite(self.path, np.stack(self.frames), fps=self.fps)
-
+        write_video_frames(self.frames, self.path, fps=self.fps, codec=self.codec)
         print("[INFO] Done.")
         self.frames.clear()

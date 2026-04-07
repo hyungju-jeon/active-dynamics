@@ -14,6 +14,7 @@ dependencies:
   - scipy
   - scikit-learn
   - tqdm
+  - einops
   - pytorch::pytorch
   - pytorch::torchvision
   - pytorch::torchaudio

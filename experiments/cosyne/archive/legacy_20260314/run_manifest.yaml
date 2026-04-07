@@ -1,0 +1,53 @@
+manifest_version: 1
+name: cosyne_action_limit_comparison
+
+commits:
+  updated: "1ef4d6f"
+
+locked_metadata_fields:
+  - model_tag
+  - commit
+  - seed
+  - exp_id
+  - total_steps
+  - base_dir
+  - status
+  - start_time
+  - end_time
+
+defaults:
+  base_dir: "results/cosyne"
+  model_tags: ["low_action", "high_action"]
+  seeds: [0, 10, 20]
+  exp_ids: ["active_short", "active_long", "RND", "random"]
+  repeats: 1
+  track_total_steps: 500
+  q_theta: 5.0e-4
+  k_theta: 10
+  q_theta_meas_coeff: 0.0
+  q_theta_max_scale: 10.0
+  state_noise: 0.2
+  gamma: 1.0
+  dynamics_alpha: 1.0
+  action_max_by_tag:
+    low_action: 1.0
+    high_action: 3.0
+  state_init_uncertainty: 50.0
+  writing_ref: "docs/active-dynamics-writing/methods.tex"
+
+matrix:
+  tracks:
+    model_tags: ["low_action", "high_action"]
+    exp_ids: ["active_short", "active_long", "RND", "random"]
+    seeds: [0, 10, 20]
+    total_steps: 500
+    repeats: 1
+
+summary_outputs:
+  csv: "results/cosyne/summary/metrics.csv"
+  markdown: "results/cosyne/summary/metrics.md"
+  figures_glob: "results/cosyne/summary/figures/*.png"
+
+acceptance_thresholds:
+  allow_nan_metrics: false
+  max_failed_track_runs: 0

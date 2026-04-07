@@ -44,7 +44,8 @@ class RandomNetworkDistillation(BaseMetric):
 
     def __init__(self, compute_type="sum", device: str = "cpu", **kwargs):
         super().__init__(compute_type=compute_type, device=device)
-        _ = kwargs
+        self.state_clip = float(kwargs.get("state_clip", 10.0))
+        self.grad_clip_norm = float(kwargs.get("grad_clip_norm", 5.0))
         self.metric = torch.tensor(0.0, device=self.device)
         # define target and predictor MLP networks
         self.target_network = nn.Sequential(nn.Linear(2, 128), nn.ReLU(), nn.Linear(128, 128))
@@ -69,19 +70,27 @@ class RandomNetworkDistillation(BaseMetric):
 
         self.optimizer = torch.optim.SGD(self.predictor_network.parameters(), lr=1e-3)
 
+    def _sanitize_state(self, x: torch.Tensor) -> torch.Tensor:
+        x = torch.as_tensor(x, device=self.device, dtype=torch.float32)
+        x = torch.nan_to_num(x, nan=0.0, posinf=self.state_clip, neginf=-self.state_clip)
+        return x.clamp(min=-self.state_clip, max=self.state_clip)
+
     def compute_uncertainty(self, x):
         """Compute uncertainty using RND."""
+        x = self._sanitize_state(x)
         with torch.no_grad():
             target_features = self.target_network(x)
         pred_features = self.predictor_network(x)
         uncertainty = ((pred_features - target_features) ** 2).mean(dim=-1)
+        uncertainty = torch.nan_to_num(uncertainty, nan=0.0, posinf=1e6, neginf=0.0)
         return uncertainty
 
     def compute_stepwise(self, rollout: Rollout | RolloutBuffer | dict) -> torch.Tensor:
         """Compute the RND uncertainty metric."""
-        next_state = torch.as_tensor(rollout["next_model_state"], device=self.device)
+        next_state = self._sanitize_state(rollout["next_model_state"])
         uncertainty = self.compute_uncertainty(next_state)
         self.metric = uncertainty.unsqueeze(-1).sum(dim=1)
+        self.metric = torch.nan_to_num(self.metric, nan=0.0, posinf=1e6, neginf=0.0)
 
         self.current_cost = -self.metric
         assert self.current_cost is not None
@@ -89,16 +98,18 @@ class RandomNetworkDistillation(BaseMetric):
 
     def update(self, rollout: Rollout | RolloutBuffer | dict):
         """Update the predictor network using new transitions."""
-        x = torch.as_tensor(rollout["next_model_state"], device=self.device)
+        x = self._sanitize_state(rollout["next_model_state"])
         with torch.no_grad():
             target_features = self.target_network(x)
         pred_features = self.predictor_network(x)
         # detach target_features to be explicit that only predictor gets gradients
         loss = F.mse_loss(pred_features, target_features.detach())
+        loss = torch.nan_to_num(loss, nan=0.0, posinf=1e3, neginf=0.0)
 
         self.optimizer.zero_grad()
         # loss should require grad if predictor params are trainable
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.predictor_network.parameters(), self.grad_clip_norm)
         self.optimizer.step()
 
 

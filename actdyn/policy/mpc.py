@@ -102,7 +102,7 @@ class MpcICem(BaseMPC):
 
     def sample_action_sequences(self, num_samples):
         # Generate action sequences with colored noise
-        if self.noise_beta > 0:
+        if self.noise_beta > 0 and self.horizon > 1:
             samples = torch.tensor(
                 colorednoise.powerlaw_psd_gaussian(
                     self.noise_beta, size=(num_samples, self.action_dim, self.horizon)
@@ -140,6 +140,7 @@ class MpcICem(BaseMPC):
         rollout.add_dict(
             {
                 "action": actions,
+                "encoded_action": a_enc,
                 "model_state": simulated_paths[:, :-1],
                 "next_model_state": simulated_paths[:, 1:],
             }
@@ -185,6 +186,13 @@ class MpcICem(BaseMPC):
             rollout = self.simulate(state, actions)
             with torch.no_grad():
                 costs = self.metric(rollout, **kwargs).reshape(-1)
+                costs = torch.nan_to_num(costs, nan=float("inf"), posinf=float("inf"), neginf=float("inf"))
+                if not torch.isfinite(costs).any():
+                    # If every candidate is invalid, avoid random saturated actions.
+                    # Fall back to the current mean plan (typically near-zero and bounded).
+                    fallback_action = self.mean.unsqueeze(0).clone()
+                    fallback_cost = torch.full((1,), 1e12, device=self.device)
+                    return fallback_action, fallback_cost
 
             # Keep elites from previous iteration
             if iter > 0 and self.keep_elites:
@@ -215,9 +223,12 @@ class MpcICem(BaseMPC):
                 best_cost = costs[min_cost_idx]
                 best_first_action = actions[min_cost_idx, 0]
 
-            # Update mean and std
+            # Update mean/std using a numerically stable variance estimate.
+            # `unbiased=False` avoids NaNs when num_elites == 1.
             new_mean = self.elite_actions.mean(dim=0).to(self.device)
-            new_std = self.elite_actions.std(dim=0).to(self.device)
+            new_std = self.elite_actions.std(dim=0, unbiased=False).to(self.device)
+            new_mean = torch.nan_to_num(new_mean, nan=0.0, posinf=0.0, neginf=0.0)
+            new_std = torch.nan_to_num(new_std, nan=0.0, posinf=self.init_std, neginf=0.0)
 
             self.mean = (1 - self.alpha) * new_mean + self.alpha * self.mean
             self.std = (1 - self.alpha) * new_std + self.alpha * self.std

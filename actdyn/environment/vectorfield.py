@@ -7,11 +7,14 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from actdyn.utils.vectorfield_definition import (
+    BistableLimitCycle,
     LimitCycle,
     MultiAttractor,
     DoubleLimitCycle,
     VanDerPol,
     Duffing,
+    FitzHughNagumo,
+    Hopf,
     SnowMan,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence
@@ -21,9 +24,12 @@ from actdyn.utils.visualize import plot_vector_field
 vf_from_string = {
     "limit_cycle": LimitCycle,
     "double_limit_cycle": DoubleLimitCycle,
+    "bistable_limit_cycle": BistableLimitCycle,
     "multi_attractor": MultiAttractor,
     "van_der_pol": VanDerPol,
     "duffing": Duffing,
+    "fitzhugh_nagumo": FitzHughNagumo,
+    "hopf": Hopf,
     "snowman": SnowMan,
 }
 
@@ -42,6 +48,7 @@ class VectorFieldEnv(gym.Env):
         render_mode: Optional[str] = None,
         action_bounds: Sequence[float] = (-1.0, 1.0),
         state_bounds: Optional[Sequence[float]] = None,
+        initial_state: Optional[Sequence[float]] = None,
         **kwargs: Any,
     ):
         super().__init__()
@@ -50,6 +57,14 @@ class VectorFieldEnv(gym.Env):
         self.dt = dt
         self.device = torch.device(device)
         self.render_mode = render_mode
+        self.initial_state = None
+        if initial_state is not None:
+            init = torch.as_tensor(initial_state, dtype=torch.float16, device=self.device).reshape(-1)
+            if init.numel() != d_state:
+                raise ValueError(
+                    f"initial_state must have {d_state} values, got {init.numel()}"
+                )
+            self.initial_state = init
 
         # Initialize spaces with configurable bounds
         self.action_space = self._set_space_bounds(action_bounds, d_state)
@@ -67,9 +82,12 @@ class VectorFieldEnv(gym.Env):
         self.set_params(dyn_params)
 
         # Initialize state
-        self.state = torch.tensor(
-            self.observation_space.sample(), device=self.device, dtype=torch.float16
-        )
+        if self.initial_state is not None:
+            self.state = self.initial_state.clone()
+        else:
+            self.state = torch.tensor(
+                self.observation_space.sample(), device=self.device, dtype=torch.float16
+            )
 
     def _set_space_bounds(self, bounds: Sequence[float], dim: int) -> spaces.Box:
         """Set space bounds for action and observation spaces."""
@@ -89,12 +107,12 @@ class VectorFieldEnv(gym.Env):
 
         if isinstance(dyn_params, dict):
             _dyn_params = torch.tensor(
-                [v for k, v in dyn_params.items()], device=self.device, dtype=torch.float16
+                [v for k, v in dyn_params.items()], device=self.device, dtype=torch.float32
             )
         elif isinstance(dyn_params, list):
-            _dyn_params = torch.tensor(dyn_params, device=self.device, dtype=torch.float16)
+            _dyn_params = torch.tensor(dyn_params, device=self.device, dtype=torch.float32)
         else:
-            _dyn_params = dyn_params.to(self.device)
+            _dyn_params = dyn_params.to(self.device, dtype=torch.float32)
 
         if _dyn_params.ndim == 1:
             _dyn_params = _dyn_params.unsqueeze(0)
@@ -111,9 +129,24 @@ class VectorFieldEnv(gym.Env):
     ) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment."""
         super().reset(seed=seed)
-        self.state = torch.tensor(
-            self.observation_space.sample(), device=self.device, dtype=torch.float16
-        )
+        reset_state = None
+        if options is not None and "initial_state" in options:
+            reset_state = torch.as_tensor(
+                options["initial_state"], dtype=torch.float16, device=self.device
+            ).reshape(-1)
+            if reset_state.numel() != self.d_state:
+                raise ValueError(
+                    f"options['initial_state'] must have {self.d_state} values, got {reset_state.numel()}"
+                )
+        elif self.initial_state is not None:
+            reset_state = self.initial_state
+
+        if reset_state is not None:
+            self.state = reset_state.clone()
+        else:
+            self.state = torch.tensor(
+                self.observation_space.sample(), device=self.device, dtype=torch.float16
+            )
         return self.state, {}
 
     def step(self, action: torch.Tensor) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
