@@ -7,6 +7,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from actdyn.utils.vectorfield_definition import (
+    BistableLimitCycle,
     LimitCycle,
     MultiAttractor,
     DoubleLimitCycle,
@@ -23,6 +24,7 @@ from actdyn.utils.visualize import plot_vector_field
 vf_from_string = {
     "limit_cycle": LimitCycle,
     "double_limit_cycle": DoubleLimitCycle,
+    "bistable_limit_cycle": BistableLimitCycle,
     "multi_attractor": MultiAttractor,
     "van_der_pol": VanDerPol,
     "duffing": Duffing,

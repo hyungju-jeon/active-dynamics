@@ -36,6 +36,14 @@ class VectorField:
     def set_params(self, *dyn_params: torch.Tensor | list[float] | Dict[str, float]):
         """Set model parameters from a tensor, list, dict, or expanded arguments."""
 
+        def _format_param_args(params_tensor: torch.Tensor) -> tuple[torch.Tensor, ...]:
+            param_args = []
+            for param in params_tensor.mT:
+                if params_tensor.shape[0] > 1 and param.ndim == 1:
+                    param = param.unsqueeze(-1)
+                param_args.append(param)
+            return tuple(param_args)
+
         if len(dyn_params) == 1 and isinstance(dyn_params[0], dict):
             self._set_params(**dyn_params[0])
             return
@@ -50,7 +58,7 @@ class VectorField:
             if params_tensor.ndim == 1:
                 params_tensor = params_tensor.unsqueeze(0)
             self.dyn_params = params_tensor
-            self._set_params(*params_tensor.mT)
+            self._set_params(*_format_param_args(params_tensor))
             return
 
         params_list = []
@@ -65,7 +73,7 @@ class VectorField:
         if params_tensor.ndim == 1:
             params_tensor = params_tensor.unsqueeze(0)
         self.dyn_params = params_tensor
-        self._set_params(*dyn_params)
+        self._set_params(*_format_param_args(params_tensor))
 
     def _set_params(self, *args, **kwargs):
         raise NotImplementedError("_set_params method must be implemented in subclasses.")
@@ -134,6 +142,45 @@ class DoubleLimitCycle(VectorField):
         U = self.alpha * U
         V = self.alpha * V
         return torch.stack([U, V], dim=-1)
+
+
+class BistableLimitCycle(VectorField):
+    """Smoothly blends two local limit cycles into a left/right bistable system."""
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.center_offset = float(kwargs.get("center_offset", 1.6))
+        self.gate_sharpness = float(kwargs.get("gate_sharpness", 3.0))
+        if dyn_param is None:
+            self.omega = 1.0
+            self.radius = 0.9
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, omega=1.0, radius=0.9):
+        self.omega = omega
+        self.radius = radius
+
+    def _local_cycle(self, x: torch.Tensor, center_x: float) -> torch.Tensor:
+        px = x[..., 0] - float(center_x)
+        py = x[..., 1]
+        r = torch.sqrt(px**2 + py**2).clamp_min(1e-6)
+        k = self.radius - r
+        u = px * k - self.omega * py
+        v = py * k + self.omega * px
+        return torch.stack([u, v], dim=-1)
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        gate = torch.sigmoid(self.gate_sharpness * x[..., 0])
+        left = self._local_cycle(x, center_x=-self.center_offset)
+        right = self._local_cycle(x, center_x=self.center_offset)
+        field = (1.0 - gate).unsqueeze(-1) * left + gate.unsqueeze(-1) * right
+        return self.alpha * field
 
 
 # TODO: Fix the code to match the new structure
