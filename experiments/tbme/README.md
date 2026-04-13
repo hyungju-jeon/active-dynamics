@@ -211,6 +211,7 @@ Suite:
 - `tbme_exp3_realdata_policy`
 
 This path is an offline replay benchmark. It fits a linear ridge dynamics model after each selected transition and evaluates the learned model on held-out replay transitions.
+The current prepared replay file is derived from the published DANDI `000129` release `0.241017.1444`, using the train NWB asset `sub-Indy_desc-train_behavior+ecephys.nwb`.
 
 ### Compared Methods
 
@@ -286,6 +287,14 @@ Recommended practice:
 - archive the exact command line used for each final figure or table
 
 ## Commands
+
+Prepare the MC_RTT replay data:
+
+```bash
+python -m experiments.tbme.prepare_exp3_data --overwrite-output
+```
+
+This downloads the published MC_RTT NWB assets into `data/mcrtt/raw/` if needed and writes the replay file expected by the current Experiment 3 config at `data/mcrtt/mcrtt_replay.npz`.
 
 Run Experiment 1:
 
