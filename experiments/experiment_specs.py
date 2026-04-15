@@ -26,6 +26,9 @@ class EnvironmentPreset:
     preset_id: str
     system_id: str
     asymmetric_loading: bool
+    observation_primary_scale: float
+    observation_secondary_scale: float
+    observation_row_skew: float
     firing_rate_scale: float
     action_max: float
     system_label: str | None = None
@@ -255,6 +258,9 @@ def load_catalog_bundle(
                 else str(spec.get("estimator_system_id"))
             ),
             asymmetric_loading=bool(spec.get("asymmetric_loading", False)),
+            observation_primary_scale=float(spec.get("observation_primary_scale", 1.0)),
+            observation_secondary_scale=float(spec.get("observation_secondary_scale", 2.0)),
+            observation_row_skew=float(spec.get("observation_row_skew", 0.0)),
             firing_rate_scale=float(spec.get("firing_rate_scale", 1.0)),
             action_max=float(spec.get("action_max", 1.0)),
             dynamics_alpha=float(spec.get("dynamics_alpha", 1.0)),

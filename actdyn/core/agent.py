@@ -124,6 +124,7 @@ class Agent:
         if isinstance(self.policy, BaseMPC):
             for metric in self.policy.metric.metric_list:
                 metric.update(rollout)
+        update_info = None
         policy_update = getattr(type(self.policy), "update", BasePolicy.update)
         if policy_update is not BasePolicy.update:
             update_info = self.policy.update(rollout)

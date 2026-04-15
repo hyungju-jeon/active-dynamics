@@ -1,4 +1,87 @@
+schedules:
+  tbme_u1_r1_h10:
+    update_interval: 1
+    replan_interval: 1
+    planning_horizon: 10
+    planning_chunk: 1
+
+  tbme_u1_r1_h40:
+    update_interval: 1
+    replan_interval: 1
+    planning_horizon: 40
+    planning_chunk: 1
+
 models:
+  ig_parameter:
+    objective_kind: parameter_eig
+    schedule_id: u1_r1_h20
+
+  ig_full_observable:
+    objective_kind: fully_observable_parameter_eig
+    schedule_id: u1_r1_h20
+
+  ig_e_optimality:
+    objective_kind: e_optimality
+    schedule_id: u1_r1_h20
+
+  ig_state_information:
+    objective_kind: state_information
+    schedule_id: u1_r1_h20
+
+  ig_dynamics:
+    objective_kind: dynamics
+    schedule_id: u1_r1_h20
+
+  ig_sampling_variance:
+    objective_kind: sampling_variance
+    schedule_id: u1_r1_h20
+
+  flex:
+    objective_kind: fully_observable_parameter_eig
+    schedule_id: u1_r1_h1
+    policy_type: flex
+    save_acq_map: false
+
+  rhc:
+    objective_kind: fully_observable_parameter_eig
+    schedule_id: u1_r1_h20
+    policy_type: rhc
+    save_acq_map: false
+
+  rhc_mvr:
+    objective_kind: fully_observable_parameter_eig
+    schedule_id: u1_r1_h20
+    policy_type: rhc
+    save_acq_map: false
+
+  sched_h2_u1_r1:
+    objective_kind: parameter_eig
+    schedule_id: u1_r1_h2
+
+  sched_h10_u1_r1:
+    objective_kind: parameter_eig
+    schedule_id: tbme_u1_r1_h10
+
+  sched_h20_u1_r1:
+    objective_kind: parameter_eig
+    schedule_id: u1_r1_h20
+
+  sched_h40_u1_r1:
+    objective_kind: parameter_eig
+    schedule_id: tbme_u1_r1_h40
+
+  sched_h20_u5_r1:
+    objective_kind: parameter_eig
+    schedule_id: u5_r1_h20
+
+  sched_h20_u5_r5:
+    objective_kind: parameter_eig
+    schedule_id: u5_r5_h20
+
+  sched_h40_u5_r5:
+    objective_kind: parameter_eig
+    schedule_id: u5_r5_h40
+
   e_optimality:
     objective_kind: e_optimality
     schedule_id: u1_r1_h20

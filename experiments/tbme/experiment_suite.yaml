@@ -12,6 +12,20 @@ suites:
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
+  tbme_exp1_duffing_policy_sota:
+    experiment_kind: duffing
+    total_steps: 600
+    env_preset_id: tbme_duffing_easy
+    model_ids:
+      - active_myopic
+      - active_planning
+      - flex
+      - rhc
+      - baseline_prbs
+      - random
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
   tbme_exp1_pendulum_policy:
     experiment_kind: duffing
     total_steps: 600
@@ -22,6 +36,20 @@ suites:
       - baseline_prbs
       - random
       - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_pendulum_policy_sota:
+    experiment_kind: duffing
+    total_steps: 600
+    env_preset_id: tbme_pendulum_damped
+    model_ids:
+      - active_myopic
+      - active_planning
+      - flex
+      - rhc
+      - baseline_prbs
+      - random
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
@@ -38,6 +66,20 @@ suites:
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
+  tbme_exp1_double_integrator_policy_sota:
+    experiment_kind: duffing
+    total_steps: 600
+    env_preset_id: tbme_double_integrator
+    model_ids:
+      - active_myopic
+      - active_planning
+      - flex
+      - rhc
+      - baseline_prbs
+      - random
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
   tbme_exp1_objective_duffing:
     experiment_kind: duffing
     total_steps: 600
@@ -48,6 +90,98 @@ suites:
       - state_information
       - dynamics
       - sampling_variance
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_duffing_challenge_policy:
+    experiment_kind: duffing
+    total_steps: 300
+    env_preset_id: tbme_duffing_planning_challenge
+    model_ids:
+      - active_myopic
+      - active_planning
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_duffing_challenge_sota:
+    experiment_kind: duffing
+    total_steps: 600
+    env_preset_id: tbme_duffing_planning_challenge
+    model_ids:
+      - active_myopic
+      - active_planning
+      - flex
+      - rhc
+      - baseline_prbs
+      - random
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_duffing_budget_ablation_short:
+    experiment_kind: duffing
+    total_steps: 200
+    env_preset_id: tbme_duffing_planning_challenge
+    model_ids:
+      - active_myopic
+      - active_planning
+      - baseline_prbs
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_duffing_budget_ablation_medium:
+    experiment_kind: duffing
+    total_steps: 400
+    env_preset_id: tbme_duffing_planning_challenge
+    model_ids:
+      - active_myopic
+      - active_planning
+      - baseline_prbs
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_duffing_ig_ablation:
+    experiment_kind: duffing
+    total_steps: 300
+    env_preset_id: tbme_duffing_planning_challenge
+    model_ids:
+      - ig_parameter
+      - ig_full_observable
+      - ig_e_optimality
+      - ig_state_information
+      - ig_dynamics
+      - ig_sampling_variance
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_duffing_schedule_ablation:
+    experiment_kind: duffing
+    total_steps: 300
+    env_preset_id: tbme_duffing_planning_challenge
+    model_ids:
+      - sched_h2_u1_r1
+      - sched_h10_u1_r1
+      - sched_h20_u1_r1
+      - sched_h40_u1_r1
+      - sched_h20_u5_r1
+      - sched_h20_u5_r5
+      - sched_h40_u5_r5
+      - baseline_prbs
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp1_duffing_competitor_compare:
+    experiment_kind: duffing
+    total_steps: 300
+    env_preset_id: tbme_duffing_planning_challenge
+    model_ids:
+      - active_planning
+      - ig_sampling_variance
+      - ig_e_optimality
+      - baseline_prbs
+      - random
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
@@ -64,6 +198,19 @@ suites:
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
+  tbme_exp2_robustness_duffing_sota:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_duffing_family_mismatch
+    model_ids:
+      - active_planning
+      - flex
+      - rhc
+      - baseline_prbs
+      - random
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
   tbme_exp2_robustness_pendulum:
     experiment_kind: duffing
     total_steps: 800
@@ -77,6 +224,19 @@ suites:
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
+  tbme_exp2_robustness_pendulum_sota:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_pendulum_param_mismatch
+    model_ids:
+      - active_planning
+      - flex
+      - rhc
+      - baseline_prbs
+      - random
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
   tbme_exp2_robustness_double_integrator:
     experiment_kind: duffing
     total_steps: 800
@@ -87,6 +247,19 @@ suites:
       - baseline_prbs
       - random
       - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp2_robustness_double_integrator_sota:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_double_integrator_mismatch
+    model_ids:
+      - active_planning
+      - flex
+      - rhc
+      - baseline_prbs
+      - random
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
