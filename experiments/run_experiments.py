@@ -387,6 +387,28 @@ def _predictive_only_embedding_step(model: Any, action: Any) -> dict[str, Any]:
     }
 
 
+def _apply_loglinear_loading_asymmetry(weight: Any, env_preset: Any):
+    import torch
+
+    c = weight.detach().clone()
+    if not bool(getattr(env_preset, "asymmetric_loading", False)):
+        return c
+    primary_scale = float(getattr(env_preset, "observation_primary_scale", 1.0))
+    secondary_scale = float(getattr(env_preset, "observation_secondary_scale", 2.0))
+    row_skew = float(getattr(env_preset, "observation_row_skew", 0.0))
+    if c.shape[1] >= 1:
+        c[:, 0] = torch.abs(c[:, 0]) * primary_scale
+    if c.shape[1] >= 2:
+        c[:, 1] = c[:, 1] * secondary_scale
+        if abs(row_skew) > 1e-8 and c.shape[0] > 1:
+            row_axis = torch.linspace(-1.0, 1.0, steps=c.shape[0], device=c.device)
+            primary_gain = 1.0 + row_skew * torch.clamp(row_axis, min=0.0)
+            secondary_gain = 1.0 + row_skew * torch.clamp(-row_axis, min=0.0)
+            c[:, 0] = c[:, 0] * primary_gain
+            c[:, 1] = c[:, 1] * secondary_gain
+    return c
+
+
 def _predict_planned_xy_trajectory(
     *, model: Any, policy: Any, transition: dict[str, Any]
 ) -> np.ndarray | None:
@@ -1309,10 +1331,7 @@ def _run_single_duffing_identification(
         dt=dt,
         device=device,
     )
-    c = obs_model.network[0].weight.detach()
-    if env_preset.asymmetric_loading:
-        c[:, 0] = torch.abs(c[:, 0])
-        c[:, 1] = c[:, 1] * 2
+    c = _apply_loglinear_loading_asymmetry(obs_model.network[0].weight, env_preset)
     state_range_for_cap = 5.0
     mean_log_rate = torch.log(torch.full((dy,), mean_firing, device=device))
     max_log_rate = torch.log(torch.full((dy,), max_firing_rate, device=device))
@@ -1971,10 +1990,7 @@ def _run_single_rbf_identification(
         dt=dt,
         device=device,
     )
-    c = obs_model.network[0].weight.detach()
-    if env_preset.asymmetric_loading:
-        c[:, 0] = torch.abs(c[:, 0])
-        c[:, 1] = c[:, 1] * 2
+    c = _apply_loglinear_loading_asymmetry(obs_model.network[0].weight, env_preset)
     state_range_for_cap = 5.0
     mean_log_rate = torch.log(torch.full((dy,), mean_firing, device=device))
     max_log_rate = torch.log(torch.full((dy,), max_firing_rate, device=device))
