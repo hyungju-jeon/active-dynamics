@@ -56,12 +56,20 @@ class Agent:
             # Reset model
             _, model_info = self.model.reset(self._observation)
 
+        reset_policy_state = getattr(self.policy, "reset_policy_state", None)
+        if callable(reset_policy_state):
+            reset_policy_state(seed=seed)
+
         # Initialize internal states
         self._env_state = info["latent_state"]
         self._model_state = model_info["latent_state"]
 
         # Reset recent buffer
         self.recent = RecentRollout(max_len=self.buffer_length, device=str(self.device))
+
+        beginning_of_rollout = getattr(self.policy, "beginning_of_rollout", None)
+        if callable(beginning_of_rollout):
+            beginning_of_rollout(self._env_state)
 
         return self._observation
 
@@ -107,7 +115,7 @@ class Agent:
     def plan(self) -> torch.Tensor:
         """Plan next action using the policy."""
         # Use policy to plan and get action
-        action = self.policy(self._model_state)
+        action = self.policy(self._model_state, observed_state=self._env_state)
         return action
 
     def update_policy(self, rollout: RecentRollout) -> None:
@@ -116,6 +124,11 @@ class Agent:
         if isinstance(self.policy, BaseMPC):
             for metric in self.policy.metric.metric_list:
                 metric.update(rollout)
+        policy_update = getattr(type(self.policy), "update", BasePolicy.update)
+        if policy_update is not BasePolicy.update:
+            update_info = self.policy.update(rollout)
+        if isinstance(update_info, dict):
+            setattr(self.policy, "last_update_info", update_info)
 
     def train_model(self, sampling_ratio: int = 1, **kwargs) -> Dict[str, float | torch.Tensor]:
         """Train the model using recent transitions."""

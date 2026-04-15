@@ -9,7 +9,6 @@ from .baseline_ce_mpc import BaselineCEMPCPolicy
 from .baseline_flex import FLEXPolicy
 from .baseline_prbs import BaselinePRBSPolicy
 from .baseline_random import BaselineRandomPolicy
-from .baseline_rhc import RecedingHorizonCuriosityPolicy
 from .baseline_thompson import BaselineThompsonPolicy
 from .baseline_ucb import BaselineUCBPolicy
 from .policy import OffPolicy, RandomPolicy, StepPolicy
@@ -50,3 +49,10 @@ def policy_from_str(policy_str: str) -> type[BasePolicy]:
     module_name, class_name = _policy_map[policy_str]
     module = importlib.import_module(module_name, __package__)
     return getattr(module, class_name)
+
+
+def __getattr__(name: str):
+    if name == "RecedingHorizonCuriosityPolicy":
+        module = importlib.import_module(".baseline_rhc", __package__)
+        return getattr(module, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

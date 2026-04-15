@@ -387,6 +387,27 @@ class SamplingVarianceMetric(BaseMetric):
         self._call_count += 1
         return mean.unsqueeze(0) + noise @ chol.transpose(-1, -2)
 
+    @staticmethod
+    def _rollout_get(rollout, key: str):
+        if isinstance(rollout, dict):
+            return rollout.get(key)
+        try:
+            return rollout[key]
+        except (KeyError, TypeError, IndexError):
+            getter = getattr(rollout, "get", None)
+            if getter is None:
+                return None
+            return getter(key, None)
+
+    def _rollout_actions(self, rollout):
+        action = self._rollout_get(rollout, "action")
+        encoded_action = self._rollout_get(rollout, "encoded_action")
+        if encoded_action is None:
+            encoded_action = self._rollout_get(rollout, "env_action")
+        if encoded_action is None:
+            encoded_action = self._rollout_get(rollout, "model_action")
+        return action, encoded_action
+
     def _encode_actions(self, actions: torch.Tensor, state: torch.Tensor) -> torch.Tensor:
         if self.model.action_encoder is None:
             return actions
@@ -474,12 +495,25 @@ class SamplingVarianceMetric(BaseMetric):
         return torch.stack(lambda_samples, dim=0)
 
     def compute_stepwise(self, rollout: dict) -> torch.Tensor:
-        actions = rollout["action"].to(self.device).float()
-        if actions.ndim != 3:
-            actions = actions.unsqueeze(0)
-        batch, steps, _ = actions.shape
-        if "model_state" in rollout:
-            rollout_states = rollout["model_state"].to(self.device).float()
+        actions, encoded_action_value = self._rollout_actions(rollout)
+        if actions is not None:
+            actions = actions.to(self.device).float()
+            if actions.ndim != 3:
+                actions = actions.unsqueeze(0)
+            batch, steps, _ = actions.shape
+        else:
+            if encoded_action_value is None:
+                raise KeyError(
+                    "SamplingVarianceMetric requires one of 'action', 'encoded_action', "
+                    "'env_action', or 'model_action' in rollout"
+                )
+            encoded_actions = encoded_action_value.to(self.device).float()
+            if encoded_actions.ndim != 3:
+                encoded_actions = encoded_actions.unsqueeze(0)
+            batch, steps, _ = encoded_actions.shape
+        rollout_states_value = self._rollout_get(rollout, "model_state")
+        if rollout_states_value is not None:
+            rollout_states = rollout_states_value.to(self.device).float()
             if rollout_states.ndim != 3:
                 rollout_states = rollout_states.unsqueeze(0)
             state0 = rollout_states[:, :1]
@@ -494,11 +528,14 @@ class SamplingVarianceMetric(BaseMetric):
                 state0 = state0.unsqueeze(0)
             if state0.shape[0] == 1 and batch > 1:
                 state0 = state0.expand(batch, -1, -1).clone()
-        if "encoded_action" in rollout:
-            encoded_actions = rollout["encoded_action"].to(self.device).float()
-            if encoded_actions.ndim != 3:
-                encoded_actions = encoded_actions.unsqueeze(0)
+        if encoded_action_value is not None:
+            if "encoded_actions" not in locals():
+                encoded_actions = encoded_action_value.to(self.device).float()
+                if encoded_actions.ndim != 3:
+                    encoded_actions = encoded_actions.unsqueeze(0)
         else:
+            if actions is None:
+                raise KeyError("SamplingVarianceMetric cannot encode actions when rollout['action'] is missing")
             encoded_actions = self._encode_actions(actions, state0)
         theta_samples = self._sample_theta_belief()
         lam_stack = self._predict_lambda_samples(

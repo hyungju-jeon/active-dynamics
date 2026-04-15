@@ -1187,6 +1187,26 @@ def _instantiate_synthetic_policy(
             hold_steps=max(1, int(getattr(schedule_spec, "planning_chunk", 1))),
             amplitude=1.0,
         )
+    if policy_type == "flex":
+        return actdyn_module.policy.FLEXPolicy(
+            action_space=env.action_space,
+            model=model,
+            device=device,
+        )
+    if policy_type == "rhc":
+        return actdyn_module.policy.RecedingHorizonCuriosityPolicy(
+            action_space=env.action_space,
+            device=device,
+            horizon=int(schedule_spec.planning_horizon),
+            objective="rhc_mvr" if str(policy_id).endswith("_mvr") else "rhc_us",
+            num_features=128,
+            prior_precision=1.0,
+            obs_noise_var=1e-3,
+            lengthscale=1.0,
+            optimize_hyperparams=True,
+            planner_maxiter=500,
+            seed=int(seed),
+        )
     if policy_type == "off-policy":
         return actdyn_module.policy.OffPolicy(action_space=env.action_space, device=device)
     if policy_type != "mpc-icem":
@@ -3014,9 +3034,15 @@ def run_matrix(
     *, exp_ids: list[str], seeds: list[int], repeats: int, base_dir: Path, args: argparse.Namespace
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
+    policy_filter = set(parse_csv_list(getattr(args, "policy_ids", None))) or None
     for exp_id in exp_ids:
         exp_spec = get_experiment_spec(exp_id)
-        for policy_id in exp_spec.policy_ids:
+        selected_policy_ids = tuple(
+            policy_id
+            for policy_id in exp_spec.policy_ids
+            if policy_filter is None or policy_id in policy_filter
+        )
+        for policy_id in selected_policy_ids:
             for seed in seeds:
                 for repeat in range(1, repeats + 1):
                     records.append(
@@ -3058,12 +3084,18 @@ def _build_session_experiment_entry(
     seeds: list[int],
     repeats: int,
     total_steps_override: int | None,
+    policy_filter: set[str] | None = None,
 ) -> dict[str, Any]:
     exp_spec = get_experiment_spec(exp_id)
     env_preset = get_environment_preset(exp_spec.env_preset_id)
     env_summary = _environment_summary(env_preset)
+    selected_policy_ids = tuple(
+        policy_id
+        for policy_id in exp_spec.policy_ids
+        if policy_filter is None or policy_id in policy_filter
+    )
     policies: list[dict[str, Any]] = []
-    for policy_id in exp_spec.policy_ids:
+    for policy_id in selected_policy_ids:
         policy_spec = get_policy_spec(policy_id)
         schedule_spec = get_schedule_spec(policy_spec.schedule_id)
         policies.append(
@@ -3140,7 +3172,7 @@ def _build_session_experiment_entry(
         "policies": policies,
         "seeds": [int(seed) for seed in seeds],
         "repeats": int(repeats),
-        "planned_runs": int(len(exp_spec.policy_ids) * len(seeds) * repeats),
+        "planned_runs": int(len(selected_policy_ids) * len(seeds) * repeats),
     }
 
 
@@ -3154,12 +3186,14 @@ def _build_session_metadata(
     repeats: int,
     records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    policy_filter = set(parse_csv_list(getattr(args, "policy_ids", None))) or None
     experiments = [
         _build_session_experiment_entry(
             exp_id=exp_id,
             seeds=seeds,
             repeats=repeats,
             total_steps_override=args.total_steps,
+            policy_filter=policy_filter,
         )
         for exp_id in exp_ids
     ]
@@ -3276,6 +3310,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--suite-catalog", action="append", dest="suite_catalogs")
     parser.add_argument("--exp-id", choices=[*list_experiment_ids(), "all"], default="all")
     parser.add_argument("--exp-ids", type=str, default=None)
+    parser.add_argument("--policy-ids", type=str, default=None)
     parser.add_argument("--mode", choices=["run", "summary", "video", "all"], default="run")
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
     parser.add_argument("--repeats", type=int, default=1)
@@ -3336,6 +3371,16 @@ def main(argv: list[str] | None = None) -> int:
             parser.error(f"Unknown experiment ids: {', '.join(unknown)}")
     else:
         exp_ids = list_experiment_ids() if args.exp_id == "all" else [str(args.exp_id)]
+    policy_filter = set(parse_csv_list(args.policy_ids)) or None
+    if policy_filter is not None:
+        available_policy_ids = {
+            policy_id
+            for exp_id in exp_ids
+            for policy_id in get_experiment_spec(exp_id).policy_ids
+        }
+        unknown_policy_ids = sorted(policy_filter - available_policy_ids)
+        if unknown_policy_ids:
+            parser.error(f"Unknown policy ids for selected experiments: {', '.join(unknown_policy_ids)}")
     base_dir = resolve_session_root(
         Path(args.base_dir),
         create=args.mode in {"run", "all"},
