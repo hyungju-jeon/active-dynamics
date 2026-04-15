@@ -6,7 +6,10 @@ import torch
 from torch.nn.functional import softplus
 
 from actdyn.metrics.base import BaseMetric
-from actdyn.metrics.information import EmbeddingFisherMetric
+from actdyn.metrics.information import (
+    AmbiguityAwareEmbeddingFisherMetric,
+    EmbeddingFisherMetric,
+)
 from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.helper import safe_cholesky, symmetrize
 
@@ -25,6 +28,59 @@ def parameter_eig(
         model=model,
         Fe_net=Fe_net,
         Fz_net=Fz_net,
+        gamma=gamma,
+        device=device,
+    )
+
+
+def shrinkage_parameter_eig(
+    *,
+    model: FilteringEmbedding,
+    Fe_net: Callable,
+    Fz_net: Callable,
+    gamma: float,
+    device: str,
+) -> EmbeddingFisherMetric:
+    return parameter_eig(model=model, Fe_net=Fe_net, Fz_net=Fz_net, gamma=gamma, device=device)
+
+
+def _scaled_sensitivity_network(network: Callable, scale: float) -> Callable:
+    def _wrapped(z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
+        return float(scale) * network(z, e)
+
+    return _wrapped
+
+
+def ambiguity_aware_parameter_eig(
+    *,
+    model: FilteringEmbedding,
+    Fe_net: Callable,
+    Fz_net: Callable,
+    gamma: float,
+    device: str,
+    ambiguity_temperature: float = 1.0,
+    ensemble_kind: str | None = None,
+) -> AmbiguityAwareEmbeddingFisherMetric:
+    if ensemble_kind in {None, "sensitivity_gain"}:
+        scale_factors = (0.75, 1.0, 1.25)
+    elif ensemble_kind == "wide_sensitivity_gain":
+        scale_factors = (0.5, 1.0, 1.5)
+    else:
+        raise ValueError(f"Unsupported ensemble_kind={ensemble_kind!r}")
+
+    ensemble_members = [
+        {
+            "Fe_net": _scaled_sensitivity_network(Fe_net, scale),
+            "Fz_net": _scaled_sensitivity_network(Fz_net, scale),
+            "decoder": model.decoder,
+            "weight": 1.0 / len(scale_factors),
+        }
+        for scale in scale_factors
+    ]
+    return AmbiguityAwareEmbeddingFisherMetric(
+        model=model,
+        ensemble_members=ensemble_members,
+        ambiguity_temperature=float(ambiguity_temperature),
         gamma=gamma,
         device=device,
     )

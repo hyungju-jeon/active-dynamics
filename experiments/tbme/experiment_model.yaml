@@ -12,6 +12,29 @@ schedules:
     planning_chunk: 1
 
 models:
+  tbme_active_nominal:
+    extends: active_planning
+
+  tbme_active_shrinkage:
+    extends: tbme_active_nominal
+    objective_kind: shrinkage_parameter_eig
+    shrinkage_kind: inverse_quadratic
+    shrinkage_min: 0.25
+
+  tbme_active_ambiguity:
+    extends: tbme_active_nominal
+    objective_kind: ambiguity_aware_parameter_eig
+    ambiguity_temperature: 0.5
+    ensemble_kind: sensitivity_gain
+
+  tbme_active_robust:
+    extends: tbme_active_nominal
+    objective_kind: ambiguity_aware_parameter_eig
+    shrinkage_kind: inverse_quadratic
+    shrinkage_min: 0.25
+    ambiguity_temperature: 0.5
+    ensemble_kind: sensitivity_gain
+
   ig_parameter:
     objective_kind: parameter_eig
     schedule_id: u1_r1_h20

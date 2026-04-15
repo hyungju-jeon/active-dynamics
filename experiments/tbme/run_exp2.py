@@ -13,10 +13,14 @@ else:
 
 EXP2_SUITES = [
     "tbme_exp2_robustness_duffing",
+    "tbme_exp2_robustness_duffing_obs",
+    "tbme_exp2_robustness_duffing_noise",
     "tbme_exp2_robustness_duffing_sota",
     "tbme_exp2_robustness_pendulum",
     "tbme_exp2_robustness_pendulum_sota",
     "tbme_exp2_robustness_double_integrator",
+    "tbme_exp2_robust_methods_duffing",
+    "tbme_exp2_uncertainty_duffing",
     "tbme_exp2_robustness_double_integrator_sota",
 ]
 

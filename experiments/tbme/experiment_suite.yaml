@@ -190,7 +190,33 @@ suites:
     total_steps: 800
     env_preset_id: tbme_duffing_family_mismatch
     model_ids:
-      - active_planning
+      - tbme_active_nominal
+      - e_optimality
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp2_robustness_duffing_obs:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_duffing_obs_mismatch
+    model_ids:
+      - tbme_active_nominal
+      - e_optimality
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp2_robustness_duffing_noise:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_duffing_noise_mismatch
+    model_ids:
+      - tbme_active_nominal
       - e_optimality
       - baseline_prbs
       - random
@@ -216,7 +242,7 @@ suites:
     total_steps: 800
     env_preset_id: tbme_pendulum_param_mismatch
     model_ids:
-      - active_planning
+      - tbme_active_nominal
       - e_optimality
       - baseline_prbs
       - random
@@ -242,8 +268,38 @@ suites:
     total_steps: 800
     env_preset_id: tbme_double_integrator_mismatch
     model_ids:
-      - active_planning
+      - tbme_active_nominal
       - e_optimality
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp2_robust_methods_duffing:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_duffing_family_mismatch
+    model_ids:
+      - tbme_active_nominal
+      - tbme_active_shrinkage
+      - tbme_active_ambiguity
+      - tbme_active_robust
+      - baseline_prbs
+      - random
+      - off_policy
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
+  tbme_exp2_uncertainty_duffing:
+    experiment_kind: duffing
+    total_steps: 800
+    env_preset_id: tbme_duffing_family_mismatch
+    model_ids:
+      - tbme_active_nominal
+      - tbme_active_shrinkage
+      - tbme_active_ambiguity
+      - tbme_active_robust
       - baseline_prbs
       - random
       - off_policy

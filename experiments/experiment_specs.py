@@ -11,6 +11,8 @@ import yaml
 
 ObjectiveKind = Literal[
     "parameter_eig",
+    "shrinkage_parameter_eig",
+    "ambiguity_aware_parameter_eig",
     "e_optimality",
     "fully_observable_parameter_eig",
     "state_information",
@@ -74,6 +76,10 @@ class PolicySpec:
     policy_type: str | None = None
     passive: bool = False
     save_acq_map: bool = True
+    shrinkage_kind: str | None = None
+    shrinkage_min: float | None = None
+    ambiguity_temperature: float | None = None
+    ensemble_kind: str | None = None
 
 
 @dataclass(frozen=True)
@@ -322,6 +328,26 @@ def load_catalog_bundle(
             ),
             passive=bool(spec.get("passive", False)),
             save_acq_map=bool(spec.get("save_acq_map", True)),
+            shrinkage_kind=(
+                None
+                if spec.get("shrinkage_kind") is None
+                else str(spec.get("shrinkage_kind"))
+            ),
+            shrinkage_min=(
+                None
+                if spec.get("shrinkage_min") is None
+                else float(spec.get("shrinkage_min"))
+            ),
+            ambiguity_temperature=(
+                None
+                if spec.get("ambiguity_temperature") is None
+                else float(spec.get("ambiguity_temperature"))
+            ),
+            ensemble_kind=(
+                None
+                if spec.get("ensemble_kind") is None
+                else str(spec.get("ensemble_kind"))
+            ),
         )
         for policy_id, spec in model_raw.items()
     }
