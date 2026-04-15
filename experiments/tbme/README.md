@@ -11,7 +11,13 @@ This directory contains TBME-specific catalogs and thin wrappers on top of the s
 - `_run_family.py`: shared helper for TBME family launchers
 - `run_exp1.py`: convenience launcher for Experiment 1 suites
 - `run_exp2.py`: convenience launcher for Experiment 2 suites
-- `run_exp3.py`: convenience launcher for Experiment 3 suites
+- `run_exp3.py`: convenience launcher for the Experiment 3 neural digital-twin workflow
+- `exp3_digital_twin.yaml`: default config for the spike-driven Exp 3 neural digital twin
+- `exp3_digital_twin.py`: generator fitting, digital-twin construction, active-ID benchmark, and summary library
+- `seqvae_mcrtt.yaml`: default config for the SeqVAE-on-MC_RTT research workflow
+- `seqvae_mcrtt.py`: SeqVAE training, baseline comparison, and semi-synthetic recovery library
+- `run_seqvae_mcrtt.py`: convenience launcher for the SeqVAE-on-MC_RTT workflow
+- `summarize_seqvae_mcrtt.py`: summary-only entrypoint for SeqVAE-on-MC_RTT sessions
 - `summarize_experiments.py`: TBME wrapper around `experiments/summarize_experiments.py`
 - `render_experiment_videos.py`: TBME wrapper around `experiments/render_experiment_videos.py`
 
@@ -44,7 +50,7 @@ The suite YAML encodes the default step budgets:
 
 - Experiment 1 suites: `600` steps
 - Experiment 2 suites: `800` steps
-- Experiment 3 suite: `256` selected replay transitions
+- Experiment 3 benchmark: `200` active interaction steps by default
 
 ## Experiment 1: Basic Proof of Work
 
@@ -70,6 +76,12 @@ Suites:
 - `tbme_exp1_pendulum_policy`
 - `tbme_exp1_double_integrator_policy`
 - `tbme_exp1_objective_duffing`
+- `tbme_exp1_duffing_challenge_policy`
+- `tbme_exp1_duffing_budget_ablation_short`
+- `tbme_exp1_duffing_budget_ablation_medium`
+- `tbme_exp1_duffing_ig_ablation`
+- `tbme_exp1_duffing_schedule_ablation`
+- `tbme_exp1_duffing_competitor_compare`
 
 ### Compared Methods
 
@@ -112,6 +124,11 @@ Lead figure:
 Supporting figure:
 
 - one Duffing objective-ablation panel comparing the acquisition objective choices under the same planning policy
+- one hard-Duffing challenge panel showing the short-budget policy comparison
+- one hard-Duffing budget-ablation panel comparing how the planning advantage changes with interaction budget
+- one hard-Duffing IG-approximation ablation panel with schedule held fixed
+- one hard-Duffing schedule-tuning panel with objective held fixed
+- one hard-Duffing competitor panel comparing the default method to practical alternatives
 
 Table:
 
@@ -120,6 +137,44 @@ Table:
 ### Interpretation Goal
 
 This experiment establishes the basic method claim: the active planner should identify dynamics faster than passive/random baselines on canonical low-dimensional systems when the estimator family is correctly specified.
+
+### Hard-Duffing Challenge
+
+The base matched-system suites above are intentionally simple. They establish that active excitation helps, but they do not consistently separate `active_planning` from `active_myopic`. For manuscript claims about long-horizon information gathering, the more relevant track is the constrained hard-Duffing challenge:
+
+- `tbme_duffing_planning_challenge`
+- `tbme_exp1_duffing_challenge_policy`
+- `tbme_exp1_duffing_budget_ablation_short`
+- `tbme_exp1_duffing_budget_ablation_medium`
+
+This challenge makes planning matter by combining:
+
+- weaker observations (`observation_dim: 24`)
+- lower firing rates (`mean_firing_rate_target: 12`)
+- tighter control bounds (`action_max: 0.45`)
+- broader reachable state support (`x_range: 6`)
+- moderate state and observation noise
+
+The intended interpretation is sample-efficiency under constrained reachability. If `active_planning` does not beat `active_myopic` here, then the benchmark is still too easy or the planning objective is not aligned with the true identification bottleneck.
+
+### Deep Ablation and Parameter Tuning
+
+The hard-Duffing challenge is also the recommended setting for deeper method analysis. The additional suites serve three distinct purposes:
+
+- `tbme_exp1_duffing_ig_ablation`
+  This holds the schedule fixed at `u1_r1_h20` and varies only the information objective / approximation:
+  `ig_parameter`, `ig_full_observable`, `ig_e_optimality`, `ig_state_information`, `ig_dynamics`, `ig_sampling_variance`.
+
+- `tbme_exp1_duffing_schedule_ablation`
+  This holds the objective fixed at parameter EIG and varies:
+  planning horizon, update interval, and replan frequency through
+  `sched_h2_u1_r1`, `sched_h10_u1_r1`, `sched_h20_u1_r1`, `sched_h40_u1_r1`, `sched_h20_u5_r1`, `sched_h20_u5_r5`, `sched_h40_u5_r5`, plus `baseline_prbs`.
+
+- `tbme_exp1_duffing_competitor_compare`
+  This is the compact comparison against practical alternatives already implemented in the repo:
+  `active_planning`, `ig_sampling_variance`, `ig_e_optimality`, `baseline_prbs`, and `random`.
+
+These suites are intentionally all run on the same hard-Duffing preset so the conclusions are attributable to the ablation axis rather than to environment changes.
 
 ## Experiment 2: Convergence and Robustness
 
@@ -190,28 +245,33 @@ Table:
 
 This experiment supports the manuscript robustness claim. It should show where active identification remains useful, where it fails gracefully, and where estimator-family mismatch causes the strongest degradation.
 
-## Experiment 3: High-Dimensional Neural Replay
+## Experiment 3: Neural Digital Twin From Real Spiking Data
 
 ### Question
 
-Can the same active-selection logic scale to high-dimensional neural observations without requiring the closed-loop synthetic setting used in Experiments 1 and 2?
+Can we fit a latent neural dynamics model from real spiking data, turn it into a controlled generative simulator, and then test whether active identification recovers that latent dynamics faster than non-adaptive excitation?
 
 ### Hypothesis
 
-Even in an offline replay setting, actively selected transitions should improve held-out dynamics prediction faster than passive or random selection baselines.
+A spike-driven latent digital twin fit on MC_RTT should support a closed-loop identification benchmark in which active information-seeking policies reduce latent dynamics parameter error faster than random or PRBS baselines.
 
-### Dataset and Suite
+### Dataset and Workflow
 
-Environment preset:
+Data source:
 
-- `tbme_mcrtt_spikes`
+- `data/mcrtt/mcrtt_replay.npz`, prepared from the published DANDI `000129` MC_RTT train session
 
-Suite:
+Main launcher:
 
-- `tbme_exp3_realdata_policy`
+- `python -m experiments.tbme.run_exp3 --mode all ...`
 
-This path is an offline replay benchmark. It fits a linear ridge dynamics model after each selected transition and evaluates the learned model on held-out replay transitions.
-The current prepared replay file is derived from the published DANDI `000129` release `0.241017.1444`, using the train NWB asset `sub-Indy_desc-train_behavior+ecephys.nwb`.
+Core workflow:
+
+1. Fit a spike-only `SeqVae` with `MLP` latent dynamics on MC_RTT spike sequences.
+2. Freeze the fitted encoder/decoder and calibrate a low-dimensional additive control map in latent space.
+3. Treat the fitted model as the generator digital twin.
+4. Instantiate a learner with the same observation model and control map, but perturbed latent dynamics parameters.
+5. Run active identification on the digital twin and evaluate recovery against the generator's latent dynamics.
 
 ### Compared Methods
 
@@ -219,51 +279,137 @@ The current prepared replay file is derived from the published DANDI `000129` re
 - `active_planning`
 - `baseline_prbs`
 - `random`
-- `off_policy`
 
 ### Protocol
 
-The current replay pipeline:
+The current digital-twin pipeline:
 
-1. loads a standardized `.npz` archive from `dataset_path`
-2. projects behavior to `latent_dim` and standardizes it
-3. optionally truncates observation channels to the highest-variance subset
-4. splits replay transitions into train and evaluation partitions
-5. selects training transitions sequentially according to the policy
-6. refits a linear ridge dynamics model after each selected transition
-7. reports held-out prediction quality over time
+1. loads spike and aligned behavior arrays from the prepared `.npz` archive
+2. windows the spike sequence into train and evaluation segments
+3. trains the generator `SeqVae` on spikes only
+4. validates the fitted generator by held-out spike prediction and behavior readout from the latent state
+5. builds a controlled latent digital twin with synthetic low-dimensional actions
+6. runs active identification on that simulator while only retraining the learner dynamics with supervised latent-transition updates
+7. reports dynamics-parameter recovery and predictive rollout fidelity against the generator
 
-This should be described in the manuscript as counterfactual replay-based active selection, not as an online intervention experiment.
+This should be described in the manuscript as a closed-loop benchmark on a data-driven neural digital twin, not as a direct intervention experiment on the original MC_RTT recording.
 
 ### Primary Metrics
 
 Primary:
 
-- held-out dynamics MSE over selected transitions
-- final held-out dynamics MSE
+- relative latent dynamics parameter error over interaction steps
+- final relative latent dynamics parameter error
 
 Secondary:
 
-- held-out trajectory `R^2`
-- information trace
+- latent rollout MSE against the generator
+- spike-rate rollout MSE and `R^2`
+- generator held-out spike prediction metrics
 
 ### Expected Figures and Tables
 
 Lead figure:
 
-- held-out dynamics MSE versus selected transitions for the replay policy sweep
+- relative parameter error versus interaction step for the policy sweep
 
 Supporting figure:
 
-- one representative replay-session panel combining latent state evolution, uncertainty/information trace, and policy comparison summary
+- spike-rate rollout MSE versus interaction step
+- generator fit summary for the spike-only neural latent model
 
 Table:
 
-- final held-out MSE and final trajectory `R^2` by policy
+- final parameter error and rollout-fidelity metrics by policy
 
 ### Interpretation Goal
 
-This experiment supports the manuscript scaling claim: the active-selection framework should transfer from simple synthetic systems to high-dimensional neural observations while preserving an advantage on predictive quality.
+This experiment supports the manuscript large-scale claim: active identification should remain effective when the environment is a controlled digital twin fit from real neural population data.
+
+## SeqVAE Dynamics Recovery on MC_RTT
+
+### Purpose
+
+This workflow is a TBME research prototype for fitting a `SeqVae` with `MLP` latent dynamics on the prepared MC_RTT replay dataset, then checking how well the learned latent simulator captures and reproduces the underlying replay dynamics.
+
+It is intentionally separate from the policy-selection Experiment 3 pipeline above. The goal here is model-fitting and recovery analysis, not active transition selection.
+
+### Scope
+
+Current implementation choices:
+
+- source data: `data/mcrtt/mcrtt_replay.npz`
+- default observation stream: `behavior`
+- latent dynamics model: `SeqVae` with `MLP` dynamics
+- latent-dimension sweep: `2`, `4`, `8`
+- baselines:
+  - linear behavior dynamics fit
+  - behavior-only nonlinear MLP predictor
+- recovery benchmark:
+  - generate synthetic sequences from the fitted SeqVAE
+  - refit the same model family on those synthetic sequences
+  - measure aligned latent and rollout recovery error
+
+This first version is behavior-sequence based. It does not yet fit a joint spike-plus-behavior decoder, and it does not claim recovery of biological ground-truth neural dynamics.
+
+### Questions Answered
+
+1. Does a nonlinear latent SeqVAE predict held-out MC_RTT replay trajectories better than simple linear and nonlinear behavior baselines?
+2. Do larger latent dimensions improve forecast quality on held-out replay windows?
+3. If the fitted SeqVAE is treated as a generator, can the same model family recover that simulator from synthetic sequences?
+
+### Outputs
+
+Each session under `results/tbme/seqvae_mcrtt/session_N/` contains:
+
+- `linear_behavior/`: linear baseline metrics
+- `mlp_behavior/`: nonlinear behavior baseline metrics and checkpoint
+- `seqvae_latent_2/`, `seqvae_latent_4/`, `seqvae_latent_8/`: fitted SeqVAE runs
+- `seqvae_latent_*/recovery/`: synthetic-refit recovery artifacts
+- `summary/realdata_metrics.csv`: held-out comparison across all models
+- `summary/recovery_metrics.csv`: semi-synthetic recovery metrics
+- `summary/figures/`: manuscript-facing comparison plots
+
+Key metrics:
+
+- one-step MSE on held-out replay windows
+- rollout MSE by horizon
+- one-step and rollout `R^2`
+- aligned latent recovery MSE
+- generator-versus-recovered rollout MSE
+
+### Commands
+
+Run the full latent-dimension sweep with summary generation:
+
+```bash
+python -m experiments.tbme.run_seqvae_mcrtt \
+  --mode all \
+  --base-dir results/tbme/seqvae_mcrtt
+```
+
+Run a smaller smoke configuration manually:
+
+```bash
+python -m experiments.tbme.run_seqvae_mcrtt \
+  --mode all \
+  --latent-dims 2 \
+  --sequence-length 64 \
+  --sequence-stride 32 \
+  --max-train-sequences 32 \
+  --max-eval-sequences 8 \
+  --n-epochs 5 \
+  --recovery-epochs 3 \
+  --synthetic-num-sequences 8 \
+  --base-dir /tmp/tbme_seqvae_smoke
+```
+
+Summarize an existing session without retraining:
+
+```bash
+python -m experiments.tbme.summarize_seqvae_mcrtt \
+  --base-dir results/tbme/seqvae_mcrtt
+```
 
 ## Policies and Objectives
 
@@ -319,7 +465,22 @@ Run Experiment 3:
 ```bash
 python -m experiments.tbme.run_exp3 \
   --mode all \
-  --seeds 0 \
+  --base-dir results/tbme/exp3
+```
+
+Run only the generator fit stage:
+
+```bash
+python -m experiments.tbme.run_exp3 \
+  --mode fit \
+  --base-dir results/tbme/exp3
+```
+
+Run the benchmark only against an existing fitted digital twin:
+
+```bash
+python -m experiments.tbme.run_exp3 \
+  --mode benchmark \
   --base-dir results/tbme/exp3
 ```
 
@@ -376,11 +537,13 @@ Synthetic runs write:
 - optional `planned_trajectory_trace.npz`
 - optional `acquisition_map_trace.npz`
 
-Replay runs write:
+Experiment 3 digital-twin runs write:
 
-- `dynamics_mse_trace.csv`
-- `trajectory_r2_trace.csv`
-- `information_trace.csv`
-- `state_action_trace.csv`
+- `generator/checkpoint.pt`
+- `generator/fit_metrics.json`
+- `benchmark/<policy>/seed_<seed>/metrics_over_steps.csv`
+- `benchmark/<policy>/seed_<seed>/final_metrics.json`
+- `summary/benchmark_final_metrics.csv`
+- `summary/figures/parameter_error_over_steps.pdf`
 
 Summary artifacts are written under each suite's `summary/` directory. Real-data runs skip the planar-only renderer.

@@ -13,9 +13,19 @@ else:
 
 EXP1_SUITES = [
     "tbme_exp1_duffing_policy",
+    "tbme_exp1_duffing_policy_sota",
     "tbme_exp1_pendulum_policy",
+    "tbme_exp1_pendulum_policy_sota",
     "tbme_exp1_double_integrator_policy",
+    "tbme_exp1_double_integrator_policy_sota",
     "tbme_exp1_objective_duffing",
+    "tbme_exp1_duffing_challenge_policy",
+    "tbme_exp1_duffing_challenge_sota",
+    "tbme_exp1_duffing_budget_ablation_short",
+    "tbme_exp1_duffing_budget_ablation_medium",
+    "tbme_exp1_duffing_ig_ablation",
+    "tbme_exp1_duffing_schedule_ablation",
+    "tbme_exp1_duffing_competitor_compare",
 ]
 
 
