@@ -92,9 +92,15 @@ class FisherInformationMetric(BaseMetric):
 
         elif isinstance(self.decoder.mapping, LogLinearMapping):
             C = self.decoder.mapping.network[0].weight.data.clone()
+            rates = torch.nan_to_num(
+                self.decoder(z),
+                nan=eps,
+                posinf=1e3,
+                neginf=eps,
+            ).clamp(min=eps, max=1e3)
             dh_dz = torch.einsum(
                 "btd,dn->btdn",
-                self.decoder(z),
+                rates,
                 C,
             )
         else:
@@ -206,7 +212,63 @@ class FisherInformationMetric(BaseMetric):
         return I_new
 
     def compute_nn_fim(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
-        pass
+        z = rollout["model_state"]
+        if len(z.shape) != 3:
+            z = z.unsqueeze(0)
+        assert len(z.shape) == 3, "z must be a tensor of shape (batch, T, d_latent)"
+        batch, T, d_latent = z.shape
+
+        dh_dz = self.compute_dh_dz(z)
+        dz_dtheta_raw = compute_jacobian_params(self.dynamics, z)
+        if isinstance(dz_dtheta_raw, tuple):
+            parts = []
+            for part in dz_dtheta_raw:
+                if part is None:
+                    continue
+                parts.append(part.reshape(batch, T, d_latent, -1))
+            if not parts:
+                raise ValueError("Dynamics parameter Jacobian is empty for neural dynamics FIM computation")
+            dz_dtheta = torch.cat(parts, dim=-1)
+        else:
+            dz_dtheta = dz_dtheta_raw.reshape(batch, T, d_latent, -1)
+
+        if self.covariance == "invariant":
+            cc = dh_dz @ dh_dz.mT
+            cc = symmetrize(torch.nan_to_num(cc, nan=0.0, posinf=1e6, neginf=-1e6))
+            eye_obs = torch.eye(cc.shape[-1], device=cc.device).view(1, 1, cc.shape[-1], cc.shape[-1])
+            chol = None
+            for jitter in (eps, 1e-8, 1e-6, 1e-4, 1e-2):
+                try:
+                    chol = torch.linalg.cholesky(cc + float(jitter) * eye_obs)
+                    break
+                except torch.linalg.LinAlgError:
+                    continue
+            if chol is not None:
+                invcc_dh = torch.cholesky_solve(dh_dz, chol)
+                ht_h = dh_dz.mT @ invcc_dh
+            else:
+                # Final fallback: diagonal inverse approximation avoids SVD failures on
+                # severely ill-conditioned observation covariance batches.
+                diag = torch.diagonal(cc, dim1=-2, dim2=-1).clamp_min(eps)
+                weighted_dh = dh_dz / diag.unsqueeze(-1)
+                ht_h = dh_dz.mT @ weighted_dh
+        else:
+            ht_h = torch.einsum("btnd,btnf->btdf", dh_dz, dh_dz)
+
+        if self.use_diag:
+            i_new = (
+                torch.einsum("btdp,btdf,btfp->btp", dz_dtheta, ht_h, dz_dtheta)
+                .sum(dim=1)
+                .unsqueeze(1)
+            )
+        else:
+            j = torch.einsum("btod,btdp->btop", dh_dz, dz_dtheta)
+            i_new = (j.transpose(-1, -2) @ j).sum(dim=1)
+
+        if self.I is not None:
+            i_new += self.I * self.discount_factor
+
+        return i_new
 
     def compute_fim(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
         if isinstance(self.dynamics, RBFDynamics):
@@ -216,6 +278,9 @@ class FisherInformationMetric(BaseMetric):
 
     def update_fim(self, rollout: Union[Rollout, RolloutBuffer]):
         self.I = self.compute_fim(rollout)
+
+    def update(self, rollout: Union[Rollout, RolloutBuffer]) -> None:
+        self.update_fim(rollout)
 
 
 class AOptimality(FisherInformationMetric):
@@ -227,7 +292,8 @@ class AOptimality(FisherInformationMetric):
             # reciprocal of element greater than 1e-3
             # return shape (batch, 1)
             fim_traj[fim_traj < eps] = eps
-            return torch.reciprocal(fim_traj).sum(dim=-1)
+            self.current_cost = torch.reciprocal(fim_traj).sum(dim=-1)
+            return self.current_cost
 
         else:
             # TODO: implement non-diagonal A-optimality
@@ -243,7 +309,8 @@ class DOptimality(FisherInformationMetric):
             # reciprocal of element greater than 1e-3
             # return shape (batch, 1)
             fim_traj[fim_traj < eps] = eps
-            return -torch.log1p(fim_traj).sum(dim=-1)
+            self.current_cost = -torch.log1p(fim_traj).sum(dim=-1)
+            return self.current_cost
 
         else:
             # TODO: implement non-diagonal A-optimality
