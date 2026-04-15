@@ -171,6 +171,8 @@ class MLPDynamics(BaseDynamics):
     def __init__(
         self, state_dim, hidden_dims: int | list = [16], activation="relu", device="cpu", **kwargs
     ):
+        if "hidden_dim" in kwargs and kwargs["hidden_dim"] is not None:
+            hidden_dims = kwargs.pop("hidden_dim")
         super().__init__(
             state_dim,
             dt=kwargs.get("dt", 1),

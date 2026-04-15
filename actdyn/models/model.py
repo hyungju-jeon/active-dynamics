@@ -122,7 +122,7 @@ class SeqVae(BaseModel):
                 kl_terms.append(kl_mc)
             else:
                 # Analytic KL
-                mu_p = mus_list[k - 1]
+                mu_p = mus_list[k - 1][..., :-k, :]
                 var_p = vars_list[k - 1]
 
                 mu_q_target_s = repeat(mu_q_target, "b t d -> s b t d", s=S)
@@ -164,7 +164,7 @@ class SeqVae(BaseModel):
         # Apply temporal masking
         t_mask = torch.bernoulli((1 - p_mask) * torch.ones((T, 1), device=mu_q_x.device))
 
-        z_tr = self.dynamics.sample_forward(init_z=z_me, action=u_encoded, k_step=1)[1]
+        z_tr = self.dynamics.sample_forward(init_z=z_me[..., :-1, :], action=u_encoded, k_step=1)[1]
         z_tr = torch.cat([z_me[..., :1, :], z_tr], dim=-2)  # (S,B),T,D)
 
         z_samples = t_mask * z_me + (1 - t_mask) * z_tr  # (S,B),T,D)
@@ -465,7 +465,7 @@ class SeqStateVae(BaseModel):
         # Apply temporal masking
         t_mask = torch.bernoulli((1 - p_mask) * torch.ones((T, 1), device=mu_q_x.device))
 
-        z_tr = self.dynamics.sample_forward(init_z=z_me, action=u_encoded, k_step=1)[1]
+        z_tr = self.dynamics.sample_forward(init_z=z_me[..., :-1, :], action=u_encoded, k_step=1)[1]
         z_tr = torch.cat([z_me[..., :1, :], z_tr], dim=-2)  # (S,B),T,D)
 
         z_samples = t_mask * z_me + (1 - t_mask) * z_tr  # (S,B),T,D)

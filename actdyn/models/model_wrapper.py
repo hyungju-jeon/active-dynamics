@@ -48,7 +48,9 @@ class ModelWrapper(gym.Env):
 
         # Encode initial state to latent space
         with torch.no_grad():
-            self._state = self.model.encoder(y=observation)[0]  # Use mean of encoding
+            _samples, mu, _var = self.model.encoder(y=observation, n_samples=1)
+            self._state = mu[:, -1:, :]
+            self.model.set_state(self._state)
 
         info = {"latent_state": self._state}
 
@@ -56,6 +58,7 @@ class ModelWrapper(gym.Env):
 
     def set_state(self, state: torch.Tensor):
         self._state = state
+        self.model.set_state(state)
 
     def step(
         self, action: torch.Tensor
@@ -75,6 +78,7 @@ class ModelWrapper(gym.Env):
             next_observation = self.model.decoder(next_state)
         # Update states
         self._state = next_state
+        self.model.set_state(next_state)
 
         # For now, return zero reward and not done
         # These can be modified based on your specific needs
