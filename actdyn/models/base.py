@@ -44,6 +44,9 @@ class BaseEncoder(nn.Module):
             observation.dim() == 3
         ), f"Input y must be of shape (batch, time, input_dim), got {observation.shape}"
 
+        if self.action_dim == 0:
+            action = None
+
         if action is not None:
             assert action.dim() == 3
             assert (
@@ -204,8 +207,10 @@ class BaseDynamics(nn.Module):
             if len(action.shape) == 2:
                 action = action.unsqueeze(0)
             # k_step = max(1, action.shape[-2] - T + 1)
-        if B < action.shape[0]:
-            init_z = init_z.repeat(action.shape[0], 1, 1)
+            if B < action.shape[0]:
+                repeat_dims = [1] * init_z.dim()
+                repeat_dims[0] = action.shape[0]
+                init_z = init_z.repeat(*repeat_dims)
         # B, T, _ = init_z.shape
         # if action is not None:
         #     if action.ndim == 2:
@@ -222,11 +227,13 @@ class BaseDynamics(nn.Module):
             if len(z_pred.shape) == 2:
                 z_pred = z_pred.unsqueeze(0)
 
-            if action is not None:
+            if action is not None and action.shape[-1] > 0:
                 valid_T = min(z_pred.shape[-2], action.shape[-2])
                 z_pred = z_pred[..., :valid_T, :]
                 z_pred += action[..., :valid_T, :] * self.dt
                 action = action[..., 1:, :]  # Shift action for next step
+            elif action is not None:
+                action = action[..., 1:, :]
 
             mus.append(z_pred)
             vars.append(var)
