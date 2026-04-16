@@ -1,0 +1,60 @@
+runtime:
+  seed: 0
+  device: auto
+
+dataset:
+  dataset_path: data/mcrtt/mcrtt_replay.npz
+  observation_key: behavior
+  train_fraction: 0.7
+  sequence_length: 128
+  sequence_stride: 64
+  normalize_observations: true
+  max_train_sequences:
+  max_eval_sequences: 64
+
+seqvae:
+  latent_dims: [2, 4, 8]
+  encoder_type: rnn
+  enc_hidden_dims: [64]
+  enc_rnn_hidden_dims: [64]
+  enc_rnn_type: gru
+  enc_h_init: reset
+  mapping_type: linear
+  map_hidden_dims: [64]
+  noise_type: gaussian
+  dynamics_type: mlp
+  dyn_hidden_dims: [128, 128]
+  dyn_activation: relu
+  is_residual: false
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  batch_size: 16
+  n_epochs: 40
+  beta: 1.0
+  n_samples: 3
+  k_steps: 5
+  grad_clip_norm: 10.0
+  p_mask: 0.0
+  annealing_type: none
+  annealing_steps: 1000
+  warmup: 0
+
+baselines:
+  linear_ridge: 0.001
+  mlp_hidden_dims: [128, 128]
+  mlp_learning_rate: 0.001
+  mlp_weight_decay: 0.00001
+  mlp_batch_size: 256
+  mlp_n_epochs: 200
+  mlp_grad_clip_norm: 10.0
+
+recovery:
+  synthetic_num_sequences: 64
+  synthetic_sequence_length: 128
+  sample_decoder_noise: false
+  refit_n_epochs: 30
+  rollout_horizons: [1, 5, 10, 25, 50]
+
+summary:
+  figure_formats: [.pdf]
+  representative_index: 0

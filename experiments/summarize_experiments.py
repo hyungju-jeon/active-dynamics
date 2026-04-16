@@ -5,7 +5,7 @@ import argparse
 import csv
 from pathlib import Path
 import sys
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -24,7 +24,11 @@ if __package__ in {None, ""}:
         safe_float,
     )
     from experiment_specs import get_experiment_spec, list_experiment_ids
-    from cosyne.planar_systems import get_planar_system_spec, has_planar_system_spec, residual_torch
+    from experiments.cosyne.planar_systems import (
+        get_planar_system_spec,
+        has_planar_system_spec,
+        residual_torch,
+    )
 else:
     from .experiment_common import (
         expected_loglinear_rate_hz,
@@ -128,12 +132,12 @@ def _read_trace_csv(path: Path) -> list[dict[str, Any]]:
         return list(csv.DictReader(f))
 
 
-def aggregate_trace(
+def aggregate_custom_trace(
     records: list[dict[str, Any]],
     *,
     metadata_key: str,
     fallback_name: str,
-    value_col: str,
+    extract_value: Callable[[dict[str, Any]], float | None],
 ) -> list[dict[str, Any]]:
     out_rows: list[dict[str, Any]] = []
     for policy_id in sorted({str(r["policy_id"]) for r in records}):
@@ -145,7 +149,7 @@ def aggregate_trace(
                 continue
             for row in _read_trace_csv(trace_path):
                 step = safe_float(row.get("step"))
-                value = safe_float(row.get(value_col))
+                value = extract_value(row)
                 cpu_sec = safe_float(row.get("cpu_time_sec"))
                 if step is None or value is None:
                     continue
@@ -169,6 +173,35 @@ def aggregate_trace(
             )
     out_rows.sort(key=lambda row: (row["policy_id"], int(row["step"])))
     return out_rows
+
+
+def aggregate_trace(
+    records: list[dict[str, Any]],
+    *,
+    metadata_key: str,
+    fallback_name: str,
+    value_col: str,
+) -> list[dict[str, Any]]:
+    return aggregate_custom_trace(
+        records,
+        metadata_key=metadata_key,
+        fallback_name=fallback_name,
+        extract_value=lambda row: safe_float(row.get(value_col)),
+    )
+
+
+def _extract_parameter_covariance_trace(row: dict[str, Any]) -> float | None:
+    diag_values: list[float] = []
+    for key, raw in row.items():
+        suffix = key.removeprefix("cov_diag")
+        if not key.startswith("cov_diag") or not suffix.isdigit():
+            continue
+        value = safe_float(raw)
+        if value is not None:
+            diag_values.append(value)
+    if diag_values:
+        return float(np.sum(np.asarray(diag_values, dtype=np.float64)))
+    return safe_float(row.get("cov_diag_mean"))
 
 
 def _sample_sem(values: Sequence[float]) -> float:
@@ -268,6 +301,7 @@ def _plot_curves(
     *,
     rows: list[dict[str, Any]],
     trace_rows: list[dict[str, Any]],
+    cov_rows: list[dict[str, Any]],
     traj_rows: list[dict[str, Any]],
     value_label: str,
     value_prefix: str,
@@ -362,6 +396,26 @@ def _plot_curves(
         ax.legend(loc="best")
         fig.tight_layout()
         _save_figure(fig, figures_dir / "trajectory_r2_over_steps", figure_formats)
+        plt.close(fig)
+    if cov_rows:
+        fig, ax = plt.subplots(figsize=(9.5, 5.0))
+        for policy_id in sorted({str(r["policy_id"]) for r in cov_rows}):
+            series = [r for r in cov_rows if r["policy_id"] == policy_id]
+            series.sort(key=lambda r: int(r["step"]))
+            xs = [int(r["step"]) for r in series]
+            ys = [float(r["value_mean"]) for r in series]
+            sem = [float(r["value_sem"]) for r in series]
+            ax.plot(xs, ys, label=policy_id)
+            ax.fill_between(
+                xs, np.asarray(ys) - np.asarray(sem), np.asarray(ys) + np.asarray(sem), alpha=0.18
+            )
+        ax.set_xlabel("Environment Step")
+        ax.set_ylabel("Trace of Parameter Covariance (mean ± SEM)")
+        ax.set_title("Trace of Parameter Covariance Over Steps")
+        ax.grid(alpha=0.2)
+        ax.legend(loc="best")
+        fig.tight_layout()
+        _save_figure(fig, figures_dir / "parameter_covariance_trace_over_steps", figure_formats)
         plt.close(fig)
 
 
@@ -717,6 +771,12 @@ def main(argv: list[str] | None = None) -> int:
         fallback_name="trajectory_r2_trace.csv",
         value_col="trajectory_r2",
     )
+    cov_rows = aggregate_custom_trace(
+        records,
+        metadata_key="embedding_estimate_trace_path",
+        fallback_name="embedding_estimate_trace.csv",
+        extract_value=_extract_parameter_covariance_trace,
+    )
     info_rows = aggregate_trace(
         records,
         metadata_key="information_trace_path",
@@ -732,6 +792,11 @@ def main(argv: list[str] | None = None) -> int:
         summary_dir / f"{value_prefix}_over_steps.csv", trace_rows, f"{value_prefix}_mean"
     )
     _write_curve_csv(summary_dir / "trajectory_r2_over_steps.csv", traj_rows, "trajectory_r2_mean")
+    _write_curve_csv(
+        summary_dir / "parameter_covariance_trace_over_steps.csv",
+        cov_rows,
+        "parameter_covariance_trace_mean",
+    )
     _write_curve_csv(summary_dir / "I_z_t_over_steps.csv", info_rows, "I_z_t_mean")
     _write_markdown(
         summary_dir / "metrics.md", exp_spec.exp_id, rows, missing, exp_spec.summary_value_label
@@ -741,26 +806,25 @@ def main(argv: list[str] | None = None) -> int:
         figures_dir,
         rows=rows,
         trace_rows=trace_rows,
+        cov_rows=cov_rows,
         traj_rows=traj_rows,
         value_label=exp_spec.summary_value_label,
         value_prefix=value_prefix,
         figure_formats=figure_formats,
     )
-    _plot_neuron_tuning_curve_colormap(
-        figures_dir,
-        records=records,
-        figure_formats=figure_formats,
-    )
-    _plot_information_colormap(
-        figures_dir,
-        records=records,
-        figure_formats=figure_formats,
-    )
-    _plot_trajectory_coverage(
-        figures_dir,
-        records=records,
-        figure_formats=figure_formats,
-    )
+    for plotter in (
+        _plot_neuron_tuning_curve_colormap,
+        _plot_information_colormap,
+        _plot_trajectory_coverage,
+    ):
+        try:
+            plotter(
+                figures_dir,
+                records=records,
+                figure_formats=figure_formats,
+            )
+        except Exception:
+            pass
     print(f"Wrote {len(rows)} rows to {summary_dir / 'metrics.csv'}")
     if missing and args.fail_on_missing:
         return 1

@@ -26,7 +26,7 @@ if __package__ in {None, ""}:
         resolve_session_root,
     )
     from experiment_specs import get_experiment_spec, list_experiment_ids
-    from cosyne.planar_systems import get_planar_system_spec, residual_torch
+    from experiments.cosyne.planar_systems import get_planar_system_spec, residual_torch
 else:
     from .experiment_common import (
         expected_loglinear_rate_hz,
@@ -56,33 +56,80 @@ from actdyn.utils.visualize import (
 PASSIVE_POLICIES = {"random", "off_policy", "baseline_prbs", "baseline_random"}
 
 
-def _load_run_artifacts(run_dir: Path) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+def _load_run_artifacts(
+    run_dir: Path,
+) -> tuple[
+    dict[str, Any],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     metadata = load_json(run_dir / "run_metadata.json")
-    sa_path = resolve_artifact_path(run_dir, metadata, key="state_action_trace_path", fallback_name="state_action_trace.csv")
-    emb_path = resolve_artifact_path(run_dir, metadata, key="embedding_estimate_trace_path", fallback_name="embedding_estimate_trace.csv")
-    info_path = resolve_artifact_path(run_dir, metadata, key="information_trace_path", fallback_name="information_trace.csv")
+    sa_path = resolve_artifact_path(
+        run_dir, metadata, key="state_action_trace_path", fallback_name="state_action_trace.csv"
+    )
+    emb_path = resolve_artifact_path(
+        run_dir,
+        metadata,
+        key="embedding_estimate_trace_path",
+        fallback_name="embedding_estimate_trace.csv",
+    )
+    info_path = resolve_artifact_path(
+        run_dir, metadata, key="information_trace_path", fallback_name="information_trace.csv"
+    )
     sa_df = pd.read_csv(sa_path).sort_values("step")
     emb_df = pd.read_csv(emb_path).sort_values("step")
     info_df = pd.read_csv(info_path).sort_values("step")
     true_state = sa_df[["true_x", "true_v"]].to_numpy(dtype=float)
     model_state = sa_df[["model_x", "model_v"]].to_numpy(dtype=float)
     action = sa_df[["action_x", "action_v"]].to_numpy(dtype=float)
-    policy_cost = sa_df["policy_cost"].to_numpy(dtype=float) if "policy_cost" in sa_df.columns else np.full((true_state.shape[0],), np.nan)
+    policy_cost = (
+        sa_df["policy_cost"].to_numpy(dtype=float)
+        if "policy_cost" in sa_df.columns
+        else np.full((true_state.shape[0],), np.nan)
+    )
     emb_steps = emb_df["step"].to_numpy(dtype=int)
     e0 = emb_df["e0"].to_numpy(dtype=float)
     e1 = emb_df["e1"].to_numpy(dtype=float)
     pz_cols = np.stack(
         [
-            info_df["Pz00"].to_numpy(dtype=float) if "Pz00" in info_df.columns else np.ones((len(info_df),), dtype=float),
-            info_df["Pz01"].to_numpy(dtype=float) if "Pz01" in info_df.columns else np.zeros((len(info_df),), dtype=float),
-            info_df["Pz11"].to_numpy(dtype=float) if "Pz11" in info_df.columns else np.ones((len(info_df),), dtype=float),
+            (
+                info_df["Pz00"].to_numpy(dtype=float)
+                if "Pz00" in info_df.columns
+                else np.ones((len(info_df),), dtype=float)
+            ),
+            (
+                info_df["Pz01"].to_numpy(dtype=float)
+                if "Pz01" in info_df.columns
+                else np.zeros((len(info_df),), dtype=float)
+            ),
+            (
+                info_df["Pz11"].to_numpy(dtype=float)
+                if "Pz11" in info_df.columns
+                else np.ones((len(info_df),), dtype=float)
+            ),
         ],
         axis=1,
     )
-    return metadata, true_state, model_state, action, policy_cost, emb_steps, np.stack([e0, e1], axis=1), pz_cols
+    return (
+        metadata,
+        true_state,
+        model_state,
+        action,
+        policy_cost,
+        emb_steps,
+        np.stack([e0, e1], axis=1),
+        pz_cols,
+    )
 
 
-def _load_npz_trace(run_dir: Path, metadata: dict[str, Any], key: str, fallback: str) -> tuple[np.ndarray, ...] | None:
+def _load_npz_trace(
+    run_dir: Path, metadata: dict[str, Any], key: str, fallback: str
+) -> tuple[np.ndarray, ...] | None:
     path = resolve_artifact_path(run_dir, metadata, key=key, fallback_name=fallback)
     if not path.exists():
         return None
@@ -102,15 +149,34 @@ def _load_npz_trace(run_dir: Path, metadata: dict[str, Any], key: str, fallback:
 
 def _load_run_artifacts_rbf(
     run_dir: Path,
-) -> tuple[dict[str, Any], np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, int]:
+) -> tuple[
+    dict[str, Any],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    float,
+    int,
+]:
     metadata = load_json(run_dir / "run_metadata.json")
-    sa_path = resolve_artifact_path(run_dir, metadata, key="state_action_trace_path", fallback_name="state_action_trace.csv")
+    sa_path = resolve_artifact_path(
+        run_dir, metadata, key="state_action_trace_path", fallback_name="state_action_trace.csv"
+    )
     sa_df = pd.read_csv(sa_path).sort_values("step")
     true_state = sa_df[["true_x", "true_v"]].to_numpy(dtype=float)
     model_state = sa_df[["model_x", "model_v"]].to_numpy(dtype=float)
     action = sa_df[["action_x", "action_v"]].to_numpy(dtype=float)
-    policy_cost = sa_df["policy_cost"].to_numpy(dtype=float) if "policy_cost" in sa_df.columns else np.full((true_state.shape[0],), np.nan)
-    rbf_path = resolve_artifact_path(run_dir, metadata, key="rbf_model_trace_path", fallback_name="rbf_model_trace.npz")
+    policy_cost = (
+        sa_df["policy_cost"].to_numpy(dtype=float)
+        if "policy_cost" in sa_df.columns
+        else np.full((true_state.shape[0],), np.nan)
+    )
+    rbf_path = resolve_artifact_path(
+        run_dir, metadata, key="rbf_model_trace_path", fallback_name="rbf_model_trace.npz"
+    )
     with np.load(rbf_path, allow_pickle=True) as data:
         steps = np.asarray(data["steps"], dtype=int)
         weights = np.asarray(data["weights"], dtype=float)
@@ -118,7 +184,19 @@ def _load_run_artifacts_rbf(
         axis = np.asarray(data["axis"], dtype=float)
         width = float(np.asarray(data["width"]).reshape(-1)[0])
         support_radius = int(np.asarray(data["support_radius"]).reshape(-1)[0])
-    return metadata, true_state, model_state, action, policy_cost, steps, weights, centers, axis, width, support_radius
+    return (
+        metadata,
+        true_state,
+        model_state,
+        action,
+        policy_cost,
+        steps,
+        weights,
+        centers,
+        axis,
+        width,
+        support_radius,
+    )
 
 
 def _system_id_from_metadata(metadata: dict[str, Any]) -> str:
@@ -620,8 +698,16 @@ def main(argv: list[str] | None = None) -> int:
                 if not run_meta.exists():
                     continue
                 output_path = run_dir / "video" / "acq_vectorfield.mp4"
-                saved = render_acq_vectorfield_video(run_dir, output_path, stride=int(args.stride), fps=int(args.fps), grid_lim=float(args.grid_lim))
-                shutil.copy2(saved, out_dir / f"{policy_id}_seed_{seed}_{run_dir.name}_acq_vectorfield.mp4")
+                saved = render_acq_vectorfield_video(
+                    run_dir,
+                    output_path,
+                    stride=int(args.stride),
+                    fps=int(args.fps),
+                    grid_lim=float(args.grid_lim),
+                )
+                shutil.copy2(
+                    saved, out_dir / f"{policy_id}_seed_{seed}_{run_dir.name}_acq_vectorfield.mp4"
+                )
                 spike_rate_path = run_dir / "video" / "spike_rate.mp4"
                 spike_saved = render_spike_rate_video(
                     run_dir,
@@ -630,7 +716,9 @@ def main(argv: list[str] | None = None) -> int:
                     fps=int(args.fps),
                     history_window=int(args.history_window),
                 )
-                shutil.copy2(spike_saved, out_dir / f"{policy_id}_seed_{seed}_{run_dir.name}_spike_rate.mp4")
+                shutil.copy2(
+                    spike_saved, out_dir / f"{policy_id}_seed_{seed}_{run_dir.name}_spike_rate.mp4"
+                )
     return 0
 
 

@@ -108,7 +108,7 @@ suites:
 
   tbme_exp1_duffing_challenge_sota:
     experiment_kind: duffing
-    total_steps: 600
+    total_steps: 2000
     env_preset_id: tbme_duffing_planning_challenge
     model_ids:
       - active_myopic
@@ -172,6 +172,18 @@ suites:
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
+  tbme_exp1_duffing_schedule_maintext:
+    experiment_kind: duffing
+    total_steps: 2000
+    env_preset_id: tbme_duffing_planning_challenge
+    model_ids:
+      - sched_h20_u1_r1
+      - sched_h20_u5_r5
+      - sched_h40_u5_r5
+      - baseline_prbs
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error
+
   tbme_exp1_duffing_competitor_compare:
     experiment_kind: duffing
     total_steps: 300
@@ -211,10 +223,10 @@ suites:
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
-  tbme_exp2_robustness_pendulum:
+  tbme_exp2_robustness_duffing_parameter:
     experiment_kind: duffing
     total_steps: 800
-    env_preset_id: tbme_pendulum_param_mismatch
+    env_preset_id: tbme_duffing_parameter_mismatch
     model_ids:
       - active_planning
       - e_optimality
@@ -224,36 +236,10 @@ suites:
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
 
-  tbme_exp2_robustness_pendulum_sota:
+  tbme_exp2_robustness_duffing_parameter_sota:
     experiment_kind: duffing
     total_steps: 800
-    env_preset_id: tbme_pendulum_param_mismatch
-    model_ids:
-      - active_planning
-      - flex
-      - rhc
-      - baseline_prbs
-      - random
-    summary_value_kind: parameter_error
-    summary_value_label: Parameter Error
-
-  tbme_exp2_robustness_double_integrator:
-    experiment_kind: duffing
-    total_steps: 800
-    env_preset_id: tbme_double_integrator_mismatch
-    model_ids:
-      - active_planning
-      - e_optimality
-      - baseline_prbs
-      - random
-      - off_policy
-    summary_value_kind: parameter_error
-    summary_value_label: Parameter Error
-
-  tbme_exp2_robustness_double_integrator_sota:
-    experiment_kind: duffing
-    total_steps: 800
-    env_preset_id: tbme_double_integrator_mismatch
+    env_preset_id: tbme_duffing_parameter_mismatch
     model_ids:
       - active_planning
       - flex

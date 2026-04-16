@@ -35,7 +35,7 @@ if __package__ in {None, ""}:
         get_schedule_spec,
         list_experiment_ids,
     )
-    from cosyne.planar_systems import (
+    from experiments.cosyne.planar_systems import (
         env_params_from_embedding,
         get_planar_system_spec,
         has_planar_system_spec,
@@ -47,7 +47,7 @@ if __package__ in {None, ""}:
         step_np,
         true_embedding,
     )
-    from cosyne.realdata_spiking import (
+    from experiments.cosyne.realdata_spiking import (
         build_transition_matrices,
         evaluate_prediction_mse,
         evaluate_prediction_r2,
@@ -55,7 +55,7 @@ if __package__ in {None, ""}:
         load_replay_dataset,
         split_replay_dataset,
     )
-    from cosyne.rbf_filtering import (
+    from experiments.cosyne.rbf_filtering import (
         SparseRbfDynamics,
         SparseRbfFilteringModel,
         StructuredLocalRbfParameterMetric,
@@ -167,7 +167,9 @@ def _environment_summary(env_preset: Any) -> dict[str, Any]:
     return {
         "system_id": system_id,
         "system_label": str(getattr(env_preset, "system_label", None) or system_id),
-        "dynamics_type": "replay_dataset" if bool(getattr(env_preset, "real_data", False)) else "unknown",
+        "dynamics_type": (
+            "replay_dataset" if bool(getattr(env_preset, "real_data", False)) else "unknown"
+        ),
         "estimator_system_id": estimator_system_id,
         "estimator_system_label": None,
         "estimator_dynamics_type": None,
@@ -555,6 +557,7 @@ def _trajectory_r2(
     e_true,
     *,
     system_id: str,
+    estimator_system_id: str | None = None,
     dt: float,
     dynamics_alpha: float,
     horizon: int,
@@ -564,6 +567,7 @@ def _trajectory_r2(
 ) -> float:
     import torch
 
+    est_system_id = str(estimator_system_id or system_id)
     starts = torch.as_tensor(
         rng.uniform(low=-3.0, high=3.0, size=(n_starts, 2)),
         dtype=torch.float32,
@@ -583,7 +587,7 @@ def _trajectory_r2(
         traj_est = _rollout_no_input(
             starts,
             e_est_batch,
-            system_id=system_id,
+            system_id=est_system_id,
             horizon=horizon,
             dt=dt,
             dynamics_alpha=dynamics_alpha,
@@ -1112,7 +1116,7 @@ def _build_metric(
     sampling_variance_seed: int | None,
 ):
     if __package__ in {None, ""}:
-        from cosyne.objectives import (
+        from experiments.cosyne.objectives import (
             dynamics as build_dynamics_metric,
             e_optimality as build_e_optimality_metric,
             fully_observable_parameter_eig,
@@ -1723,6 +1727,7 @@ def _run_single_duffing_identification(
                         e_est=e_est,
                         e_true=e_true_flat,
                         system_id=system_spec.system_id,
+                        estimator_system_id=estimator_system_spec.system_id,
                         dt=dt,
                         dynamics_alpha=alpha,
                         horizon=traj_eval_horizon,
@@ -2778,7 +2783,9 @@ def _run_single_realdata_replay(
                 "I_theta_t": float(logdet if sign > 0 else np.nan),
                 "Pz00": float(cov_state[0, 0]),
                 "Pz01": float(cov_state[0, 1]) if cov_state.shape[1] > 1 else 0.0,
-                "Pz11": float(cov_state[1, 1]) if cov_state.shape[0] > 1 else float(cov_state[0, 0]),
+                "Pz11": (
+                    float(cov_state[1, 1]) if cov_state.shape[0] > 1 else float(cov_state[0, 0])
+                ),
                 "state_posterior_updated": True,
                 "parameter_posterior_updated": True,
                 "window_buffer_length": 0,
@@ -3332,7 +3339,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--base-dir", type=str, default="results/experiments")
     parser.add_argument("--total-steps", type=int, default=None)
-    parser.add_argument("--q-theta", type=float, default=5e-4)
+    parser.add_argument("--q-theta", type=float, default=1e-6)
     parser.add_argument("--q-theta-meas-coeff", type=float, default=0.0)
     parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
     parser.add_argument("--eig-gamma", type=float, default=1.0)
@@ -3390,13 +3397,13 @@ def main(argv: list[str] | None = None) -> int:
     policy_filter = set(parse_csv_list(args.policy_ids)) or None
     if policy_filter is not None:
         available_policy_ids = {
-            policy_id
-            for exp_id in exp_ids
-            for policy_id in get_experiment_spec(exp_id).policy_ids
+            policy_id for exp_id in exp_ids for policy_id in get_experiment_spec(exp_id).policy_ids
         }
         unknown_policy_ids = sorted(policy_filter - available_policy_ids)
         if unknown_policy_ids:
-            parser.error(f"Unknown policy ids for selected experiments: {', '.join(unknown_policy_ids)}")
+            parser.error(
+                f"Unknown policy ids for selected experiments: {', '.join(unknown_policy_ids)}"
+            )
     base_dir = resolve_session_root(
         Path(args.base_dir),
         create=args.mode in {"run", "all"},

@@ -48,11 +48,11 @@ environments:
     extends: tbme_duffing_easy
     estimator_system_id: damped_pendulum
     system_label: Duffing oscillator / pendulum model mismatch
-    asymmetric_loading: true
-    observation_primary_scale: 1.5
-    observation_secondary_scale: 4.0
-    observation_row_skew: 1.2
-    state_noise: 0.35
+
+  tbme_duffing_parameter_mismatch:
+    extends: tbme_duffing_easy
+    estimator_system_id: single_attractor_cubic_0p2
+    system_label: Duffing oscillator / fixed cubic-coefficient mismatch
 
   tbme_duffing_noise_mismatch:
     extends: tbme_duffing_easy
@@ -62,9 +62,11 @@ environments:
   tbme_pendulum_param_mismatch:
     extends: tbme_pendulum_damped
     asymmetric_loading: true
-    observation_primary_scale: 1.5
-    observation_secondary_scale: 3.5
-    observation_row_skew: 1.0
+    observation_dim: 64
+    observation_primary_scale: 1.0
+    observation_secondary_scale: 4.5
+    observation_row_skew: 2.0
+    max_firing_rate_target: 180.0
     state_noise: 0.35
     state_init_uncertainty: 16.0
 
