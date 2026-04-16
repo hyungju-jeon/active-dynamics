@@ -5,10 +5,16 @@ to dynamically resolve metrics by name.
 """
 
 from .base import BaseMetric, CompositeMetric, DiscountedMetric
-from .information import FisherInformationMetric
+from .information import (
+    AmbiguityAwareEmbeddingFisherMetric,
+    EmbeddingFisherMetric,
+    FisherInformationMetric,
+)
 
 __all__ = [
     "BaseMetric",
+    "EmbeddingFisherMetric",
+    "AmbiguityAwareEmbeddingFisherMetric",
     "FisherInformationMetric",
     "CompositeMetric",
     "DiscountedMetric",
@@ -24,6 +30,7 @@ _metric_map = {
     "d-optimality": (".information", "DOptimality"),
     "ensemble-disagreement": (".uncertainty", "EnsembleDisagreement"),
     "embedding-fisher": (".information", "EmbeddingFisherMetric"),
+    "ambiguity-aware-embedding-fisher": (".information", "AmbiguityAwareEmbeddingFisherMetric"),
 }
 
 

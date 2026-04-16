@@ -91,15 +91,27 @@ def collect_track_records(
 def collect_track_rows(records: list[dict[str, Any]], value_key: str) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for record in records:
-        grouped.setdefault((str(record["policy_id"]), int(record["seed"])), []).append(
-            record["metadata"]
-        )
+        grouped.setdefault((str(record["policy_id"]), int(record["seed"])), []).append(record)
     rows: list[dict[str, Any]] = []
     for (policy_id, seed), runs in grouped.items():
-        finals = [safe_float(run.get(value_key)) for run in runs]
-        runtimes = [safe_float(run.get("runtime_sec")) for run in runs]
+        finals = [safe_float(run["metadata"].get(value_key)) for run in runs]
+        runtimes = [safe_float(run["metadata"].get("runtime_sec")) for run in runs]
+        trajectory_r2_finals: list[float | None] = []
+        for run in runs:
+            traj_final = safe_float(run["metadata"].get("trajectory_r2_final"))
+            if traj_final is None:
+                trace_path = _trace_path(
+                    run,
+                    metadata_key="trajectory_r2_trace_path",
+                    fallback_name="trajectory_r2_trace.csv",
+                )
+                trace_rows = [] if trace_path is None else _read_trace_csv(trace_path)
+                if trace_rows:
+                    traj_final = safe_float(trace_rows[-1].get("trajectory_r2"))
+            trajectory_r2_finals.append(traj_final)
         finals_num = [v for v in finals if v is not None]
         runtimes_num = [v for v in runtimes if v is not None]
+        traj_r2_num = [v for v in trajectory_r2_finals if v is not None]
         rows.append(
             {
                 "policy_id": policy_id,
@@ -107,10 +119,11 @@ def collect_track_rows(records: list[dict[str, Any]], value_key: str) -> list[di
                 "n_repeats": len(runs),
                 "status": (
                     "completed"
-                    if all(run.get("status") == "completed" for run in runs)
+                    if all(run["metadata"].get("status") == "completed" for run in runs)
                     else "partial"
                 ),
                 "value_final_mean": float(np.mean(finals_num)) if finals_num else None,
+                "trajectory_r2_final_mean": float(np.mean(traj_r2_num)) if traj_r2_num else None,
                 "runtime_sec_mean": float(np.mean(runtimes_num)) if runtimes_num else None,
             }
         )
@@ -258,20 +271,34 @@ def _write_markdown(
     lines.extend(
         [
             "",
-            f"## Final {value_label} by Policy",
+            "## Final Metrics by Policy",
             "",
-            "| policy_id | final_mean |",
-            "| --- | ---: |",
+            f"| policy_id | final_{value_label.lower().replace(' ', '_')} | final_trajectory_r2 |",
+            "| --- | ---: | ---: |",
         ]
     )
-    grouped: dict[str, list[float]] = {}
+    grouped: dict[str, dict[str, list[float]]] = {}
     for row in rows:
-        grouped.setdefault(str(row["policy_id"]), []).append(
+        policy_bucket = grouped.setdefault(
+            str(row["policy_id"]), {"value": [], "trajectory_r2": []}
+        )
+        policy_bucket["value"].append(
             float(row["value_final_mean"]) if row["value_final_mean"] is not None else np.nan
         )
+        policy_bucket["trajectory_r2"].append(
+            float(row["trajectory_r2_final_mean"])
+            if row.get("trajectory_r2_final_mean") is not None
+            else np.nan
+        )
     for policy_id in sorted(grouped):
-        nums = [v for v in grouped[policy_id] if np.isfinite(v)]
-        lines.append(f"| {policy_id} | {float(np.mean(nums)) if nums else np.nan:.6f} |")
+        value_nums = [v for v in grouped[policy_id]["value"] if np.isfinite(v)]
+        traj_nums = [v for v in grouped[policy_id]["trajectory_r2"] if np.isfinite(v)]
+        lines.append(
+            "| "
+            + policy_id
+            + f" | {float(np.mean(value_nums)) if value_nums else np.nan:.6f}"
+            + f" | {float(np.mean(traj_nums)) if traj_nums else np.nan:.6f} |"
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -786,7 +813,15 @@ def main(argv: list[str] | None = None) -> int:
     _write_csv(
         summary_dir / "metrics.csv",
         rows,
-        ["policy_id", "seed", "n_repeats", "status", "value_final_mean", "runtime_sec_mean"],
+        [
+            "policy_id",
+            "seed",
+            "n_repeats",
+            "status",
+            "value_final_mean",
+            "trajectory_r2_final_mean",
+            "runtime_sec_mean",
+        ],
     )
     _write_curve_csv(
         summary_dir / f"{value_prefix}_over_steps.csv", trace_rows, f"{value_prefix}_mean"

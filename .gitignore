@@ -83,9 +83,12 @@ htmlcov/
 coverage.xml
 *.cover
 .hypothesis/
+tests/
 
 # Documentation
 docs/_build/
+docs/plans/
+docs/presentation/
 site/
 
 # Jupyter Notebook

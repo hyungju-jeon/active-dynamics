@@ -1104,6 +1104,29 @@ def _build_metadata(
     return payload
 
 
+def _make_shrinkage_map(
+    *,
+    shrinkage_kind: str | None,
+    shrinkage_min: float | None,
+) -> Any | None:
+    if shrinkage_kind is None:
+        return None
+    if shrinkage_kind != "inverse_quadratic":
+        raise ValueError(f"Unsupported shrinkage_kind={shrinkage_kind!r}")
+
+    tau_min = 0.0 if shrinkage_min is None else float(shrinkage_min)
+
+    def _map(delta):
+        import torch
+
+        delta_tensor = torch.as_tensor(delta)
+        tau = torch.reciprocal(1.0 + delta_tensor)
+        tau = torch.nan_to_num(tau, nan=1.0, posinf=1.0, neginf=tau_min)
+        return tau.clamp(min=tau_min, max=1.0)
+
+    return _map
+
+
 def _build_metric(
     *,
     objective_kind: str,
@@ -1114,6 +1137,8 @@ def _build_metric(
     device: str,
     sampling_variance_samples: int,
     sampling_variance_seed: int | None,
+    ambiguity_temperature: float | None = None,
+    ensemble_kind: str | None = None,
 ):
     if __package__ in {None, ""}:
         from experiments.cosyne.objectives import (
@@ -1122,20 +1147,43 @@ def _build_metric(
             fully_observable_parameter_eig,
             parameter_eig,
             sampling_variance as build_sampling_variance_metric,
+            shrinkage_parameter_eig,
             state_information as build_state_information_metric,
         )
     else:
         from .cosyne.objectives import (
+            ambiguity_aware_parameter_eig,
             dynamics as build_dynamics_metric,
             e_optimality as build_e_optimality_metric,
             fully_observable_parameter_eig,
             parameter_eig,
             sampling_variance as build_sampling_variance_metric,
+            shrinkage_parameter_eig,
             state_information as build_state_information_metric,
         )
 
     if objective_kind == "parameter_eig":
         return parameter_eig(model=model, Fe_net=Fe_net, Fz_net=Fz_net, gamma=gamma, device=device)
+    if objective_kind == "shrinkage_parameter_eig":
+        return shrinkage_parameter_eig(
+            model=model,
+            Fe_net=Fe_net,
+            Fz_net=Fz_net,
+            gamma=gamma,
+            device=device,
+        )
+    if objective_kind == "ambiguity_aware_parameter_eig":
+        return ambiguity_aware_parameter_eig(
+            model=model,
+            Fe_net=Fe_net,
+            Fz_net=Fz_net,
+            gamma=gamma,
+            device=device,
+            ambiguity_temperature=(
+                1.0 if ambiguity_temperature is None else float(ambiguity_temperature)
+            ),
+            ensemble_kind=ensemble_kind,
+        )
     if objective_kind == "e_optimality":
         return build_e_optimality_metric(
             model=model,
@@ -1435,6 +1483,17 @@ def _run_single_duffing_identification(
         model_kwargs["q_theta_max_scale"] = q_theta_max_scale
     if "state_init_uncertainty" in fe_init.parameters:
         model_kwargs["state_init_uncertainty"] = float(env_preset.state_init_uncertainty)
+    shrinkage_map = _make_shrinkage_map(
+        shrinkage_kind=getattr(policy_spec, "shrinkage_kind", None),
+        shrinkage_min=getattr(policy_spec, "shrinkage_min", None),
+    )
+    if "shrinkage_map" in fe_init.parameters and shrinkage_map is not None:
+        model_kwargs["shrinkage_map"] = shrinkage_map
+    if (
+        "shrinkage_min" in fe_init.parameters
+        and getattr(policy_spec, "shrinkage_min", None) is not None
+    ):
+        model_kwargs["shrinkage_min"] = float(policy_spec.shrinkage_min)
     model = actdyn.models.FilteringEmbedding(**model_kwargs)
     model.set_params(e_bel["m"])
 
@@ -1449,6 +1508,8 @@ def _run_single_duffing_identification(
             device=device,
             sampling_variance_samples=int(sampling_variance_samples),
             sampling_variance_seed=int(seed),
+            ambiguity_temperature=getattr(policy_spec, "ambiguity_temperature", None),
+            ensemble_kind=getattr(policy_spec, "ensemble_kind", None),
         )
         metric = actdyn.metrics.CompositeMetric(
             metrics=[base_metric], compute_type="sum", weights=[1.0], device=device
@@ -1630,6 +1691,16 @@ def _run_single_duffing_identification(
                 "Pz00": float(info_diag.get("Pz00", 0.0)),
                 "Pz01": float(info_diag.get("Pz01", 0.0)),
                 "Pz11": float(info_diag.get("Pz11", 0.0)),
+                "innovation_statistic": (
+                    float(model._last_innovation_statistic.reshape(-1).mean().item())
+                    if getattr(model, "_last_innovation_statistic", None) is not None
+                    else None
+                ),
+                "parameter_shrinkage": (
+                    float(model._last_parameter_shrinkage.reshape(-1).mean().item())
+                    if getattr(model, "_last_parameter_shrinkage", None) is not None
+                    else None
+                ),
                 "state_posterior_updated": _as_bool(
                     transition.get("state_posterior_updated", True)
                 ),
@@ -1778,6 +1849,8 @@ def _run_single_duffing_identification(
             "Pz00",
             "Pz01",
             "Pz11",
+            "innovation_statistic",
+            "parameter_shrinkage",
             "state_posterior_updated",
             "parameter_posterior_updated",
             "window_buffer_length",
@@ -1875,6 +1948,10 @@ def _run_single_duffing_identification(
                 float(np.mean([row["parameter_error"] for row in param_rows]))
                 if param_rows
                 else None
+            ),
+            "trajectory_r2_final": float(traj_rows[-1]["trajectory_r2"]) if traj_rows else None,
+            "trajectory_r2_mean": (
+                float(np.mean([row["trajectory_r2"] for row in traj_rows])) if traj_rows else None
             ),
             "objective_variant": str(policy_spec.objective_kind),
             "schedule_id": str(schedule_spec.schedule_id),
@@ -2599,7 +2676,13 @@ def _replay_candidate_score(
     reference = info_accum + info_step if planning_mode else info_step
     ref_eye = np.eye(reference.shape[0], dtype=np.float64)
 
-    if objective_kind in {None, "parameter_eig", "fully_observable_parameter_eig"}:
+    if objective_kind in {
+        None,
+        "parameter_eig",
+        "shrinkage_parameter_eig",
+        "ambiguity_aware_parameter_eig",
+        "fully_observable_parameter_eig",
+    }:
         sign, logdet = np.linalg.slogdet(ref_eye + reference)
         score = float(logdet if sign > 0 else -1e12)
     elif objective_kind == "e_optimality":

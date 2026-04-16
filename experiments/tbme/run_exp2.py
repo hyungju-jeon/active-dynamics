@@ -13,6 +13,8 @@ else:
 
 EXP2_SUITES = [
     "tbme_exp2_robustness_duffing",
+    "tbme_exp2_robustness_duffing_obs",
+    "tbme_exp2_robustness_duffing_noise",
     "tbme_exp2_robustness_duffing_sota",
     "tbme_exp2_robustness_duffing_parameter",
     "tbme_exp2_robustness_duffing_parameter_sota",

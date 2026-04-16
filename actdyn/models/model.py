@@ -659,6 +659,8 @@ class FilteringEmbedding(BaseModel):
         state_init_uncertainty: float = 1.0,
         q_theta_meas_coeff: float = 0.0,
         q_theta_max_scale: float = 10.0,
+        shrinkage_map: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+        shrinkage_min: float = 0.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -679,7 +681,11 @@ class FilteringEmbedding(BaseModel):
         self.q_theta_meas_coeff = max(float(q_theta_meas_coeff), 0.0)
         self.q_theta_max_scale = max(float(q_theta_max_scale), 1.0)
         self.k_theta = max(1, int(k_theta))
+        self.shrinkage_map = shrinkage_map
+        self.shrinkage_min = float(shrinkage_min)
         self.gn_iter = 10
+        self._last_innovation_statistic = None
+        self._last_parameter_shrinkage = None
         self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
         self.last_information = {
             "I_z_t": 0.0,
@@ -709,7 +715,9 @@ class FilteringEmbedding(BaseModel):
         if P.shape[0] == 1 and batch > 1:
             P = P.expand(batch, -1, -1).clone()
         if P.shape[0] != batch:
-            raise ValueError(f"Embedding covariance batch mismatch: {P.shape} vs mean batch {batch}")
+            raise ValueError(
+                f"Embedding covariance batch mismatch: {P.shape} vs mean batch {batch}"
+            )
         P = symmetrize(P)
 
         L = self.e.get("L")
@@ -752,13 +760,54 @@ class FilteringEmbedding(BaseModel):
         self._theta_block_steps = 0
         self._theta_score_block = torch.zeros(batch_size, d_embed, device=self.device)
         self._theta_info_block = torch.zeros(batch_size, d_embed, d_embed, device=self.device)
-        self._theta_sensitivity = torch.zeros(batch_size, self.latent_dim, d_embed, device=self.device)
+        self._theta_sensitivity = torch.zeros(
+            batch_size, self.latent_dim, d_embed, device=self.device
+        )
 
     def _initial_state_covariance(self, batch_size: int) -> torch.Tensor:
         return (
-            self.state_init_uncertainty
-            * torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
-        ).expand(batch_size, -1, -1, -1).clone()
+            (
+                self.state_init_uncertainty
+                * torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
+            )
+            .expand(batch_size, -1, -1, -1)
+            .clone()
+        )
+
+    def _compute_innovation_statistic(
+        self,
+        residual: torch.Tensor,
+        chol_covariance: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return normalized innovation energy used to moderate parameter updates."""
+        residual_col = residual.unsqueeze(-1)
+        inv_cov_residual = torch.cholesky_solve(residual_col, chol_covariance)
+        innovation_quad = residual_col.transpose(-1, -2) @ inv_cov_residual
+        innovation_quad = innovation_quad.squeeze(-1).squeeze(-1).squeeze(-1)
+        obs_dim = residual.shape[-1]
+        return innovation_quad / float(obs_dim)
+
+    def _compute_parameter_shrinkage(self, innovation_statistic: torch.Tensor) -> torch.Tensor:
+        """Map a mismatch statistic to a scalar shrinkage factor in [shrinkage_min, 1]."""
+        if self.shrinkage_map is None:
+            return torch.ones_like(innovation_statistic)
+
+        tau = self.shrinkage_map(innovation_statistic)
+        if not torch.is_tensor(tau):
+            tau = torch.as_tensor(
+                tau, device=innovation_statistic.device, dtype=innovation_statistic.dtype
+            )
+        tau = tau.to(device=innovation_statistic.device, dtype=innovation_statistic.dtype)
+        if tau.ndim == 0:
+            tau = tau.expand_as(innovation_statistic)
+        elif tau.shape != innovation_statistic.shape:
+            if tau.numel() == innovation_statistic.numel():
+                tau = tau.reshape_as(innovation_statistic)
+            else:
+                tau = tau.expand_as(innovation_statistic)
+
+        tau = torch.nan_to_num(tau, nan=1.0, posinf=1.0, neginf=self.shrinkage_min)
+        return tau.clamp(min=self.shrinkage_min, max=1.0)
 
     def _apply_embedding_block_update(self) -> None:
         """Apply block-wise information-form update with drifting prior."""
@@ -823,10 +872,9 @@ class FilteringEmbedding(BaseModel):
         return torch.diag_embed(diag)
 
     def set_params(self, e: torch.Tensor):
-        self.e["m"] = (
-            torch.nan_to_num(e.to(self.device), nan=0.0, posinf=self.e_clip, neginf=-self.e_clip)
-            .clamp(-self.e_clip, self.e_clip)
-        )
+        self.e["m"] = torch.nan_to_num(
+            e.to(self.device), nan=0.0, posinf=self.e_clip, neginf=-self.e_clip
+        ).clamp(-self.e_clip, self.e_clip)
         self.dynamics.set_params(self.e["m"])
 
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
@@ -834,7 +882,9 @@ class FilteringEmbedding(BaseModel):
         observation, info = super().reset(observation)
         d_embed = self.e["m"].shape[-1]
         batch = self.e["m"].shape[0]
-        eye_embed = torch.eye(d_embed, device=self.device).unsqueeze(0).expand(batch, -1, -1).clone()
+        eye_embed = (
+            torch.eye(d_embed, device=self.device).unsqueeze(0).expand(batch, -1, -1).clone()
+        )
         self.e.update(
             {
                 "P": eye_embed,
@@ -1062,7 +1112,9 @@ class FilteringEmbedding(BaseModel):
         I = torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
 
         if self.Fe is None or self.Fz is None:
-            raise ValueError("FilteringEmbedding requires both Fe and Fz callables for parameter updates.")
+            raise ValueError(
+                "FilteringEmbedding requires both Fe and Fz callables for parameter updates."
+            )
 
         batch_size = y.shape[0]
         if self._theta_score_block.shape[0] != batch_size:
@@ -1096,9 +1148,9 @@ class FilteringEmbedding(BaseModel):
         # Re-linearize observation and variance at new z_pred
         z_obs = torch.nan_to_num(z_pred["m"], nan=0.0, posinf=1e6, neginf=-1e6)
         dhdz = torch.nan_to_num(self.decoder.jacobian(z_obs), nan=0.0, posinf=1e6, neginf=-1e6)
-        R_diag = torch.nan_to_num(self.decoder.var(z_obs), nan=1e-6, posinf=1e6, neginf=1e-6).clamp_min(
-            1e-6
-        )
+        R_diag = torch.nan_to_num(
+            self.decoder.var(z_obs), nan=1e-6, posinf=1e6, neginf=1e-6
+        ).clamp_min(1e-6)
         R = self._project_spd(R_diag.diag_embed())
         eye_obs = torch.eye(R.shape[-1], device=self.device).view(1, 1, R.shape[-1], R.shape[-1])
         S = self._project_spd(dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R + 1e-6 * eye_obs)
@@ -1119,9 +1171,17 @@ class FilteringEmbedding(BaseModel):
         r = y - y_pred
         z_post_m = z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1)
         z_post_m = torch.nan_to_num(z_post_m, nan=0.0, posinf=1e6, neginf=-1e6)
+
+        delta_t = self._compute_innovation_statistic(r, chol_S)
+        tau_t = self._compute_parameter_shrinkage(delta_t)
+        self._last_innovation_statistic = delta_t.detach()
+        self._last_parameter_shrinkage = tau_t.detach()
+
         z_post = {
             "m": z_post_m,
-            "P": self._project_spd(torch.nan_to_num(P_upd, nan=0.0, posinf=1e6, neginf=-1e6) + 1e-8 * I),
+            "P": self._project_spd(
+                torch.nan_to_num(P_upd, nan=0.0, posinf=1e6, neginf=-1e6) + 1e-8 * I
+            ),
         }
 
         self.z = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
@@ -1136,6 +1196,7 @@ class FilteringEmbedding(BaseModel):
         delta_z = z_post["m"] - z_pred["m"]  # (B, 1, Dz)
         invP_delta = torch.cholesky_solve(delta_z.unsqueeze(-1), chol_P_pred).squeeze(-1).squeeze(1)
         score_t = torch.einsum("bze,bz->be", S_t, invP_delta)
+        score_t = tau_t.unsqueeze(-1) * score_t
 
         # Information: I_t = S_t^T (I + Pz_pred I_z)^-1 I_z S_t.
         chol_R = safe_cholesky(self._project_spd(R))
@@ -1162,6 +1223,7 @@ class FilteringEmbedding(BaseModel):
             "Pz01": float(torch.nan_to_num(Pz01, nan=0.0, posinf=1e6, neginf=0.0).item()),
             "Pz11": float(torch.nan_to_num(Pz11, nan=0.0, posinf=1e6, neginf=0.0).item()),
         }
+        info_t = tau_t.view(-1, 1, 1) * info_t
 
         self._theta_score_block += score_t
         self._theta_info_block += info_t
