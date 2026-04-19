@@ -5,6 +5,13 @@ posterior. In this repo we therefore keep shared latent-state filtering in the
 model, but parameter estimation lives inside the policy as a point estimate plus
 an online Gram / information matrix. The inverse Gram is exposed only as a
 diagnostic proxy so the existing trace/export pipeline can remain unchanged.
+"""FLEX policy with point parameter estimate and Gram matrix.
+
+FLEX in Blanke & Lelarge (ICML 2023) does not maintain a Bayesian parameter
+posterior. In this repo we therefore keep shared latent-state filtering in the
+model, but parameter estimation lives inside the policy as a point estimate plus
+an online Gram / information matrix. The inverse Gram is exposed only as a
+diagnostic proxy so the existing trace/export pipeline can remain unchanged.
 """
 
 from __future__ import annotations
@@ -25,6 +32,9 @@ class FLEXPolicy(BasePolicy):
     """FLEX with policy-local point estimate and online Gram matrix."""
 
     owns_parameter_estimate = True
+    """FLEX with policy-local point estimate and online Gram matrix."""
+
+    owns_parameter_estimate = True
 
     def __init__(
         self,
@@ -32,7 +42,11 @@ class FLEXPolicy(BasePolicy):
         action_space: gym.Space,
         model: Any,
         initial_parameter_mean: torch.Tensor | None = None,
+        model: Any,
+        initial_parameter_mean: torch.Tensor | None = None,
         gram_init_scale: float = 1e-3,
+        gram_ridge: float = 1e-8,
+        parameter_step_clip: float = 0.25,
         gram_ridge: float = 1e-8,
         parameter_step_clip: float = 0.25,
         eps: float = 1e-8,
@@ -42,6 +56,8 @@ class FLEXPolicy(BasePolicy):
         super().__init__(action_space=action_space, chunk=1, device=device, **kwargs)
         self.model = model
         self.gram_init_scale = float(max(gram_init_scale, 1e-12))
+        self.gram_ridge = float(max(gram_ridge, 1e-12))
+        self.parameter_step_clip = float(max(parameter_step_clip, 1e-8))
         self.gram_ridge = float(max(gram_ridge, 1e-12))
         self.parameter_step_clip = float(max(parameter_step_clip, 1e-8))
         self.eps = float(max(eps, 1e-12))
@@ -89,7 +105,13 @@ class FLEXPolicy(BasePolicy):
         self._gamma = float(
             torch.min(torch.minimum(self._action_high.abs(), self._action_low.abs())).item()
         )
+        self._gamma = float(
+            torch.min(torch.minimum(self._action_high.abs(), self._action_low.abs())).item()
+        )
         if not math.isfinite(self._gamma) or self._gamma <= 0.0:
+            self._gamma = float(
+                torch.max(torch.maximum(self._action_high.abs(), self._action_low.abs())).item()
+            )
             self._gamma = float(
                 torch.max(torch.maximum(self._action_high.abs(), self._action_low.abs())).item()
             )
@@ -130,6 +152,7 @@ class FLEXPolicy(BasePolicy):
 
     def _current_embedding(self) -> torch.Tensor:
         return self._parameter_mean[:1]
+        return self._parameter_mean[:1]
 
     def _current_state(self, state: torch.Tensor) -> torch.Tensor:
         z = torch.as_tensor(state, dtype=torch.float32, device=self.device)
@@ -138,10 +161,12 @@ class FLEXPolicy(BasePolicy):
         elif z.dim() == 2:
             z = z.unsqueeze(1)
         return z[:1]
+        return z[:1]
 
     def _parameter_jacobian(self, z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
         fe = getattr(self.model, "Fe", None)
         if fe is None:
+            raise ValueError("FLEX requires model.Fe(z, e)")
             raise ValueError("FLEX requires model.Fe(z, e)")
         V = fe(z, e.unsqueeze(1))
         if V.dim() == 4:
@@ -166,12 +191,22 @@ class FLEXPolicy(BasePolicy):
             )[0]
             if grad is None:
                 grad = torch.zeros_like(z_req)
+            if not v[j].requires_grad:
+                rows.append(torch.zeros(d_state, dtype=z_req.dtype, device=self.device))
+                continue
+            grad = torch.autograd.grad(
+                v[j], z_req, retain_graph=j < d_embed - 1, allow_unused=True
+            )[0]
+            if grad is None:
+                grad = torch.zeros_like(z_req)
             rows.append(grad.reshape(d_state))
         return torch.stack(rows, dim=0)
 
     def _action_jacobian(self, z_t: torch.Tensor) -> torch.Tensor:
         d_action = int(self._action_low.numel())
-        action = torch.zeros((1, 1, d_action), device=self.device, dtype=torch.float32, requires_grad=True)
+        action = torch.zeros(
+            (1, 1, d_action), device=self.device, dtype=torch.float32, requires_grad=True
+        )
         if getattr(self.model, "action_encoder", None) is not None:
             encoded = self.model.action_encoder(action, z_t)
         else:
@@ -250,6 +285,17 @@ class FLEXPolicy(BasePolicy):
         if norm_u > self.eps:
             u = u * (gamma / norm_u)
         return u
+
+    def _extract_last_tensor(self, rollout: Any, key: str) -> torch.Tensor | None:
+        value = rollout.get(key, None)
+        if value is None:
+            return None
+        tensor = torch.as_tensor(value, dtype=torch.float32, device=self.device)
+        if tensor.dim() == 1:
+            tensor = tensor.view(1, 1, -1)
+        elif tensor.dim() == 2:
+            tensor = tensor.unsqueeze(1)
+        return tensor[:, -1:, :]
 
     def _extract_last_tensor(self, rollout: Any, key: str) -> torch.Tensor | None:
         value = rollout.get(key, None)
