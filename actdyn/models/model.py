@@ -618,7 +618,7 @@ class SeqStateVae(BaseModel):
 
         return epoch_info
 
-    def update_posterior_embedding(self, y, u=None, **kwargs):
+    def update_posterior_embedding(self, y, u=None, update_theta: bool = True, **kwargs):
         """Update the posterior state given new observation and action."""
         # with torch.no_grad():
         _, z_post, _ = self.encoder(y=y, u=u, n_samples=1)
@@ -1101,7 +1101,7 @@ class FilteringEmbedding(BaseModel):
         return self._state
 
     @torch.no_grad()
-    def update_posterior_embedding(self, y, u=None, **kwargs):
+    def update_posterior_embedding(self, y, u=None, update_theta: bool = True, **kwargs):
         """Update the posterior state given new observation and action."""
 
         self._normalize_embedding_belief()
@@ -1187,29 +1187,38 @@ class FilteringEmbedding(BaseModel):
         self.z = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
         self._state = z_post["m"].detach()
 
-        # Parameter sensitivity recursion S_t = F_theta,t + F_z,t S_{t-1}.
-        S_prev = self._theta_sensitivity
-        S_t = F_theta.squeeze(1) + dfdz.squeeze(1) @ S_prev  # (B, Dz, De)
-
-        # Score: s_t = S_t^T (Pz_pred)^-1 (z_post - z_pred).
-        chol_P_pred = safe_cholesky(self._project_spd(z_pred["P"]))
-        delta_z = z_post["m"] - z_pred["m"]  # (B, 1, Dz)
-        invP_delta = torch.cholesky_solve(delta_z.unsqueeze(-1), chol_P_pred).squeeze(-1).squeeze(1)
-        score_t = torch.einsum("bze,bz->be", S_t, invP_delta)
-        score_t = tau_t.unsqueeze(-1) * score_t
-
-        # Information: I_t = S_t^T (I + Pz_pred I_z)^-1 I_z S_t.
+        # Information diagnostics are still useful in state-only update mode, but
+        # parameter score / posterior updates are disabled when update_theta=False.
         chol_R = safe_cholesky(self._project_spd(R))
         invR_H = torch.cholesky_solve(dhdz, chol_R)
         I_z = symmetrize(dhdz.transpose(-1, -2) @ invR_H)
-        atten_mat = self._project_spd(I + z_pred["P"] @ I_z)
-        chol_atten = safe_cholesky(atten_mat)
-        atten_Iz = torch.cholesky_solve(I_z, chol_atten).squeeze(1)
-        info_t = symmetrize(S_t.transpose(-1, -2) @ atten_Iz @ S_t)
+        info_t = None
+        if update_theta:
+            # Parameter sensitivity recursion S_t = F_theta,t + F_z,t S_{t-1}.
+            S_prev = self._theta_sensitivity
+            S_t = F_theta.squeeze(1) + dfdz.squeeze(1) @ S_prev  # (B, Dz, De)
+
+            # Score: s_t = S_t^T (Pz_pred)^-1 (z_post - z_pred).
+            chol_P_pred = safe_cholesky(self._project_spd(z_pred["P"]))
+            delta_z = z_post["m"] - z_pred["m"]  # (B, 1, Dz)
+            invP_delta = (
+                torch.cholesky_solve(delta_z.unsqueeze(-1), chol_P_pred).squeeze(-1).squeeze(1)
+            )
+            score_t = torch.einsum("bze,bz->be", S_t, invP_delta)
+            score_t = tau_t.unsqueeze(-1) * score_t
+
+            # Information: I_t = S_t^T (I + Pz_pred I_z)^-1 I_z S_t.
+            atten_mat = self._project_spd(I + z_pred["P"] @ I_z)
+            chol_atten = safe_cholesky(atten_mat)
+            atten_Iz = torch.cholesky_solve(I_z, chol_atten).squeeze(1)
+            info_t = symmetrize(S_t.transpose(-1, -2) @ atten_Iz @ S_t)
 
         # Diagnostic traces for visualization: average matrix trace over batch.
         I_z_scalar = torch.diagonal(I_z.squeeze(1), dim1=-2, dim2=-1).sum(dim=-1).mean()
-        I_theta_scalar = torch.diagonal(info_t, dim1=-2, dim2=-1).sum(dim=-1).mean()
+        if info_t is not None:
+            I_theta_scalar = torch.diagonal(info_t, dim1=-2, dim2=-1).sum(dim=-1).mean()
+        else:
+            I_theta_scalar = torch.tensor(0.0, device=self.device)
         Pz_eval = z_pred["P"].squeeze(1)
         Pz00 = Pz_eval[:, 0, 0].mean()
         Pz01 = Pz_eval[:, 0, 1].mean()
@@ -1223,14 +1232,15 @@ class FilteringEmbedding(BaseModel):
             "Pz01": float(torch.nan_to_num(Pz01, nan=0.0, posinf=1e6, neginf=0.0).item()),
             "Pz11": float(torch.nan_to_num(Pz11, nan=0.0, posinf=1e6, neginf=0.0).item()),
         }
-        info_t = tau_t.view(-1, 1, 1) * info_t
+        if update_theta and info_t is not None:
+            info_t = tau_t.view(-1, 1, 1) * info_t
 
-        self._theta_score_block += score_t
-        self._theta_info_block += info_t
-        self._theta_sensitivity = S_t.detach()
-        self._theta_block_steps += 1
-        if self._theta_block_steps >= self.k_theta:
-            self._apply_embedding_block_update()
+            self._theta_score_block += score_t
+            self._theta_info_block += info_t
+            self._theta_sensitivity = S_t.detach()
+            self._theta_block_steps += 1
+            if self._theta_block_steps >= self.k_theta:
+                self._apply_embedding_block_update()
 
         return self._state
 

@@ -461,7 +461,7 @@ class SparseRbfFilteringModel(BaseModel):
         }
 
     @torch.no_grad()
-    def update_posterior_embedding(self, y, u=None, **kwargs):
+    def update_posterior_embedding(self, y, u=None, update_theta: bool = True, **kwargs):
         self._normalize_embedding_belief()
         self._ensure_state_belief_shapes(batch_size=int(self.e["m"].shape[0]))
         y = y[:, -1:, :]
@@ -516,44 +516,51 @@ class SparseRbfFilteringModel(BaseModel):
         self.z = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
         self._state = z_post["m"].detach()
 
-        s_prev = self._theta_sensitivity
-        s_t = f_theta.squeeze(1) + dfdz.squeeze(1) @ s_prev
-
-        chol_p_pred = safe_cholesky(self._project_spd(z_pred["P"]))
-        delta_z = z_post["m"] - z_pred["m"]
-        invp_delta = torch.cholesky_solve(delta_z.unsqueeze(-1), chol_p_pred).squeeze(-1).squeeze(1)
-        score_t = torch.einsum("bze,bz->be", s_t, invp_delta)
-
         chol_r = safe_cholesky(self._project_spd(r))
         invr_h = torch.cholesky_solve(dhdz, chol_r)
         i_z = symmetrize(dhdz.transpose(-1, -2) @ invr_h)
-        atten_mat = self._project_spd(eye + z_pred["P"] @ i_z)
-        chol_atten = safe_cholesky(atten_mat)
-        atten_i_z = torch.cholesky_solve(i_z, chol_atten).squeeze(1)
-
         info_scalar = 0.0
-        info_block = self._theta_info_block
-        active_block_mask = self._theta_active_mask_block
-        support_mask = torch.sum(torch.abs(s_t), dim=1) > 1e-10
-        for batch_idx in range(batch_size):
-            support_idx = torch.nonzero(support_mask[batch_idx], as_tuple=False).reshape(-1)
-            if support_idx.numel() == 0:
-                support_idx = self.dynamics.parameter_indices_for_centers(active_centers[batch_idx].reshape(-1))
-            block_idx = self.dynamics.expand_parameter_indices(support_idx)
-            if block_idx.numel() == 0:
-                continue
-            s_block = s_t[batch_idx : batch_idx + 1].index_select(-1, block_idx)
-            mid = torch.einsum("bij,bje->bie", atten_i_z[batch_idx : batch_idx + 1], s_block)
-            info_local = torch.einsum("bze,bzf->bef", s_block, mid).squeeze(0)
-            info_local = self._project_psd(info_local)
-            row_idx = block_idx.unsqueeze(1).expand(-1, block_idx.numel())
-            col_idx = block_idx.unsqueeze(0).expand(block_idx.numel(), -1)
-            info_block[batch_idx, row_idx, col_idx] = info_block[batch_idx, row_idx, col_idx] + info_local
-            active_block_mask[batch_idx, block_idx] = True
-            cov_local = self.e["P"][min(batch_idx, self.e["P"].shape[0] - 1)].index_select(0, block_idx).index_select(
-                1, block_idx
+        if update_theta:
+            s_prev = self._theta_sensitivity
+            s_t = f_theta.squeeze(1) + dfdz.squeeze(1) @ s_prev
+
+            chol_p_pred = safe_cholesky(self._project_spd(z_pred["P"]))
+            delta_z = z_post["m"] - z_pred["m"]
+            invp_delta = (
+                torch.cholesky_solve(delta_z.unsqueeze(-1), chol_p_pred).squeeze(-1).squeeze(1)
             )
-            info_scalar += self._structured_local_info_gain(cov_local, info_local)
+            score_t = torch.einsum("bze,bz->be", s_t, invp_delta)
+
+            atten_mat = self._project_spd(eye + z_pred["P"] @ i_z)
+            chol_atten = safe_cholesky(atten_mat)
+            atten_i_z = torch.cholesky_solve(i_z, chol_atten).squeeze(1)
+
+            info_block = self._theta_info_block
+            active_block_mask = self._theta_active_mask_block
+            support_mask = torch.sum(torch.abs(s_t), dim=1) > 1e-10
+            for batch_idx in range(batch_size):
+                support_idx = torch.nonzero(support_mask[batch_idx], as_tuple=False).reshape(-1)
+                if support_idx.numel() == 0:
+                    support_idx = self.dynamics.parameter_indices_for_centers(
+                        active_centers[batch_idx].reshape(-1)
+                    )
+                block_idx = self.dynamics.expand_parameter_indices(support_idx)
+                if block_idx.numel() == 0:
+                    continue
+                s_block = s_t[batch_idx : batch_idx + 1].index_select(-1, block_idx)
+                mid = torch.einsum("bij,bje->bie", atten_i_z[batch_idx : batch_idx + 1], s_block)
+                info_local = torch.einsum("bze,bzf->bef", s_block, mid).squeeze(0)
+                info_local = self._project_psd(info_local)
+                row_idx = block_idx.unsqueeze(1).expand(-1, block_idx.numel())
+                col_idx = block_idx.unsqueeze(0).expand(block_idx.numel(), -1)
+                info_block[batch_idx, row_idx, col_idx] = (
+                    info_block[batch_idx, row_idx, col_idx] + info_local
+                )
+                active_block_mask[batch_idx, block_idx] = True
+                cov_local = self.e["P"][
+                    min(batch_idx, self.e["P"].shape[0] - 1)
+                ].index_select(0, block_idx).index_select(1, block_idx)
+                info_scalar += self._structured_local_info_gain(cov_local, info_local)
 
         i_z_scalar = torch.diagonal(i_z.squeeze(1), dim1=-2, dim2=-1).sum(dim=-1).mean()
         pz_eval = z_pred["P"].squeeze(1)
@@ -565,13 +572,14 @@ class SparseRbfFilteringModel(BaseModel):
             "Pz11": float(torch.nan_to_num(pz_eval[:, 1, 1].mean(), nan=0.0, posinf=1e6, neginf=0.0).item()),
         }
 
-        self._theta_score_block += score_t
-        self._theta_info_block = info_block
-        self._theta_active_mask_block = active_block_mask
-        self._theta_sensitivity = s_t.detach()
-        self._theta_block_steps += 1
-        if self._theta_block_steps >= self.k_theta:
-            self._apply_embedding_block_update()
+        if update_theta:
+            self._theta_score_block += score_t
+            self._theta_info_block = info_block
+            self._theta_active_mask_block = active_block_mask
+            self._theta_sensitivity = s_t.detach()
+            self._theta_block_steps += 1
+            if self._theta_block_steps >= self.k_theta:
+                self._apply_embedding_block_update()
 
         return self._state
 
