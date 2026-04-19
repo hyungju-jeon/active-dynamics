@@ -389,6 +389,63 @@ def _predictive_only_embedding_step(model: Any, action: Any) -> dict[str, Any]:
     }
 
 
+def _parameter_owner(*, model: Any, policy: Any) -> Any:
+    if bool(getattr(policy, "owns_parameter_estimate", False)) and hasattr(
+        policy, "get_parameter_mean"
+    ):
+        return policy
+    return model
+
+
+def _resolve_parameter_mean(*, model: Any, policy: Any) -> torch.Tensor:
+    owner = _parameter_owner(model=model, policy=policy)
+    if owner is policy:
+        mean = policy.get_parameter_mean()
+    else:
+        mean = model.e["m"]
+    mean = torch.as_tensor(mean, device=model.device if hasattr(model, "device") else None)
+    return mean.detach()
+
+
+def _resolve_parameter_covariance(*, model: Any, policy: Any) -> torch.Tensor | None:
+    owner = _parameter_owner(model=model, policy=policy)
+    if owner is policy and hasattr(policy, "get_parameter_covariance"):
+        cov = policy.get_parameter_covariance()
+    else:
+        cov = getattr(model, "e", {}).get("P")
+    if cov is None:
+        return None
+    return torch.as_tensor(cov, device=model.device if hasattr(model, "device") else None).detach()
+
+
+def _resolve_parameter_precision(*, model: Any, policy: Any) -> torch.Tensor | None:
+    owner = _parameter_owner(model=model, policy=policy)
+    if owner is policy and hasattr(policy, "get_parameter_precision"):
+        precision = policy.get_parameter_precision()
+    elif hasattr(model, "weight_precision"):
+        precision = model.weight_precision()
+    else:
+        precision = getattr(model, "e", {}).get("L")
+    if precision is None:
+        return None
+    return torch.as_tensor(
+        precision, device=model.device if hasattr(model, "device") else None
+    ).detach()
+
+
+def _sync_policy_parameter_state(*, model: Any, policy: Any) -> None:
+    if not bool(getattr(policy, "owns_parameter_estimate", False)):
+        return
+    if not hasattr(policy, "get_parameter_mean") or not hasattr(model, "set_params"):
+        return
+    mean = policy.get_parameter_mean().detach()
+    if mean.dim() == 1:
+        mean = mean.unsqueeze(0)
+    if getattr(model, "e", None) is not None and "m" in model.e:
+        model.e["m"] = mean.to(model.device).clone()
+    model.set_params(mean.to(model.device))
+
+
 def _apply_loglinear_loading_asymmetry(weight: Any, env_preset: Any):
     import torch
 
@@ -1262,9 +1319,13 @@ def _instantiate_synthetic_policy(
             amplitude=1.0,
         )
     if policy_type == "flex":
+        initial_parameter_mean = None
+        if getattr(model, "e", None) is not None and "m" in model.e:
+            initial_parameter_mean = model.e["m"].detach().clone()
         return actdyn_module.policy.FLEXPolicy(
             action_space=env.action_space,
             model=model,
+            initial_parameter_mean=initial_parameter_mean,
             device=device,
         )
     if policy_type == "rhc":
@@ -1553,6 +1614,7 @@ def _run_single_duffing_identification(
         def step(self, action: torch.Tensor | None = None):
             obs, reward, terminated, truncated, env_info = self.env.step(action)
             done = terminated or truncated
+            policy_owns_theta = bool(getattr(self.policy, "owns_parameter_estimate", False))
             env_transition = {
                 "obs": self._observation,
                 "next_obs": obs,
@@ -1566,6 +1628,8 @@ def _run_single_duffing_identification(
             self.recent.add(**env_transition)
             state_posterior_updated = False
             parameter_posterior_updated = False
+            if policy_owns_theta:
+                _sync_policy_parameter_state(model=self.model, policy=self.policy)
             if self.predictive_only_window and self.state_update_interval > 1:
                 model_info = _predictive_only_embedding_step(self.model, action)
                 self._window_buffer.append(
@@ -1578,32 +1642,45 @@ def _run_single_duffing_identification(
                     if self._window_start_snapshot is None:
                         self._window_start_snapshot = _clone_filter_belief_state(self.model)
                     _restore_filter_belief_state(self.model, self._window_start_snapshot)
+                    if policy_owns_theta:
+                        _sync_policy_parameter_state(model=self.model, policy=self.policy)
                     for buffered in self._window_buffer:
                         prev_block_steps = int(getattr(self.model, "_theta_block_steps", 0))
                         self.model.update_posterior_embedding(
-                            y=buffered["next_obs"], u=buffered["action"]
+                            y=buffered["next_obs"],
+                            u=buffered["action"],
+                            update_theta=not policy_owns_theta,
                         )
-                        parameter_posterior_updated = parameter_posterior_updated or (
-                            prev_block_steps + 1 >= max(1, int(getattr(self.model, "k_theta", 1)))
-                            and int(getattr(self.model, "_theta_block_steps", 0)) == 0
-                        )
+                        if not policy_owns_theta:
+                            parameter_posterior_updated = parameter_posterior_updated or (
+                                prev_block_steps + 1
+                                >= max(1, int(getattr(self.model, "k_theta", 1)))
+                                and int(getattr(self.model, "_theta_block_steps", 0)) == 0
+                            )
                     model_info["latent_state"] = self.model.get_state()
                     state_posterior_updated = True
                     self._window_buffer = []
                     self._window_start_snapshot = _clone_filter_belief_state(self.model)
             else:
                 prev_block_steps = int(getattr(self.model, "_theta_block_steps", 0))
-                model_info = self.model.update(self.recent)
+                model_info = self.model.update(self.recent, update_theta=not policy_owns_theta)
                 state_posterior_updated = True
-                parameter_posterior_updated = (
-                    prev_block_steps + 1 >= max(1, int(getattr(self.model, "k_theta", 1)))
-                    and int(getattr(self.model, "_theta_block_steps", 0)) == 0
-                )
+                if not policy_owns_theta:
+                    parameter_posterior_updated = (
+                        prev_block_steps + 1 >= max(1, int(getattr(self.model, "k_theta", 1)))
+                        and int(getattr(self.model, "_theta_block_steps", 0)) == 0
+                    )
             model_transition = {
                 "model_action": model_info["env_action"],
                 "next_model_state": model_info["latent_state"],
             }
             self.recent.add(**model_transition)
+            self.update_policy(self.recent)
+            if policy_owns_theta:
+                policy_update_info = getattr(self.policy, "last_update_info", {}) or {}
+                parameter_posterior_updated = bool(
+                    policy_update_info.get("parameter_posterior_updated", False)
+                )
             transition = {
                 **env_transition,
                 **model_transition,
@@ -1613,7 +1690,6 @@ def _run_single_duffing_identification(
                 "window_buffer_length": len(self._window_buffer),
                 "state_update_interval": self.state_update_interval,
             }
-            self.update_policy(self.recent)
             self._observation = obs
             self._env_state = env_info["latent_state"]
             self._model_state = self.model.get_state()
@@ -1657,9 +1733,9 @@ def _run_single_duffing_identification(
     def _on_step_end(transition: dict[str, Any]) -> None:
         step = int(experiment.env_step)
         cpu_time_sec = float(time.perf_counter() - perf_start)
-        e_est = model.e["m"].detach().reshape(-1)
+        e_est = _resolve_parameter_mean(model=model, policy=policy).reshape(-1)
         param_err = float(torch.linalg.norm(e_est - e_true_flat).item())
-        e_cov = model.e.get("P")
+        e_cov = _resolve_parameter_covariance(model=model, policy=policy)
         cov_diag0 = cov_diag1 = cov_diag_mean = None
         if e_cov is not None:
             diag = torch.diagonal(e_cov.detach(), dim1=-2, dim2=-1).reshape(-1)
@@ -1940,7 +2016,12 @@ def _run_single_duffing_identification(
             "estimator_dynamics_type": str(estimator_system_spec.dynamics_type),
             "initial_state_true": [float(x) for x in init_state.tolist()],
             "embedding_true": [float(x) for x in e_true_flat.tolist()],
-            "embedding_estimate": [float(x) for x in model.e["m"].detach().reshape(-1).tolist()],
+            "embedding_estimate": [
+                float(x)
+                for x in _resolve_parameter_mean(model=model, policy=policy)
+                .reshape(-1)
+                .tolist()
+            ],
             "embedding_error_final": (
                 float(param_rows[-1]["parameter_error"]) if param_rows else None
             ),
@@ -2187,6 +2268,7 @@ def _run_single_rbf_identification(
         def step(self, action: torch.Tensor | None = None):
             obs, reward, terminated, truncated, env_info = self.env.step(action)
             done = terminated or truncated
+            policy_owns_theta = bool(getattr(self.policy, "owns_parameter_estimate", False))
             env_transition = {
                 "obs": self._observation,
                 "next_obs": obs,
@@ -2200,6 +2282,8 @@ def _run_single_rbf_identification(
             self.recent.add(**env_transition)
             state_posterior_updated = False
             parameter_posterior_updated = False
+            if policy_owns_theta:
+                _sync_policy_parameter_state(model=self.model, policy=self.policy)
             if self.predictive_only_window and self.state_update_interval > 1:
                 model_info = _predictive_only_embedding_step(self.model, action)
                 self._window_buffer.append(
@@ -2212,32 +2296,45 @@ def _run_single_rbf_identification(
                     if self._window_start_snapshot is None:
                         self._window_start_snapshot = _clone_filter_belief_state(self.model)
                     _restore_filter_belief_state(self.model, self._window_start_snapshot)
+                    if policy_owns_theta:
+                        _sync_policy_parameter_state(model=self.model, policy=self.policy)
                     for buffered in self._window_buffer:
                         prev_block_steps = int(getattr(self.model, "_theta_block_steps", 0))
                         self.model.update_posterior_embedding(
-                            y=buffered["next_obs"], u=buffered["action"]
+                            y=buffered["next_obs"],
+                            u=buffered["action"],
+                            update_theta=not policy_owns_theta,
                         )
-                        parameter_posterior_updated = parameter_posterior_updated or (
-                            prev_block_steps + 1 >= max(1, int(getattr(self.model, "k_theta", 1)))
-                            and int(getattr(self.model, "_theta_block_steps", 0)) == 0
-                        )
+                        if not policy_owns_theta:
+                            parameter_posterior_updated = parameter_posterior_updated or (
+                                prev_block_steps + 1
+                                >= max(1, int(getattr(self.model, "k_theta", 1)))
+                                and int(getattr(self.model, "_theta_block_steps", 0)) == 0
+                            )
                     model_info["latent_state"] = self.model.get_state()
                     state_posterior_updated = True
                     self._window_buffer = []
                     self._window_start_snapshot = _clone_filter_belief_state(self.model)
             else:
                 prev_block_steps = int(getattr(self.model, "_theta_block_steps", 0))
-                model_info = self.model.update(self.recent)
+                model_info = self.model.update(self.recent, update_theta=not policy_owns_theta)
                 state_posterior_updated = True
-                parameter_posterior_updated = (
-                    prev_block_steps + 1 >= max(1, int(getattr(self.model, "k_theta", 1)))
-                    and int(getattr(self.model, "_theta_block_steps", 0)) == 0
-                )
+                if not policy_owns_theta:
+                    parameter_posterior_updated = (
+                        prev_block_steps + 1 >= max(1, int(getattr(self.model, "k_theta", 1)))
+                        and int(getattr(self.model, "_theta_block_steps", 0)) == 0
+                    )
             model_transition = {
                 "model_action": model_info["env_action"],
                 "next_model_state": model_info["latent_state"],
             }
             self.recent.add(**model_transition)
+            self.update_policy(self.recent)
+            if policy_owns_theta:
+                policy_update_info = getattr(self.policy, "last_update_info", {}) or {}
+                parameter_posterior_updated = bool(
+                    policy_update_info.get("parameter_posterior_updated", False)
+                )
             transition = {
                 **env_transition,
                 **model_transition,
@@ -2247,7 +2344,6 @@ def _run_single_rbf_identification(
                 "window_buffer_length": len(self._window_buffer),
                 "state_update_interval": self.state_update_interval,
             }
-            self.update_policy(self.recent)
             self._observation = obs
             self._env_state = env_info["latent_state"]
             self._model_state = self.model.get_state()
@@ -2294,25 +2390,31 @@ def _run_single_rbf_identification(
     )
     eval_x, eval_y = np.meshgrid(eval_axis, eval_axis, indexing="xy")
     eval_states = np.stack([eval_x.reshape(-1), eval_y.reshape(-1)], axis=1)
-    last_weight_mean = [model.e["m"].detach().clone()]
+    last_weight_mean = [_resolve_parameter_mean(model=model, policy=policy).detach().clone()]
 
     def _on_step_end(transition: dict[str, Any]) -> None:
         step = int(experiment.env_step)
         cpu_time_sec = float(time.perf_counter() - perf_start)
-        weight_vec = model.e["m"].detach()
+        weight_vec = _resolve_parameter_mean(model=model, policy=policy).detach()
         weight_mat = (
             weight_vec.reshape(-1, dz).detach().cpu().numpy().astype(np.float64, copy=False)
         )
+        precision = _resolve_parameter_precision(model=model, policy=policy)
         precision_mat = (
-            model.weight_precision().detach().cpu().numpy().astype(np.float64, copy=False)
+            precision.detach().cpu().numpy().astype(np.float64, copy=False)
+            if precision is not None
+            else np.zeros((1, weight_vec.numel(), weight_vec.numel()), dtype=np.float64)
         )
+        covariance = _resolve_parameter_covariance(model=model, policy=policy)
         covariance_diag = (
-            torch.diagonal(model.e["P"], dim1=-2, dim2=-1)
+            torch.diagonal(covariance, dim1=-2, dim2=-1)
             .detach()
             .reshape(-1, dz)
             .cpu()
             .numpy()
             .astype(np.float64, copy=False)
+            if covariance is not None
+            else np.zeros_like(weight_mat)
         )
         dynamics_mse = _rbf_dynamics_mse(
             system_id=system_spec.system_id,

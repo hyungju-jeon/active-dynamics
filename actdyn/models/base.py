@@ -399,14 +399,16 @@ class BaseModel(nn.Module):
 
         return observation, info
 
-    def update(self, recent: Rollout) -> Dict[str, Any]:
+    def update(self, recent: Rollout, update_theta: bool = True) -> Dict[str, Any]:
         """Update the model state given new observation and action."""
         # Extract the latest observation and action from the recent rollout
         observation = recent["next_obs"]
         action = recent["action"]
 
         with torch.no_grad():
-            self._state = self.update_posterior_embedding(y=observation, u=action)
+            self._state = self.update_posterior_embedding(
+                y=observation, u=action, update_theta=update_theta
+            )
             if self.action_encoder is not None and action is not None:
                 encoded_action = self.action_encoder(action, self._state)
             else:
