@@ -17,6 +17,14 @@ __all__ = [
     "format_list",
     "to_np",
     "eps",
+    "write_trace_csv",
+    "to_xy_pair",
+    "as_bool",
+    "extract_remaining_plan_actions",
+    "apply_loglinear_loading_asymmetry",
+    "predict_planned_xy_trajectory",
+    "extract_rollout_metrics",
+    "trajectory_r2_planar_system",
 ]
 
 
@@ -41,6 +49,40 @@ def __getattr__(name: str):
             "RolloutBuffer": RolloutBuffer,
             "RecentRollout": RecentRollout,
         }[name]
+
+    if name in {
+        "write_trace_csv",
+        "to_xy_pair",
+        "as_bool",
+        "extract_remaining_plan_actions",
+        "apply_loglinear_loading_asymmetry",
+        "predict_planned_xy_trajectory",
+        "extract_rollout_metrics",
+    }:
+        from .experiment_runtime import (
+            apply_loglinear_loading_asymmetry,
+            as_bool,
+            extract_remaining_plan_actions,
+            extract_rollout_metrics,
+            predict_planned_xy_trajectory,
+            to_xy_pair,
+            write_trace_csv,
+        )
+
+        return {
+            "write_trace_csv": write_trace_csv,
+            "to_xy_pair": to_xy_pair,
+            "as_bool": as_bool,
+            "extract_remaining_plan_actions": extract_remaining_plan_actions,
+            "apply_loglinear_loading_asymmetry": apply_loglinear_loading_asymmetry,
+            "predict_planned_xy_trajectory": predict_planned_xy_trajectory,
+            "extract_rollout_metrics": extract_rollout_metrics,
+        }[name]
+
+    if name == "trajectory_r2_planar_system":
+        from .validation import trajectory_r2_planar_system
+
+        return trajectory_r2_planar_system
 
     if name == "VideoRecorder":
         from .video import VideoRecorder

@@ -120,33 +120,36 @@ def plot_vector_field(dynamics, ax=None, title=None, **kwargs):
         plt.colorbar(label="Speed", aspect=20)
 
 
-class PlanarResidualDynamics:
-    """Wrap a planar residual function so it can be passed to plot_vector_field."""
+class VectorFieldResidualDynamics:
+    """Wrap a vectorfield residual function so it can be passed to plot_vector_field."""
 
     def __init__(
         self,
         *,
-        system_id: str,
-        embedding,
+        dynamics_type: str,
+        dyn_params,
         residual_fn,
         dynamics_alpha: float = 1.0,
         device: str = "cpu",
     ) -> None:
-        self.system_id = str(system_id)
-        self.embedding = torch.as_tensor(embedding, dtype=torch.float32)
+        self.dynamics_type = str(dynamics_type)
+        self.dyn_params = dyn_params
         self.residual_fn = residual_fn
         self.dynamics_alpha = float(dynamics_alpha)
         self.device = torch.device(device)
 
     def __call__(self, state: torch.Tensor) -> torch.Tensor:
         state = torch.as_tensor(state, device=self.device, dtype=torch.float32)
-        embedding = self.embedding.to(self.device)
+        dyn_params = torch.as_tensor(self.dyn_params, device=self.device, dtype=torch.float32)
         return self.residual_fn(
-            self.system_id,
+            self.dynamics_type,
             state,
-            embedding,
+            dyn_params,
             dynamics_alpha=self.dynamics_alpha,
         )
+
+
+PlanarResidualDynamics = VectorFieldResidualDynamics
 
 
 class RbfVectorFieldDynamics:

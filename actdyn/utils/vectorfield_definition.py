@@ -37,12 +37,7 @@ class VectorField:
         """Set model parameters from a tensor, list, dict, or expanded arguments."""
 
         def _format_param_args(params_tensor: torch.Tensor) -> tuple[torch.Tensor, ...]:
-            param_args = []
-            for param in params_tensor.mT:
-                if params_tensor.shape[0] > 1 and param.ndim == 1:
-                    param = param.unsqueeze(-1)
-                param_args.append(param)
-            return tuple(param_args)
+            return tuple(params_tensor[..., idx] for idx in range(params_tensor.shape[-1]))
 
         if len(dyn_params) == 1 and isinstance(dyn_params[0], dict):
             self._set_params(**dyn_params[0])
@@ -86,8 +81,23 @@ class VectorField:
             return result.squeeze(0)
         return self.compute(x)
 
+    def _broadcast_param(self, param: torch.Tensor | float, x: torch.Tensor) -> torch.Tensor:
+        value = torch.as_tensor(param, dtype=x.dtype, device=x.device)
+        target = x[..., 0]
+        while value.ndim < target.ndim:
+            value = value.unsqueeze(-1)
+        return value
+
 
 class LimitCycle(VectorField):
+    """Stable radial limit cycle.
+
+    Equation:
+        dx/dt = x (d - r^2) - w y
+        dy/dt = y (d - r^2) + w x
+        r^2 = x^2 + y^2
+    """
+
     def __init__(
         self,
         dyn_params: torch.Tensor | list[float] | Dict[str, float] = None,
@@ -117,6 +127,14 @@ class LimitCycle(VectorField):
 
 
 class DoubleLimitCycle(VectorField):
+    """Double-ring limit-cycle field.
+
+    Equation:
+        dx/dt = x (d - r) - w y (2 d - r)
+        dy/dt = y (d - r) + w x (2 d - r)
+        r = sqrt(x^2 + y^2)
+    """
+
     def __init__(
         self,
         dyn_param: Optional[list[float]] | torch.Tensor = None,
@@ -145,7 +163,14 @@ class DoubleLimitCycle(VectorField):
 
 
 class BistableLimitCycle(VectorField):
-    """Smoothly blends two local limit cycles into a left/right bistable system."""
+    """Smoothly blends two local limit cycles into a left/right bistable system.
+
+    Equation:
+        f(x, y) = (1 - g(x)) f_L(x, y) + g(x) f_R(x, y)
+        g(x) = sigmoid(k x)
+        f_c(p, q) = [p (r0 - rho) - omega q, q (r0 - rho) + omega p]
+        rho = sqrt(p^2 + q^2), p = x - c, q = y
+    """
 
     def __init__(
         self,
@@ -185,6 +210,12 @@ class BistableLimitCycle(VectorField):
 
 # TODO: Fix the code to match the new structure
 class MultiAttractor(VectorField):
+    """Random smooth multi-attractor field sampled on a grid.
+
+    Equation:
+        f(x) = alpha * normalize(f_GP(x)) - w_att ||x|| x
+        f_GP sampled from a zero-mean RBF Gaussian-process prior on the grid
+    """
 
     def __init__(
         self,
@@ -282,7 +313,12 @@ class MultiAttractor(VectorField):
 
 
 class VanDerPol(VectorField):
-    """Van der Pol oscillator"""
+    """Van der Pol oscillator.
+
+    Equation:
+        dx/dt = y
+        dy/dt = mu (1 - x^2) y - w x
+    """
 
     def __init__(
         self,
@@ -302,8 +338,10 @@ class VanDerPol(VectorField):
         self.w = w
 
     def compute(self, x: torch.Tensor) -> torch.Tensor:
+        mu = self._broadcast_param(self.mu, x)
+        w = self._broadcast_param(self.w, x)
         U = x[..., 1]
-        V = self.mu * (1 - x[..., 0] ** 2) * x[..., 1] - self.w * x[..., 0]
+        V = mu * (1 - x[..., 0] ** 2) * x[..., 1] - w * x[..., 0]
 
         U = self.alpha * U
         V = self.alpha * V
@@ -312,7 +350,12 @@ class VanDerPol(VectorField):
 
 
 class Duffing(VectorField):
-    """Duffing oscillator"""
+    """Duffing oscillator.
+
+    Equation:
+        dx/dt = y
+        dy/dt = a y - b x - c x^3
+    """
 
     def __init__(
         self,
@@ -334,16 +377,161 @@ class Duffing(VectorField):
         self.c = c
 
     def compute(self, x: torch.Tensor) -> torch.Tensor:
+        a = self._broadcast_param(self.a, x)
+        b = self._broadcast_param(self.b, x)
+        c = self._broadcast_param(self.c, x)
         U = x[..., 1]
-        V = self.a * x[..., 1] - x[..., 0] * (self.b + self.c * x[..., 0] ** 2)
+        V = a * x[..., 1] - x[..., 0] * (b + c * x[..., 0] ** 2)
         U = self.alpha * U
         V = self.alpha * V
 
         return torch.stack([U, V], dim=-1)
 
 
+class AsymmetricBasin(VectorField):
+    """Duffing-style asymmetric two-basin system with gated parameters.
+
+    Equation:
+        dx/dt = y
+        dy/dt = a_eff(x) y - b_eff(x) x - c x^3
+        a_eff(x) = (1 - g(x)) a_left + g(x) a_right
+        b_eff(x) = (1 - g(x)) b_left + g(x) b_right
+        g(x) = sigmoid(k x)
+    """
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.gate_sharpness = float(kwargs.get("gate_sharpness", 3.0))
+        self.c = float(kwargs.get("cubic", 0.1))
+        if dyn_param is None:
+            self.a_left = -1.2
+            self.b_left = -0.8
+            self.a_right = 0.55
+            self.b_right = 0.1
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, a_left=-1.2, b_left=-0.8, a_right=0.55, b_right=0.1):
+        self.a_left = a_left
+        self.b_left = b_left
+        self.a_right = a_right
+        self.b_right = b_right
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        a_left = self._broadcast_param(self.a_left, x)
+        b_left = self._broadcast_param(self.b_left, x)
+        a_right = self._broadcast_param(self.a_right, x)
+        b_right = self._broadcast_param(self.b_right, x)
+        gate = torch.sigmoid(self.gate_sharpness * x[..., 0])
+        a_eff = (1.0 - gate) * a_left + gate * a_right
+        b_eff = (1.0 - gate) * b_left + gate * b_right
+        U = x[..., 1]
+        V = a_eff * x[..., 1] - b_eff * x[..., 0] - self.c * x[..., 0] ** 3
+        U = self.alpha * U
+        V = self.alpha * V
+        return torch.stack([U, V], dim=-1)
+
+
+class MultiStable(VectorField):
+    """Gaussian-well multistable dynamics with local contraction and swirl.
+
+    Equation:
+        f(x) = sum_i exp(-||x-c_i||^2 / (2 sigma^2))
+               * ( -a_i (x-c_i) + w_i R_90 (x-c_i) )
+        R_90 [u, v] = [-v, u]
+
+    The Gaussian envelope makes both the drift and its state/parameter Jacobians decay
+    rapidly away from the attractor region. The learned embedding remains backward
+    compatible with the original four amplitude parameters; the swirl strengths use
+    fixed defaults unless explicitly provided.
+    """
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.sigma = float(kwargs.get("sigma", 1))
+        center_scale = float(kwargs.get("center_scale", 2))
+        self._centers = torch.tensor(
+            [
+                [-center_scale, center_scale],
+                [center_scale, center_scale],
+                [-center_scale, -center_scale],
+                [center_scale, -center_scale],
+            ],
+            dtype=torch.float32,
+            device=self.device,
+        )
+        if dyn_param is None:
+            self.set_params([1.15, -0.1, -0.2, 1.5])
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(
+        self,
+        a_nw=1.15,
+        a_ne=0.95,
+        a_sw=1.05,
+        a_se=0.85,
+        w_nw=1.55,
+        w_ne=-0.25,
+        w_sw=-0.40,
+        w_se=-2.0,
+    ):
+        self.a_nw = a_nw
+        self.a_ne = a_ne
+        self.a_sw = a_sw
+        self.a_se = a_se
+        self.w_nw = w_nw
+        self.w_ne = w_ne
+        self.w_sw = w_sw
+        self.w_se = w_se
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        centers = self._centers.to(device=x.device, dtype=x.dtype)
+        disp = x.unsqueeze(-2) - centers
+        r2 = torch.sum(disp * disp, dim=-1)
+        sigma2 = max(self.sigma**2, 1e-6)
+        envelope = torch.exp(-0.5 * r2 / sigma2)
+        amplitudes = torch.stack(
+            [
+                self._broadcast_param(self.a_nw, x),
+                self._broadcast_param(self.a_ne, x),
+                self._broadcast_param(self.a_sw, x),
+                self._broadcast_param(self.a_se, x),
+            ],
+            dim=-1,
+        )
+        rotations = torch.stack(
+            [
+                self._broadcast_param(self.w_nw, x),
+                self._broadcast_param(self.w_ne, x),
+                self._broadcast_param(self.w_sw, x),
+                self._broadcast_param(self.w_se, x),
+            ],
+            dim=-1,
+        )
+        tangent = torch.stack((-disp[..., 1], disp[..., 0]), dim=-1)
+        local_field = -amplitudes.unsqueeze(-1) * disp + rotations.unsqueeze(-1) * tangent
+        field = torch.sum(envelope.unsqueeze(-1) * local_field, dim=-2)
+        return self.alpha * field
+
+
 class DampedPendulum(VectorField):
-    """Damped pendulum with learnable damping and gravity scale."""
+    """Damped pendulum with learnable damping and gravity scale.
+
+    Equation:
+        dtheta/dt = omega
+        domega/dt = damping * omega - gravity * sin(theta)
+    """
 
     def __init__(
         self,
@@ -363,15 +551,22 @@ class DampedPendulum(VectorField):
         self.gravity = gravity
 
     def compute(self, x: torch.Tensor) -> torch.Tensor:
+        damping = self._broadcast_param(self.damping, x)
+        gravity = self._broadcast_param(self.gravity, x)
         U = x[..., 1]
-        V = self.damping * x[..., 1] - self.gravity * torch.sin(x[..., 0])
+        V = damping * x[..., 1] - gravity * torch.sin(x[..., 0])
         U = self.alpha * U
         V = self.alpha * V
         return torch.stack([U, V], dim=-1)
 
 
 class DoubleIntegrator(VectorField):
-    """Controlled double-integrator with unknown drift bias and damping."""
+    """Controlled double-integrator with unknown drift bias and damping.
+
+    Equation:
+        dx/dt = v
+        dv/dt = bias - damping * v
+    """
 
     def __init__(
         self,
@@ -391,15 +586,22 @@ class DoubleIntegrator(VectorField):
         self.damping = damping
 
     def compute(self, x: torch.Tensor) -> torch.Tensor:
+        bias = self._broadcast_param(self.bias, x)
+        damping = self._broadcast_param(self.damping, x)
         U = x[..., 1]
-        V = self.bias - self.damping * x[..., 1]
+        V = bias - damping * x[..., 1]
         U = self.alpha * U
         V = self.alpha * V
         return torch.stack([U, V], dim=-1)
 
 
 class FitzHughNagumo(VectorField):
-    """FitzHugh-Nagumo excitable dynamics."""
+    """FitzHugh-Nagumo excitable dynamics.
+
+    Equation:
+        du/dt = u - u^3 / 3 - v + I_ext
+        dv/dt = (u + a - b v) / tau
+    """
 
     def __init__(
         self,
@@ -422,15 +624,25 @@ class FitzHughNagumo(VectorField):
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         """Compute FitzHugh-Nagumo velocity for state shape (..., 2)."""
 
-        U = x[..., 0] - (x[..., 0] ** 3) / 3.0 - x[..., 1] + self.i_ext
-        V = (x[..., 0] + self.a - self.b * x[..., 1]) / self.tau
+        a = self._broadcast_param(self.a, x)
+        b = self._broadcast_param(self.b, x)
+        tau = self._broadcast_param(self.tau, x)
+        i_ext = self._broadcast_param(self.i_ext, x)
+        U = x[..., 0] - (x[..., 0] ** 3) / 3.0 - x[..., 1] + i_ext
+        V = (x[..., 0] + a - b * x[..., 1]) / tau
         U = self.alpha * U
         V = self.alpha * V
         return torch.stack([U, V], dim=-1)
 
 
 class Hopf(VectorField):
-    """Generalized Hopf normal form with optional nonlinear frequency shift."""
+    """Generalized Hopf normal form with optional nonlinear frequency shift.
+
+    Equation:
+        dx/dt = (mu - r^2) x - (omega + beta r^2) y
+        dy/dt = (omega + beta r^2) x + (mu - r^2) y
+        r^2 = x^2 + y^2
+    """
 
     def __init__(
         self,
@@ -452,16 +664,27 @@ class Hopf(VectorField):
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         """Compute Hopf velocity for state shape (..., 2)."""
 
+        mu = self._broadcast_param(self.mu, x)
+        omega = self._broadcast_param(self.omega, x)
+        beta = self._broadcast_param(self.beta, x)
         radius_sq = x[..., 0] ** 2 + x[..., 1] ** 2
-        omega_eff = self.omega + self.beta * radius_sq
-        U = (self.mu - radius_sq) * x[..., 0] - omega_eff * x[..., 1]
-        V = omega_eff * x[..., 0] + (self.mu - radius_sq) * x[..., 1]
+        omega_eff = omega + beta * radius_sq
+        U = (mu - radius_sq) * x[..., 0] - omega_eff * x[..., 1]
+        V = omega_eff * x[..., 0] + (mu - radius_sq) * x[..., 1]
         U = self.alpha * U
         V = self.alpha * V
         return torch.stack([U, V], dim=-1)
 
 
 class SnowMan(VectorField):
+    """Two coupled limit cycles blended by a horizontal sigmoid gate.
+
+    Equation:
+        f(x, y) = s(x) f_R(x-d, y) + (1 - s(x)) f_L(x+d, y)
+        s(x) = sigmoid(beta x)
+        f_R, f_L are mirrored single-cycle fields around centers +/- d
+    """
+
     def __init__(
         self,
         dyn_param: Optional[list[float]] | torch.Tensor = None,
@@ -481,20 +704,22 @@ class SnowMan(VectorField):
         self.beta = beta
 
     def compute(self, x: torch.Tensor) -> torch.Tensor:
-        d = self.d
+        w = self._broadcast_param(self.w, x)
+        d = self._broadcast_param(self.d, x)
+        beta = self._broadcast_param(self.beta, x)
         r = torch.sqrt((x[..., 0] - d) ** 2 + x[..., 1] ** 2)
-        U1 = (x[..., 0] - d) * (d**2 - r**2) - self.w * x[..., 1]
-        V1 = x[..., 1] * (d**2 - r**2) + self.w * (x[..., 0] - d)
+        U1 = (x[..., 0] - d) * (d**2 - r**2) - w * x[..., 1]
+        V1 = x[..., 1] * (d**2 - r**2) + w * (x[..., 0] - d)
 
         r = torch.sqrt((x[..., 0] + d) ** 2 + x[..., 1] ** 2)
-        U2 = (x[..., 0] + d) * (d**2 - r**2) + self.w * x[..., 1]
-        V2 = x[..., 1] * (d**2 - r**2) - self.w * (x[..., 0] + d)
+        U2 = (x[..., 0] + d) * (d**2 - r**2) + w * x[..., 1]
+        V2 = x[..., 1] * (d**2 - r**2) - w * (x[..., 0] + d)
 
         U = self.alpha * (
-            torch.sigmoid(self.beta * x[..., 0]) * U1 + torch.sigmoid(-self.beta * x[..., 0]) * U2
+            torch.sigmoid(beta * x[..., 0]) * U1 + torch.sigmoid(-beta * x[..., 0]) * U2
         )
         V = self.alpha * (
-            torch.sigmoid(self.beta * x[..., 0]) * V1 + torch.sigmoid(-self.beta * x[..., 0]) * V2
+            torch.sigmoid(beta * x[..., 0]) * V1 + torch.sigmoid(-beta * x[..., 0]) * V2
         )
 
         return torch.stack([U, V], dim=-1)

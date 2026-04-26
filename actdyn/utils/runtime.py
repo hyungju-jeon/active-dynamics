@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
+import subprocess
 
 import numpy as np
 import torch
@@ -23,3 +25,35 @@ def ensure_dir(path: str | Path) -> str:
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
     return str(p)
+
+
+def repo_root() -> Path:
+    """Return the repository root based on the installed actdyn package layout."""
+    return Path(__file__).resolve().parents[2]
+
+
+def resolve_repo_path(path_like: str | Path) -> Path:
+    """Resolve an absolute path or interpret a relative path from the repo root."""
+    path = Path(path_like)
+    if path.is_absolute():
+        return path
+    return (repo_root() / path).resolve()
+
+
+def utc_now() -> str:
+    """Return the current UTC time in ISO-8601 format with a Z suffix."""
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def current_commit(*, short: bool = True) -> str:
+    """Return the current git commit hash for the repository, or 'unknown' on failure."""
+    rev = "--short" if short else "HEAD"
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", rev, "HEAD"] if short else ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_root()),
+            text=True,
+        ).strip()
+        return out or "unknown"
+    except Exception:
+        return "unknown"

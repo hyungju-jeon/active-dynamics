@@ -257,3 +257,98 @@ def _compute_average_r2(
 #     for i in range(r2m.shape[1]):
 #         for k in range(r2m.shape[0]):
 #             writer.add_scalar(f"validation/kstep/r2_mean_{i}", r2m[k, i], k + 1)
+
+
+
+def _pad_embedding_to_params(
+    embedding: torch.Tensor,
+    *,
+    full_params: np.ndarray,
+    min_embedding_dim: int,
+) -> torch.Tensor:
+    if embedding.shape[-1] < int(min_embedding_dim):
+        raise ValueError(
+            f"Embedding must have at least {min_embedding_dim} coordinates, got shape {tuple(embedding.shape)}."
+        )
+    full = torch.as_tensor(full_params, dtype=embedding.dtype, device=embedding.device)
+    if embedding.shape[-1] >= full.shape[0]:
+        return embedding[..., : full.shape[0]]
+    tail = full[embedding.shape[-1]:]
+    if embedding.ndim == 1:
+        return torch.cat((embedding, tail), dim=0)
+    tail = tail.reshape(*([1] * (embedding.ndim - 1)), -1).expand(*embedding.shape[:-1], -1)
+    return torch.cat((embedding, tail), dim=-1)
+
+
+def trajectory_r2_vectorfield(
+    e_est: torch.Tensor,
+    e_true: torch.Tensor,
+    *,
+    true_dynamics_type: str,
+    true_full_params: np.ndarray,
+    estimator_dynamics_type: str,
+    estimator_full_params: np.ndarray,
+    true_min_embedding_dim: int,
+    estimator_min_embedding_dim: int,
+    dt: float,
+    dynamics_alpha: float,
+    horizon: int,
+    n_starts: int,
+    rng: np.random.Generator,
+    device,
+) -> float:
+    from actdyn.environment.vectorfield import residual_torch
+
+    starts = torch.as_tensor(
+        rng.uniform(low=-3.0, high=3.0, size=(n_starts, 2)),
+        dtype=torch.float32,
+        device=device,
+    )
+    e_true_batch = e_true.reshape(1, -1).repeat(n_starts, 1)
+    e_est_batch = e_est.reshape(1, -1).repeat(n_starts, 1)
+
+    def _rollout(
+        z0: torch.Tensor,
+        embedding: torch.Tensor,
+        *,
+        dynamics_type: str,
+        full_params: np.ndarray,
+        min_embedding_dim: int,
+    ) -> torch.Tensor:
+        z = z0.clone()
+        dyn_params = _pad_embedding_to_params(
+            embedding, full_params=full_params, min_embedding_dim=min_embedding_dim
+        )
+        traj = [z]
+        for _ in range(int(horizon)):
+            drift = residual_torch(
+                dynamics_type,
+                z,
+                dyn_params,
+                dynamics_alpha=float(dynamics_alpha),
+            )
+            z = z + float(dt) * drift
+            traj.append(z)
+        return torch.stack(traj, dim=1)
+
+    with torch.no_grad():
+        traj_true = _rollout(
+            starts,
+            e_true_batch,
+            dynamics_type=true_dynamics_type,
+            full_params=np.asarray(true_full_params, dtype=np.float32),
+            min_embedding_dim=int(true_min_embedding_dim),
+        )
+        traj_est = _rollout(
+            starts,
+            e_est_batch,
+            dynamics_type=estimator_dynamics_type,
+            full_params=np.asarray(estimator_full_params, dtype=np.float32),
+            min_embedding_dim=int(estimator_min_embedding_dim),
+        )
+        y_true = traj_true.reshape(-1)
+        y_est = traj_est.reshape(-1)
+        sse = torch.sum((y_true - y_est) ** 2)
+        sst = torch.sum((y_true - torch.mean(y_true)) ** 2)
+    return 0.0 if float(sst.item()) <= 1e-12 else float((1.0 - sse / sst).item())
+
