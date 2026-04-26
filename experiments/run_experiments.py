@@ -392,32 +392,17 @@ def _build_metric(
     ambiguity_temperature: float | None = None,
     ensemble_kind: str | None = None,
 ):
-    if __package__ in {None, ""}:
-        from experiments.cosyne.objectives import (
-            dynamics as build_dynamics_metric,
-            e_optimality as build_e_optimality_metric,
-            fully_observable_parameter_eig,
-            parameter_eig,
-            model_predictive_variance as build_model_predictive_variance_metric,
-            sampling_variance as build_sampling_variance_metric,
-            state_variance as build_state_variance_metric,
-            state_variance as build_state_variance_metric,
-            shrinkage_parameter_eig,
-            state_information as build_state_information_metric,
-        )
-    else:
-        from .cosyne.objectives import (
-            ambiguity_aware_parameter_eig,
-            dynamics as build_dynamics_metric,
-            e_optimality as build_e_optimality_metric,
-            fully_observable_parameter_eig,
-            parameter_eig,
-            model_predictive_variance as build_model_predictive_variance_metric,
-            sampling_variance as build_sampling_variance_metric,
-            state_variance as build_state_variance_metric,
-            shrinkage_parameter_eig,
-            state_information as build_state_information_metric,
-        )
+    from actdyn.metrics.objectives import (
+        ambiguity_aware_parameter_eig,
+        dynamics as build_dynamics_metric,
+        e_optimality as build_e_optimality_metric,
+        fully_observable_parameter_eig,
+        parameter_eig,
+        sampling_variance as build_sampling_variance_metric,
+        state_variance as build_state_variance_metric,
+        shrinkage_parameter_eig,
+        state_information as build_state_information_metric,
+    )
 
     if objective_kind == "parameter_eig":
         return parameter_eig(model=model, Fe_net=Fe_net, Fz_net=Fz_net, gamma=gamma, device=device)
@@ -482,14 +467,6 @@ def _build_metric(
             device=device,
             num_parameter_samples=int(sampling_variance_samples),
             sample_seed=sampling_variance_seed,
-        )
-    if objective_kind == "model_predictive_variance":
-        return build_model_predictive_variance_metric(
-            model=model,
-            Fe_net=Fe_net,
-            Fz_net=Fz_net,
-            gamma=gamma,
-            device=device,
         )
     if objective_kind == "state_variance":
         return build_state_variance_metric(
@@ -585,17 +562,6 @@ def _instantiate_synthetic_policy(
             planner_maxiter=500,
             warm_start=False,
             seed=int(seed),
-        )
-    if policy_type == "rhc-model-us":
-        return actdyn_module.policy.RecedingHorizonCuriosityModelUSPolicy(
-            metric=metric,
-            model=model,
-            device=device,
-            horizon=int(schedule_spec.planning_horizon),
-            num_iterations=int(mpc_num_iterations),
-            num_samples=int(mpc_num_samples),
-            num_elite=int(mpc_num_elite),
-            verbose=False,
         )
     if policy_type == "off-policy":
         return actdyn_module.policy.OffPolicy(action_space=env.action_space, device=device)
@@ -843,8 +809,21 @@ def _run_single_parameter_identification(
             ambiguity_temperature=getattr(policy_spec, "ambiguity_temperature", None),
             ensemble_kind=getattr(policy_spec, "ensemble_kind", None),
         )
+        action_cost_weight = float(getattr(policy_spec, "action_cost_weight", 0.01))
+        metrics = [base_metric]
+        weights = [1.0]
+        if action_cost_weight > 0.0:
+            metrics.append(
+                actdyn.metrics.NormalizedActionCost.from_action_bounds(
+                    (action_model.action_space.low, action_model.action_space.high),
+                    compute_type="sum",
+                    device=device,
+                    normalize_horizon=True,
+                )
+            )
+            weights.append(action_cost_weight)
         metric = actdyn.metrics.CompositeMetric(
-            metrics=[base_metric], compute_type="sum", weights=[1.0], device=device
+            metrics=metrics, compute_type="sum", weights=weights, device=device
         )
 
     policy = _instantiate_synthetic_policy(
@@ -1313,6 +1292,7 @@ def _run_single_parameter_identification(
             "q_theta_meas_coeff": float(q_theta_meas_coeff),
             "q_theta_max_scale": float(q_theta_max_scale),
             "eig_gamma": float(eig_gamma),
+            "action_cost_weight": float(getattr(policy_spec, "action_cost_weight", 0.01)),
             "sampling_variance_samples": int(sampling_variance_samples),
             "state_noise": float(noise_scale),
             "action_max": float(action_max),

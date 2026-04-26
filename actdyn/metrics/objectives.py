@@ -1,3 +1,5 @@
+"""Objective factory helpers for catalog-driven active-learning policies."""
+
 from __future__ import annotations
 
 from typing import Callable
@@ -665,4 +667,165 @@ def sampling_variance(
         num_parameter_samples=num_parameter_samples,
         sample_seed=sample_seed,
         device=device,
+    )
+
+
+class StateVarianceMetric(SamplingVarianceMetric):
+    """State-variance objective using theta samples from the current parameter posterior."""
+
+    def __init__(self, *, aggregation: str = "sum", **kwargs) -> None:
+        super().__init__(**kwargs)
+        if aggregation not in {"sum", "terminal"}:
+            raise ValueError(f"Unsupported aggregation={aggregation!r}")
+        self.aggregation = aggregation
+
+    def _predict_state_samples(
+        self,
+        *,
+        init_state: torch.Tensor,
+        encoded_actions: torch.Tensor,
+        theta_samples: torch.Tensor,
+    ) -> torch.Tensor:
+        if hasattr(self.model.dynamics, "sample_forward"):
+            batch, steps, _ = encoded_actions.shape
+            num_samples = int(theta_samples.shape[0])
+            state_batch = init_state.unsqueeze(0).expand(num_samples, -1, -1, -1).reshape(
+                num_samples * batch, 1, -1
+            )
+            action_batch = encoded_actions.unsqueeze(0).expand(num_samples, -1, -1, -1).reshape(
+                num_samples * batch, steps, -1
+            )
+            theta_batch = theta_samples.unsqueeze(1).expand(num_samples, batch, -1).reshape(
+                num_samples * batch, -1
+            )
+            current_theta = self.model.e["m"].detach().clone()
+            try:
+                with torch.no_grad():
+                    self.model.dynamics.set_params(theta_batch)
+                    samples, _mus, _vars = self.model.dynamics.sample_forward(
+                        init_z=state_batch,
+                        action=action_batch,
+                        k_step=steps,
+                        return_traj=True,
+                        add_noise=False,
+                    )
+                    traj = torch.cat(samples[1:], dim=-2)
+            finally:
+                self.model.dynamics.set_params(current_theta)
+            return traj.reshape(num_samples, batch, steps, -1)
+        if not hasattr(self.model, "predict"):
+            raise AttributeError("StateVarianceMetric requires dynamics.sample_forward or model.predict")
+        batch, _steps, _ = encoded_actions.shape
+        original_state = None
+        if hasattr(self.model, "_state"):
+            original_state = self.model._state.detach().clone()
+        current_theta = self.model.e["m"].detach().clone()
+        state_samples = []
+        try:
+            for theta in theta_samples:
+                theta_batch = theta.unsqueeze(0)
+                if hasattr(self.model, "set_params"):
+                    self.model.set_params(theta_batch)
+                else:
+                    self.model.dynamics.set_params(theta_batch)
+                if original_state is not None:
+                    state_seed = init_state if init_state.shape[0] == batch else init_state.expand(batch, -1, -1)
+                    self.model._state = state_seed.detach().clone()
+                traj = self.model.predict(encoded_actions)
+                state_samples.append(traj)
+        finally:
+            if hasattr(self.model, "set_params"):
+                self.model.set_params(current_theta)
+            else:
+                self.model.dynamics.set_params(current_theta)
+            if original_state is not None:
+                self.model._state = original_state
+        return torch.stack(state_samples, dim=0)
+
+    def compute_stepwise(self, rollout: dict) -> torch.Tensor:
+        actions, encoded_action_value = self._rollout_actions(rollout)
+        if actions is not None:
+            actions = actions.to(self.device).float()
+            if actions.ndim != 3:
+                actions = actions.unsqueeze(0)
+            batch, steps, _ = actions.shape
+        else:
+            if encoded_action_value is None:
+                raise KeyError(
+                    "StateVarianceMetric requires one of 'action', 'encoded_action', "
+                    "'env_action', or 'model_action' in rollout"
+                )
+            encoded_actions = encoded_action_value.to(self.device).float()
+            if encoded_actions.ndim != 3:
+                encoded_actions = encoded_actions.unsqueeze(0)
+            batch, steps, _ = encoded_actions.shape
+        rollout_states_value = self._rollout_get(rollout, "model_state")
+        if rollout_states_value is not None:
+            rollout_states = rollout_states_value.to(self.device).float()
+            if rollout_states.ndim != 3:
+                rollout_states = rollout_states.unsqueeze(0)
+            state0 = rollout_states[:, :1]
+            if state0.shape[0] == 1 and batch > 1:
+                state0 = state0.expand(batch, -1, -1).clone()
+        else:
+            if hasattr(self.model, "get_state"):
+                state0 = self.model.get_state().to(self.device).float()
+            else:
+                state0 = self.model._state.to(self.device).float()
+            if state0.ndim != 3:
+                state0 = state0.unsqueeze(0)
+            if state0.shape[0] == 1 and batch > 1:
+                state0 = state0.expand(batch, -1, -1).clone()
+        if encoded_action_value is not None:
+            if "encoded_actions" not in locals():
+                encoded_actions = encoded_action_value.to(self.device).float()
+                if encoded_actions.ndim != 3:
+                    encoded_actions = encoded_actions.unsqueeze(0)
+        else:
+            if actions is None:
+                raise KeyError("StateVarianceMetric cannot encode actions when rollout['action'] is missing")
+            encoded_actions = self._encode_actions(actions, state0)
+        theta_samples = self._sample_theta_belief()
+        state_stack = self._predict_state_samples(
+            init_state=state0,
+            encoded_actions=encoded_actions,
+            theta_samples=theta_samples,
+        )
+        var_diag = torch.var(
+            state_stack,
+            dim=0,
+            unbiased=self.num_parameter_samples > 1,
+        )
+        trace = var_diag.sum(dim=-1)
+        if self.aggregation == "terminal":
+            total = trace[:, -1]
+        else:
+            gamma_scale = torch.pow(
+                torch.full((steps,), self.gamma, dtype=state_stack.dtype, device=self.device),
+                torch.arange(steps, dtype=state_stack.dtype, device=self.device),
+            ).view(1, steps)
+            total = torch.sum(gamma_scale * trace, dim=-1)
+        self.current_cost = (-total).unsqueeze(-1)
+        return self.current_cost
+
+
+def state_variance(
+    *,
+    model: FilteringEmbedding,
+    Fe_net: Callable,
+    Fz_net: Callable,
+    gamma: float,
+    device: str,
+    num_parameter_samples: int,
+    sample_seed: int | None = None,
+    aggregation: str = "sum",
+) -> StateVarianceMetric:
+    del Fe_net, Fz_net
+    return StateVarianceMetric(
+        model=model,
+        gamma=gamma,
+        num_parameter_samples=num_parameter_samples,
+        sample_seed=sample_seed,
+        device=device,
+        aggregation=aggregation,
     )
