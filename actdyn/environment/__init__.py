@@ -13,12 +13,28 @@ import gymnasium as gym
 
 from .base import BaseAction, BaseObservation
 from .env_wrapper import EnvWrapper
+from .vectorfield import (
+    build_system_jacobians,
+    jacobian_param_torch,
+    jacobian_state_torch,
+    residual_np,
+    residual_torch,
+    rollout_no_input,
+    step_np,
+)
 
 __all__ = [
     "environment_from_str",
     "observation_from_str",
     "action_from_str",
     "EnvWrapper",
+    "residual_torch",
+    "residual_np",
+    "jacobian_state_torch",
+    "jacobian_param_torch",
+    "build_system_jacobians",
+    "rollout_no_input",
+    "step_np",
 ]
 
 _environment_map = {

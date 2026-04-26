@@ -17,7 +17,9 @@ from actdyn.utils.vectorfield_definition import (
     Duffing,
     FitzHughNagumo,
     Hopf,
+    MultiStable,
     SnowMan,
+    AsymmetricBasin,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence
 from actdyn.utils.visualize import plot_vector_field
@@ -30,12 +32,280 @@ vf_from_string = {
     "multi_attractor": MultiAttractor,
     "van_der_pol": VanDerPol,
     "duffing": Duffing,
+    "asymmetric_basin": AsymmetricBasin,
+    "multi_stable": MultiStable,
     "damped_pendulum": DampedPendulum,
     "double_integrator": DoubleIntegrator,
     "fitzhugh_nagumo": FitzHughNagumo,
     "hopf": Hopf,
     "snowman": SnowMan,
 }
+
+
+def build_vectorfield(
+    dynamics_type: str,
+    dyn_params: torch.Tensor | list[float] | Dict[str, float] | None = None,
+    *,
+    dynamics_alpha: float = 1.0,
+    device: torch.device | str = "cpu",
+):
+    if dynamics_type not in vf_from_string:
+        raise ValueError(f"Unknown dynamics type: {dynamics_type}")
+    vf_device = torch.device(device)
+    vf = vf_from_string[dynamics_type](device=str(vf_device), alpha=float(dynamics_alpha))
+    if dyn_params is not None:
+        value: torch.Tensor | Dict[str, float]
+        if isinstance(dyn_params, dict):
+            value = dyn_params
+        else:
+            value = torch.as_tensor(dyn_params, device=vf_device, dtype=torch.float32)
+        vf.set_params(value)
+    return vf
+
+
+def _state_device(state: torch.Tensor | np.ndarray, dyn_params: Any) -> torch.device:
+    if torch.is_tensor(state):
+        return state.device
+    if torch.is_tensor(dyn_params):
+        return dyn_params.device
+    return torch.device("cpu")
+
+
+def _align_dyn_params_torch(
+    state: torch.Tensor, dyn_params: torch.Tensor | list[float] | np.ndarray
+) -> torch.Tensor:
+    params = torch.as_tensor(dyn_params, dtype=torch.float32, device=state.device)
+    while params.ndim < state.ndim:
+        params = params.unsqueeze(-2)
+    return params
+
+
+def _align_dyn_params_np(
+    state: np.ndarray, dyn_params: np.ndarray | list[float] | torch.Tensor
+) -> np.ndarray:
+    params = np.asarray(dyn_params, dtype=np.float64)
+    while params.ndim < state.ndim:
+        params = np.expand_dims(params, axis=-2)
+    return params
+
+
+def _batched_jacobian(output: torch.Tensor, wrt: torch.Tensor) -> torch.Tensor:
+    with torch.enable_grad():
+        flat_output = output.reshape(-1, output.shape[-1])
+        rows = []
+        for out_idx in range(flat_output.shape[-1]):
+            grads = torch.autograd.grad(
+                flat_output[:, out_idx].sum(),
+                wrt,
+                retain_graph=out_idx < flat_output.shape[-1] - 1,
+                create_graph=True,
+                allow_unused=False,
+            )[0]
+            rows.append(grads)
+        jac = torch.stack(rows, dim=-2)
+    return jac.reshape(*wrt.shape[:-1], output.shape[-1], wrt.shape[-1])
+
+
+def residual_torch(
+    dynamics_type: str,
+    state: torch.Tensor,
+    dyn_params: torch.Tensor | list[float] | Dict[str, float],
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    device = _state_device(state, dyn_params)
+    state_t = torch.as_tensor(state, dtype=torch.float32, device=device)
+    params_t: torch.Tensor | Dict[str, float]
+    if isinstance(dyn_params, dict):
+        params_t = dyn_params
+    else:
+        params_t = _align_dyn_params_torch(state_t, dyn_params)
+    flat_state = state_t.reshape(-1, state_t.shape[-1])
+    if isinstance(params_t, dict):
+        params_value: torch.Tensor | Dict[str, float] = params_t
+    else:
+        params_value = params_t.reshape(-1, params_t.shape[-1])
+    vf = build_vectorfield(
+        dynamics_type,
+        params_value,
+        dynamics_alpha=float(dynamics_alpha),
+        device=state_t.device,
+    )
+    drift = vf.compute(flat_state)
+    return drift.reshape(state_t.shape)
+
+
+def jacobian_state_torch(
+    dynamics_type: str,
+    state: torch.Tensor,
+    dyn_params: torch.Tensor | list[float] | Dict[str, float],
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    with torch.enable_grad():
+        device = _state_device(state, dyn_params)
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=device).detach().clone()
+        state_t.requires_grad_(True)
+        drift = residual_torch(
+            dynamics_type,
+            state_t,
+            dyn_params,
+            dynamics_alpha=float(dynamics_alpha),
+        )
+        return _batched_jacobian(drift, state_t)
+
+
+def jacobian_param_torch(
+    dynamics_type: str,
+    state: torch.Tensor,
+    dyn_params: torch.Tensor | list[float] | np.ndarray,
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    if isinstance(dyn_params, dict):
+        raise TypeError("jacobian_param_torch does not support dict-valued dyn_params")
+    with torch.enable_grad():
+        device = _state_device(state, dyn_params)
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=device)
+        params_t = _align_dyn_params_torch(state_t, dyn_params).detach().clone()
+        params_t.requires_grad_(True)
+        drift = residual_torch(
+            dynamics_type,
+            state_t,
+            params_t,
+            dynamics_alpha=float(dynamics_alpha),
+        )
+        return _batched_jacobian(drift, params_t)
+
+
+def residual_np(
+    dynamics_type: str,
+    state: np.ndarray,
+    dyn_params: np.ndarray | list[float] | Dict[str, float],
+    *,
+    dynamics_alpha: float,
+) -> np.ndarray:
+    state_np = np.asarray(state, dtype=np.float32)
+    if isinstance(dyn_params, dict):
+        params_t: torch.Tensor | Dict[str, float] = dyn_params
+    else:
+        params_t = torch.as_tensor(
+            _align_dyn_params_np(state_np, dyn_params), dtype=torch.float32
+        )
+    state_t = torch.as_tensor(state_np, dtype=torch.float32)
+    with torch.no_grad():
+        drift = residual_torch(
+            dynamics_type,
+            state_t,
+            params_t,
+            dynamics_alpha=float(dynamics_alpha),
+        )
+    return drift.cpu().numpy().astype(np.float64, copy=False)
+
+
+
+def _pad_embedding_to_params(
+    embedding: torch.Tensor,
+    *,
+    full_params: torch.Tensor | np.ndarray | Sequence[float],
+    min_embedding_dim: int,
+) -> torch.Tensor:
+    if embedding.shape[-1] < int(min_embedding_dim):
+        raise ValueError(
+            f"Embedding must have at least {min_embedding_dim} coordinates, got shape {tuple(embedding.shape)}."
+        )
+    full = torch.as_tensor(full_params, dtype=embedding.dtype, device=embedding.device)
+    if embedding.shape[-1] >= full.shape[0]:
+        return embedding[..., : full.shape[0]]
+    tail = full[embedding.shape[-1]:]
+    if embedding.ndim == 1:
+        return torch.cat((embedding, tail), dim=0)
+    tail = tail.reshape(*([1] * (embedding.ndim - 1)), -1).expand(*embedding.shape[:-1], -1)
+    return torch.cat((embedding, tail), dim=-1)
+
+
+def build_system_jacobians(
+    *,
+    dynamics_type: str,
+    full_params: torch.Tensor | np.ndarray | Sequence[float],
+    min_embedding_dim: int = 1,
+    dynamics_alpha: float,
+):
+    def _fe(z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
+        z_t = torch.as_tensor(z, dtype=torch.float32, device=z.device).detach()
+        e_t = torch.as_tensor(e, dtype=torch.float32, device=z_t.device).detach().clone()
+        e_t.requires_grad_(True)
+        drift = residual_torch(
+            dynamics_type,
+            z_t,
+            _pad_embedding_to_params(
+                e_t,
+                full_params=full_params,
+                min_embedding_dim=int(min_embedding_dim),
+            ),
+            dynamics_alpha=float(dynamics_alpha),
+        )
+        return _batched_jacobian(drift, e_t)
+
+    def _fz(z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
+        return jacobian_state_torch(
+            dynamics_type,
+            z,
+            _pad_embedding_to_params(
+                torch.as_tensor(e, dtype=torch.float32, device=z.device),
+                full_params=full_params,
+                min_embedding_dim=int(min_embedding_dim),
+            ),
+            dynamics_alpha=float(dynamics_alpha),
+        )
+
+    return _fe, _fz
+
+
+def rollout_no_input(
+    z0: torch.Tensor,
+    e: torch.Tensor,
+    *,
+    dynamics_type: str,
+    full_params: torch.Tensor | np.ndarray | Sequence[float],
+    min_embedding_dim: int = 1,
+    horizon: int,
+    dt: float,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    z = z0.clone()
+    dyn_params = _pad_embedding_to_params(
+        torch.as_tensor(e, dtype=torch.float32, device=z.device),
+        full_params=full_params,
+        min_embedding_dim=int(min_embedding_dim),
+    )
+    traj = [z]
+    for _ in range(int(horizon)):
+        drift = residual_torch(
+            dynamics_type,
+            z,
+            dyn_params,
+            dynamics_alpha=float(dynamics_alpha),
+        )
+        z = z + float(dt) * drift
+        traj.append(z)
+    return torch.stack(traj, dim=1)
+
+def step_np(
+    dynamics_type: str,
+    state: np.ndarray,
+    action: np.ndarray,
+    *,
+    dyn_params: np.ndarray | list[float] | Dict[str, float],
+    dt: float,
+    dynamics_alpha: float,
+    clip_limit: float,
+) -> np.ndarray:
+    next_state = np.asarray(state, dtype=np.float64) + float(dt) * (
+        residual_np(dynamics_type, state, dyn_params, dynamics_alpha=float(dynamics_alpha))
+        + np.asarray(action, dtype=np.float64)
+    )
+    return np.clip(next_state, -float(clip_limit), float(clip_limit))
 
 
 class VectorFieldEnv(gym.Env):
@@ -108,21 +378,13 @@ class VectorFieldEnv(gym.Env):
         """Set dynamics parameters."""
         if dyn_params is None:
             return  # Do nothing if no params provided
-
-        if isinstance(dyn_params, dict):
-            _dyn_params = torch.tensor(
-                [v for k, v in dyn_params.items()], device=self.device, dtype=torch.float32
-            )
-        elif isinstance(dyn_params, list):
-            _dyn_params = torch.tensor(dyn_params, device=self.device, dtype=torch.float32)
-        else:
-            _dyn_params = dyn_params.to(self.device, dtype=torch.float32)
-
-        if _dyn_params.ndim == 1:
-            _dyn_params = _dyn_params.unsqueeze(0)
-
         if hasattr(self.dynamics, "set_params"):
-            self.dynamics.set_params(*_dyn_params.mT)
+            value: torch.Tensor | Dict[str, float]
+            if isinstance(dyn_params, dict):
+                value = dyn_params
+            else:
+                value = torch.as_tensor(dyn_params, device=self.device, dtype=torch.float32)
+            self.dynamics.set_params(value)
 
     def compute_dynamics(self, state: torch.Tensor) -> torch.Tensor:
         """Compute vector field at given state."""
