@@ -236,6 +236,7 @@ class PolicySpec:
     ensemble_kind: str | None = None
     action_constraint: str | None = None
     action_radius: float | None = None
+    action_cost_weight: float = 0.01
     flex_regularization: float | None = None
     flex_parameter_step_clip: float | None = None
     flex_parameter_min: float | None = None
@@ -590,6 +591,7 @@ def load_catalog_bundle(
                 if spec.get("action_radius") is None
                 else float(spec.get("action_radius"))
             ),
+            action_cost_weight=float(spec.get("action_cost_weight", 0.01)),
             flex_regularization=(
                 None
                 if spec.get("flex_regularization") is None

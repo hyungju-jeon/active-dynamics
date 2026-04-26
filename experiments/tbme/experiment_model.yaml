@@ -112,12 +112,6 @@ models:
     schedule_id: u1_r1_h20
     save_acq_map: false
 
-  rhc_model_us:
-    objective_kind: model_predictive_variance
-    schedule_id: u1_r1_h20
-    policy_type: rhc-model-us
-    save_acq_map: false
-
   sched_h2_u1_r1:
     objective_kind: parameter_eig
     schedule_id: u1_r1_h2

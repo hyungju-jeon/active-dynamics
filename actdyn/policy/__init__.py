@@ -26,7 +26,6 @@ __all__ = [
     "WrapperFLEXPolicy",
     "OfficialFLEXPolicy",
     "RecedingHorizonCuriosityPolicy",
-    "RecedingHorizonCuriosityModelUSPolicy",
     "BaselineThompsonPolicy",
     "BaselineUCBPolicy",
     "AsyncMpcICem",
@@ -45,7 +44,6 @@ _policy_map = {
     "flex": (".baseline_flex", "FLEXPolicy"),
     "flex-official": (".baseline_flex_official", "OfficialFLEXPolicy"),
     "rhc": (".baseline_rhc", "RecedingHorizonCuriosityPolicy"),
-    "rhc-model-us": (".baseline_rhc_model_us", "RecedingHorizonCuriosityModelUSPolicy"),
     "baseline-thompson": (".baseline_thompson", "BaselineThompsonPolicy"),
     "baseline-ucb": (".baseline_ucb", "BaselineUCBPolicy"),
 }
@@ -65,8 +63,5 @@ def __getattr__(name: str):
         return getattr(module, name)
     if name == "RecedingHorizonCuriosityPolicy":
         module = importlib.import_module(".baseline_rhc", __package__)
-        return getattr(module, name)
-    if name == "RecedingHorizonCuriosityModelUSPolicy":
-        module = importlib.import_module(".baseline_rhc_model_us", __package__)
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
