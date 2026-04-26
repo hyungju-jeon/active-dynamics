@@ -8,6 +8,7 @@ import sys
 from typing import Any, Callable, Sequence
 
 import numpy as np
+import torch
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,11 +25,8 @@ if __package__ in {None, ""}:
         safe_float,
     )
     from experiment_specs import get_experiment_spec, list_experiment_ids
-    from experiments.cosyne.planar_systems import (
-        get_planar_system_spec,
-        has_planar_system_spec,
-        residual_torch,
-    )
+    from actdyn.environment.vectorfield import residual_torch
+    from actdyn.utils.validation import trajectory_r2_vectorfield
 else:
     from .experiment_common import (
         expected_loglinear_rate_hz,
@@ -43,13 +41,10 @@ else:
         safe_float,
     )
     from .experiment_specs import get_experiment_spec, list_experiment_ids
-    from .cosyne.planar_systems import (
-        get_planar_system_spec,
-        has_planar_system_spec,
-        residual_torch,
-    )
+    from actdyn.environment.vectorfield import residual_torch
+    from actdyn.utils.validation import trajectory_r2_vectorfield
 from actdyn.utils.visualize import (
-    PlanarResidualDynamics,
+    VectorFieldResidualDynamics,
     decorate_phase_space_axis,
     plot_vector_field,
 )
@@ -201,6 +196,167 @@ def aggregate_trace(
         fallback_name=fallback_name,
         extract_value=lambda row: safe_float(row.get(value_col)),
     )
+
+
+def _extract_embedding_vector(row: dict[str, Any]) -> np.ndarray | None:
+    values: list[tuple[int, float]] = []
+    for key, raw in row.items():
+        suffix = key.removeprefix("e")
+        if not key.startswith("e") or not suffix.isdigit():
+            continue
+        value = safe_float(raw)
+        if value is None:
+            return None
+        values.append((int(suffix), float(value)))
+    if not values:
+        return None
+    values.sort(key=lambda item: item[0])
+    if values[-1][0] != len(values) - 1:
+        return None
+    return np.asarray([value for _, value in values], dtype=np.float32)
+
+
+def _recompute_trajectory_trace_rows(
+    record: dict[str, Any],
+    *,
+    exp_spec: Any,
+    env_preset: Any,
+    interval: int = 10,
+) -> list[dict[str, Any]]:
+    emb_trace_path = _trace_path(
+        record,
+        metadata_key="embedding_estimate_trace_path",
+        fallback_name="embedding_estimate_trace.csv",
+    )
+    if emb_trace_path is None:
+        return []
+    embedding_rows = _read_trace_csv(emb_trace_path)
+    if not embedding_rows:
+        return []
+
+    metadata = record["metadata"]
+    true_embedding = metadata.get("embedding_true")
+    final_embedding = metadata.get("embedding_estimate")
+    if not isinstance(true_embedding, list) or not isinstance(final_embedding, list):
+        return []
+    expected_dim = max(len(true_embedding), len(final_embedding))
+    if expected_dim <= 0:
+        return []
+
+    out_rows: list[dict[str, Any]] = []
+    for row in embedding_rows:
+        step = safe_float(row.get("step"))
+        cpu_sec = safe_float(row.get("cpu_time_sec"))
+        if step is None:
+            continue
+        step_i = int(step)
+        if step_i % int(interval) != 0:
+            continue
+        embedding = _extract_embedding_vector(row)
+        if embedding is None or embedding.shape[0] < expected_dim:
+            return []
+        local_rng = np.random.default_rng(int(record["seed"]) * 100_000 + step_i + 137)
+        out_rows.append(
+            {
+                "step": step_i,
+                "cpu_time_sec": cpu_sec,
+                "trajectory_r2": trajectory_r2_vectorfield(
+                    e_est=torch.as_tensor(embedding[:expected_dim], dtype=torch.float32),
+                    e_true=torch.as_tensor(true_embedding[:expected_dim], dtype=torch.float32),
+                    true_dynamics_type=str(metadata.get("dynamics_type") or env_preset.resolved_dynamics_type()),
+                    true_full_params=np.asarray(
+                        metadata.get("true_params_full") or env_preset.resolved_true_params(),
+                        dtype=np.float32,
+                    ),
+                    estimator_dynamics_type=str(
+                        metadata.get("estimator_dynamics_type")
+                        or env_preset.resolved_dynamics_type(estimator=True)
+                    ),
+                    estimator_full_params=np.asarray(
+                        metadata.get("estimator_true_params_full")
+                        or env_preset.resolved_true_params(estimator=True),
+                        dtype=np.float32,
+                    ),
+                    true_min_embedding_dim=int(
+                        metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
+                    ),
+                    estimator_min_embedding_dim=int(
+                        metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
+                    ),
+                    dt=float(env_preset.dt),
+                    dynamics_alpha=float(env_preset.dynamics_alpha),
+                    horizon=int(
+                        metadata.get("trajectory_eval_horizon")
+                        or exp_spec.trajectory_eval_horizon
+                    ),
+                    n_starts=int(
+                        metadata.get("trajectory_eval_samples")
+                        or exp_spec.trajectory_eval_samples
+                    ),
+                    rng=local_rng,
+                    device="cpu",
+                ),
+                "traj_eval_horizon": int(
+                    metadata.get("trajectory_eval_horizon") or exp_spec.trajectory_eval_horizon
+                ),
+                "traj_eval_samples": int(
+                    metadata.get("trajectory_eval_samples") or exp_spec.trajectory_eval_samples
+                ),
+            }
+        )
+    return out_rows
+
+
+def aggregate_trajectory_r2_trace(
+    records: list[dict[str, Any]],
+    *,
+    exp_spec: Any,
+) -> list[dict[str, Any]]:
+    out_rows: list[dict[str, Any]] = []
+    for policy_id in sorted({str(r["policy_id"]) for r in records}):
+        subgroup = [r for r in records if str(r["policy_id"]) == policy_id]
+        by_step: dict[int, dict[str, list[float]]] = {}
+        for record in subgroup:
+            env_preset = get_environment_preset_from_metadata(record["metadata"])
+            trace_rows = _recompute_trajectory_trace_rows(
+                record,
+                exp_spec=exp_spec,
+                env_preset=env_preset,
+                interval=10,
+            )
+            if not trace_rows:
+                trace_path = _trace_path(
+                    record,
+                    metadata_key="trajectory_r2_trace_path",
+                    fallback_name="trajectory_r2_trace.csv",
+                )
+                trace_rows = [] if trace_path is None else _read_trace_csv(trace_path)
+            for row in trace_rows:
+                step = safe_float(row.get("step"))
+                value = safe_float(row.get("trajectory_r2"))
+                cpu_sec = safe_float(row.get("cpu_time_sec"))
+                if step is None or value is None:
+                    continue
+                step_i = int(step)
+                bucket = by_step.setdefault(step_i, {"value": [], "cpu": []})
+                bucket["value"].append(value)
+                if cpu_sec is not None:
+                    bucket["cpu"].append(cpu_sec)
+        for step_i in sorted(by_step):
+            values = by_step[step_i]["value"]
+            cpu_vals = by_step[step_i]["cpu"]
+            out_rows.append(
+                {
+                    "policy_id": policy_id,
+                    "step": step_i,
+                    "value_mean": float(np.mean(values)),
+                    "value_sem": _sample_sem(values),
+                    "cpu_time_sec_mean": float(np.mean(cpu_vals)) if cpu_vals else None,
+                    "n_points": len(values),
+                }
+            )
+    out_rows.sort(key=lambda row: (row["policy_id"], int(row["step"])))
+    return out_rows
 
 
 def _extract_parameter_covariance_trace(row: dict[str, Any]) -> float | None:
@@ -419,6 +575,7 @@ def _plot_curves(
         ax.set_xlabel("Environment Step")
         ax.set_ylabel("Trajectory R2 (mean ± SEM)")
         ax.set_title("Trajectory R2 Over Steps")
+        ax.set_ylim(0.0, 1.0)
         ax.grid(alpha=0.2)
         ax.legend(loc="best")
         fig.tight_layout()
@@ -496,15 +653,13 @@ def _plot_neuron_tuning_curve_colormap(
     if not seed_refs:
         return
     metadata = dict(seed_refs[0]["metadata"])
-    if not has_planar_system_spec(str(metadata.get("system_id", "")).strip()):
-        return
     try:
         import matplotlib.pyplot as plt
     except Exception:
         return
 
     env_preset = get_environment_preset_from_metadata(dict(seed_refs[0]["metadata"]))
-    grid_lim = float(env_preset.x_range)
+    grid_lim = float(env_preset.resolved_plot_limit())
     n_grid = 121
     axis = np.linspace(-grid_lim, grid_lim, n_grid, dtype=np.float32)
     xx, yy = np.meshgrid(axis, axis, indexing="xy")
@@ -558,15 +713,13 @@ def _plot_information_colormap(
     if not seed_refs:
         return
     metadata = dict(seed_refs[0]["metadata"])
-    if not has_planar_system_spec(str(metadata.get("system_id", "")).strip()):
-        return
     try:
         import matplotlib.pyplot as plt
     except Exception:
         return
 
     env_preset = get_environment_preset_from_metadata(dict(seed_refs[0]["metadata"]))
-    grid_lim = float(env_preset.x_range)
+    grid_lim = float(env_preset.resolved_plot_limit())
     n_grid = 121
     axis = np.linspace(-grid_lim, grid_lim, n_grid, dtype=np.float32)
     xx, yy = np.meshgrid(axis, axis, indexing="xy")
@@ -639,22 +792,15 @@ def _plot_trajectory_coverage(
         return
 
     metadata = dict(ref["metadata"])
-    system_id_raw = metadata.get("system_id")
-    system_id = (
-        str(system_id_raw).strip()
-        if isinstance(system_id_raw, str) and str(system_id_raw).strip()
-        else ("bistable_attractor" if metadata.get("hard_setup") else "single_attractor")
-    )
-    if not has_planar_system_spec(system_id):
+    env_preset = get_environment_preset_from_metadata(metadata)
+    if bool(getattr(env_preset, "real_data", False)):
         return
-    system_spec = get_planar_system_spec(system_id)
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=np.float32)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 0.7))
-    env_preset = get_environment_preset_from_metadata(metadata)
-    grid_lim = float(env_preset.x_range)
-    dyn_true = PlanarResidualDynamics(
-        system_id=system_spec.system_id,
-        embedding=theta_true,
+    grid_lim = float(env_preset.resolved_plot_limit())
+    dyn_true = VectorFieldResidualDynamics(
+        dynamics_type=env_preset.resolved_dynamics_type(),
+        dyn_params=env_preset.params_from_embedding(theta_true),
         residual_fn=residual_torch,
         dynamics_alpha=dynamics_alpha,
         device="cpu",
@@ -731,7 +877,8 @@ def _plot_trajectory_coverage(
     for idx in range(n_panels, n_rows * n_cols):
         axes[idx // n_cols, idx % n_cols].axis("off")
 
-    fig.suptitle(f"Trajectory Coverage on True {system_spec.label} Vector Field", y=0.98)
+    label = getattr(env_preset, "system_label", None) or env_preset.system_id
+    fig.suptitle(f"Trajectory Coverage on True {label} Vector Field", y=0.98)
     fig.tight_layout()
     _save_figure(fig, figures_dir / "trajectory_coverage_by_policy", figure_formats)
     plt.close(fig)
@@ -792,12 +939,7 @@ def main(argv: list[str] | None = None) -> int:
     trace_rows = aggregate_trace(
         records, metadata_key=trace_key, fallback_name=trace_name, value_col=trace_col
     )
-    traj_rows = aggregate_trace(
-        records,
-        metadata_key="trajectory_r2_trace_path",
-        fallback_name="trajectory_r2_trace.csv",
-        value_col="trajectory_r2",
-    )
+    traj_rows = aggregate_trajectory_r2_trace(records, exp_spec=exp_spec)
     cov_rows = aggregate_custom_trace(
         records,
         metadata_key="embedding_estimate_trace_path",

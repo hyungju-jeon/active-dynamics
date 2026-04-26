@@ -19,6 +19,7 @@ if __package__ in {None, ""}:
     from experiment_common import (
         expected_loglinear_rate_hz,
         frame_indices,
+        get_environment_preset_from_metadata,
         load_json,
         parse_csv_ints,
         reconstruct_loglinear_rate_model,
@@ -26,11 +27,12 @@ if __package__ in {None, ""}:
         resolve_session_root,
     )
     from experiment_specs import get_experiment_spec, list_experiment_ids
-    from experiments.cosyne.planar_systems import get_planar_system_spec, residual_torch
+    from actdyn.environment.vectorfield import residual_torch
 else:
     from .experiment_common import (
         expected_loglinear_rate_hz,
         frame_indices,
+        get_environment_preset_from_metadata,
         load_json,
         parse_csv_ints,
         reconstruct_loglinear_rate_model,
@@ -38,11 +40,11 @@ else:
         resolve_session_root,
     )
     from .experiment_specs import get_experiment_spec, list_experiment_ids
-    from .cosyne.planar_systems import get_planar_system_spec, residual_torch
+    from actdyn.environment.vectorfield import residual_torch
 from actdyn.utils.video import figure_to_rgb_array, write_video_frames
 from actdyn.utils.visualize import (
-    PlanarResidualDynamics,
     RbfVectorFieldDynamics,
+    VectorFieldResidualDynamics,
     annotate_action_arrow,
     decorate_phase_space_axis,
     make_lognorm,
@@ -536,13 +538,12 @@ def _render_rbf_vectorfield_video(
         key="acquisition_map_trace_path",
         fallback="acquisition_map_trace.npz",
     )
-    system_id = _system_id_from_metadata(metadata)
-    system_spec = get_planar_system_spec(system_id)
+    env_preset = get_environment_preset_from_metadata(metadata)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 1.0))
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=float)
-    dyn_true = PlanarResidualDynamics(
-        system_id=system_spec.system_id,
-        embedding=theta_true,
+    dyn_true = VectorFieldResidualDynamics(
+        dynamics_type=env_preset.resolved_dynamics_type(),
+        dyn_params=env_preset.params_from_embedding(theta_true),
         residual_fn=residual_torch,
         dynamics_alpha=dynamics_alpha,
     )
@@ -575,7 +576,7 @@ def _render_rbf_vectorfield_video(
         acq_trace=acq_trace,
         dyn_true=dyn_true,
         true_title=(
-            f"True {system_spec.label} VF "
+            f"True {getattr(env_preset, "system_label", None) or env_preset.system_id} VF "
             f"[t0,t1]=[{float(theta_true[0]):.3f}, {float(theta_true[1]):.3f}]"
         ),
         estimate_at_step=_estimate_at_step,
@@ -614,13 +615,12 @@ def render_acq_vectorfield_video(
         key="acquisition_map_trace_path",
         fallback="acquisition_map_trace.npz",
     )
-    system_id = _system_id_from_metadata(metadata)
-    system_spec = get_planar_system_spec(system_id)
+    env_preset = get_environment_preset_from_metadata(metadata)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 1.0))
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=float)
-    dyn_true = PlanarResidualDynamics(
-        system_id=system_spec.system_id,
-        embedding=theta_true,
+    dyn_true = VectorFieldResidualDynamics(
+        dynamics_type=env_preset.resolved_dynamics_type(),
+        dyn_params=env_preset.params_from_embedding(theta_true),
         residual_fn=residual_torch,
         dynamics_alpha=dynamics_alpha,
     )
@@ -632,14 +632,14 @@ def render_acq_vectorfield_video(
             dtype=float,
         )
         return (
-            PlanarResidualDynamics(
-                system_id=system_spec.system_id,
-                embedding=theta_est,
+            VectorFieldResidualDynamics(
+                dynamics_type=env_preset.resolved_dynamics_type(),
+                dyn_params=env_preset.params_from_embedding(theta_est),
                 residual_fn=residual_torch,
                 dynamics_alpha=dynamics_alpha,
             ),
             (
-                f"Inferred {system_spec.label} VF "
+                f"Inferred {getattr(env_preset, "system_label", None) or env_preset.system_id} VF "
                 f"[t0,t1]=[{float(theta_est[0]):.3f}, {float(theta_est[1]):.3f}]"
             ),
         )
@@ -658,7 +658,7 @@ def render_acq_vectorfield_video(
         acq_trace=acq_trace,
         dyn_true=dyn_true,
         true_title=(
-            f"True {system_spec.label} VF "
+            f"True {getattr(env_preset, "system_label", None) or env_preset.system_id} VF "
             f"[t0,t1]=[{float(theta_true[0]):.3f}, {float(theta_true[1]):.3f}]"
         ),
         estimate_at_step=_estimate_at_step,
