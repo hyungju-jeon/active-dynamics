@@ -16,10 +16,9 @@ EXPERIMENTS_DIR = TBME_DIR.parent
 
 
 EXP1_SUITES = [
-    "tbme_exp1_duffing_main",
-    "tbme_exp1_damped_pendulum_main",
-    "tbme_exp1_asymmetric_basin_main",
-    "tbme_exp1_multi_stable_main",
+    "exp1_duffing",
+    "exp1_damped_pendulum",
+    "exp1_asymmetric_basin",
 ]
 DEFAULT_BASE_DIR = "results/tbme/exp1"
 

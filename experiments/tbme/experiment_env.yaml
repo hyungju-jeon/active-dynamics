@@ -37,7 +37,6 @@ environments:
     observation_dim: 64
     mean_firing_rate_target: 35.0
 
-
   tbme_damped_pendulum:
     extends: tbme_duffing
     system_id: damped_pendulum

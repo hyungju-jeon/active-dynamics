@@ -7,8 +7,6 @@ to resolve policies by short names.
 from .base import BasePolicy, BaseMPC
 from .baseline_ce_mpc import BaselineCEMPCPolicy
 from .baseline_flex import FLEXPolicy
-from .baseline_flex_official import WrapperFLEXPolicy
-OfficialFLEXPolicy = WrapperFLEXPolicy
 from .baseline_prbs import BaselinePRBSPolicy
 from .baseline_random import BaselineRandomPolicy
 from .baseline_thompson import BaselineThompsonPolicy
@@ -23,8 +21,7 @@ __all__ = [
     "BaselineRandomPolicy",
     "BaselinePRBSPolicy",
     "BaselineCEMPCPolicy",
-    "WrapperFLEXPolicy",
-    "OfficialFLEXPolicy",
+    "FLEXPolicy",
     "RecedingHorizonCuriosityPolicy",
     "BaselineThompsonPolicy",
     "BaselineUCBPolicy",
@@ -42,7 +39,6 @@ _policy_map = {
     "baseline-prbs": (".baseline_prbs", "BaselinePRBSPolicy"),
     "baseline-ce-mpc": (".baseline_ce_mpc", "BaselineCEMPCPolicy"),
     "flex": (".baseline_flex", "FLEXPolicy"),
-    "flex-official": (".baseline_flex_official", "OfficialFLEXPolicy"),
     "rhc": (".baseline_rhc", "RecedingHorizonCuriosityPolicy"),
     "baseline-thompson": (".baseline_thompson", "BaselineThompsonPolicy"),
     "baseline-ucb": (".baseline_ucb", "BaselineUCBPolicy"),

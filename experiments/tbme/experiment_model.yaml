@@ -30,7 +30,7 @@ models:
     objective_kind: parameter_eig
     schedule_id: u1_r1_h20
     action_constraint: radius
-    coarse_dt_factor: 10
+    coarse_dt_factor: 20
     coarse_action_mapping: hold
 
   active_planning_async:
@@ -66,28 +66,16 @@ models:
     schedule_id: u1_r1_h1
     policy_type: flex
     save_acq_map: false
-
-  flex_true_state:
-    objective_kind: null
-    schedule_id: u1_r1_h1
-    policy_type: flex
-    save_acq_map: false
-
-  flex_official:
-    objective_kind: null
-    schedule_id: u1_r1_h1
-    policy_type: flex-official
-    save_acq_map: false
     flex_regularization: 0.01
     flex_parameter_step_clip: 0.5
     flex_parameter_min: -5.0
     flex_parameter_max: 5.0
     flex_lr: null
 
-  flex_official_true_state:
+  flex_true_state:
     objective_kind: null
     schedule_id: u1_r1_h1
-    policy_type: flex-official
+    policy_type: flex
     save_acq_map: false
     flex_regularization: 0.01
     flex_parameter_step_clip: 0.5

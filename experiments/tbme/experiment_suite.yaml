@@ -1,34 +1,5 @@
 suites:
-  tbme_debug_duffing_flex_state_source:
-    experiment_kind: parameter
-    total_steps: 2000
-    env_preset_id: tbme_duffing
-    model_ids:
-    - flex
-    - flex_true_state
-    summary_value_kind: parameter_error
-    summary_value_label: Parameter Error
-  tbme_debug_asymmetric_basin_flex_state_source:
-    experiment_kind: parameter
-    total_steps: 2000
-    env_preset_id: tbme_asymmetric_basin
-    model_ids:
-    - flex
-    - flex_true_state
-    summary_value_kind: parameter_error
-    summary_value_label: Parameter Error
-  tbme_debug_damped_pendulum_flex_state_source:
-    experiment_kind: parameter
-    total_steps: 2000
-    env_preset_id: tbme_damped_pendulum
-    model_ids:
-    - flex
-    - flex_true_state
-    - flex_official
-    - flex_official_true_state
-    summary_value_kind: parameter_error
-    summary_value_label: Parameter Error
-  tbme_exp1_duffing_main:
+  exp1_duffing:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_duffing
@@ -38,12 +9,11 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_damped_pendulum_main:
+  exp1_damped_pendulum:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_damped_pendulum
@@ -53,12 +23,11 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_asymmetric_basin_main:
+  exp1_asymmetric_basin:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_asymmetric_basin
@@ -68,12 +37,11 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_multi_stable_main:
+  exp1_multi_stable:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_multi_stable
@@ -83,12 +51,12 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_schedule_duffing:
+  
+  exp1_schedule_duffing:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_duffing
@@ -98,10 +66,10 @@ suites:
     - active_planning_u1_r5_h40
     - active_planning_u10_r10_h40
     - active_planning_u5_r10_h40
-    - flex_official
+    - flex
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_schedule_damped_pendulum:
+  exp1_schedule_damped_pendulum:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_damped_pendulum
@@ -111,10 +79,10 @@ suites:
     - active_planning_u1_r5_h40
     - active_planning_u10_r10_h40
     - active_planning_u5_r10_h40
-    - flex_official
+    - flex
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_schedule_asymmetric_basin:
+  exp1_schedule_asymmetric_basin:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_asymmetric_basin
@@ -124,23 +92,11 @@ suites:
     - active_planning_u1_r5_h40
     - active_planning_u10_r10_h40
     - active_planning_u5_r10_h40
-    - flex_official
+    - flex
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_schedule_multi_stable:
-    experiment_kind: parameter
-    total_steps: 2000
-    env_preset_id: tbme_multi_stable
-    model_ids:
-    - active_planning_u1_r1_h40
-    - active_planning_u5_r5_h40
-    - active_planning_u1_r5_h40
-    - active_planning_u10_r10_h40
-    - active_planning_u5_r10_h40
-    - flex_official
-    summary_value_kind: parameter_error
-    summary_value_label: Parameter Error
-  tbme_exp1_hard_duffing_asymmetric:
+
+  exp1_hard_duffing_asymmetric:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_duffing_asymmetric
@@ -150,12 +106,12 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_hard_duffing:
+  exp1_hard_duffing:
+    summary_value_label: Parameter Error
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_duffing_hard
@@ -165,12 +121,11 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp1_hard_damped_pendulum_asymmetry:
+  exp1_hard_damped_pendulum_asymmetry:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_damped_pendulum_asymmetry
@@ -180,12 +135,26 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp2_duffing_parameter_mismatch:
+  exp1_hard_asymmetric_basin:
+    experiment_kind: parameter
+    total_steps: 2000
+    env_preset_id: tbme_asymmetric_basin_hard
+    model_ids:
+    - active_planning
+    - active_myopic
+    - prbs
+    - random
+    - flex
+    - ensemble
+    - rhc
+    summary_value_kind: parameter_error
+    summary_value_label: Parameter Error  
+
+  exp2_duffing_parameter_mismatch:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_duffing_parameter_mismatch
@@ -195,12 +164,11 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp2_asymmetric_basin_parameter_mismatch:
+  exp2_asymmetric_basin_parameter_mismatch:
     experiment_kind: parameter
     total_steps: 2000
     env_preset_id: tbme_asymmetric_basin_parameter_mismatch
@@ -210,12 +178,11 @@ suites:
     - prbs
     - random
     - flex
-    - flex_official
     - ensemble
     - rhc
     summary_value_kind: parameter_error
     summary_value_label: Parameter Error
-  tbme_exp3_realdata_policy:
+  exp3_realdata_policy:
     experiment_kind: realdata
     total_steps: 256
     env_preset_id: tbme_mcrtt_spikes

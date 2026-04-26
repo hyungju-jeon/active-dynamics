@@ -576,18 +576,6 @@ def _instantiate_synthetic_policy(
         return actdyn_module.policy.FLEXPolicy(
             action_space=env.action_space,
             model=model,
-            initial_parameter_mean=initial_parameter_mean,
-            use_observed_state=use_observed_state,
-            device=device,
-        )
-    if policy_type == "flex-official":
-        initial_parameter_mean = None
-        if getattr(model, "e", None) is not None and "m" in model.e:
-            initial_parameter_mean = model.e["m"].detach().clone()
-        use_observed_state = str(policy_id).endswith("_true_state")
-        return actdyn_module.policy.OfficialFLEXPolicy(
-            action_space=env.action_space,
-            model=model,
             env_preset=env_preset,
             initial_parameter_mean=initial_parameter_mean,
             use_observed_state=use_observed_state,
