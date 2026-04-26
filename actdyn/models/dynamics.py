@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from functools import partial
 from os import read
 from einops import rearrange
@@ -73,7 +74,7 @@ class FunctionDynamics(BaseDynamics):
     Dynamics model using a user-defined function.
     """
 
-    def __init__(self, state_dim, dynamics_fn, device="cpu", **kwargs):
+    def __init__(self, state_dim, dynamics_fn, device="cpu", param_formatter=None, **kwargs):
         super().__init__(
             state_dim,
             dt=kwargs.get("dt", 1),
@@ -83,6 +84,39 @@ class FunctionDynamics(BaseDynamics):
         self.dynamics_fn = dynamics_fn
         self.network = dynamics_fn
         self.dyn_param = None
+        self.param_formatter = param_formatter
+
+    def _format_backend_params(
+        self, dyn_param: torch.Tensor
+    ) -> torch.Tensor | Dict[str, float]:
+        params: torch.Tensor | Dict[str, float] | list[float] = dyn_param
+        if self.param_formatter is not None:
+            params = self.param_formatter(dyn_param)
+        if isinstance(params, dict):
+            return params
+        param_tensor = torch.as_tensor(params, device=self.device, dtype=torch.float32)
+        if param_tensor.ndim == 1:
+            param_tensor = param_tensor.unsqueeze(0)
+        elif param_tensor.ndim == 3:
+            param_tensor = rearrange(param_tensor, "b T d -> (b T) d")
+        return param_tensor
+
+    def _sync_backend_params(self) -> None:
+        if not hasattr(self.dynamics_fn, "set_params"):
+            return
+        backend_params = self._format_backend_params(self.dyn_param)
+        if isinstance(backend_params, dict):
+            self.dynamics_fn.set_params(backend_params)
+            return
+        self.dynamics_fn.set_params(*backend_params.mT.to(self.device))
+
+    @staticmethod
+    def _supports_embedding_arg(dynamics_fn) -> bool:
+        try:
+            signature = inspect.signature(dynamics_fn)
+        except (TypeError, ValueError):
+            return False
+        return "e" in signature.parameters
 
     def set_params(self, dyn_param: torch.Tensor | list[float] | Dict[str, float]):
         """Set dynamics parameters.
@@ -140,15 +174,12 @@ class FunctionDynamics(BaseDynamics):
                 dyn_param = rearrange(dyn_param, "b T d -> (b T) d")
             self.dyn_param = dyn_param
 
-        # DESIGN FIX: Ensure dyn_param is tensor before using .mT
-        # Current: May fail if list/dict conversion above doesn't happen first
-        if hasattr(self.dynamics_fn, "set_params"):
-            self.dynamics_fn.set_params(*self.dyn_param.mT.to(self.device))
+        self._sync_backend_params()
         self.network = self.dynamics_fn
 
     def compute_param(self, state, e=None):
         if e is not None:
-            if "e" in self.dynamics_fn.__code__.co_varnames:
+            if self._supports_embedding_arg(self.dynamics_fn):
                 self.network = partial(self.dynamics_fn, e=e)
             else:
                 self.network = self.dynamics_fn
@@ -156,7 +187,7 @@ class FunctionDynamics(BaseDynamics):
 
     def sample_forward(self, e=None, **kwargs):
         if e is not None:
-            if "e" in self.dynamics_fn.__code__.co_varnames:
+            if self._supports_embedding_arg(self.dynamics_fn):
                 self.network = partial(self.dynamics_fn, e=e)
             else:
                 self.network = self.dynamics_fn

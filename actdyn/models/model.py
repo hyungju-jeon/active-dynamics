@@ -819,6 +819,9 @@ class FilteringEmbedding(BaseModel):
             info = info.mean(dim=0, keepdim=True)
         score = torch.nan_to_num(score, nan=0.0, posinf=1e6, neginf=-1e6)
         info = torch.nan_to_num(info, nan=0.0, posinf=1e6, neginf=-1e6)
+        self._last_theta_score_block_applied = score.detach().clone()
+        self._last_theta_info_block_applied = info.detach().clone()
+        self._last_theta_block_steps_applied = int(self._theta_block_steps)
 
         d_embed = self.e["m"].shape[-1]
         eye = torch.eye(d_embed, device=self.device).unsqueeze(0)
@@ -899,6 +902,9 @@ class FilteringEmbedding(BaseModel):
         self._ensure_state_belief_shapes(batch_size=batch)
         self.set_params(self.e["m"])
         self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
+        self._last_theta_score_block_applied = torch.zeros_like(self._theta_score_block)
+        self._last_theta_info_block_applied = torch.zeros_like(self._theta_info_block)
+        self._last_theta_block_steps_applied = 0
         self.last_information = {
             "I_z_t": 0.0,
             "I_theta_t": 0.0,
