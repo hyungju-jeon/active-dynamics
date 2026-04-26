@@ -9,6 +9,23 @@ import torch
 from .base import BasePolicy
 
 
+def _prbs_selection_order(num_items: int, budget: int) -> np.ndarray:
+    if num_items <= 0 or budget <= 0:
+        return np.zeros((0,), dtype=np.int64)
+    anchors = np.linspace(0.0, float(num_items - 1), int(budget))
+    order: list[int] = []
+    seen: set[int] = set()
+    for idx in np.round(anchors).astype(int).tolist():
+        idx_i = int(np.clip(idx, 0, num_items - 1))
+        if idx_i not in seen:
+            seen.add(idx_i)
+            order.append(idx_i)
+    for idx in range(num_items):
+        if idx not in seen:
+            order.append(idx)
+    return np.asarray(order[: min(num_items, budget)], dtype=np.int64)
+
+
 class BaselinePRBSPolicy(BasePolicy):
     """PRBS policy that holds binary-valued actions for fixed intervals."""
 

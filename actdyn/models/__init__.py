@@ -18,6 +18,7 @@ from .base import (
 from .decoder import Decoder
 from .model_wrapper import ModelWrapper
 from .model import SeqVae, FilteringEmbedding
+from .planning_surrogates import LocalRBFBayesianLinearDynamics, RFFBayesianLinearDynamics
 
 __all__ = [
     # Base classes
@@ -32,6 +33,8 @@ __all__ = [
     "ModelWrapper",
     "SeqVae",
     "FilteringEmbedding",
+    "RFFBayesianLinearDynamics",
+    "LocalRBFBayesianLinearDynamics",
     # Factory functions
     "mapping_from_str",
     "noise_from_str",

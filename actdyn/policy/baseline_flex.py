@@ -1,18 +1,4 @@
-"""FLEX policy with point parameter estimate and Gram matrix.
-
-FLEX in Blanke & Lelarge (ICML 2023) does not maintain a Bayesian parameter
-posterior. In this repo we therefore keep shared latent-state filtering in the
-model, but parameter estimation lives inside the policy as a point estimate plus
-an online Gram / information matrix. The inverse Gram is exposed only as a
-diagnostic proxy so the existing trace/export pipeline can remain unchanged.
-"""FLEX policy with point parameter estimate and Gram matrix.
-
-FLEX in Blanke & Lelarge (ICML 2023) does not maintain a Bayesian parameter
-posterior. In this repo we therefore keep shared latent-state filtering in the
-model, but parameter estimation lives inside the policy as a point estimate plus
-an online Gram / information matrix. The inverse Gram is exposed only as a
-diagnostic proxy so the existing trace/export pipeline can remain unchanged.
-"""
+"""FLEX policy adapted from the original implementation"""
 
 from __future__ import annotations
 
@@ -32,9 +18,6 @@ class FLEXPolicy(BasePolicy):
     """FLEX with policy-local point estimate and online Gram matrix."""
 
     owns_parameter_estimate = True
-    """FLEX with policy-local point estimate and online Gram matrix."""
-
-    owns_parameter_estimate = True
 
     def __init__(
         self,
@@ -42,14 +25,11 @@ class FLEXPolicy(BasePolicy):
         action_space: gym.Space,
         model: Any,
         initial_parameter_mean: torch.Tensor | None = None,
-        model: Any,
-        initial_parameter_mean: torch.Tensor | None = None,
         gram_init_scale: float = 1e-3,
         gram_ridge: float = 1e-8,
         parameter_step_clip: float = 0.25,
-        gram_ridge: float = 1e-8,
-        parameter_step_clip: float = 0.25,
         eps: float = 1e-8,
+        use_observed_state: bool = False,
         device: str = "cpu",
         **kwargs,
     ):
@@ -58,9 +38,8 @@ class FLEXPolicy(BasePolicy):
         self.gram_init_scale = float(max(gram_init_scale, 1e-12))
         self.gram_ridge = float(max(gram_ridge, 1e-12))
         self.parameter_step_clip = float(max(parameter_step_clip, 1e-8))
-        self.gram_ridge = float(max(gram_ridge, 1e-12))
-        self.parameter_step_clip = float(max(parameter_step_clip, 1e-8))
         self.eps = float(max(eps, 1e-12))
+        self.use_observed_state = bool(use_observed_state)
         self.parameter_clip = float(max(getattr(model, "e_clip", 100.0), 1.0))
         lr = getattr(model, "lr", None)
         self.learning_rate = None if lr is None else float(lr)
@@ -98,20 +77,18 @@ class FLEXPolicy(BasePolicy):
             "flex_gram_trace": float(torch.trace(self._gram).item()),
         }
 
-        action_low = np.asarray(getattr(self.action_space, "low", -1.0), dtype=np.float32).reshape(-1)
-        action_high = np.asarray(getattr(self.action_space, "high", 1.0), dtype=np.float32).reshape(-1)
+        action_low = np.asarray(getattr(self.action_space, "low", -1.0), dtype=np.float32).reshape(
+            -1
+        )
+        action_high = np.asarray(getattr(self.action_space, "high", 1.0), dtype=np.float32).reshape(
+            -1
+        )
         self._action_low = torch.as_tensor(action_low, dtype=torch.float32, device=self.device)
         self._action_high = torch.as_tensor(action_high, dtype=torch.float32, device=self.device)
         self._gamma = float(
             torch.min(torch.minimum(self._action_high.abs(), self._action_low.abs())).item()
         )
-        self._gamma = float(
-            torch.min(torch.minimum(self._action_high.abs(), self._action_low.abs())).item()
-        )
         if not math.isfinite(self._gamma) or self._gamma <= 0.0:
-            self._gamma = float(
-                torch.max(torch.maximum(self._action_high.abs(), self._action_low.abs())).item()
-            )
             self._gamma = float(
                 torch.max(torch.maximum(self._action_high.abs(), self._action_low.abs())).item()
             )
@@ -152,7 +129,6 @@ class FLEXPolicy(BasePolicy):
 
     def _current_embedding(self) -> torch.Tensor:
         return self._parameter_mean[:1]
-        return self._parameter_mean[:1]
 
     def _current_state(self, state: torch.Tensor) -> torch.Tensor:
         z = torch.as_tensor(state, dtype=torch.float32, device=self.device)
@@ -161,12 +137,10 @@ class FLEXPolicy(BasePolicy):
         elif z.dim() == 2:
             z = z.unsqueeze(1)
         return z[:1]
-        return z[:1]
 
     def _parameter_jacobian(self, z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
         fe = getattr(self.model, "Fe", None)
         if fe is None:
-            raise ValueError("FLEX requires model.Fe(z, e)")
             raise ValueError("FLEX requires model.Fe(z, e)")
         V = fe(z, e.unsqueeze(1))
         if V.dim() == 4:
@@ -175,32 +149,27 @@ class FLEXPolicy(BasePolicy):
             V = V.squeeze(0)
         return torch.as_tensor(V, dtype=torch.float32, device=self.device)
 
-    def _state_jacobian_of_feature(self, z_t: torch.Tensor, e: torch.Tensor, row_idx: int) -> torch.Tensor:
-        z_req = z_t.detach().clone().requires_grad_(True)
-        V = self._parameter_jacobian(z_req, e)
-        v = V[row_idx]
-        d_embed = int(v.shape[0])
-        d_state = int(z_req.shape[-1])
-        rows = []
-        for j in range(d_embed):
-            if not v[j].requires_grad:
-                rows.append(torch.zeros(d_state, dtype=z_req.dtype, device=self.device))
-                continue
-            grad = torch.autograd.grad(
-                v[j], z_req, retain_graph=j < d_embed - 1, allow_unused=True
-            )[0]
-            if grad is None:
-                grad = torch.zeros_like(z_req)
-            if not v[j].requires_grad:
-                rows.append(torch.zeros(d_state, dtype=z_req.dtype, device=self.device))
-                continue
-            grad = torch.autograd.grad(
-                v[j], z_req, retain_graph=j < d_embed - 1, allow_unused=True
-            )[0]
-            if grad is None:
-                grad = torch.zeros_like(z_req)
-            rows.append(grad.reshape(d_state))
-        return torch.stack(rows, dim=0)
+    def _state_jacobian_of_feature(
+        self, z_t: torch.Tensor, e: torch.Tensor, row_idx: int
+    ) -> torch.Tensor:
+        with torch.enable_grad():
+            z_req = z_t.detach().clone().requires_grad_(True)
+            V = self._parameter_jacobian(z_req, e)
+            v = V[row_idx]
+            d_embed = int(v.shape[0])
+            d_state = int(z_req.shape[-1])
+            rows = []
+            for j in range(d_embed):
+                if not v[j].requires_grad:
+                    rows.append(torch.zeros(d_state, dtype=z_req.dtype, device=self.device))
+                    continue
+                grad = torch.autograd.grad(
+                    v[j], z_req, retain_graph=j < d_embed - 1, allow_unused=True
+                )[0]
+                if grad is None:
+                    grad = torch.zeros_like(z_req)
+                rows.append(grad.reshape(d_state))
+            return torch.stack(rows, dim=0)
 
     def _action_jacobian(self, z_t: torch.Tensor) -> torch.Tensor:
         d_action = int(self._action_low.numel())
@@ -297,20 +266,12 @@ class FLEXPolicy(BasePolicy):
             tensor = tensor.unsqueeze(1)
         return tensor[:, -1:, :]
 
-    def _extract_last_tensor(self, rollout: Any, key: str) -> torch.Tensor | None:
-        value = rollout.get(key, None)
-        if value is None:
-            return None
-        tensor = torch.as_tensor(value, dtype=torch.float32, device=self.device)
-        if tensor.dim() == 1:
-            tensor = tensor.view(1, 1, -1)
-        elif tensor.dim() == 2:
-            tensor = tensor.unsqueeze(1)
-        return tensor[:, -1:, :]
-
     def get_action(self, state: torch.Tensor, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
-        del kwargs
-        z_t = self._current_state(state)
+        observed_state = kwargs.get("observed_state")
+        state_for_control = (
+            observed_state if self.use_observed_state and observed_state is not None else state
+        )
+        z_t = self._current_state(state_for_control)
         e_t = self._current_embedding()
         V_t = self._parameter_jacobian(z_t, e_t)
         row_idx = int(self._rng.integers(0, max(1, V_t.shape[0])))
@@ -326,7 +287,9 @@ class FLEXPolicy(BasePolicy):
         action_vec = self._solve_quadratic(Q, b)
         action_vec = torch.maximum(torch.minimum(action_vec, self._action_high), self._action_low)
         objective = action_vec @ (Q @ action_vec) - 2.0 * (b @ action_vec)
-        return action_vec.view(1, 1, -1), torch.tensor(float((-objective).item()), device=self.device)
+        return action_vec.view(1, 1, -1), torch.tensor(
+            float((-objective).item()), device=self.device
+        )
 
     def _rls_update(
         self,
@@ -338,30 +301,48 @@ class FLEXPolicy(BasePolicy):
     ) -> tuple[float, float]:
         theta = self._parameter_mean.reshape(-1)
         feature_matrix = torch.as_tensor(feature_matrix, dtype=torch.float32, device=self.device)
-        observation = torch.as_tensor(observation, dtype=torch.float32, device=self.device).reshape(-1)
-        action_effect = self._encode_action(state, action)
-        if action_effect is not None and action_effect.shape[-1] == observation.shape[0]:
-            observation = observation - action_effect.reshape(-1)
-        prediction = feature_matrix @ theta
+        observation = torch.as_tensor(observation, dtype=torch.float32, device=self.device).reshape(
+            -1
+        )
+        prediction_full = self._predict_derivative(
+            state,
+            action=action,
+            e=self._parameter_mean,
+        ).reshape(-1)
+        prediction_linear = feature_matrix @ theta
+        affine_correction = prediction_full - prediction_linear
+        observation = observation - affine_correction
+        prediction = prediction_linear
         residual_norm = float(torch.linalg.norm(observation - prediction).item())
         update_norm = 0.0
         for row_idx in range(feature_matrix.shape[0]):
             v = feature_matrix[row_idx]
             posterior_gram = self._gram + torch.outer(v, v)
             combination = self._gram @ theta + observation[row_idx] * v
-            theta_new = torch.linalg.solve(
-                posterior_gram + self.gram_ridge * torch.eye(self._parameter_dim, device=self.device),
+            theta_posterior = torch.linalg.solve(
+                posterior_gram
+                + self.gram_ridge * torch.eye(self._parameter_dim, device=self.device),
                 combination.unsqueeze(-1),
             ).squeeze(-1)
-            update_norm += float(torch.linalg.norm(theta_new - theta).item())
+            delta = torch.clamp(
+                theta_posterior - theta,
+                min=-self.parameter_step_clip,
+                max=self.parameter_step_clip,
+            )
+            theta_new = theta + delta
+            update_norm += float(torch.linalg.norm(delta).item())
             denom = 1.0 + (v @ self._gram_inv @ v)
             correction = (self._gram_inv @ v.unsqueeze(-1)) @ (v.unsqueeze(0) @ self._gram_inv)
             self._gram_inv = self._gram_inv - correction / denom.clamp_min(self.eps)
             self._gram = posterior_gram
             theta = theta_new
-        self._parameter_mean = torch.nan_to_num(
-            theta.unsqueeze(0), nan=0.0, posinf=self.parameter_clip, neginf=-self.parameter_clip
-        ).clamp(-self.parameter_clip, self.parameter_clip).detach()
+        self._parameter_mean = (
+            torch.nan_to_num(
+                theta.unsqueeze(0), nan=0.0, posinf=self.parameter_clip, neginf=-self.parameter_clip
+            )
+            .clamp(-self.parameter_clip, self.parameter_clip)
+            .detach()
+        )
         self._gram = 0.5 * (self._gram + self._gram.transpose(-1, -2))
         self._gram_inv = 0.5 * (self._gram_inv + self._gram_inv.transpose(-1, -2))
         return residual_norm, update_norm
@@ -376,7 +357,9 @@ class FLEXPolicy(BasePolicy):
     def _gradient_update(
         self, state: torch.Tensor, action: torch.Tensor | None, dx_dt: torch.Tensor
     ) -> tuple[float, float]:
-        default_action = torch.zeros(1, 1, self._action_low.numel(), dtype=torch.float32, device=self.device)
+        default_action = torch.zeros(
+            1, 1, self._action_low.numel(), dtype=torch.float32, device=self.device
+        )
         self._state_history.append(state.detach().clone())
         self._action_history.append((default_action if action is None else action.detach().clone()))
         self._dxdt_history.append(dx_dt.detach().clone())
@@ -394,13 +377,25 @@ class FLEXPolicy(BasePolicy):
         loss.backward()
         self._theta_optimizer.step()
 
-        theta_new = torch.nan_to_num(
+        theta_candidate = torch.nan_to_num(
             self._theta_param.detach().view(1, -1),
             nan=0.0,
             posinf=self.parameter_clip,
             neginf=-self.parameter_clip,
         ).clamp(-self.parameter_clip, self.parameter_clip)
-        update_norm = float(torch.linalg.norm(theta_new - self._parameter_mean).item())
+        delta = torch.clamp(
+            theta_candidate - self._parameter_mean,
+            min=-self.parameter_step_clip,
+            max=self.parameter_step_clip,
+        )
+        theta_new = torch.nan_to_num(
+            self._parameter_mean + delta,
+            nan=0.0,
+            posinf=self.parameter_clip,
+            neginf=-self.parameter_clip,
+        ).clamp(-self.parameter_clip, self.parameter_clip)
+        self._theta_param.data.copy_(theta_new.reshape(-1))
+        update_norm = float(torch.linalg.norm(delta).item())
         self._parameter_mean = theta_new
         feature_matrix = self._parameter_jacobian(state, self._parameter_mean)
         self._gram = self._gram + feature_matrix.transpose(-1, -2) @ feature_matrix

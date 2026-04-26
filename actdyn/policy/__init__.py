@@ -7,6 +7,8 @@ to resolve policies by short names.
 from .base import BasePolicy, BaseMPC
 from .baseline_ce_mpc import BaselineCEMPCPolicy
 from .baseline_flex import FLEXPolicy
+from .baseline_flex_official import WrapperFLEXPolicy
+OfficialFLEXPolicy = WrapperFLEXPolicy
 from .baseline_prbs import BaselinePRBSPolicy
 from .baseline_random import BaselineRandomPolicy
 from .baseline_thompson import BaselineThompsonPolicy
@@ -21,23 +23,29 @@ __all__ = [
     "BaselineRandomPolicy",
     "BaselinePRBSPolicy",
     "BaselineCEMPCPolicy",
-    "FLEXPolicy",
+    "WrapperFLEXPolicy",
+    "OfficialFLEXPolicy",
     "RecedingHorizonCuriosityPolicy",
+    "RecedingHorizonCuriosityModelUSPolicy",
     "BaselineThompsonPolicy",
     "BaselineUCBPolicy",
+    "AsyncMpcICem",
 ]
 
 import importlib
 
 _policy_map = {
     "mpc-icem": (".mpc", "MpcICem"),
+    "async-mpc-icem": (".mpc", "AsyncMpcICem"),
     "random": (".policy", "RandomPolicy"),
     "off-policy": (".policy", "OffPolicy"),
     "baseline-random": (".baseline_random", "BaselineRandomPolicy"),
     "baseline-prbs": (".baseline_prbs", "BaselinePRBSPolicy"),
     "baseline-ce-mpc": (".baseline_ce_mpc", "BaselineCEMPCPolicy"),
     "flex": (".baseline_flex", "FLEXPolicy"),
+    "flex-official": (".baseline_flex_official", "OfficialFLEXPolicy"),
     "rhc": (".baseline_rhc", "RecedingHorizonCuriosityPolicy"),
+    "rhc-model-us": (".baseline_rhc_model_us", "RecedingHorizonCuriosityModelUSPolicy"),
     "baseline-thompson": (".baseline_thompson", "BaselineThompsonPolicy"),
     "baseline-ucb": (".baseline_ucb", "BaselineUCBPolicy"),
 }
@@ -52,7 +60,13 @@ def policy_from_str(policy_str: str) -> type[BasePolicy]:
 
 
 def __getattr__(name: str):
+    if name == "AsyncMpcICem":
+        module = importlib.import_module(".mpc", __package__)
+        return getattr(module, name)
     if name == "RecedingHorizonCuriosityPolicy":
         module = importlib.import_module(".baseline_rhc", __package__)
+        return getattr(module, name)
+    if name == "RecedingHorizonCuriosityModelUSPolicy":
+        module = importlib.import_module(".baseline_rhc_model_us", __package__)
         return getattr(module, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

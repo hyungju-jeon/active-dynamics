@@ -1,11 +1,10 @@
-"""Multiple-shooting open-loop planner for exact RHC."""
+"""Official-style multiple-shooting planner for exact RHC."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 
-import casadi as ca
+import casadi as cas
 import numpy as np
 
 
@@ -18,8 +17,6 @@ class RhcPlanResult:
 
 
 class RhcMultipleShootingPlanner:
-    """Open-loop multiple-shooting planner following the RHC reference code."""
-
     def __init__(
         self,
         *,
@@ -29,6 +26,7 @@ class RhcMultipleShootingPlanner:
         horizon: int,
         planner_maxiter: int = 500,
         state_bounds: np.ndarray | None = None,
+        warm_start: bool = False,
         rng: np.random.Generator | None = None,
     ) -> None:
         self.model = model
@@ -37,8 +35,10 @@ class RhcMultipleShootingPlanner:
         self.horizon = int(max(horizon, 1))
         self.state_bounds = state_bounds
         self.planner_maxiter = int(max(planner_maxiter, 1))
+        self.warm_start = bool(warm_start)
         self._warm_start: np.ndarray | None = None
         self._rng = rng or np.random.default_rng(0)
+        self.model_diff = True
 
     @property
     def action_dim(self) -> int:
@@ -48,101 +48,64 @@ class RhcMultipleShootingPlanner:
     def state_dim(self) -> int:
         return int(self.model.output_dim)
 
-    def plan(
-        self,
-        *,
-        x0: np.ndarray,
-        objective: str = "rhc_us",
-    ) -> RhcPlanResult:
-        x0_arr = np.asarray(x0, dtype=np.float64).reshape(1, self.state_dim)
-        predict_cas = self.model.predict_cas()
+    def plan(self, *, x0: np.ndarray, objective: str = 'rhc_us') -> RhcPlanResult:
+        m = self.model.predict_casf(ret_var=True)
+        x0_arr = cas.DM(np.atleast_2d(np.asarray(x0, dtype=np.float64)))
+        xu = cas.MX.sym('x', self.horizon, self.state_dim + self.action_dim)
+        x = cas.vcat((x0_arr, xu[:, : self.state_dim]))
+        u = xu[:, -self.action_dim:]
 
-        xu = ca.MX.sym("xu", self.horizon, self.state_dim + self.action_dim)
-        states = ca.vcat((ca.DM(x0_arr), xu[:, : self.state_dim]))
-        actions = xu[:, -self.action_dim :]
-
-        lower = np.full((self.horizon, self.state_dim + self.action_dim), -np.inf, dtype=np.float64)
-        upper = np.full((self.horizon, self.state_dim + self.action_dim), np.inf, dtype=np.float64)
-        lower[:, -self.action_dim :] = self.action_low
-        upper[:, -self.action_dim :] = self.action_high
+        xu_l = np.ones((self.horizon, self.state_dim + self.action_dim), dtype=np.float64) * -np.inf
+        xu_u = np.ones((self.horizon, self.state_dim + self.action_dim), dtype=np.float64) * np.inf
+        xu_l[:, -self.action_dim:] = self.action_low
+        xu_u[:, -self.action_dim:] = self.action_high
         if self.state_bounds is not None:
             bounds = np.asarray(self.state_bounds, dtype=np.float64)
             if bounds.ndim == 2:
                 bounds = np.tile(bounds[None, :, :], (self.horizon, 1, 1))
-            lower[:, : self.state_dim] = bounds[:, :, 0]
-            upper[:, : self.state_dim] = bounds[:, :, 1]
+            xu_l[:, : self.state_dim] = bounds[:, :, 0]
+            xu_u[:, : self.state_dim] = bounds[:, :, 1]
 
-        objective_expr = 0
-        constraints = ca.MX()
-        variances = []
-        feature_inputs = []
-        for step in range(self.horizon):
-            x_t = states[step, :]
-            u_t = actions[step, :]
-            xu_t = ca.hcat((x_t, u_t))
-            delta_t, var_t = predict_cas(xu_t)
-            variances.append(var_t)
-            feature_inputs.append(xu_t)
-            constraints = ca.horzcat(constraints, states[step + 1, :] - (x_t + delta_t))
-            if objective == "rhc_us":
-                objective_expr += -ca.sum1(var_t)
+        obj = 0
+        g = cas.MX()
+        v = cas.MX()
+        for i in range(self.horizon):
+            xi = x[i, :]
+            ui = u[i, :]
+            pred_res = m(cas.hcat((xi, ui)))
+            xj = pred_res[0]
+            vi = pred_res[1]
+            v = cas.vcat((v, vi))
+            gi = x[i + 1, :] - xj
+            if self.model_diff:
+                gi -= xi
+            g = cas.horzcat(g, gi)
+            if objective == 'rhc_us':
+                obj += -vi
+        if objective == 'rhc_mvr':
+            inputs = cas.horzcat(x[:-1, :], u)
+            obj = self.model.pred_ent_cas(inputs)
+        elif objective != 'rhc_us':
+            raise ValueError(f'Unsupported RHC objective {objective!r}')
 
-        if objective == "rhc_mvr":
-            stacked_inputs = ca.vertcat(*feature_inputs)
-            objective_expr = self.model.predicted_posterior_entropy_cas(stacked_inputs)
-        elif objective != "rhc_us":
-            raise ValueError(f"Unsupported RHC objective {objective!r}")
+        xu_flat = cas.reshape(xu, -1, 1)
+        nlp = {'x': xu_flat, 'f': obj, 'g': g}
+        opts = {'ipopt.max_iter': self.planner_maxiter}
+        solver = cas.nlpsol('solver', 'ipopt', nlp, opts)
 
-        flat = ca.reshape(xu, -1, 1)
-        nlp = {"x": flat, "f": objective_expr, "g": constraints}
-        opts = {"ipopt.max_iter": self.planner_maxiter}
-        solver = ca.nlpsol("rhc_solver", "ipopt", nlp, opts)
+        xopt_0 = self._initial_guess(xu_flat.shape[0])
+        sol = solver(x0=xopt_0, lbx=xu_l.T.flatten(), ubx=xu_u.T.flatten(), lbg=0, ubg=0)
+        opt_xu = np.array(cas.reshape(sol['x'], xu.shape[0], xu.shape[1]))
+        opt_a = np.array(opt_xu[:, -self.action_dim:])
+        opt_x = np.array(cas.vcat((x0_arr, opt_xu[:, : self.state_dim])))
+        cost = float(sol['f'])
+        if self.warm_start:
+            self._warm_start = opt_xu.copy()
+        var_f = cas.Function('variance', [xu], [v])
+        opt_varx = np.array(var_f(opt_xu)).reshape(self.horizon, -1)
+        return RhcPlanResult(actions=opt_a, states=opt_x, variances=opt_varx, cost=cost)
 
-        x0_guess = self._initial_guess(x0_arr)
-        sol = solver(
-            x0=x0_guess,
-            lbx=lower.T.flatten(),
-            ubx=upper.T.flatten(),
-            lbg=0.0,
-            ubg=0.0,
-        )
-        opt_xu = np.array(ca.reshape(sol["x"], xu.shape[0], xu.shape[1]), dtype=np.float64)
-        opt_actions = opt_xu[:, -self.action_dim :]
-        opt_states = np.array(ca.vcat((ca.DM(x0_arr), opt_xu[:, : self.state_dim])), dtype=np.float64)
-        variance_f = ca.Function("variance", [xu], [ca.vcat(variances)])
-        opt_variances = np.array(variance_f(opt_xu), dtype=np.float64).reshape(self.horizon, -1)
-        cost = float(sol["f"])
-        self._warm_start = opt_xu.copy()
-        return RhcPlanResult(
-            actions=opt_actions,
-            states=opt_states,
-            variances=opt_variances,
-            cost=cost,
-        )
-
-    def _initial_guess(self, x0: np.ndarray) -> np.ndarray:
-        if self._warm_start is not None and self._warm_start.shape[0] == self.horizon:
-            warm = self._warm_start.copy()
-            shifted = np.zeros_like(warm)
-            shifted[:-1] = warm[1:]
-            shifted[-1, -self.action_dim :] = 0.0
-            shifted[:, : self.state_dim] = self._rollout_mean_states(x0, shifted[:, -self.action_dim :])[1:]
-            return shifted.T.flatten()
-
-        random_actions = self._rng.uniform(
-            low=self.action_low[None, :],
-            high=self.action_high[None, :],
-            size=(self.horizon, self.action_dim),
-        )
-        mean_states = self._rollout_mean_states(x0, random_actions)
-        xu0 = np.concatenate((mean_states[1:], random_actions), axis=1)
-        return xu0.T.flatten()
-
-    def _rollout_mean_states(self, x0: np.ndarray, actions: np.ndarray) -> np.ndarray:
-        states = [np.asarray(x0, dtype=np.float64).reshape(1, self.state_dim)]
-        for u_t in actions:
-            xu_t = np.concatenate((states[-1], u_t.reshape(1, self.action_dim)), axis=1)
-            pred = self.model.predict(xu_t, return_variance=False)
-            next_state = states[-1] + pred.mean
-            states.append(next_state)
-        return np.vstack(states)
+    def _initial_guess(self, flat_size: int) -> np.ndarray:
+        if self.warm_start and self._warm_start is not None:
+            return cas.reshape(self._warm_start, -1, 1)
+        return (self._rng.random(flat_size) - 0.5) * 4.0
