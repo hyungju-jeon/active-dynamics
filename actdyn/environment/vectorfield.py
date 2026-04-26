@@ -23,6 +23,7 @@ from actdyn.utils.vectorfield_definition import (
 )
 from typing import Optional, Tuple, Dict, Any, Sequence
 from actdyn.utils.visualize import plot_vector_field
+from .boundary import boundary_barrier_drift, project_to_boundary
 
 
 vf_from_string = {
@@ -323,6 +324,14 @@ class VectorFieldEnv(gym.Env):
         action_bounds: Sequence[float] = (-1.0, 1.0),
         state_bounds: Optional[Sequence[float]] = None,
         initial_state: Optional[Sequence[float]] = None,
+        boundary_enabled: bool = False,
+        boundary_type: str = "none",
+        boundary_radius: float | None = None,
+        boundary_barrier_enabled: bool = False,
+        boundary_projection_enabled: bool = False,
+        boundary_barrier_width: float = 0.5,
+        boundary_barrier_strength: float = 5.0,
+        boundary_barrier_temperature: float = 0.1,
         **kwargs: Any,
     ):
         super().__init__()
@@ -331,6 +340,17 @@ class VectorFieldEnv(gym.Env):
         self.dt = dt
         self.device = torch.device(device)
         self.render_mode = render_mode
+        self.boundary_enabled = bool(boundary_enabled)
+        self.boundary_type = str(boundary_type or "none").lower()
+        if not self.boundary_enabled:
+            self.boundary_type = "none"
+        self.boundary_radius = None if boundary_radius is None else float(boundary_radius)
+        self.boundary_barrier_enabled = bool(boundary_barrier_enabled)
+        self.boundary_projection_enabled = bool(boundary_projection_enabled)
+        self.boundary_barrier_width = float(boundary_barrier_width)
+        self.boundary_barrier_strength = float(boundary_barrier_strength)
+        self.boundary_barrier_temperature = float(boundary_barrier_temperature)
+        self.boundary_box_bounds = None
         self.initial_state = None
         if initial_state is not None:
             init = torch.as_tensor(initial_state, dtype=torch.float16, device=self.device).reshape(-1)
@@ -346,6 +366,11 @@ class VectorFieldEnv(gym.Env):
         if state_bounds is None:
             state_bounds = (-np.inf, np.inf)
         self.observation_space = self._set_space_bounds(state_bounds, d_state)
+        if self.boundary_type == "box":
+            self.boundary_box_bounds = (
+                self.observation_space.low.astype(np.float32),
+                self.observation_space.high.astype(np.float32),
+            )
 
         # Initialize dynamics
         if dynamics_type not in vf_from_string:
@@ -374,21 +399,49 @@ class VectorFieldEnv(gym.Env):
     def get_params(self) -> torch.Tensor:
         return self.dynamics.dyn_params
 
-    def set_params(self, dyn_params: torch.Tensor | list[float] | Dict[str, float] | None):
+    def set_params(self, *dyn_params: torch.Tensor | list[float] | Dict[str, float] | None):
         """Set dynamics parameters."""
-        if dyn_params is None:
+        if not dyn_params or dyn_params[0] is None:
             return  # Do nothing if no params provided
         if hasattr(self.dynamics, "set_params"):
             value: torch.Tensor | Dict[str, float]
-            if isinstance(dyn_params, dict):
-                value = dyn_params
+            if len(dyn_params) > 1:
+                self.dynamics.set_params(*dyn_params)
+                return
+            raw_params = dyn_params[0]
+            if isinstance(raw_params, dict):
+                value = raw_params
             else:
-                value = torch.as_tensor(dyn_params, device=self.device, dtype=torch.float32)
+                value = torch.as_tensor(raw_params, device=self.device, dtype=torch.float32)
             self.dynamics.set_params(value)
 
     def compute_dynamics(self, state: torch.Tensor) -> torch.Tensor:
         """Compute vector field at given state."""
-        return self.dynamics(state)
+        dynamics = self.dynamics(state)
+        if self.boundary_barrier_enabled and self.boundary_type != "none":
+            dynamics = dynamics + boundary_barrier_drift(
+                state,
+                boundary_type=self.boundary_type,
+                radius=self.boundary_radius,
+                box_bounds=self.boundary_box_bounds,
+                width=self.boundary_barrier_width,
+                strength=self.boundary_barrier_strength,
+                temperature=self.boundary_barrier_temperature,
+            )
+        return dynamics
+
+    def project_state(self, state: torch.Tensor) -> torch.Tensor:
+        if not self.boundary_projection_enabled or self.boundary_type == "none":
+            return state
+        return project_to_boundary(
+            state,
+            boundary_type=self.boundary_type,
+            radius=self.boundary_radius,
+            box_bounds=self.boundary_box_bounds,
+        )
+
+    def __call__(self, state: torch.Tensor) -> torch.Tensor:
+        return self.compute_dynamics(state)
 
     def reset(
         self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None
@@ -425,6 +478,7 @@ class VectorFieldEnv(gym.Env):
 
         # Add noise
         self.state += torch.randn_like(self.state) * torch.sqrt(torch.tensor(self.Q) * self.dt)
+        self.state = self.project_state(self.state)
 
         # Compute reward
         reward = 0
@@ -443,7 +497,7 @@ class VectorFieldEnv(gym.Env):
         if self.render_mode == "rgb_array":
             pass
         elif self.render_mode == "human":
-            plot_vector_field(self.dynamics, x_range=x_range, ax=ax)
+            plot_vector_field(self.compute_dynamics, x_range=x_range, ax=ax, device=self.device)
 
     def close(self):
         pass

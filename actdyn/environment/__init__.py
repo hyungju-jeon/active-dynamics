@@ -13,6 +13,7 @@ import gymnasium as gym
 
 from .base import BaseAction, BaseObservation
 from .env_wrapper import EnvWrapper
+from .boundary import boundary_barrier_drift, boundary_visibility, project_to_boundary
 from .vectorfield import (
     build_system_jacobians,
     jacobian_param_torch,
@@ -35,6 +36,9 @@ __all__ = [
     "build_system_jacobians",
     "rollout_no_input",
     "step_np",
+    "boundary_visibility",
+    "boundary_barrier_drift",
+    "project_to_boundary",
 ]
 
 _environment_map = {

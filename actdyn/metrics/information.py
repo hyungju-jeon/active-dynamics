@@ -1,4 +1,5 @@
 import actdyn
+from actdyn.environment.boundary import boundary_visibility
 import actdyn.models
 from actdyn.models.base import BaseDynamicsEnsemble
 import torch
@@ -346,6 +347,13 @@ class EmbeddingFisherMetric(BaseMetric):
         self.freeze_covariance = bool(freeze_covariance)
         self.no_sensitivity_propagation = bool(no_sensitivity_propagation)
         self.fully_observed = bool(fully_observed)
+        self.boundary_visibility_enabled = bool(
+            kwargs.get("boundary_visibility_enabled", False)
+        )
+        self.boundary_type = str(kwargs.get("boundary_type", "none"))
+        self.boundary_radius = kwargs.get("boundary_radius")
+        self.boundary_margin = float(kwargs.get("boundary_margin", 1.0))
+        self.boundary_temperature = float(kwargs.get("boundary_temperature", 0.15))
         approximation_count = sum(
             [
                 self.freeze_covariance,
@@ -513,6 +521,15 @@ class EmbeddingFisherMetric(BaseMetric):
                 del atten_base
                 atten_Iz = torch.cholesky_solve(I_z, chol_atten)
             info_step = symmetrize(S_sens.transpose(-1, -2) @ atten_Iz @ S_sens)
+            if self.boundary_visibility_enabled:
+                visibility = boundary_visibility(
+                    z[:, i],
+                    boundary_type=self.boundary_type,
+                    radius=self.boundary_radius,
+                    margin=self.boundary_margin,
+                    temperature=self.boundary_temperature,
+                )
+                info_step = visibility.square().view(batch, 1, 1) * info_step
             J += (self.gamma**i) * info_step
 
             P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)

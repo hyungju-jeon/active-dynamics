@@ -481,6 +481,60 @@ def _build_metric(
     raise ValueError(f"Unsupported objective_kind={objective_kind}")
 
 
+def _boundary_env_kwargs(env_preset: Any) -> dict[str, Any]:
+    return {
+        "boundary_enabled": bool(getattr(env_preset, "boundary_enabled", False)),
+        "boundary_type": str(getattr(env_preset, "boundary_type", "none")),
+        "boundary_radius": getattr(env_preset, "boundary_radius", None),
+        "boundary_barrier_enabled": bool(
+            getattr(env_preset, "boundary_barrier_enabled", False)
+        ),
+        "boundary_projection_enabled": bool(
+            getattr(env_preset, "boundary_projection_enabled", False)
+        ),
+        "boundary_barrier_width": float(getattr(env_preset, "boundary_barrier_width", 0.5)),
+        "boundary_barrier_strength": float(
+            getattr(env_preset, "boundary_barrier_strength", 5.0)
+        ),
+        "boundary_barrier_temperature": float(
+            getattr(env_preset, "boundary_barrier_temperature", 0.1)
+        ),
+    }
+
+
+def _apply_boundary_visibility_to_metric(metric: Any, env_preset: Any) -> None:
+    if metric is None:
+        return
+    metric.boundary_visibility_enabled = bool(
+        getattr(env_preset, "information_boundary_visibility_enabled", False)
+    )
+    metric.boundary_type = str(getattr(env_preset, "boundary_type", "none"))
+    metric.boundary_radius = getattr(env_preset, "boundary_radius", None)
+    metric.boundary_margin = float(getattr(env_preset, "information_boundary_margin", 1.0))
+    metric.boundary_temperature = float(
+        getattr(env_preset, "information_boundary_temperature", 0.15)
+    )
+
+
+def _boundary_visibility_mean(states: Any, env_preset: Any) -> float | None:
+    if not bool(getattr(env_preset, "information_boundary_visibility_enabled", False)):
+        return None
+    try:
+        from actdyn.environment.boundary import boundary_visibility
+
+        z = torch.as_tensor(states, dtype=torch.float32)
+        visibility = boundary_visibility(
+            z,
+            boundary_type=str(getattr(env_preset, "boundary_type", "none")),
+            radius=getattr(env_preset, "boundary_radius", None),
+            margin=float(getattr(env_preset, "information_boundary_margin", 1.0)),
+            temperature=float(getattr(env_preset, "information_boundary_temperature", 0.15)),
+        )
+        return float(visibility.mean().item())
+    except Exception:
+        return None
+
+
 def _instantiate_synthetic_policy(
     *,
     actdyn_module: Any,
@@ -716,6 +770,7 @@ def _run_single_parameter_identification(
         state_bounds=[-5.0, 5.0],
         initial_state=init_state.tolist(),
         device=device,
+        **_boundary_env_kwargs(env_preset),
     )
     true_vec_env.set_params(
         torch.as_tensor(
@@ -739,6 +794,7 @@ def _run_single_parameter_identification(
         alpha=alpha,
         Q=noise_scale,
         device=device,
+        **_boundary_env_kwargs(env_preset),
     )
     sim_vec_env.set_params(
         torch.as_tensor(
@@ -749,7 +805,7 @@ def _run_single_parameter_identification(
     dynamics = actdyn.models.dynamics.FunctionDynamics(
         state_dim=dz,
         dt=dt,
-        dynamics_fn=sim_vec_env.dynamics,
+        dynamics_fn=sim_vec_env,
         param_formatter=lambda params: env_preset.params_from_embedding(params, estimator=True),
         device=device,
     )
@@ -809,6 +865,7 @@ def _run_single_parameter_identification(
             ambiguity_temperature=getattr(policy_spec, "ambiguity_temperature", None),
             ensemble_kind=getattr(policy_spec, "ensemble_kind", None),
         )
+        _apply_boundary_visibility_to_metric(base_metric, env_preset)
         action_cost_weight = float(getattr(policy_spec, "action_cost_weight", 0.01))
         metrics = [base_metric]
         weights = [1.0]
@@ -954,6 +1011,9 @@ def _run_single_parameter_identification(
                     transition.get("parameter_posterior_updated", True)
                 ),
                 "window_buffer_length": int(transition.get("window_buffer_length", 0)),
+                "boundary_visibility_mean": _boundary_visibility_mean(
+                    transition.get("model_state", transition.get("env_state")), env_preset
+                ),
             }
         )
         env_x, env_v = to_xy_pair(transition.get("env_state", torch.zeros(2, device=device)))
@@ -1152,6 +1212,7 @@ def _run_single_parameter_identification(
             "state_posterior_updated",
             "parameter_posterior_updated",
             "window_buffer_length",
+            "boundary_visibility_mean",
         ],
     )
     write_trace_csv(
@@ -1247,6 +1308,33 @@ def _run_single_parameter_identification(
             "state_low": [float(x) for x in env_preset.resolved_state_bounds()[0].tolist()],
             "state_high": [float(x) for x in env_preset.resolved_state_bounds()[1].tolist()],
             "min_embedding_dim": int(env_preset.resolved_min_embedding_dim()),
+            "boundary_enabled": bool(getattr(env_preset, "boundary_enabled", False)),
+            "boundary_type": str(getattr(env_preset, "boundary_type", "none")),
+            "boundary_radius": getattr(env_preset, "boundary_radius", None),
+            "boundary_barrier_enabled": bool(
+                getattr(env_preset, "boundary_barrier_enabled", False)
+            ),
+            "boundary_projection_enabled": bool(
+                getattr(env_preset, "boundary_projection_enabled", False)
+            ),
+            "boundary_barrier_width": float(
+                getattr(env_preset, "boundary_barrier_width", 0.5)
+            ),
+            "boundary_barrier_strength": float(
+                getattr(env_preset, "boundary_barrier_strength", 5.0)
+            ),
+            "boundary_barrier_temperature": float(
+                getattr(env_preset, "boundary_barrier_temperature", 0.1)
+            ),
+            "information_boundary_visibility_enabled": bool(
+                getattr(env_preset, "information_boundary_visibility_enabled", False)
+            ),
+            "information_boundary_margin": float(
+                getattr(env_preset, "information_boundary_margin", 1.0)
+            ),
+            "information_boundary_temperature": float(
+                getattr(env_preset, "information_boundary_temperature", 0.15)
+            ),
             "initial_state_true": [float(x) for x in init_state.tolist()],
             "embedding_true": [float(x) for x in e_true_flat.tolist()],
             "embedding_estimate": [
@@ -1550,6 +1638,18 @@ def _build_session_experiment_entry(
             "train_fraction": float(getattr(env_preset, "train_fraction", 0.7)),
             "time_bin_ms": float(getattr(env_preset, "time_bin_ms", 20.0)),
             "max_observation_dim": getattr(env_preset, "max_observation_dim", None),
+            "boundary_enabled": bool(getattr(env_preset, "boundary_enabled", False)),
+            "boundary_type": str(getattr(env_preset, "boundary_type", "none")),
+            "boundary_radius": getattr(env_preset, "boundary_radius", None),
+            "boundary_barrier_enabled": bool(
+                getattr(env_preset, "boundary_barrier_enabled", False)
+            ),
+            "boundary_projection_enabled": bool(
+                getattr(env_preset, "boundary_projection_enabled", False)
+            ),
+            "information_boundary_visibility_enabled": bool(
+                getattr(env_preset, "information_boundary_visibility_enabled", False)
+            ),
             "true_embedding": env_summary["true_embedding"],
         },
         "policies": policies,

@@ -235,12 +235,17 @@ class BaseDynamics(nn.Module):
             elif action is not None:
                 action = action[..., 1:, :]
 
+            if hasattr(self.network, "project_state"):
+                z_pred = self.network.project_state(z_pred)
+
             mus.append(z_pred)
             vars.append(var)
 
             z_sample = z_pred
             if add_noise:
                 z_sample += torch.sqrt(var * self.dt) * torch.randn_like(z_pred, device=self.device)
+                if hasattr(self.network, "project_state"):
+                    z_sample = self.network.project_state(z_sample)
             samples.append(z_sample)
 
         if return_traj:

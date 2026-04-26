@@ -65,6 +65,17 @@ class EnvironmentPreset:
     train_fraction: float = 0.7
     time_bin_ms: float = 20.0
     max_observation_dim: int | None = None
+    boundary_enabled: bool = False
+    boundary_type: str = "none"
+    boundary_radius: float | None = None
+    boundary_barrier_enabled: bool = False
+    boundary_projection_enabled: bool = False
+    boundary_barrier_width: float = 0.5
+    boundary_barrier_strength: float = 5.0
+    boundary_barrier_temperature: float = 0.1
+    information_boundary_visibility_enabled: bool = False
+    information_boundary_margin: float = 1.0
+    information_boundary_temperature: float = 0.15
 
     def resolved_dynamics_type(self, *, estimator: bool = False) -> str:
         configured = self.estimator_dynamics_type if estimator else self.dynamics_type
@@ -531,6 +542,23 @@ def load_catalog_bundle(
                 None
                 if spec.get("max_observation_dim") is None
                 else int(spec.get("max_observation_dim"))
+            ),
+            boundary_enabled=bool(spec.get("boundary_enabled", False)),
+            boundary_type=str(spec.get("boundary_type", "none")),
+            boundary_radius=(
+                None if spec.get("boundary_radius") is None else float(spec.get("boundary_radius"))
+            ),
+            boundary_barrier_enabled=bool(spec.get("boundary_barrier_enabled", False)),
+            boundary_projection_enabled=bool(spec.get("boundary_projection_enabled", False)),
+            boundary_barrier_width=float(spec.get("boundary_barrier_width", 0.5)),
+            boundary_barrier_strength=float(spec.get("boundary_barrier_strength", 5.0)),
+            boundary_barrier_temperature=float(spec.get("boundary_barrier_temperature", 0.1)),
+            information_boundary_visibility_enabled=bool(
+                spec.get("information_boundary_visibility_enabled", False)
+            ),
+            information_boundary_margin=float(spec.get("information_boundary_margin", 1.0)),
+            information_boundary_temperature=float(
+                spec.get("information_boundary_temperature", 0.15)
             ),
         )
         for preset_id, spec in environment_raw.items()
