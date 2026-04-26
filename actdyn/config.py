@@ -157,6 +157,10 @@ class PolicyConfig:
     mpc_use_mean_actions: bool = True
     mpc_shift_elites: bool = True
     mpc_keep_elites: bool = True
+    mpc_coarse_dt_factor: int = 1
+    mpc_coarse_action_mapping: str = "hold"
+    mpc_coarse_mapping_opt_steps: int = 25
+    mpc_coarse_mapping_opt_lr: float = 0.05
 
     def get_mpc_cfg(self):
         return {
@@ -174,6 +178,10 @@ class PolicyConfig:
             "use_mean_actions": self.mpc_use_mean_actions,
             "shift_elites": self.mpc_shift_elites,
             "keep_elites": self.mpc_keep_elites,
+            "coarse_dt_factor": self.mpc_coarse_dt_factor,
+            "coarse_action_mapping": self.mpc_coarse_action_mapping,
+            "coarse_mapping_opt_steps": self.mpc_coarse_mapping_opt_steps,
+            "coarse_mapping_opt_lr": self.mpc_coarse_mapping_opt_lr,
         }
 
 
