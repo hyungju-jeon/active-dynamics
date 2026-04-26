@@ -17,14 +17,35 @@ environments:
     observation_noise_type: poisson
     mean_firing_rate_target: 25.0
     max_firing_rate_target: 100.0
-
+    dynamics_type: duffing
+    true_params:
+    - -0.55
+    - 1.0
+    - 0.1
+    state_low:
+    - -2.5
+    - -2.5
+    state_high:
+    - 2.5
+    - 2.5
+    min_embedding_dim: 2
   easy_duffing:
     extends: single_duffing
     system_id: bistable_attractor
-
+    dynamics_type: duffing
+    true_params:
+    - -1.1
+    - -0.9
+    - 0.1
+    state_low:
+    - -2.5
+    - -2.5
+    state_high:
+    - 2.5
+    - 2.5
+    min_embedding_dim: 2
   bistable_duffing:
     extends: easy_duffing
-
   hard_duffing:
     extends: easy_duffing
     asymmetric_loading: true
@@ -32,12 +53,20 @@ environments:
     action_max: 1.5
     state_noise: 1.0
     state_init_uncertainty: 10.0
-
   bistable_h_duffing:
     extends: hard_duffing
-
   rbf_duffing:
     extends: easy_duffing
     system_id: bistable_limitcycle
     asymmetric_loading: true
     mean_firing_rate_target: 50.0
+    dynamics_type: bistable_limit_cycle
+    true_params:
+    - 1.0
+    - 0.9
+    state_low:
+    - -2.5
+    - -2.5
+    state_high:
+    - 2.5
+    - 2.5

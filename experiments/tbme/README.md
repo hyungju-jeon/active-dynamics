@@ -7,8 +7,6 @@ This directory contains TBME-specific catalogs and thin wrappers on top of the s
 - `experiment_env.yaml`: TBME environment presets
 - `experiment_model.yaml`: TBME-only model and policy additions
 - `experiment_suite.yaml`: TBME manuscript experiment matrices
-- `experiment_specs.py`: TBME catalog view that merges the shared base env/model catalogs with the TBME additions
-- `_run_family.py`: shared helper for TBME family launchers
 - `run_exp1.py`: convenience launcher for Experiment 1 suites
 - `run_exp2.py`: convenience launcher for Experiment 2 suites
 - `run_exp3.py`: convenience launcher for the Experiment 3 neural digital-twin workflow
@@ -176,33 +174,122 @@ The hard-Duffing challenge is also the recommended setting for deeper method ana
 
 These suites are intentionally all run on the same hard-Duffing preset so the conclusions are attributable to the ablation axis rather than to environment changes.
 
+### Proposed Experiment 1 Addition: Basin-Bridge Multistable Planning Challenge
+
+To make the long-range-planning claim sharper than the current hard-Duffing setup, add a multistable benchmark where accurate identification requires leaving the initial basin and visiting a second basin with disjoint local parameter sensitivity.
+
+Core design:
+
+- two separated attractors with basin-specific parameter subsets
+- a central barrier / separatrix that is crossable only through coordinated multi-step control
+- starts initialized in one basin so local exploration alone is insufficient
+- metrics that explicitly track basin visitation, first-cross time, and per-basin parameter recovery
+
+Recommended suite IDs once the runtime support exists:
+
+- `tbme_exp1_two_basin_policy`
+- `tbme_exp1_two_basin_budget_ablation`
+- `tbme_exp1_two_basin_schedule_ablation`
+
+Minimal runnable spec currently registered in TBME:
+
+- environment preset: `tbme_asymmetric_basin`
+- runtime system: `asymmetric_basin`
+- suites: `tbme_exp1_two_basin_policy`, `tbme_exp1_two_basin_budget_ablation`, `tbme_exp1_two_basin_schedule_ablation`
+
+This benchmark now uses a dedicated `asymmetric_basin` runtime with basin-gated parameters while still fitting the existing 2D synthetic runner.
+
+- rollouts start in the left basin by construction
+- left and right basins expose different local parameter sensitivity through `(a_L, b_L, a_R, b_R)`
+- control and observation budgets are tighter than `tbme_duffing_planning_challenge`
+
+Suggested default parameterization for the minimal benchmark:
+
+- `system_id: asymmetric_basin`
+- `embedding_dim: 4`
+- true parameters `(a_L, b_L, a_R, b_R) = (-1.2, -0.8, -0.55, -1.35)`
+- `action_max: 0.35`
+- `state_noise: 0.25`
+- `state_init_uncertainty: 4.0`
+- `observation_dim: 20`
+- `observation_noise_scale: 0.2`
+- `firing_rate_scale: 0.35`
+- `mean_firing_rate_target: 10.0`
+- `max_firing_rate_target: 45.0`
+- `total_steps: 300` for policy comparison, `200` for the short budget ablation
+
+Interpretation:
+
+- this benchmark now implements the disjoint-parameter idea at the dynamics level through basin-gated left/right parameters
+- it tests whether a policy can leave the initial basin under a constrained budget and gather information from both sides of the separatrix
+- it still does **not** yet log dedicated basin-crossing summary metrics; those remain the next extension
+
+Valid smoke test for repo integration:
+
+```bash
+python -m experiments.run_experiments \
+  --env-catalog experiments/tbme/experiment_env.yaml \
+  --model-catalog experiments/experiment_model.yaml \
+  --model-catalog experiments/tbme/experiment_model.yaml \
+  --suite-catalog experiments/tbme/experiment_suite.yaml \
+  --exp-id tbme_exp1_two_basin_budget_ablation \
+  --policy-ids baseline_prbs \
+  --seeds 0 \
+  --total-steps 8 \
+  --mode run \
+  --base-dir results/tbme/two_basin_smoke
+```
+
+Smoke-test success criteria:
+
+- process exits with code `0`
+- session metadata is written under `results/tbme/two_basin_smoke/...`
+- one run record is marked `completed`
+- `run_metadata.json` reports `env_preset_id: tbme_asymmetric_basin` and `system_id: asymmetric_basin`
+
+Interpretation goal:
+
+- show that planning helps not merely because it explores more, but because some parameters are effectively unidentifiable from single-basin trajectories under the same control budget
+
+See `experiments/tbme/TBME_experiment_additions.md` for the current design spec and implementation hooks.
+
 ## Experiment 2: Convergence and Robustness
 
 ### Question
 
-How much does performance degrade when the estimator is misspecified or the observation regime becomes less informative?
+How much does performance degrade when the estimator is structurally misspecified, even when the observation regime is held fixed?
 
 ### Hypothesis
 
-Active methods should still retain an advantage under moderate mismatch, but the gain should shrink when observation quality drops or when the estimator family is structurally wrong.
+Active methods should still retain an advantage under moderate model mismatch, and the benefit should be largest when the observation model is correct but the latent dynamics model is wrong.
 
 ### Mismatch Presets
 
 Available environment presets:
 
-- `tbme_duffing_obs_mismatch`
-- `tbme_duffing_noise_mismatch`
 - `tbme_duffing_family_mismatch`
-- `tbme_pendulum_param_mismatch`
-- `tbme_double_integrator_mismatch`
+- `tbme_duffing_parameter_mismatch`
 
 Main suites:
 
 - `tbme_exp2_robustness_duffing`
-- `tbme_exp2_robustness_pendulum`
-- `tbme_exp2_robustness_double_integrator`
+- `tbme_exp2_robustness_duffing_parameter`
 
-`tbme_duffing_family_mismatch` keeps the true Duffing environment but swaps the learned model family through `estimator_system_id: damped_pendulum`.
+`tbme_duffing_family_mismatch` keeps the true Duffing generator but forces the learner to use the wrong dynamics family through `estimator_system_id: damped_pendulum`.
+
+`tbme_duffing_parameter_mismatch` keeps the Duffing family correct but fixes the learner to the wrong non-inferred cubic coefficient. Concretely, the true generator uses
+
+```math
+\dot{x}=v,\qquad \dot{v}=a v - b x - 0.1 x^3,
+```
+
+while the learner uses
+
+```math
+\dot{x}=v,\qquad \dot{v}=a v - b x - 0.2 x^3.
+```
+
+The cubic coefficient is not inferred online; only the remaining Duffing embedding parameters are learned.
 
 ### Compared Methods
 
@@ -212,7 +299,7 @@ Main suites:
 - `random`
 - `off_policy`
 
-These suites are intentionally narrower than Experiment 1. The robustness question is about whether the active method still converges usefully, not about exhaustively sweeping all policy/objective combinations.
+These suites are intentionally narrower than Experiment 1. The Experiment 2 question is about model mismatch, not noise robustness or exhaustive policy sweeps.
 
 ### Primary Metrics
 
@@ -244,6 +331,28 @@ Table:
 ### Interpretation Goal
 
 This experiment supports the manuscript robustness claim. It should show where active identification remains useful, where it fails gracefully, and where estimator-family mismatch causes the strongest degradation.
+
+### Proposed Qualitative / Follow-on Addition: Time-Varying Observation Hotspots
+
+A complementary synthetic benchmark should test time-varying dynamics tracking when observation informativeness is concentrated in moving high-SNR regions that are not a simple monotone function of distance from the origin. A standalone prototype is now available at `experiments/tbme/run_circular_timevarying_hotspots_experiment.py`.
+
+Core design:
+
+- latent dynamics with unknown time-varying parameters such as drifting `omega_t`
+- moving off-center hotspots or anisotropic arcs of high observation gain
+- policies evaluated on phase alignment to the moving informative regions, cumulative information, and final tracking / parameter error
+- explicit avoidance of the trivial radial heuristic where "farther from center" always implies greater sensitivity
+
+Recommended first implementation path:
+
+- run the standalone prototype `python -m experiments.tbme.run_circular_timevarying_hotspots_experiment --output-dir results/tbme/timevarying_hotspots`
+- promote it to a TBME suite only after the information geometry and metrics are stable
+
+Interpretation goal:
+
+- show that good active tracking requires synchronizing state occupancy with a moving informative set, not simply maximizing radius or staying near the center
+
+See `experiments/tbme/TBME_experiment_additions.md` for the current design spec and implementation hooks.
 
 ## Experiment 3: Neural Digital Twin From Real Spiking Data
 

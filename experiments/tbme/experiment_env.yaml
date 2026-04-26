@@ -1,80 +1,135 @@
 environments:
+  tbme_duffing:
+    system_id: bistable_attractor
+    system_label: duffing oscillator
+    dynamics_type: duffing
+    x_range: 5.0
+    dt: 0.01
+    latent_dim: 2
+    action_dim: 2
+    embedding_dim: 2
+    min_embedding_dim: 2
+    observation_dim: 20
+    dynamics_alpha: 1.0
+    state_noise: 0.1
+    state_init_uncertainty: 1.0
+    action_max: 1.0
+    asymmetric_loading: false
+    firing_rate_scale: 1
+    observation_noise_scale: 1
+    observation_noise_type: poisson
+    mean_firing_rate_target: 10.0
+    max_firing_rate_target: 100.0
+    true_params:
+    - -0.5
+    - -0.75
+    - 0.1
+    state_low:
+    - -5
+    - -5
+    state_high:
+    - 5
+    - 5
+
   tbme_duffing_easy:
-    extends: easy_duffing
-    system_label: Duffing oscillator
+    extends: tbme_duffing
+    system_label: duffing oscillator
     observation_dim: 64
     mean_firing_rate_target: 35.0
 
-  tbme_pendulum_damped:
-    extends: single_duffing
+
+  tbme_damped_pendulum:
+    extends: tbme_duffing
     system_id: damped_pendulum
     system_label: damped pendulum
-    observation_dim: 64
-    action_max: 1.2
-    x_range: 4.0
-    mean_firing_rate_target: 30.0
+    dynamics_type: damped_pendulum
+    true_params:
+    - -0.5
+    - 1.0
 
-  tbme_double_integrator:
-    extends: single_duffing
-    system_id: double_integrator
-    system_label: double integrator
-    observation_dim: 64
-    action_max: 1.4
-    state_noise: 0.1
-    x_range: 4.0
-    mean_firing_rate_target: 20.0
+  tbme_asymmetric_basin:
+    extends: tbme_duffing
+    system_id: asymmetric_basin
+    system_label: Asymmetric basin
+    dynamics_type: asymmetric_basin
+    embedding_dim: 4
+    true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - 0.1
 
-  tbme_duffing_planning_challenge:
-    extends: easy_duffing
-    system_label: Duffing planning challenge
+  tbme_multi_stable:
+    extends: tbme_duffing
+    system_id: multi_stable
+    system_label: Multi-stable system
+    dynamics_type: multi_stable
+    embedding_dim: 8
+    action_max: 5.0
+    true_params:
+    - 1.15
+    - -0.1
+    - -0.2
+    - 1.5
+    - 1.55
+    - -0.25
+    - -0.40
+    - -2.0
+
+  tbme_duffing_asymmetric:
+    extends: tbme_duffing
+    system_label: duffing oscillator with asymmetric loading
     asymmetric_loading: true
-    observation_dim: 24
-    action_max: 0.45
-    state_noise: 0.35
-    state_init_uncertainty: 9.0
-    x_range: 6.0
-    observation_noise_scale: 0.2
-    firing_rate_scale: 0.45
-    mean_firing_rate_target: 12.0
-    max_firing_rate_target: 60.0
 
-  tbme_duffing_obs_mismatch:
-    extends: tbme_duffing_easy
-    observation_dim: 24
-    observation_noise_scale: 0.2
-    firing_rate_scale: 0.6
+  tbme_duffing_hard:
+    extends: tbme_duffing_asymmetric
+    system_label: hard duffing oscillator with asymmetric loading
+    state_noise: 0.1
+    state_init_uncertainty: 10.0
+    firing_rate_scale: 0.5
+    action_max: 0.5
 
-  tbme_duffing_family_mismatch:
-    extends: tbme_duffing_easy
-    estimator_system_id: damped_pendulum
-    system_label: Duffing oscillator / pendulum model mismatch
+  tbme_damped_pendulum_asymmetry:
+    extends: tbme_damped_pendulum
+    system_label: damped pendulum with asymmetric loading
+    asymmetric_loading: true
+
+
+  tbme_asymmetric_basin_hard:
+    extends: tbme_duffing_asymmetric
+    system_id: asymmetric_basin
+    system_label: Asymmetric basin
+    dynamics_type: asymmetric_basin
+    embedding_dim: 4
+    true_params:
+    - -1.2
+    - -0.8
+    - 1.5
+    - 1.1
 
   tbme_duffing_parameter_mismatch:
-    extends: tbme_duffing_easy
-    estimator_system_id: single_attractor_cubic_0p2
+    extends: tbme_duffing
     system_label: Duffing oscillator / fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -1.1
+    - -0.9
+    - 0.2
 
   tbme_duffing_noise_mismatch:
-    extends: tbme_duffing_easy
-    state_noise: 0.6
-    observation_noise_scale: 0.2
+    extends: tbme_duffing
+    state_noise: 1
 
-  tbme_pendulum_param_mismatch:
-    extends: tbme_pendulum_damped
-    asymmetric_loading: true
-    observation_dim: 64
-    observation_primary_scale: 1.0
-    observation_secondary_scale: 4.5
-    observation_row_skew: 2.0
-    max_firing_rate_target: 180.0
-    state_noise: 0.35
-    state_init_uncertainty: 16.0
-
-  tbme_double_integrator_mismatch:
-    extends: tbme_double_integrator
-    state_noise: 0.25
-    observation_noise_scale: 0.15
-    mean_firing_rate_target: 12.0
+  tbme_asymmetric_basin_parameter_mismatch:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / fixed-parameter mismatch
+    estimator_dynamics_type: asymmetric_basin
+    estimator_true_params:
+    - -1.2
+    - -0.1
+    - -0.55
+    - -0.5
+    embedding_dim: 3
 
   tbme_mcrtt_spikes:
     extends: single_duffing

@@ -3,78 +3,119 @@ schedules:
     update_interval: 1
     replan_interval: 1
     planning_horizon: 10
-    planning_chunk: 1
 
   tbme_u1_r1_h40:
     update_interval: 1
     replan_interval: 1
     planning_horizon: 40
-    planning_chunk: 1
+
+  tbme_u1_r5_h40:
+    update_interval: 1
+    replan_interval: 5
+    planning_horizon: 40
+
+  tbme_u5_r10_h40:
+    update_interval: 5
+    replan_interval: 10
+    planning_horizon: 40
+    predictive_only_window: true
 
 models:
+  active_myopic:
+    objective_kind: parameter_eig
+    schedule_id: u1_r1_h2
+    action_constraint: radius
+
+  active_planning:
+    objective_kind: parameter_eig
+    schedule_id: u1_r1_h20
+    action_constraint: radius
+    coarse_dt_factor: 10
+    coarse_action_mapping: hold
+
+  active_planning_async:
+    extends: active_planning
+    policy_type: async-mpc-icem
+    async_planning: true
+
   tbme_active_nominal:
     extends: active_planning
 
-  tbme_active_shrinkage:
-    extends: tbme_active_nominal
-    objective_kind: shrinkage_parameter_eig
-    shrinkage_kind: inverse_quadratic
-    shrinkage_min: 0.25
+  active_planning_u1_r1_h40:
+    extends: active_planning
+    schedule_id: tbme_u1_r1_h40
 
-  tbme_active_ambiguity:
-    extends: tbme_active_nominal
-    objective_kind: ambiguity_aware_parameter_eig
-    ambiguity_temperature: 0.5
-    ensemble_kind: sensitivity_gain
+  active_planning_u5_r5_h40:
+    extends: active_planning
+    schedule_id: u5_r5_h40
 
-  tbme_active_robust:
-    extends: tbme_active_nominal
-    objective_kind: ambiguity_aware_parameter_eig
-    shrinkage_kind: inverse_quadratic
-    shrinkage_min: 0.25
-    ambiguity_temperature: 0.5
-    ensemble_kind: sensitivity_gain
+  active_planning_u1_r5_h40:
+    extends: active_planning
+    schedule_id: tbme_u1_r5_h40
 
-  ig_parameter:
-    objective_kind: parameter_eig
-    schedule_id: u1_r1_h20
+  active_planning_u10_r10_h40:
+    extends: active_planning
+    schedule_id: u10_r10_h40
 
-  ig_full_observable:
-    objective_kind: fully_observable_parameter_eig
-    schedule_id: u1_r1_h20
-
-  ig_e_optimality:
-    objective_kind: e_optimality
-    schedule_id: u1_r1_h20
-
-  ig_state_information:
-    objective_kind: state_information
-    schedule_id: u1_r1_h20
-
-  ig_dynamics:
-    objective_kind: dynamics
-    schedule_id: u1_r1_h20
-
-  ig_sampling_variance:
-    objective_kind: sampling_variance
-    schedule_id: u1_r1_h20
+  active_planning_u5_r10_h40:
+    extends: active_planning
+    schedule_id: tbme_u5_r10_h40
 
   flex:
-    objective_kind: fully_observable_parameter_eig
+    objective_kind: null
     schedule_id: u1_r1_h1
     policy_type: flex
     save_acq_map: false
 
+  flex_true_state:
+    objective_kind: null
+    schedule_id: u1_r1_h1
+    policy_type: flex
+    save_acq_map: false
+
+  flex_official:
+    objective_kind: null
+    schedule_id: u1_r1_h1
+    policy_type: flex-official
+    save_acq_map: false
+    flex_regularization: 0.01
+    flex_parameter_step_clip: 0.5
+    flex_parameter_min: -5.0
+    flex_parameter_max: 5.0
+    flex_lr: null
+
+  flex_official_true_state:
+    objective_kind: null
+    schedule_id: u1_r1_h1
+    policy_type: flex-official
+    save_acq_map: false
+    flex_regularization: 0.01
+    flex_parameter_step_clip: 0.5
+    flex_parameter_min: -5.0
+    flex_parameter_max: 5.0
+    flex_lr: null
+
   rhc:
-    objective_kind: fully_observable_parameter_eig
-    schedule_id: u1_r1_h20
+    objective_kind: null
+    schedule_id: u20_r20_h20
     policy_type: rhc
     save_acq_map: false
 
   rhc_mvr:
-    objective_kind: fully_observable_parameter_eig
-    schedule_id: u1_r1_h20
+    objective_kind: null
+    schedule_id: u20_r20_h20
     policy_type: rhc
+    save_acq_map: false
+
+  ensemble:
+    objective_kind: state_variance
+    schedule_id: u1_r1_h20
+    save_acq_map: false
+
+  rhc_model_us:
+    objective_kind: model_predictive_variance
+    schedule_id: u1_r1_h20
+    policy_type: rhc-model-us
     save_acq_map: false
 
   sched_h2_u1_r1:
@@ -105,22 +146,17 @@ models:
     objective_kind: parameter_eig
     schedule_id: u5_r5_h40
 
-  e_optimality:
-    objective_kind: e_optimality
-    schedule_id: u1_r1_h20
-
-  e_optimality_u5_r5_h40:
-    extends: e_optimality
-    schedule_id: u5_r5_h40
-
   baseline_random:
-    schedule_id: u1_r1_h1
-    policy_type: baseline-random
-    passive: true
-    save_acq_map: false
+    extends: random
 
-  baseline_prbs:
+  prbs:
     schedule_id: u1_r1_h1
     policy_type: baseline-prbs
     passive: true
     save_acq_map: false
+
+  baseline_prbs:
+    extends: prbs
+
+  off-policy:
+    extends: off_policy

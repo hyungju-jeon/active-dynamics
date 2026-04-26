@@ -5,32 +5,54 @@ from pathlib import Path
 import sys
 
 if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from _run_family import run_family
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from run_experiments import main as run_main
 else:
-    from ._run_family import run_family
+    from ..run_experiments import main as run_main
+
+
+TBME_DIR = Path(__file__).resolve().parent
+EXPERIMENTS_DIR = TBME_DIR.parent
 
 
 EXP1_SUITES = [
-    "tbme_exp1_duffing_policy",
-    "tbme_exp1_duffing_policy_sota",
-    "tbme_exp1_pendulum_policy",
-    "tbme_exp1_pendulum_policy_sota",
-    "tbme_exp1_double_integrator_policy",
-    "tbme_exp1_double_integrator_policy_sota",
-    "tbme_exp1_objective_duffing",
-    "tbme_exp1_duffing_challenge_policy",
-    "tbme_exp1_duffing_challenge_sota",
-    "tbme_exp1_duffing_budget_ablation_short",
-    "tbme_exp1_duffing_budget_ablation_medium",
-    "tbme_exp1_duffing_ig_ablation",
-    "tbme_exp1_duffing_schedule_ablation",
-    "tbme_exp1_duffing_competitor_compare",
+    "tbme_exp1_duffing_main",
+    "tbme_exp1_damped_pendulum_main",
+    "tbme_exp1_asymmetric_basin_main",
+    "tbme_exp1_multi_stable_main",
 ]
+DEFAULT_BASE_DIR = "results/tbme/exp1"
+
+
+def _catalog_args() -> list[str]:
+    return [
+        "--env-catalog",
+        str(EXPERIMENTS_DIR / "experiment_env.yaml"),
+        "--env-catalog",
+        str(TBME_DIR / "experiment_env.yaml"),
+        "--model-catalog",
+        str(EXPERIMENTS_DIR / "experiment_model.yaml"),
+        "--model-catalog",
+        str(TBME_DIR / "experiment_model.yaml"),
+        "--suite-catalog",
+        str(TBME_DIR / "experiment_suite.yaml"),
+    ]
 
 
 def main(argv: list[str] | None = None) -> int:
-    return run_family(argv=argv, suite_ids=EXP1_SUITES, default_base_dir="results/tbme/exp1")
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    return int(
+        run_main(
+            [
+                *_catalog_args(),
+                "--exp-ids",
+                ",".join(EXP1_SUITES),
+                "--base-dir",
+                DEFAULT_BASE_DIR,
+                *argv_list,
+            ]
+        )
+    )
 
 
 if __name__ == "__main__":

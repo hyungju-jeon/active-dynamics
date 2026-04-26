@@ -15,11 +15,13 @@ TBME_DIR = Path(__file__).resolve().parent
 EXPERIMENTS_DIR = TBME_DIR.parent
 
 
-EXP2_SUITES = [
-    "tbme_exp2_duffing_parameter_mismatch",
-    "tbme_exp2_asymmetric_basin_parameter_mismatch",
+EXP1_1_SUITES = [
+    "tbme_exp1_schedule_duffing",
+    "tbme_exp1_schedule_damped_pendulum",
+    "tbme_exp1_schedule_asymmetric_basin",
+    "tbme_exp1_schedule_multi_stable",
 ]
-DEFAULT_BASE_DIR = "results/tbme/exp2"
+DEFAULT_BASE_DIR = "results/tbme/exp1_1_schedule"
 
 
 def _catalog_args() -> list[str]:
@@ -44,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
             [
                 *_catalog_args(),
                 "--exp-ids",
-                ",".join(EXP2_SUITES),
+                ",".join(EXP1_1_SUITES),
                 "--base-dir",
                 DEFAULT_BASE_DIR,
                 *argv_list,

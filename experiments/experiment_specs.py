@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
+import numpy as np
+import torch
 
 
 ObjectiveKind = Literal[
@@ -19,7 +21,7 @@ ObjectiveKind = Literal[
     "dynamics",
     "sampling_variance",
 ]
-ExperimentKind = Literal["duffing", "rbf", "realdata"]
+ExperimentKind = Literal["parameter", "rbf", "realdata"]
 SummaryValueKind = Literal["parameter_error", "dynamics_mse"]
 
 
@@ -35,6 +37,13 @@ class EnvironmentPreset:
     action_max: float
     system_label: str | None = None
     estimator_system_id: str | None = None
+    dynamics_type: str | None = None
+    estimator_dynamics_type: str | None = None
+    true_params: tuple[float, ...] | None = None
+    estimator_true_params: tuple[float, ...] | None = None
+    state_low: tuple[float, float] | None = None
+    state_high: tuple[float, float] | None = None
+    min_embedding_dim: int | None = None
     dynamics_alpha: float = 1.0
     state_noise: float = 0.2
     state_init_uncertainty: float = 25.0
@@ -57,15 +66,160 @@ class EnvironmentPreset:
     time_bin_ms: float = 20.0
     max_observation_dim: int | None = None
 
+    def resolved_dynamics_type(self, *, estimator: bool = False) -> str:
+        configured = self.estimator_dynamics_type if estimator else self.dynamics_type
+        if isinstance(configured, str) and configured.strip():
+            return configured.strip()
+        if estimator:
+            if isinstance(self.dynamics_type, str) and self.dynamics_type.strip():
+                return self.dynamics_type.strip()
+            if self.estimator_system_id is not None:
+                return str(self.estimator_system_id)
+        return str(self.system_id)
 
-@dataclass(frozen=True)
+    def resolved_true_params(self, *, estimator: bool = False) -> tuple[float, ...]:
+        configured = self.estimator_true_params if estimator else self.true_params
+        if configured is not None:
+            return tuple(float(x) for x in configured)
+        if estimator and self.true_params is not None:
+            return tuple(float(x) for x in self.true_params)
+        raise ValueError(
+            f"Environment preset {self.preset_id} is missing {'estimator_' if estimator else ''}true_params."
+        )
+
+    def resolved_state_bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.state_low is not None and self.state_high is not None:
+            return (
+                np.asarray(self.state_low, dtype=np.float32),
+                np.asarray(self.state_high, dtype=np.float32),
+            )
+        lim = float(self.x_range)
+        return (
+            np.asarray([-lim, -lim], dtype=np.float32),
+            np.asarray([lim, lim], dtype=np.float32),
+        )
+
+    def resolved_plot_limit(self) -> float:
+        if self.x_range is not None:
+            return float(self.x_range)
+        low, high = self.resolved_state_bounds()
+        return float(max(np.max(np.abs(low)), np.max(np.abs(high))))
+
+    def resolved_min_embedding_dim(self) -> int:
+        if self.min_embedding_dim is not None:
+            return int(self.min_embedding_dim)
+        return 1
+
+    def true_embedding_vector(
+        self, *, embedding_dim: int | None = None, estimator: bool = False
+    ) -> np.ndarray:
+        full = np.asarray(self.resolved_true_params(estimator=estimator), dtype=np.float32)
+        dim = int(self.embedding_dim) if embedding_dim is None else int(embedding_dim)
+        min_dim = self.resolved_min_embedding_dim()
+        if dim < min_dim or dim > full.shape[0]:
+            raise ValueError(
+                f"embedding_dim must be in [{min_dim}, {full.shape[0]}] for {self.preset_id}, got {dim}."
+            )
+        return full[:dim]
+
+    def params_from_embedding(self, embedding: Any, *, estimator: bool = False) -> Any:
+        full = np.asarray(self.resolved_true_params(estimator=estimator), dtype=np.float32)
+        min_dim = self.resolved_min_embedding_dim()
+        if torch.is_tensor(embedding):
+            e = embedding.to(dtype=torch.float32)
+            if e.shape[-1] < min_dim:
+                raise ValueError(
+                    f"Embedding for {self.preset_id} must have at least {min_dim} coordinates, got shape {tuple(e.shape)}."
+                )
+            if e.shape[-1] >= full.shape[0]:
+                return e[..., : full.shape[0]]
+            tail = torch.as_tensor(full[e.shape[-1]:], dtype=e.dtype, device=e.device)
+            if e.ndim == 1:
+                return torch.cat((e, tail), dim=0)
+            tail = tail.reshape(*([1] * (e.ndim - 1)), -1).expand(*e.shape[:-1], -1)
+            return torch.cat((e, tail), dim=-1)
+        e_np = np.asarray(embedding, dtype=np.float32)
+        if e_np.shape[-1] < min_dim:
+            raise ValueError(
+                f"Embedding for {self.preset_id} must have at least {min_dim} coordinates, got shape {e_np.shape}."
+            )
+        if e_np.shape[-1] >= full.shape[0]:
+            return e_np[..., : full.shape[0]]
+        tail = full[e_np.shape[-1]:]
+        if e_np.ndim == 1:
+            return np.concatenate((e_np, tail), axis=0).astype(np.float32, copy=False)
+        tail = np.broadcast_to(
+            tail.reshape(*([1] * (e_np.ndim - 1)), -1),
+            (*e_np.shape[:-1], tail.shape[0]),
+        )
+        return np.concatenate((e_np, tail.astype(np.float32, copy=False)), axis=-1)
+
+    def sample_initial_state(self, seed: int) -> np.ndarray:
+        low, high = self.resolved_state_bounds()
+        rng = np.random.default_rng(int(seed))
+        return (low + (high - low) * rng.random(low.shape[0])).astype(np.float32)
+
+
+@dataclass(frozen=True, init=False)
 class ScheduleSpec:
     schedule_id: str
     update_interval: int
     replan_interval: int
     planning_horizon: int
-    planning_chunk: int
     predictive_only_window: bool = False
+
+    def __init__(
+        self,
+        schedule_id: str,
+        update_interval: int,
+        replan_interval: int | None = None,
+        planning_horizon: int | None = None,
+        planning_chunk_or_predictive_only_window: int | bool | None = None,
+        predictive_only_window: bool = False,
+        *,
+        planning_interval: int | None = None,
+        planning_chunk: int | None = None,
+    ) -> None:
+        if planning_chunk_or_predictive_only_window is not None:
+            if isinstance(planning_chunk_or_predictive_only_window, bool):
+                predictive_only_window = planning_chunk_or_predictive_only_window
+            elif planning_chunk is None:
+                planning_chunk = int(planning_chunk_or_predictive_only_window)
+            else:
+                raise TypeError("ScheduleSpec got planning_chunk twice")
+        aliases = {
+            key: int(value)
+            for key, value in {
+                "replan_interval": replan_interval,
+                "planning_interval": planning_interval,
+                "planning_chunk": planning_chunk,
+            }.items()
+            if value is not None
+        }
+        if not aliases:
+            raise TypeError("ScheduleSpec requires replan_interval")
+        first_value = next(iter(aliases.values()))
+        if any(value != first_value for value in aliases.values()):
+            parts = ", ".join(f"{key}={value}" for key, value in aliases.items())
+            raise ValueError(
+                f"Schedule {schedule_id!r} has conflicting planning interval aliases: {parts}. "
+                "Use a single replan_interval value."
+            )
+        if planning_horizon is None:
+            raise TypeError("ScheduleSpec requires planning_horizon")
+        object.__setattr__(self, "schedule_id", str(schedule_id))
+        object.__setattr__(self, "update_interval", int(update_interval))
+        object.__setattr__(self, "replan_interval", int(first_value))
+        object.__setattr__(self, "planning_horizon", int(planning_horizon))
+        object.__setattr__(self, "predictive_only_window", bool(predictive_only_window))
+
+    @property
+    def planning_interval(self) -> int:
+        return int(self.replan_interval)
+
+    @property
+    def planning_chunk(self) -> int:
+        return int(self.replan_interval)
 
 
 @dataclass(frozen=True)
@@ -80,6 +234,22 @@ class PolicySpec:
     shrinkage_min: float | None = None
     ambiguity_temperature: float | None = None
     ensemble_kind: str | None = None
+    action_constraint: str | None = None
+    action_radius: float | None = None
+    flex_regularization: float | None = None
+    flex_parameter_step_clip: float | None = None
+    flex_parameter_min: float | None = None
+    flex_parameter_max: float | None = None
+    flex_lr: float | None = None
+    coarse_dt_factor: int = 1
+    coarse_action_mapping: str = "hold"
+    coarse_mapping_opt_steps: int = 25
+    coarse_mapping_opt_lr: float = 0.05
+    async_planning: bool = False
+    async_stale_tolerance: float = 0.5
+    async_stale_refine_iterations: int = 2
+    async_worker_backend: str = "thread"
+    async_start_after_first_plan: bool = True
 
 
 @dataclass(frozen=True)
@@ -91,7 +261,7 @@ class ExperimentSpec:
     policy_ids: tuple[str, ...]
     summary_value_kind: SummaryValueKind
     summary_value_label: str
-    trajectory_eval_interval: int = 100
+    trajectory_eval_interval: int = 10
     trajectory_eval_horizon: int = 100
     trajectory_eval_samples: int = 16
 
@@ -173,10 +343,55 @@ def _resolve_named_entries(
     return resolved
 
 
+def _resolve_schedule_replan_interval(schedule_id: str, spec: Mapping[str, Any]) -> int:
+    aliases = {
+        key: int(spec[key])
+        for key in ("replan_interval", "planning_interval", "planning_chunk")
+        if key in spec
+    }
+    if not aliases:
+        raise KeyError(
+            f"Schedule {schedule_id!r} must define replan_interval "
+            "(planning_interval is accepted as an alias)."
+        )
+    first_key, first_value = next(iter(aliases.items()))
+    mismatched = {
+        key: value for key, value in aliases.items() if int(value) != int(first_value)
+    }
+    if mismatched:
+        parts = ", ".join(f"{key}={value}" for key, value in aliases.items())
+        raise ValueError(
+            f"Schedule {schedule_id!r} has conflicting planning interval aliases: {parts}. "
+            "Use a single replan_interval value."
+        )
+    if first_key == "planning_chunk":
+        # Backward compatible reader for older catalogs. New catalogs should use
+        # replan_interval so there is one explicit scheduling knob.
+        return int(first_value)
+    return int(first_value)
+
+
 def _as_str_tuple(values: Any, *, label: str) -> tuple[str, ...]:
     if not isinstance(values, (list, tuple)):
         raise ValueError(f"Expected list/tuple for {label}")
     return tuple(str(value) for value in values)
+
+
+def _as_float_tuple(values: Any, *, label: str) -> tuple[float, ...] | None:
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple)):
+        raise ValueError(f"Expected list/tuple for {label}")
+    return tuple(float(value) for value in values)
+
+
+def _as_pair(values: Any, *, label: str) -> tuple[float, float] | None:
+    parsed = _as_float_tuple(values, label=label)
+    if parsed is None:
+        return None
+    if len(parsed) != 2:
+        raise ValueError(f"Expected 2 values for {label}, got {len(parsed)}")
+    return (float(parsed[0]), float(parsed[1]))
 
 
 def _coerce_catalog_paths(
@@ -263,6 +478,24 @@ def load_catalog_bundle(
                 if spec.get("estimator_system_id") is None
                 else str(spec.get("estimator_system_id"))
             ),
+            dynamics_type=(
+                None if spec.get("dynamics_type") is None else str(spec.get("dynamics_type"))
+            ),
+            estimator_dynamics_type=(
+                None
+                if spec.get("estimator_dynamics_type") is None
+                else str(spec.get("estimator_dynamics_type"))
+            ),
+            true_params=_as_float_tuple(spec.get("true_params"), label=f"environments.{preset_id}.true_params"),
+            estimator_true_params=_as_float_tuple(
+                spec.get("estimator_true_params"),
+                label=f"environments.{preset_id}.estimator_true_params",
+            ),
+            state_low=_as_pair(spec.get("state_low"), label=f"environments.{preset_id}.state_low"),
+            state_high=_as_pair(spec.get("state_high"), label=f"environments.{preset_id}.state_high"),
+            min_embedding_dim=(
+                None if spec.get("min_embedding_dim") is None else int(spec.get("min_embedding_dim"))
+            ),
             asymmetric_loading=bool(spec.get("asymmetric_loading", False)),
             observation_primary_scale=float(spec.get("observation_primary_scale", 1.0)),
             observation_secondary_scale=float(spec.get("observation_secondary_scale", 2.0)),
@@ -306,9 +539,8 @@ def load_catalog_bundle(
         schedule_id: ScheduleSpec(
             schedule_id=str(spec.get("schedule_id", schedule_id)),
             update_interval=int(spec["update_interval"]),
-            replan_interval=int(spec["replan_interval"]),
+            replan_interval=_resolve_schedule_replan_interval(schedule_id, spec),
             planning_horizon=int(spec["planning_horizon"]),
-            planning_chunk=int(spec["planning_chunk"]),
             predictive_only_window=bool(spec.get("predictive_only_window", False)),
         )
         for schedule_id, spec in schedule_raw.items()
@@ -348,6 +580,50 @@ def load_catalog_bundle(
                 if spec.get("ensemble_kind") is None
                 else str(spec.get("ensemble_kind"))
             ),
+            action_constraint=(
+                None
+                if spec.get("action_constraint") is None
+                else str(spec.get("action_constraint"))
+            ),
+            action_radius=(
+                None
+                if spec.get("action_radius") is None
+                else float(spec.get("action_radius"))
+            ),
+            flex_regularization=(
+                None
+                if spec.get("flex_regularization") is None
+                else float(spec.get("flex_regularization"))
+            ),
+            flex_parameter_step_clip=(
+                None
+                if spec.get("flex_parameter_step_clip") is None
+                else float(spec.get("flex_parameter_step_clip"))
+            ),
+            flex_parameter_min=(
+                None
+                if spec.get("flex_parameter_min") is None
+                else float(spec.get("flex_parameter_min"))
+            ),
+            flex_parameter_max=(
+                None
+                if spec.get("flex_parameter_max") is None
+                else float(spec.get("flex_parameter_max"))
+            ),
+            flex_lr=(
+                None
+                if spec.get("flex_lr") is None
+                else float(spec.get("flex_lr"))
+            ),
+            coarse_dt_factor=int(spec.get("coarse_dt_factor", 1)),
+            coarse_action_mapping=str(spec.get("coarse_action_mapping", "hold")),
+            coarse_mapping_opt_steps=int(spec.get("coarse_mapping_opt_steps", 25)),
+            coarse_mapping_opt_lr=float(spec.get("coarse_mapping_opt_lr", 0.05)),
+            async_planning=bool(spec.get("async_planning", False)),
+            async_stale_tolerance=float(spec.get("async_stale_tolerance", 0.5)),
+            async_stale_refine_iterations=int(spec.get("async_stale_refine_iterations", 2)),
+            async_worker_backend=str(spec.get("async_worker_backend", "thread")),
+            async_start_after_first_plan=bool(spec.get("async_start_after_first_plan", True)),
         )
         for policy_id, spec in model_raw.items()
     }
@@ -364,7 +640,7 @@ def load_catalog_bundle(
             ),
             summary_value_kind=str(spec["summary_value_kind"]),
             summary_value_label=str(spec["summary_value_label"]),
-            trajectory_eval_interval=int(spec.get("trajectory_eval_interval", 100)),
+            trajectory_eval_interval=int(spec.get("trajectory_eval_interval", 10)),
             trajectory_eval_horizon=int(spec.get("trajectory_eval_horizon", 100)),
             trajectory_eval_samples=int(spec.get("trajectory_eval_samples", 16)),
         )

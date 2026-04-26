@@ -178,9 +178,6 @@ def frame_indices(n_steps: int, stride: int) -> list[int]:
 
 
 def get_environment_preset_from_metadata(metadata: Mapping[str, Any]) -> Any:
-    exp_id = str(metadata.get("exp_id", "")).strip()
-    if not exp_id:
-        raise ValueError("run metadata is missing exp_id")
     try:
         from experiment_specs import get_environment_preset, get_experiment_spec
     except ImportError:
@@ -190,6 +187,13 @@ def get_environment_preset_from_metadata(metadata: Mapping[str, Any]) -> Any:
         else:
             from .experiment_specs import get_environment_preset, get_experiment_spec
 
+    preset_id = str(metadata.get("env_preset_id", "")).strip()
+    if preset_id:
+        return get_environment_preset(preset_id)
+
+    exp_id = str(metadata.get("exp_id", "")).strip()
+    if not exp_id:
+        raise ValueError("run metadata is missing exp_id")
     exp_spec = get_experiment_spec(exp_id)
     return get_environment_preset(exp_spec.env_preset_id)
 
