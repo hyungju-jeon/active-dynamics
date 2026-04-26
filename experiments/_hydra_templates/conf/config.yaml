@@ -84,6 +84,15 @@ policy:
   mpc_use_mean_actions: true
   mpc_shift_elites: true
   mpc_keep_elites: true
+  mpc_coarse_dt_factor: 1
+  mpc_coarse_action_mapping: "hold"
+  mpc_coarse_mapping_opt_steps: 25
+  mpc_coarse_mapping_opt_lr: 0.05
+  mpc_async_planning: false
+  mpc_async_stale_tolerance: 0.5
+  mpc_async_stale_refine_iterations: 2
+  mpc_async_worker_backend: "thread"
+  mpc_async_start_after_first_plan: true
 
 # Metric configuration
 metric:

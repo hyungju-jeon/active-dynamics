@@ -161,6 +161,11 @@ class PolicyConfig:
     mpc_coarse_action_mapping: str = "hold"
     mpc_coarse_mapping_opt_steps: int = 25
     mpc_coarse_mapping_opt_lr: float = 0.05
+    mpc_async_planning: bool = False
+    mpc_async_stale_tolerance: float = 0.5
+    mpc_async_stale_refine_iterations: int = 2
+    mpc_async_worker_backend: str = "thread"
+    mpc_async_start_after_first_plan: bool = True
 
     def get_mpc_cfg(self):
         return {
@@ -182,6 +187,11 @@ class PolicyConfig:
             "coarse_action_mapping": self.mpc_coarse_action_mapping,
             "coarse_mapping_opt_steps": self.mpc_coarse_mapping_opt_steps,
             "coarse_mapping_opt_lr": self.mpc_coarse_mapping_opt_lr,
+            "async_planning": self.mpc_async_planning,
+            "async_stale_tolerance": self.mpc_async_stale_tolerance,
+            "async_stale_refine_iterations": self.mpc_async_stale_refine_iterations,
+            "async_worker_backend": self.mpc_async_worker_backend,
+            "async_start_after_first_plan": self.mpc_async_start_after_first_plan,
         }
 
 
