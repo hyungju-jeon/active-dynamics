@@ -458,7 +458,7 @@ class MultiStable(VectorField):
         **kwargs,
     ):
         super().__init__(device=device, **kwargs)
-        self.sigma = float(kwargs.get("sigma", 1))
+        self.sigma = float(kwargs.get("sigma", 0.9))
         center_scale = float(kwargs.get("center_scale", 2))
         self._centers = torch.tensor(
             [
