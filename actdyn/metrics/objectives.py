@@ -616,6 +616,129 @@ class SamplingVarianceMetric(BaseMetric):
         return self.current_cost
 
 
+class CorrectedSamplingVarianceMetric(SamplingVarianceMetric):
+    """Sampling-variance objective with Laplace-proposal importance correction.
+
+    The current TBME filtering posterior is Gaussian. We treat that Gaussian as the
+    Laplace proposal and reweight parameter samples toward a multivariate-Student-t
+    corrected posterior with the same mode/covariance. This is a lightweight
+    TBME-compatible analogue of the toy Laplace correction; it exposes ESS
+    diagnostics and falls back to uniform weights when ESS is too low.
+    """
+
+    def __init__(
+        self,
+        *,
+        correction_df: float = 3.0,
+        ess_gate_fraction: float = 0.05,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self.correction_df = max(float(correction_df), 1.0 + 1e-6)
+        self.ess_gate_fraction = float(max(0.0, min(1.0, ess_gate_fraction)))
+        self.last_effective_sample_size: float | None = None
+        self.last_effective_sample_fraction: float | None = None
+        self.last_used_correction: bool | None = None
+
+    def _sample_theta_belief_with_weights(self) -> tuple[torch.Tensor, torch.Tensor]:
+        samples = self._sample_theta_belief()
+        mean = self.model.e["m"].to(self.device)
+        if mean.ndim == 2:
+            mean = mean[0]
+        cov = self.model.e["P"].to(self.device)
+        if cov.ndim == 3:
+            cov = cov[0]
+        cov = symmetrize(cov)
+        eye = torch.eye(cov.shape[-1], dtype=cov.dtype, device=self.device)
+        chol = safe_cholesky(cov + 1e-8 * eye)
+        diff = samples - mean.unsqueeze(0)
+        solved = torch.cholesky_solve(diff.unsqueeze(-1), chol).squeeze(-1)
+        mahal = torch.sum(diff * solved, dim=-1)
+        dim = float(samples.shape[-1])
+        df = float(self.correction_df)
+        # Constants that do not depend on samples cancel in normalized weights.
+        log_target = -0.5 * (df + dim) * torch.log1p(mahal / df)
+        log_proposal = -0.5 * mahal
+        logw = log_target - log_proposal
+        logw = logw - torch.logsumexp(logw, dim=0)
+        weights = torch.exp(logw)
+        ess = torch.reciprocal(torch.sum(weights * weights).clamp_min(1e-12))
+        self.last_effective_sample_size = float(ess.detach().cpu().item())
+        self.last_effective_sample_fraction = self.last_effective_sample_size / float(self.num_parameter_samples)
+        if self.last_effective_sample_fraction < self.ess_gate_fraction:
+            weights = torch.full_like(weights, 1.0 / float(weights.numel()))
+            self.last_used_correction = False
+        else:
+            self.last_used_correction = True
+        return samples, weights
+
+    @staticmethod
+    def _weighted_variance(values: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+        w = weights.to(values.device, dtype=values.dtype).view(-1, *([1] * (values.ndim - 1)))
+        mean = torch.sum(w * values, dim=0, keepdim=True)
+        var = torch.sum(w * (values - mean) ** 2, dim=0)
+        return var
+
+    def compute_stepwise(self, rollout: dict) -> torch.Tensor:
+        actions, encoded_action_value = self._rollout_actions(rollout)
+        if actions is not None:
+            actions = actions.to(self.device).float()
+            if actions.ndim != 3:
+                actions = actions.unsqueeze(0)
+            batch, steps, _ = actions.shape
+        else:
+            if encoded_action_value is None:
+                raise KeyError(
+                    "CorrectedSamplingVarianceMetric requires one of 'action', 'encoded_action', "
+                    "'env_action', or 'model_action' in rollout"
+                )
+            encoded_actions = encoded_action_value.to(self.device).float()
+            if encoded_actions.ndim != 3:
+                encoded_actions = encoded_actions.unsqueeze(0)
+            batch, steps, _ = encoded_actions.shape
+        rollout_states_value = self._rollout_get(rollout, "model_state")
+        if rollout_states_value is not None:
+            rollout_states = rollout_states_value.to(self.device).float()
+            if rollout_states.ndim != 3:
+                rollout_states = rollout_states.unsqueeze(0)
+            state0 = rollout_states[:, :1]
+            if state0.shape[0] == 1 and batch > 1:
+                state0 = state0.expand(batch, -1, -1).clone()
+        else:
+            if hasattr(self.model, "get_state"):
+                state0 = self.model.get_state().to(self.device).float()
+            else:
+                state0 = self.model._state.to(self.device).float()
+            if state0.ndim != 3:
+                state0 = state0.unsqueeze(0)
+            if state0.shape[0] == 1 and batch > 1:
+                state0 = state0.expand(batch, -1, -1).clone()
+        if encoded_action_value is not None:
+            if "encoded_actions" not in locals():
+                encoded_actions = encoded_action_value.to(self.device).float()
+                if encoded_actions.ndim != 3:
+                    encoded_actions = encoded_actions.unsqueeze(0)
+        else:
+            if actions is None:
+                raise KeyError("CorrectedSamplingVarianceMetric cannot encode actions when rollout['action'] is missing")
+            encoded_actions = self._encode_actions(actions, state0)
+        theta_samples, weights = self._sample_theta_belief_with_weights()
+        lam_stack = self._predict_lambda_samples(
+            init_state=state0,
+            encoded_actions=encoded_actions,
+            theta_samples=theta_samples,
+        )
+        var_diag = self._weighted_variance(lam_stack, weights)
+        logdet_diag = torch.log1p(var_diag.clamp_min(0.0)).sum(dim=-1)
+        gamma_scale = torch.pow(
+            torch.full((steps,), self.gamma, dtype=lam_stack.dtype, device=self.device),
+            torch.arange(steps, dtype=lam_stack.dtype, device=self.device),
+        ).view(1, steps)
+        total = torch.sum(gamma_scale * logdet_diag, dim=-1)
+        self.current_cost = (-total).unsqueeze(-1)
+        return self.current_cost
+
+
 def state_information(
     *,
     model: FilteringEmbedding,
@@ -667,6 +790,30 @@ def sampling_variance(
         num_parameter_samples=num_parameter_samples,
         sample_seed=sample_seed,
         device=device,
+    )
+
+
+def corrected_sampling_variance(
+    *,
+    model: FilteringEmbedding,
+    Fe_net: Callable,
+    Fz_net: Callable,
+    gamma: float,
+    device: str,
+    num_parameter_samples: int,
+    sample_seed: int | None = None,
+    correction_df: float = 3.0,
+    ess_gate_fraction: float = 0.05,
+) -> CorrectedSamplingVarianceMetric:
+    del Fe_net, Fz_net
+    return CorrectedSamplingVarianceMetric(
+        model=model,
+        gamma=gamma,
+        num_parameter_samples=num_parameter_samples,
+        sample_seed=sample_seed,
+        device=device,
+        correction_df=correction_df,
+        ess_gate_fraction=ess_gate_fraction,
     )
 
 
