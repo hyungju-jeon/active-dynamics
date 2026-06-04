@@ -117,7 +117,6 @@ models:
   sampling_variance:
     objective_kind: sampling_variance
     schedule_id: u10_r10_h100
-    save_acq_map: false
 
   sampling_variance_u5_r5_h20:
     extends: sampling_variance
@@ -131,7 +130,6 @@ models:
     schedule_id: u1_r1_h1
     policy_type: random
     passive: true
-    save_acq_map: false
 
   off_policy:
     extends: random

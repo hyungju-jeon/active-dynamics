@@ -16,9 +16,8 @@ import pandas as pd
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from experiment_common import (
+    from experiment_io import (
         expected_loglinear_rate_hz,
-        frame_indices,
         get_environment_preset_from_metadata,
         load_json,
         parse_csv_ints,
@@ -26,12 +25,11 @@ if __package__ in {None, ""}:
         resolve_artifact_path,
         resolve_session_root,
     )
-    from experiment_specs import get_experiment_spec, list_experiment_ids
+    from experiment_definitions import get_experiment_spec, list_experiment_ids
     from actdyn.environment.vectorfield import residual_torch
 else:
-    from .experiment_common import (
+    from .experiment_io import (
         expected_loglinear_rate_hz,
-        frame_indices,
         get_environment_preset_from_metadata,
         load_json,
         parse_csv_ints,
@@ -39,15 +37,14 @@ else:
         resolve_artifact_path,
         resolve_session_root,
     )
-    from .experiment_specs import get_experiment_spec, list_experiment_ids
+    from .experiment_definitions import get_experiment_spec, list_experiment_ids
     from actdyn.environment.vectorfield import residual_torch
 from actdyn.utils.video import figure_to_rgb_array, write_video_frames
-from actdyn.utils.visualize import (
+from actdyn.utils.plotting import (
     RbfVectorFieldDynamics,
     VectorFieldResidualDynamics,
     annotate_action_arrow,
     decorate_phase_space_axis,
-    make_lognorm,
     overlay_planned_xy,
     planned_xy_for_step,
     plot_vector_field,
@@ -55,7 +52,13 @@ from actdyn.utils.visualize import (
 )
 
 
-PASSIVE_POLICIES = {"random", "off_policy", "baseline_prbs", "baseline_random"}
+def _frame_indices(n_steps: int, stride: int) -> list[int]:
+    if n_steps <= 0:
+        return [0]
+    idxs = list(range(0, n_steps, max(1, int(stride))))
+    if idxs[-1] != n_steps - 1:
+        idxs.append(n_steps - 1)
+    return idxs
 
 
 def _load_run_artifacts(
@@ -246,7 +249,7 @@ def render_spike_rate_video(
 ) -> Path:
     metadata, true_state = _load_true_state_trace(run_dir)
     spike_counts, rate_hz = _simulated_spike_and_rate_traces(metadata, true_state)
-    idxs = frame_indices(true_state.shape[0], stride)
+    idxs = _frame_indices(true_state.shape[0], stride)
     history_window = max(2, int(history_window))
     rate_ylim = float(
         max(
@@ -320,47 +323,13 @@ def render_spike_rate_video(
     return output_path
 
 
-def _build_vectorfield_figure(
-    *,
-    acq_trace: tuple[np.ndarray, ...] | None,
-    show_acq: bool,
-):
-    if show_acq and acq_trace is not None:
-        acq_steps, acq_axis, acq_maps = acq_trace
-        acq_maps = np.nan_to_num(acq_maps, nan=1e-12, posinf=1e6, neginf=1e-12)
-        acq_maps = np.maximum(acq_maps, 1e-12)
-        acq_norm = make_lognorm([acq_maps[k] for k in range(acq_maps.shape[0])])
-        extent = [
-            float(np.min(acq_axis)),
-            float(np.max(acq_axis)),
-            float(np.min(acq_axis)),
-            float(np.max(acq_axis)),
-        ]
-        fig = plt.figure(figsize=(15.8, 6.2), dpi=120)
-        gs = fig.add_gridspec(1, 3, width_ratios=[1.0, 1.0, 0.05], wspace=0.18)
-        ax_true = fig.add_subplot(gs[0, 0])
-        ax_est = fig.add_subplot(gs[0, 1])
-        cax = fig.add_subplot(gs[0, 2])
-        sm = plt.cm.ScalarMappable(norm=acq_norm, cmap="inferno")
-        cbar = fig.colorbar(sm, cax=cax)
-        cbar.set_label("Acquisition Objective (log scale)")
-        fig.subplots_adjust(left=0.05, right=0.93, bottom=0.09, top=0.90, wspace=0.18)
-        return fig, ax_true, ax_est, np.asarray(acq_steps, dtype=int), acq_maps, acq_norm, extent
-
+def _build_vectorfield_figure():
     fig = plt.figure(figsize=(14.2, 6.2), dpi=120)
     gs = fig.add_gridspec(1, 2, width_ratios=[1.0, 1.0], wspace=0.18)
     ax_true = fig.add_subplot(gs[0, 0])
     ax_est = fig.add_subplot(gs[0, 1])
     fig.subplots_adjust(left=0.05, right=0.97, bottom=0.09, top=0.90, wspace=0.18)
-    return (
-        fig,
-        ax_true,
-        ax_est,
-        np.asarray([], dtype=int),
-        np.zeros((0, 0, 0), dtype=float),
-        None,
-        None,
-    )
+    return fig, ax_true, ax_est
 
 
 def _draw_vectorfield_panel(
@@ -373,20 +342,9 @@ def _draw_vectorfield_panel(
     planned_xy: np.ndarray | None,
     grid_lim: float,
     title: str,
-    background: dict[str, Any] | None = None,
     action_xy: np.ndarray | None = None,
 ) -> None:
     ax.clear()
-    if background is not None:
-        ax.imshow(
-            background["map"],
-            extent=background["extent"],
-            origin="lower",
-            cmap="inferno",
-            norm=background["norm"],
-            alpha=0.74,
-            interpolation="nearest",
-        )
     plot_vector_field(dynamics, ax=ax, x_range=grid_lim, n_grid=26, is_residual=True, device="cpu")
     ax.plot(
         true_state[: step_idx + 1, 0],
@@ -433,35 +391,18 @@ def _render_vectorfield_comparison_video(
     action: np.ndarray,
     policy_cost: np.ndarray,
     planned_trace: tuple[np.ndarray, ...] | None,
-    acq_trace: tuple[np.ndarray, ...] | None,
     dyn_true,
     true_title: str,
     estimate_at_step,
 ) -> Path:
-    show_acq = metadata.get("policy_id") not in PASSIVE_POLICIES and acq_trace is not None
-    (
-        fig,
-        ax_true,
-        ax_est,
-        acq_steps,
-        acq_maps,
-        acq_norm,
-        extent,
-    ) = _build_vectorfield_figure(acq_trace=acq_trace, show_acq=show_acq)
-    idxs = frame_indices(true_state.shape[0], stride)
+    fig, ax_true, ax_est = _build_vectorfield_figure()
+    idxs = _frame_indices(true_state.shape[0], stride)
     frames: list[np.ndarray] = []
 
     for i in idxs:
         cur_step = int(i + 1)
         planned_xy = planned_xy_for_step(planned_trace, cur_step)
         dyn_est, est_title = estimate_at_step(cur_step)
-        background = None
-        if extent is not None and acq_norm is not None:
-            background = {
-                "map": acq_maps[trace_index(acq_steps, cur_step)],
-                "extent": extent,
-                "norm": acq_norm,
-            }
         _draw_vectorfield_panel(
             ax_true,
             dynamics=dyn_true,
@@ -481,7 +422,6 @@ def _render_vectorfield_comparison_video(
             planned_xy=planned_xy,
             grid_lim=grid_lim,
             title=est_title,
-            background=background,
             action_xy=np.asarray(action[i], dtype=float),
         )
         action_norm = float(np.linalg.norm(action[i])) if i < action.shape[0] else 0.0
@@ -532,12 +472,6 @@ def _render_rbf_vectorfield_video(
         key="planned_trajectory_trace_path",
         fallback="planned_trajectory_trace.npz",
     )
-    acq_trace = _load_npz_trace(
-        run_dir,
-        metadata,
-        key="acquisition_map_trace_path",
-        fallback="acquisition_map_trace.npz",
-    )
     env_preset = get_environment_preset_from_metadata(metadata)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 1.0))
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=float)
@@ -573,7 +507,6 @@ def _render_rbf_vectorfield_video(
         action=action,
         policy_cost=policy_cost,
         planned_trace=planned_trace,
-        acq_trace=acq_trace,
         dyn_true=dyn_true,
         true_title=(
             f"True {getattr(env_preset, "system_label", None) or env_preset.system_id} VF "
@@ -583,7 +516,7 @@ def _render_rbf_vectorfield_video(
     )
 
 
-def render_acq_vectorfield_video(
+def render_vectorfield_video(
     run_dir: Path,
     output_path: Path,
     *,
@@ -608,12 +541,6 @@ def render_acq_vectorfield_video(
         metadata,
         key="planned_trajectory_trace_path",
         fallback="planned_trajectory_trace.npz",
-    )
-    acq_trace = _load_npz_trace(
-        run_dir,
-        metadata,
-        key="acquisition_map_trace_path",
-        fallback="acquisition_map_trace.npz",
     )
     env_preset = get_environment_preset_from_metadata(metadata)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 1.0))
@@ -655,7 +582,6 @@ def render_acq_vectorfield_video(
         action=action,
         policy_cost=policy_cost,
         planned_trace=planned_trace,
-        acq_trace=acq_trace,
         dyn_true=dyn_true,
         true_title=(
             f"True {getattr(env_preset, "system_label", None) or env_preset.system_id} VF "
@@ -681,9 +607,6 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     exp_spec = get_experiment_spec(str(args.exp_id))
-    if str(exp_spec.experiment_kind) == "realdata":
-        print(f"Skipping video rendering for {exp_spec.exp_id}: planar-only renderer")
-        return 0
     base_dir = resolve_session_root(Path(args.base_dir), create=False, exp_ids=[exp_spec.exp_id])
     seeds = parse_csv_ints(args.seeds) or [0, 10, 20, 30]
     out_dir = base_dir / exp_spec.exp_id / "videos"
@@ -697,8 +620,8 @@ def main(argv: list[str] | None = None) -> int:
                 run_meta = run_dir / "run_metadata.json"
                 if not run_meta.exists():
                     continue
-                output_path = run_dir / "video" / "acq_vectorfield.mp4"
-                saved = render_acq_vectorfield_video(
+                output_path = run_dir / "video" / "vectorfield.mp4"
+                saved = render_vectorfield_video(
                     run_dir,
                     output_path,
                     stride=int(args.stride),
@@ -706,7 +629,7 @@ def main(argv: list[str] | None = None) -> int:
                     grid_lim=float(args.grid_lim),
                 )
                 shutil.copy2(
-                    saved, out_dir / f"{policy_id}_seed_{seed}_{run_dir.name}_acq_vectorfield.mp4"
+                    saved, out_dir / f"{policy_id}_seed_{seed}_{run_dir.name}_vectorfield.mp4"
                 )
                 spike_rate_path = run_dir / "video" / "spike_rate.mp4"
                 spike_saved = render_spike_rate_video(

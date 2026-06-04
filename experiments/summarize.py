@@ -9,10 +9,11 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 import torch
+from actdyn.utils.experiment_runtime import write_trace_csv
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from experiment_common import (
+    from experiment_io import (
         expected_loglinear_rate_hz,
         find_nested_metadata_paths,
         get_environment_preset_from_metadata,
@@ -24,11 +25,11 @@ if __package__ in {None, ""}:
         resolve_session_root,
         safe_float,
     )
-    from experiment_specs import get_experiment_spec, list_experiment_ids
+    from experiment_definitions import get_experiment_spec, list_experiment_ids
     from actdyn.environment.vectorfield import residual_torch
     from actdyn.utils.validation import trajectory_r2_vectorfield
 else:
-    from .experiment_common import (
+    from .experiment_io import (
         expected_loglinear_rate_hz,
         find_nested_metadata_paths,
         get_environment_preset_from_metadata,
@@ -40,27 +41,162 @@ else:
         resolve_session_root,
         safe_float,
     )
-    from .experiment_specs import get_experiment_spec, list_experiment_ids
+    from .experiment_definitions import get_experiment_spec, list_experiment_ids
     from actdyn.environment.vectorfield import residual_torch
     from actdyn.utils.validation import trajectory_r2_vectorfield
-from actdyn.utils.visualize import (
+from actdyn.utils.plotting import (
     VectorFieldResidualDynamics,
+    apply_manuscript_figure_style,
     decorate_phase_space_axis,
     plot_vector_field,
+    style_manuscript_axis,
 )
 
 
 SUPPORTED_FIGURE_FORMATS = frozenset({".pdf", ".png", ".svg"})
+TRAJECTORY_R2_THRESHOLDS = (0.90, 0.95, 0.99)
+C_WRITE = "#1F4FA8"
+C_WRITE_SOFT = "#6F8EC8"
+C_WRITE_FILL = "#E8EEFF"
+C_READ = "#B5361C"
+C_STROKE = "#3A3A3A"
+C_NEUTRAL = "#6F6A62"
+C_NEUTRAL_LIGHT = "#C8C1B8"
+C_NEUTRAL_FILL = "#F4F1EC"
+C_WHITE = "#FFFFFF"
+POLICY_LABELS = {
+    "active_planning": "Planning",
+    "active_planning_u1_r1_h40": "Planning U1/R1",
+    "active_planning_u5_r5_h40": "Planning U5/R5",
+    "active_planning_u1_r5_h40": "Planning U1/R5",
+    "active_planning_u10_r10_h40": "Planning U10/R10",
+    "active_planning_u5_r10_h40": "Planning U5/R10",
+    "active_planning_u20_r20_h40": "Planning U20/R20",
+    "active_planning_u5_r20_h40": "Planning U5/R20",
+    "active_planning_u10_r20_h40": "Planning U10/R20",
+    "active_fully_observable_u20_r20_h40": "Full-observable EIG",
+    "active_e_optimality_u20_r20_h40": "E-optimality",
+    "active_state_information_u20_r20_h40": "State information",
+    "active_dynamics_u20_r20_h40": "Dynamics objective",
+    "active_sampling_variance_u20_r20_h40": "Sampling variance",
+    "active_myopic": "Myopic",
+    "prbs": "PRBS",
+    "random": "Random",
+    "flex": "FLEX",
+    "flex_true_state": "FLEX true state",
+    "ensemble": "Ensemble",
+    "rhc": "RHC-US",
+}
+POLICY_ORDER = [
+    "active_planning",
+    "active_planning_u1_r1_h40",
+    "active_planning_u5_r5_h40",
+    "active_planning_u1_r5_h40",
+    "active_planning_u10_r10_h40",
+    "active_planning_u5_r10_h40",
+    "active_planning_u20_r20_h40",
+    "active_planning_u5_r20_h40",
+    "active_planning_u10_r20_h40",
+    "active_fully_observable_u20_r20_h40",
+    "active_e_optimality_u20_r20_h40",
+    "active_state_information_u20_r20_h40",
+    "active_dynamics_u20_r20_h40",
+    "active_sampling_variance_u20_r20_h40",
+    "active_myopic",
+    "prbs",
+    "random",
+    "flex",
+    "flex_true_state",
+    "ensemble",
+    "rhc",
+]
+POLICY_COLORS = {
+    "active_planning": C_WRITE,
+    "active_planning_u1_r1_h40": "#4B74B9",
+    "active_planning_u5_r5_h40": "#2F6F9F",
+    "active_planning_u1_r5_h40": "#5B8D5A",
+    "active_planning_u10_r10_h40": "#7A6AAE",
+    "active_planning_u5_r10_h40": "#4B8F8C",
+    "active_planning_u20_r20_h40": C_WRITE,
+    "active_planning_u5_r20_h40": "#6F8EC8",
+    "active_planning_u10_r20_h40": "#3C6D99",
+    "active_fully_observable_u20_r20_h40": "#5B8D5A",
+    "active_e_optimality_u20_r20_h40": "#7E5AA6",
+    "active_state_information_u20_r20_h40": "#C27A2C",
+    "active_dynamics_u20_r20_h40": "#2F7C7A",
+    "active_sampling_variance_u20_r20_h40": "#9C5C38",
+    "active_myopic": C_READ,
+    "prbs": "#7C6A45",
+    "random": C_NEUTRAL,
+    "flex": "#7E5AA6",
+    "flex_true_state": "#4F8A62",
+    "ensemble": "#C27A2C",
+    "rhc": "#2F7C7A",
+}
+FALLBACK_COLORS = (
+    C_WRITE,
+    C_READ,
+    "#4F8A62",
+    "#7E5AA6",
+    "#C27A2C",
+    C_NEUTRAL,
+    "#2F7C7A",
+    C_WRITE_SOFT,
+)
+
+
+def _apply_manuscript_figure_style(plt: Any) -> None:
+    apply_manuscript_figure_style(plt, stroke_color=C_STROKE)
+
+
+def _policy_sort_key(policy_id: str) -> tuple[int, str]:
+    try:
+        return POLICY_ORDER.index(policy_id), policy_id
+    except ValueError:
+        return len(POLICY_ORDER), policy_id
+
+
+def _policy_label(policy_id: str) -> str:
+    return POLICY_LABELS.get(policy_id, policy_id.replace("_", " "))
+
+
+def _policy_color(policy_id: str, fallback_idx: int = 0) -> str:
+    return POLICY_COLORS.get(policy_id, FALLBACK_COLORS[fallback_idx % len(FALLBACK_COLORS)])
+
+
+def _style_axis(ax: Any, *, grid_axis: str | None = None) -> None:
+    style_manuscript_axis(
+        ax,
+        grid_axis=grid_axis,
+        grid_color=C_NEUTRAL_LIGHT,
+        grid_alpha=0.38 if grid_axis is not None else 0.30,
+        stroke_color=C_STROKE,
+        grid_linewidth=0.35 if grid_axis is not None else 0.32,
+    )
+
+
+def _style_colorbar(cbar: Any) -> None:
+    cbar.outline.set_edgecolor(C_STROKE)
+    cbar.outline.set_linewidth(0.45)
+    cbar.ax.tick_params(width=0.45, length=2.0, colors=C_STROKE)
 
 
 def collect_track_records(
-    base_dir: Path, exp_id: str, seeds: list[int]
+    base_dir: Path,
+    exp_id: str,
+    seeds: list[int],
+    policy_filter: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[tuple[str, int]]]:
     exp_spec = get_experiment_spec(exp_id)
     records: list[dict[str, Any]] = []
     missing: list[tuple[str, int]] = []
     track_root = base_dir / exp_id / "track"
-    for policy_id in exp_spec.policy_ids:
+    selected_policy_ids = [
+        policy_id
+        for policy_id in exp_spec.policy_ids
+        if policy_filter is None or policy_id in policy_filter
+    ]
+    for policy_id in selected_policy_ids:
         for seed in seeds:
             seed_dir = track_root / policy_id / f"seed_{seed}"
             if not seed_dir.exists():
@@ -380,14 +516,6 @@ def _sample_sem(values: Sequence[float]) -> float:
     return float(np.std(arr, ddof=1) / np.sqrt(arr.size))
 
 
-def _write_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
-
-
 def _write_curve_csv(path: Path, rows: list[dict[str, Any]], value_name: str) -> None:
     payloads = [
         {
@@ -400,11 +528,82 @@ def _write_curve_csv(path: Path, rows: list[dict[str, Any]], value_name: str) ->
         }
         for row in rows
     ]
-    _write_csv(
+    write_trace_csv(
         path,
         payloads,
         ["policy_id", "step", value_name, "value_sem", "cpu_time_sec_mean", "n_points"],
     )
+
+
+def _threshold_suffix(threshold: float) -> str:
+    return f"{threshold:.2f}".replace(".", "p")
+
+
+def _first_threshold_crossing(
+    series: list[dict[str, Any]],
+    threshold: float,
+) -> dict[str, Any] | None:
+    for row in sorted(series, key=lambda r: int(float(r["step"]))):
+        value = safe_float(row.get("value_mean"))
+        if value is None or not np.isfinite(value) or value < threshold:
+            continue
+        return row
+    return None
+
+
+def summarize_trajectory_r2_thresholds(
+    traj_rows: list[dict[str, Any]],
+    thresholds: Sequence[float] = TRAJECTORY_R2_THRESHOLDS,
+) -> list[dict[str, Any]]:
+    policy_ids = sorted({str(row["policy_id"]) for row in traj_rows})
+    out_rows: list[dict[str, Any]] = []
+    for policy_id in policy_ids:
+        series = [row for row in traj_rows if str(row["policy_id"]) == policy_id]
+        payload: dict[str, Any] = {"policy_id": policy_id}
+        for threshold in thresholds:
+            suffix = _threshold_suffix(float(threshold))
+            crossing = _first_threshold_crossing(series, float(threshold))
+            if crossing is None:
+                payload[f"step_to_r2_{suffix}"] = None
+                payload[f"cpu_time_sec_to_r2_{suffix}"] = None
+                payload[f"r2_at_{suffix}"] = None
+                payload[f"n_points_at_{suffix}"] = None
+                continue
+            payload[f"step_to_r2_{suffix}"] = int(float(crossing["step"]))
+            payload[f"cpu_time_sec_to_r2_{suffix}"] = crossing.get("cpu_time_sec_mean")
+            payload[f"r2_at_{suffix}"] = crossing.get("value_mean")
+            payload[f"n_points_at_{suffix}"] = crossing.get("n_points")
+        out_rows.append(payload)
+    out_rows.sort(key=lambda row: str(row["policy_id"]))
+    return out_rows
+
+
+def _write_trajectory_r2_threshold_csv(
+    path: Path,
+    rows: list[dict[str, Any]],
+    thresholds: Sequence[float] = TRAJECTORY_R2_THRESHOLDS,
+) -> None:
+    fields = ["policy_id"]
+    for threshold in thresholds:
+        suffix = _threshold_suffix(float(threshold))
+        fields.extend(
+            [
+                f"step_to_r2_{suffix}",
+                f"cpu_time_sec_to_r2_{suffix}",
+                f"r2_at_{suffix}",
+                f"n_points_at_{suffix}",
+            ]
+        )
+    write_trace_csv(path, rows, fields)
+
+
+def _format_markdown_cell(value: Any, *, digits: int | None = None) -> str:
+    parsed = safe_float(value)
+    if parsed is None or not np.isfinite(parsed):
+        return "--"
+    if digits is None:
+        return str(int(parsed))
+    return f"{parsed:.{digits}f}"
 
 
 def _write_markdown(
@@ -413,6 +612,7 @@ def _write_markdown(
     rows: list[dict[str, Any]],
     missing: list[tuple[str, int]],
     value_label: str,
+    r2_threshold_rows: list[dict[str, Any]],
 ) -> None:
     lines = [
         f"# {exp_id} Summary",
@@ -455,6 +655,37 @@ def _write_markdown(
             + f" | {float(np.mean(value_nums)) if value_nums else np.nan:.6f}"
             + f" | {float(np.mean(traj_nums)) if traj_nums else np.nan:.6f} |"
         )
+    lines.extend(
+        [
+            "",
+            "## Trajectory R2 Thresholds",
+            "",
+            (
+                "First sampled environment step and mean CPU time where mean trajectory R2 "
+                "reaches each threshold."
+            ),
+            "",
+        ]
+    )
+    header_cells = ["policy_id"]
+    separator_cells = ["---"]
+    for threshold in TRAJECTORY_R2_THRESHOLDS:
+        label = f"{threshold:.2f}"
+        header_cells.extend([f"step_to_R2_{label}", f"cpu_sec_to_R2_{label}"])
+        separator_cells.extend(["---:", "---:"])
+    lines.append("| " + " | ".join(header_cells) + " |")
+    lines.append("| " + " | ".join(separator_cells) + " |")
+    for row in r2_threshold_rows:
+        row_cells = [str(row["policy_id"])]
+        for threshold in TRAJECTORY_R2_THRESHOLDS:
+            suffix = _threshold_suffix(float(threshold))
+            row_cells.extend(
+                [
+                    _format_markdown_cell(row.get(f"step_to_r2_{suffix}")),
+                    _format_markdown_cell(row.get(f"cpu_time_sec_to_r2_{suffix}"), digits=2),
+                ]
+            )
+        lines.append("| " + " | ".join(row_cells) + " |")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -475,7 +706,9 @@ def _parse_figure_formats(raw: str) -> tuple[str, ...]:
 
 def _save_figure(fig: Any, stem_path: Path, figure_formats: Sequence[str]) -> None:
     for fmt in figure_formats:
-        save_kwargs = {"dpi": 150} if fmt == ".png" else {}
+        save_kwargs = {"bbox_inches": "tight", "pad_inches": 0.02}
+        if fmt == ".png":
+            save_kwargs["dpi"] = 300
         fig.savefig(stem_path.with_suffix(fmt), **save_kwargs)
 
 
@@ -495,8 +728,9 @@ def _plot_curves(
         import matplotlib.pyplot as plt
     except Exception:
         return
+    _apply_manuscript_figure_style(plt)
     if rows:
-        policy_ids = sorted({str(row["policy_id"]) for row in rows})
+        policy_ids = sorted({str(row["policy_id"]) for row in rows}, key=_policy_sort_key)
         means = []
         sems = []
         for policy_id in policy_ids:
@@ -506,39 +740,56 @@ def _plot_curves(
             nums = [v for v in vals if v is not None]
             means.append(float(np.mean(nums)) if nums else np.nan)
             sems.append(_sample_sem(nums))
-        fig, ax = plt.subplots(figsize=(9, 4.8))
+        fig, ax = plt.subplots(figsize=(5.8, 3.0))
         x = np.arange(len(policy_ids), dtype=np.float64)
-        ax.bar(x, means, yerr=sems, capsize=3)
+        colors = [_policy_color(policy_id, idx) for idx, policy_id in enumerate(policy_ids)]
+        ax.bar(
+            x,
+            means,
+            yerr=sems,
+            capsize=2.5,
+            color=colors,
+            edgecolor=C_STROKE,
+            linewidth=0.45,
+            error_kw={"elinewidth": 0.55, "ecolor": C_STROKE, "capthick": 0.55},
+        )
         ax.set_xticks(x)
-        ax.set_xticklabels(policy_ids, rotation=20)
+        ax.set_xticklabels([_policy_label(policy_id) for policy_id in policy_ids], rotation=28, ha="right")
         ax.set_ylabel(f"Final {value_label} (mean ± SEM over seeds)")
         ax.set_title(f"{value_label} by Policy")
-        ax.grid(alpha=0.2, axis="y")
+        _style_axis(ax, grid_axis="y")
         fig.tight_layout()
         _save_figure(fig, figures_dir / f"final_{value_prefix}_by_policy", figure_formats)
         plt.close(fig)
     if trace_rows:
-        fig, ax = plt.subplots(figsize=(9.5, 5.0))
-        for policy_id in sorted({str(r["policy_id"]) for r in trace_rows}):
+        fig, ax = plt.subplots(figsize=(5.85, 3.15))
+        policy_ids = sorted({str(r["policy_id"]) for r in trace_rows}, key=_policy_sort_key)
+        for idx, policy_id in enumerate(policy_ids):
             series = [r for r in trace_rows if r["policy_id"] == policy_id]
             series.sort(key=lambda r: int(r["step"]))
             xs = [int(r["step"]) for r in series]
             ys = [float(r["value_mean"]) for r in series]
             sem = [float(r["value_sem"]) for r in series]
-            ax.plot(xs, ys, label=policy_id)
+            color = _policy_color(policy_id, idx)
+            ax.plot(xs, ys, label=_policy_label(policy_id), color=color, linewidth=1.05)
             ax.fill_between(
-                xs, np.asarray(ys) - np.asarray(sem), np.asarray(ys) + np.asarray(sem), alpha=0.18
+                xs,
+                np.asarray(ys) - np.asarray(sem),
+                np.asarray(ys) + np.asarray(sem),
+                color=color,
+                alpha=0.14,
+                linewidth=0.0,
             )
         ax.set_xlabel("Environment Step")
         ax.set_ylabel(f"{value_label} (mean ± SEM)")
         ax.set_title(f"{value_label} Over Steps")
-        ax.grid(alpha=0.2)
-        ax.legend(loc="best")
+        _style_axis(ax)
+        ax.legend(loc="best", fontsize=6.3, ncol=2, columnspacing=0.8, handlelength=1.5)
         fig.tight_layout()
         _save_figure(fig, figures_dir / f"{value_prefix}_over_steps", figure_formats)
         plt.close(fig)
-        fig, ax = plt.subplots(figsize=(9.5, 5.0))
-        for policy_id in sorted({str(r["policy_id"]) for r in trace_rows}):
+        fig, ax = plt.subplots(figsize=(5.85, 3.15))
+        for idx, policy_id in enumerate(policy_ids):
             series = [
                 r
                 for r in trace_rows
@@ -548,56 +799,76 @@ def _plot_curves(
             xs = [float(r["cpu_time_sec_mean"]) for r in series]
             ys = [float(r["value_mean"]) for r in series]
             sem = [float(r["value_sem"]) for r in series]
-            ax.plot(xs, ys, label=policy_id)
+            color = _policy_color(policy_id, idx)
+            ax.plot(xs, ys, label=_policy_label(policy_id), color=color, linewidth=1.05)
             ax.fill_between(
-                xs, np.asarray(ys) - np.asarray(sem), np.asarray(ys) + np.asarray(sem), alpha=0.18
+                xs,
+                np.asarray(ys) - np.asarray(sem),
+                np.asarray(ys) + np.asarray(sem),
+                color=color,
+                alpha=0.14,
+                linewidth=0.0,
             )
         ax.set_xlabel("CPU Time (sec)")
         ax.set_ylabel(f"{value_label} (mean ± SEM)")
         ax.set_title(f"{value_label} Over CPU Time")
-        ax.grid(alpha=0.2)
-        ax.legend(loc="best")
+        _style_axis(ax)
+        ax.legend(loc="best", fontsize=6.3, ncol=2, columnspacing=0.8, handlelength=1.5)
         fig.tight_layout()
         _save_figure(fig, figures_dir / f"{value_prefix}_over_cpu_time", figure_formats)
         plt.close(fig)
     if traj_rows:
-        fig, ax = plt.subplots(figsize=(9.5, 5.0))
-        for policy_id in sorted({str(r["policy_id"]) for r in traj_rows}):
+        fig, ax = plt.subplots(figsize=(5.85, 3.15))
+        policy_ids = sorted({str(r["policy_id"]) for r in traj_rows}, key=_policy_sort_key)
+        for idx, policy_id in enumerate(policy_ids):
             series = [r for r in traj_rows if r["policy_id"] == policy_id]
             series.sort(key=lambda r: int(r["step"]))
             xs = [int(r["step"]) for r in series]
             ys = [float(r["value_mean"]) for r in series]
             sem = [float(r["value_sem"]) for r in series]
-            ax.plot(xs, ys, label=policy_id)
+            color = _policy_color(policy_id, idx)
+            ax.plot(xs, ys, label=_policy_label(policy_id), color=color, linewidth=1.05)
             ax.fill_between(
-                xs, np.asarray(ys) - np.asarray(sem), np.asarray(ys) + np.asarray(sem), alpha=0.18
+                xs,
+                np.asarray(ys) - np.asarray(sem),
+                np.asarray(ys) + np.asarray(sem),
+                color=color,
+                alpha=0.14,
+                linewidth=0.0,
             )
         ax.set_xlabel("Environment Step")
         ax.set_ylabel("Trajectory R2 (mean ± SEM)")
         ax.set_title("Trajectory R2 Over Steps")
         ax.set_ylim(0.0, 1.0)
-        ax.grid(alpha=0.2)
-        ax.legend(loc="best")
+        _style_axis(ax)
+        ax.legend(loc="best", fontsize=6.3, ncol=2, columnspacing=0.8, handlelength=1.5)
         fig.tight_layout()
         _save_figure(fig, figures_dir / "trajectory_r2_over_steps", figure_formats)
         plt.close(fig)
     if cov_rows:
-        fig, ax = plt.subplots(figsize=(9.5, 5.0))
-        for policy_id in sorted({str(r["policy_id"]) for r in cov_rows}):
+        fig, ax = plt.subplots(figsize=(5.85, 3.15))
+        policy_ids = sorted({str(r["policy_id"]) for r in cov_rows}, key=_policy_sort_key)
+        for idx, policy_id in enumerate(policy_ids):
             series = [r for r in cov_rows if r["policy_id"] == policy_id]
             series.sort(key=lambda r: int(r["step"]))
             xs = [int(r["step"]) for r in series]
             ys = [float(r["value_mean"]) for r in series]
             sem = [float(r["value_sem"]) for r in series]
-            ax.plot(xs, ys, label=policy_id)
+            color = _policy_color(policy_id, idx)
+            ax.plot(xs, ys, label=_policy_label(policy_id), color=color, linewidth=1.05)
             ax.fill_between(
-                xs, np.asarray(ys) - np.asarray(sem), np.asarray(ys) + np.asarray(sem), alpha=0.18
+                xs,
+                np.asarray(ys) - np.asarray(sem),
+                np.asarray(ys) + np.asarray(sem),
+                color=color,
+                alpha=0.14,
+                linewidth=0.0,
             )
         ax.set_xlabel("Environment Step")
         ax.set_ylabel("Trace of Parameter Covariance (mean ± SEM)")
         ax.set_title("Trace of Parameter Covariance Over Steps")
-        ax.grid(alpha=0.2)
-        ax.legend(loc="best")
+        _style_axis(ax)
+        ax.legend(loc="best", fontsize=6.3, ncol=2, columnspacing=0.8, handlelength=1.5)
         fig.tight_layout()
         _save_figure(fig, figures_dir / "parameter_covariance_trace_over_steps", figure_formats)
         plt.close(fig)
@@ -657,6 +928,7 @@ def _plot_neuron_tuning_curve_colormap(
         import matplotlib.pyplot as plt
     except Exception:
         return
+    _apply_manuscript_figure_style(plt)
 
     env_preset = get_environment_preset_from_metadata(dict(seed_refs[0]["metadata"]))
     grid_lim = float(env_preset.resolved_plot_limit())
@@ -681,7 +953,7 @@ def _plot_neuron_tuning_curve_colormap(
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
-    fig, ax = plt.subplots(figsize=(7.2, 7.2))
+    fig, ax = plt.subplots(figsize=(3.35, 3.05))
     im = ax.imshow(
         heat,
         aspect="equal",
@@ -694,10 +966,12 @@ def _plot_neuron_tuning_curve_colormap(
     )
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("Total firing rate (Hz)")
+    _style_colorbar(cbar)
     ax.set_xlabel("x")
     ax.set_ylabel("v")
     ax.set_aspect("equal", adjustable="box")
-    ax.set_title(f"Total Firing Rate Colormap (mean over {len(seed_refs)} seed(s))")
+    ax.set_title(f"Total firing rate (mean over {len(seed_refs)} seeds)")
+    _style_axis(ax)
     fig.tight_layout()
     _save_figure(fig, figures_dir / "neuron_tuning_curve_colormap", figure_formats)
     plt.close(fig)
@@ -717,6 +991,7 @@ def _plot_information_colormap(
         import matplotlib.pyplot as plt
     except Exception:
         return
+    _apply_manuscript_figure_style(plt)
 
     env_preset = get_environment_preset_from_metadata(dict(seed_refs[0]["metadata"]))
     grid_lim = float(env_preset.resolved_plot_limit())
@@ -751,11 +1026,12 @@ def _plot_information_colormap(
     if vmax <= vmin:
         vmax = vmin + 1e-6
 
-    fig, ax = plt.subplots(figsize=(7.2, 7.2))
+    fig, ax = plt.subplots(figsize=(3.35, 3.05))
     im = ax.imshow(
         matrix,
         aspect="equal",
         origin="lower",
+        extent=[-grid_lim, grid_lim, -grid_lim, grid_lim],
         cmap="viridis",
         vmin=vmin,
         vmax=vmax,
@@ -763,15 +1039,12 @@ def _plot_information_colormap(
     )
     cbar = fig.colorbar(im, ax=ax)
     cbar.set_label("log det(I_z)")
-    tick_idx = np.linspace(0, n_grid - 1, 5, dtype=int)
-    ax.set_xticks(tick_idx)
-    ax.set_xticklabels([f"{axis[idx]:.1f}" for idx in tick_idx])
-    ax.set_yticks(tick_idx)
-    ax.set_yticklabels([f"{axis[idx]:.1f}" for idx in tick_idx])
+    _style_colorbar(cbar)
     ax.set_xlabel("x")
     ax.set_ylabel("v")
     ax.set_aspect("equal", adjustable="box")
-    ax.set_title(f"log det(I_z) Colormap (mean over {len(seed_refs)} seed(s))")
+    ax.set_title(f"log det(I_z) (mean over {len(seed_refs)} seeds)")
+    _style_axis(ax)
     fig.tight_layout()
     _save_figure(fig, figures_dir / "I_z_t_colormap", figure_formats)
     plt.close(fig)
@@ -790,6 +1063,7 @@ def _plot_trajectory_coverage(
         import matplotlib.pyplot as plt
     except Exception:
         return
+    _apply_manuscript_figure_style(plt)
 
     metadata = dict(ref["metadata"])
     env_preset = get_environment_preset_from_metadata(metadata)
@@ -806,8 +1080,14 @@ def _plot_trajectory_coverage(
         device="cpu",
     )
 
-    policy_ids = sorted({str(record["policy_id"]) for record in records})
-    grouped: dict[str, list[np.ndarray]] = {policy_id: [] for policy_id in policy_ids}
+    policy_ids = sorted({str(record["policy_id"]) for record in records}, key=_policy_sort_key)
+    seeds = sorted({int(record["seed"]) for record in records if "seed" in record})
+    seed_cmap = plt.get_cmap("tab10" if len(seeds) <= 10 else "tab20")
+    seed_colors = {
+        seed: seed_cmap(idx % seed_cmap.N)
+        for idx, seed in enumerate(seeds)
+    }
+    grouped: dict[str, list[tuple[int | None, np.ndarray]]] = {policy_id: [] for policy_id in policy_ids}
     for record in records:
         trace_path = _trace_path(
             record,
@@ -824,7 +1104,8 @@ def _plot_trajectory_coverage(
                 continue
             pts.append((x_val, v_val))
         if pts:
-            grouped[str(record["policy_id"])].append(np.asarray(pts, dtype=np.float32))
+            seed = int(record["seed"]) if "seed" in record else None
+            grouped[str(record["policy_id"])].append((seed, np.asarray(pts, dtype=np.float32)))
 
     n_panels = len(policy_ids)
     if n_panels == 0:
@@ -834,16 +1115,14 @@ def _plot_trajectory_coverage(
     fig, axes = plt.subplots(
         n_rows,
         n_cols,
-        figsize=(7.2 * n_cols, 6.4 * n_rows),
+        figsize=(3.2 * n_cols, 3.0 * n_rows),
         squeeze=False,
         sharex=True,
         sharey=True,
     )
-    colors = plt.get_cmap("tab10")(np.linspace(0.0, 1.0, max(n_panels, 1)))
 
     for idx, policy_id in enumerate(policy_ids):
         ax = axes[idx // n_cols, idx % n_cols]
-        color = colors[idx]
         plot_vector_field(
             dyn_true,
             ax=ax,
@@ -853,26 +1132,34 @@ def _plot_trajectory_coverage(
             device="cpu",
         )
         trajs = grouped.get(policy_id, [])
-        for traj in trajs:
-            ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=2, alpha=0.8)
+        labeled_seeds: set[int | None] = set()
+        for seed, traj in trajs:
+            color = seed_colors.get(seed, "black")
+            label = f"seed {seed}" if seed not in labeled_seeds and seed is not None else None
+            ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=0.75, alpha=0.75, label=label)
+            labeled_seeds.add(seed)
         if trajs:
-            starts = np.asarray([traj[0] for traj in trajs if traj.shape[0] > 0], dtype=np.float32)
+            starts = np.asarray([traj[0] for _, traj in trajs if traj.shape[0] > 0], dtype=np.float32)
+            start_colors = [seed_colors.get(seed, "black") for seed, traj in trajs if traj.shape[0] > 0]
             ax.scatter(
                 starts[:, 0],
                 starts[:, 1],
-                s=16,
-                color=color,
+                s=8,
+                color=start_colors,
                 alpha=1.0,
                 edgecolors="none",
                 zorder=5,
             )
+            if len(labeled_seeds) > 1:
+                ax.legend(frameon=False, fontsize=5.8, loc="best")
         decorate_phase_space_axis(
             ax,
             xlim=(-grid_lim, grid_lim),
             ylim=(-grid_lim, grid_lim),
-            title=f"{policy_id} (n={len(trajs)})",
+            title=f"{_policy_label(policy_id)} (n={len(trajs)})",
             grid_alpha=0.20,
         )
+        _style_axis(ax)
 
     for idx in range(n_panels, n_rows * n_cols):
         axes[idx // n_cols, idx % n_cols].axis("off")
@@ -889,6 +1176,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-dir", type=str, default="results/cosyne")
     parser.add_argument("--exp-id", choices=list_experiment_ids(), required=True)
     parser.add_argument("--summary-dir", type=str, default=None)
+    parser.add_argument("--policy-ids", type=str, default=None)
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
     parser.add_argument(
         "--figure-formats",
@@ -913,33 +1201,28 @@ def main(argv: list[str] | None = None) -> int:
         Path(args.summary_dir) if args.summary_dir else base_dir / exp_spec.exp_id / "summary"
     )
     seeds = parse_csv_ints(args.seeds) or [0, 10, 20, 30]
-    records, missing = collect_track_records(base_dir, exp_spec.exp_id, seeds)
-    value_key = (
-        "embedding_error_final"
-        if exp_spec.summary_value_kind == "parameter_error"
-        else "dynamics_mse_final"
+    policy_filter = set(parse_csv_list(args.policy_ids)) or None
+    if policy_filter is not None:
+        unknown_policy_ids = sorted(policy_filter - set(exp_spec.policy_ids))
+        if unknown_policy_ids:
+            parser.error(
+                f"Unknown policy ids for {exp_spec.exp_id}: {', '.join(unknown_policy_ids)}"
+            )
+    records, missing = collect_track_records(
+        base_dir, exp_spec.exp_id, seeds, policy_filter=policy_filter
     )
-    trace_key = (
-        "parameter_error_trace_path"
-        if exp_spec.summary_value_kind == "parameter_error"
-        else "dynamics_mse_trace_path"
-    )
-    trace_name = (
-        "parameter_error_trace.csv"
-        if exp_spec.summary_value_kind == "parameter_error"
-        else "dynamics_mse_trace.csv"
-    )
-    trace_col = (
-        "parameter_error" if exp_spec.summary_value_kind == "parameter_error" else "dynamics_mse"
-    )
-    value_prefix = (
-        "parameter_error" if exp_spec.summary_value_kind == "parameter_error" else "dynamics_mse"
-    )
+    value_key = "embedding_error_final"
+    trace_key = "parameter_error_trace_path"
+    trace_name = "parameter_error_trace.csv"
+    trace_col = "parameter_error"
+    value_prefix = "parameter_error"
+    value_label = "Parameter Error"
     rows = collect_track_rows(records, value_key=value_key)
     trace_rows = aggregate_trace(
         records, metadata_key=trace_key, fallback_name=trace_name, value_col=trace_col
     )
     traj_rows = aggregate_trajectory_r2_trace(records, exp_spec=exp_spec)
+    r2_threshold_rows = summarize_trajectory_r2_thresholds(traj_rows)
     cov_rows = aggregate_custom_trace(
         records,
         metadata_key="embedding_estimate_trace_path",
@@ -952,7 +1235,7 @@ def main(argv: list[str] | None = None) -> int:
         fallback_name="information_trace.csv",
         value_col="I_z_t",
     )
-    _write_csv(
+    write_trace_csv(
         summary_dir / "metrics.csv",
         rows,
         [
@@ -969,6 +1252,9 @@ def main(argv: list[str] | None = None) -> int:
         summary_dir / f"{value_prefix}_over_steps.csv", trace_rows, f"{value_prefix}_mean"
     )
     _write_curve_csv(summary_dir / "trajectory_r2_over_steps.csv", traj_rows, "trajectory_r2_mean")
+    _write_trajectory_r2_threshold_csv(
+        summary_dir / "trajectory_r2_thresholds.csv", r2_threshold_rows
+    )
     _write_curve_csv(
         summary_dir / "parameter_covariance_trace_over_steps.csv",
         cov_rows,
@@ -976,7 +1262,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     _write_curve_csv(summary_dir / "I_z_t_over_steps.csv", info_rows, "I_z_t_mean")
     _write_markdown(
-        summary_dir / "metrics.md", exp_spec.exp_id, rows, missing, exp_spec.summary_value_label
+        summary_dir / "metrics.md",
+        exp_spec.exp_id,
+        rows,
+        missing,
+        value_label,
+        r2_threshold_rows,
     )
     figures_dir = summary_dir / "figures"
     _plot_curves(
@@ -985,7 +1276,7 @@ def main(argv: list[str] | None = None) -> int:
         trace_rows=trace_rows,
         cov_rows=cov_rows,
         traj_rows=traj_rows,
-        value_label=exp_spec.summary_value_label,
+        value_label=value_label,
         value_prefix=value_prefix,
         figure_formats=figure_formats,
     )

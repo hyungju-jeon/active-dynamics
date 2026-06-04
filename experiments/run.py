@@ -11,6 +11,7 @@ from pathlib import Path
 import shlex
 import sys
 import time
+from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
@@ -18,14 +19,14 @@ import torch
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from experiment_common import (
+    from experiment_io import (
         load_json,
         parse_csv_ints,
         parse_csv_list,
         resolve_session_root,
         write_json,
     )
-    from experiment_specs import (
+    from experiment_definitions import (
         configure_catalogs,
         describe_catalogs,
         get_environment_preset,
@@ -46,14 +47,14 @@ if __package__ in {None, ""}:
         write_trace_csv,
     )
 else:
-    from .experiment_common import (
+    from .experiment_io import (
         load_json,
         parse_csv_ints,
         parse_csv_list,
         resolve_session_root,
         write_json,
     )
-    from .experiment_specs import (
+    from .experiment_definitions import (
         configure_catalogs,
         describe_catalogs,
         get_environment_preset,
@@ -205,7 +206,7 @@ def _build_runtime_experiment_config(
     exp_config = ExperimentConfig()
     exp_config.seed = int(seed)
     exp_config.device = "cpu"
-    exp_config.results_dir = str(run_dir)
+    exp_config.results_dir = str(run_dir.resolve())
     exp_config.action_dim = int(env_preset.action_dim)
     exp_config.observation_dim = int(env_preset.observation_dim)
     exp_config.latent_dim = int(env_preset.latent_dim)
@@ -398,6 +399,7 @@ def _build_metric(
         e_optimality as build_e_optimality_metric,
         fully_observable_parameter_eig,
         parameter_eig,
+        corrected_sampling_variance as build_corrected_sampling_variance_metric,
         sampling_variance as build_sampling_variance_metric,
         state_variance as build_state_variance_metric,
         shrinkage_parameter_eig,
@@ -467,6 +469,18 @@ def _build_metric(
             device=device,
             num_parameter_samples=int(sampling_variance_samples),
             sample_seed=sampling_variance_seed,
+        )
+    if objective_kind == "corrected_sampling_variance":
+        return build_corrected_sampling_variance_metric(
+            model=model,
+            Fe_net=Fe_net,
+            Fz_net=Fz_net,
+            gamma=gamma,
+            device=device,
+            num_parameter_samples=int(sampling_variance_samples),
+            sample_seed=sampling_variance_seed,
+            correction_df=3.0,
+            ess_gate_fraction=0.05,
         )
     if objective_kind == "state_variance":
         return build_state_variance_metric(
@@ -661,9 +675,6 @@ def _run_single_parameter_identification(
     traj_eval_interval: int,
     traj_eval_horizon: int,
     traj_eval_samples: int,
-    acq_map_interval: int,
-    acq_map_grid: int,
-    acq_map_lim: float,
     sampling_variance_samples: int,
 ) -> dict[str, Any]:
     import torch
@@ -680,7 +691,7 @@ def _run_single_parameter_identification(
     import actdyn.policy
     import actdyn.policy.mpc
     from actdyn.utils.runtime import configure_runtime
-    from actdyn.utils.visualize import set_matplotlib_style
+    from actdyn.utils.plotting import set_matplotlib_style
 
     exp_spec = get_experiment_spec(exp_id)
     policy_spec = get_policy_spec(policy_id)
@@ -915,20 +926,11 @@ def _run_single_parameter_identification(
     info_rows: list[dict[str, Any]] = []
     traj_rows: list[dict[str, Any]] = []
     state_action_rows: list[dict[str, Any]] = []
-    acq_map_steps: list[int] = []
-    acq_map_frames: list[np.ndarray] = []
     planned_traj_steps: list[int] = []
     planned_traj_frames: list[np.ndarray] = []
     perf_start = time.perf_counter()
     trace_rng = np.random.default_rng(seed + 137)
     e_true_flat = e_true.detach().reshape(-1)
-    acq_axis = np.linspace(
-        -float(acq_map_lim), float(acq_map_lim), max(25, int(acq_map_grid)), dtype=np.float32
-    )
-    acq_x, acq_v = np.meshgrid(acq_axis, acq_axis, indexing="xy")
-    acq_points = torch.as_tensor(
-        np.stack([acq_x.reshape(-1), acq_v.reshape(-1)], axis=1), dtype=torch.float32, device=device
-    ).unsqueeze(1)
 
     def _on_step_end(transition: dict[str, Any]) -> None:
         step = int(experiment.env_step)
@@ -1069,18 +1071,6 @@ def _run_single_parameter_identification(
         if planned is not None and planned.shape[0] >= 2:
             planned_traj_steps.append(step)
             planned_traj_frames.append(planned)
-        if (
-            policy_spec.save_acq_map
-            and metric is not None
-            and step % max(1, int(acq_map_interval)) == 0
-        ):
-            rollout = {"model_state": acq_points, "next_model_state": acq_points}
-            acq_cost = metric(rollout).detach().reshape(-1)
-            acq_map = (-acq_cost).cpu().numpy().reshape(acq_axis.shape[0], acq_axis.shape[0])
-            acq_map_frames.append(
-                np.nan_to_num(acq_map, nan=0.0, posinf=1e6, neginf=0.0).astype(np.float32)
-            )
-            acq_map_steps.append(step)
         if traj_eval_interval > 0 and step % traj_eval_interval == 0:
             traj_rows.append(
                 {
@@ -1128,7 +1118,6 @@ def _run_single_parameter_identification(
     info_trace_path = run_dir / "information_trace.csv"
     state_action_trace_path = run_dir / "state_action_trace.csv"
     planned_trace_path = run_dir / "planned_trajectory_trace.npz"
-    acq_trace_path = run_dir / "acquisition_map_trace.npz"
     write_trace_csv(param_trace_path, param_rows, ["step", "cpu_time_sec", "parameter_error"])
     emb_value_fields = sorted(
         {key for row in emb_rows for key in row if key.startswith("e") and key[1:].isdigit()},
@@ -1238,15 +1227,6 @@ def _run_single_parameter_identification(
             "window_buffer_length",
         ],
     )
-    if policy_spec.save_acq_map and acq_map_frames:
-        np.savez_compressed(
-            acq_trace_path,
-            steps=np.asarray(acq_map_steps, dtype=np.int64),
-            axis=acq_axis.astype(np.float32),
-            maps=np.asarray(acq_map_frames, dtype=np.float32),
-            exp_id=np.asarray([exp_id], dtype=object),
-            policy_id=np.asarray([policy_id], dtype=object),
-        )
     if planned_traj_frames:
         max_points = max(frame.shape[0] for frame in planned_traj_frames)
         paths = np.full((len(planned_traj_frames), max_points, 2), np.nan, dtype=np.float32)
@@ -1305,9 +1285,7 @@ def _run_single_parameter_identification(
             "boundary_projection_enabled": bool(
                 getattr(env_preset, "boundary_projection_enabled", False)
             ),
-            "boundary_barrier_width": float(
-                getattr(env_preset, "boundary_barrier_width", 0.5)
-            ),
+            "boundary_barrier_width": float(getattr(env_preset, "boundary_barrier_width", 0.5)),
             "boundary_barrier_strength": float(
                 getattr(env_preset, "boundary_barrier_strength", 5.0)
             ),
@@ -1389,9 +1367,6 @@ def _run_single_parameter_identification(
             "planned_trajectory_trace_path": (
                 str(planned_trace_path) if planned_traj_frames else None
             ),
-            "acquisition_map_trace_path": (
-                str(acq_trace_path) if policy_spec.save_acq_map and acq_map_frames else None
-            ),
             "writing_ref": WRITING_REFERENCE,
         },
     )
@@ -1404,6 +1379,11 @@ def _run_one(
     exp_spec = get_experiment_spec(exp_id)
     total_steps = int(args.total_steps or exp_spec.total_steps)
     run_dir = base_dir / exp_id / "track" / policy_id / f"seed_{seed}" / f"repeat_{repeat:02d}"
+    metadata_path = run_dir / "run_metadata.json"
+    if bool(getattr(args, "skip_existing", False)) and metadata_path.exists():
+        existing_payload = load_json(metadata_path)
+        if str(existing_payload.get("status")) == "completed":
+            return existing_payload
     ensure_dir(run_dir)
     try:
         if exp_spec.experiment_kind == "parameter":
@@ -1421,25 +1401,7 @@ def _run_one(
                 traj_eval_interval=int(exp_spec.trajectory_eval_interval),
                 traj_eval_horizon=int(exp_spec.trajectory_eval_horizon),
                 traj_eval_samples=int(exp_spec.trajectory_eval_samples),
-                acq_map_interval=int(args.acq_map_interval),
-                acq_map_grid=int(args.acq_map_grid),
-                acq_map_lim=float(args.acq_map_lim),
                 sampling_variance_samples=int(args.sampling_variance_samples),
-            )
-        elif exp_spec.experiment_kind == "realdata":
-            if __package__ in {None, ""}:
-                from run_real_experiment import run_single_realdata_replay
-            else:
-                from .run_real_experiment import run_single_realdata_replay
-
-            payload = run_single_realdata_replay(
-                exp_id=exp_id,
-                policy_id=policy_id,
-                seed=seed,
-                total_steps=total_steps,
-                run_dir=run_dir,
-                build_metadata=_build_metadata,
-                resolved_policy_type=_resolved_policy_type,
             )
         else:
             if __package__ in {None, ""}:
@@ -1458,9 +1420,6 @@ def _run_one(
                 traj_eval_interval=int(exp_spec.trajectory_eval_interval),
                 traj_eval_horizon=int(exp_spec.trajectory_eval_horizon),
                 traj_eval_samples=int(exp_spec.trajectory_eval_samples),
-                acq_map_interval=int(args.acq_map_interval),
-                acq_map_grid=int(args.acq_map_grid),
-                acq_map_lim=float(args.acq_map_lim),
                 build_runtime_experiment_config=_build_runtime_experiment_config,
                 build_metadata=_build_metadata,
                 instantiate_synthetic_policy=_instantiate_synthetic_policy,
@@ -1514,26 +1473,6 @@ def run_matrix(
     return records
 
 
-def _runner_model_name(experiment_kind: str) -> str:
-    if experiment_kind == "parameter":
-        return "FilteringEmbedding"
-    if experiment_kind == "rbf":
-        return "SparseRbfFilteringModel"
-    if experiment_kind == "realdata":
-        return "ReplayLinearDynamics"
-    return "unknown"
-
-
-def _dynamics_model_name(experiment_kind: str) -> str:
-    if experiment_kind == "parameter":
-        return "FunctionDynamics"
-    if experiment_kind == "rbf":
-        return "SparseRbfDynamics"
-    if experiment_kind == "realdata":
-        return "LinearReplayFit"
-    return "unknown"
-
-
 def _build_session_experiment_entry(
     *,
     exp_id: str,
@@ -1543,6 +1482,15 @@ def _build_session_experiment_entry(
     policy_filter: set[str] | None = None,
 ) -> dict[str, Any]:
     exp_spec = get_experiment_spec(exp_id)
+    experiment_kind = str(exp_spec.experiment_kind)
+    model_name = {
+        "parameter": "FilteringEmbedding",
+        "rbf": "SparseRbfFilteringModel",
+    }.get(experiment_kind, "unknown")
+    dynamics_name = {
+        "parameter": "FunctionDynamics",
+        "rbf": "SparseRbfDynamics",
+    }.get(experiment_kind, "unknown")
     env_preset = get_environment_preset(exp_spec.env_preset_id)
     env_summary = _environment_summary(env_preset)
     selected_policy_ids = tuple(
@@ -1564,7 +1512,6 @@ def _build_session_experiment_entry(
                     if policy_spec.objective_kind is not None
                     else None
                 ),
-                "save_acq_map": bool(policy_spec.save_acq_map),
                 "schedule_id": str(schedule_spec.schedule_id),
                 "schedule": {
                     "update_interval": int(schedule_spec.update_interval),
@@ -1577,20 +1524,18 @@ def _build_session_experiment_entry(
                 "async_planning": bool(getattr(policy_spec, "async_planning", False)),
                 "async_stale_tolerance": float(getattr(policy_spec, "async_stale_tolerance", 0.5)),
                 "model": {
-                    "runner": str(exp_spec.experiment_kind),
-                    "filter_model": _runner_model_name(str(exp_spec.experiment_kind)),
-                    "dynamics_model": _dynamics_model_name(str(exp_spec.experiment_kind)),
+                    "runner": experiment_kind,
+                    "filter_model": model_name,
+                    "dynamics_model": dynamics_name,
                     "residual_form": True,
                 },
             }
         )
     return {
         "exp_id": str(exp_spec.exp_id),
-        "experiment_kind": str(exp_spec.experiment_kind),
+        "experiment_kind": experiment_kind,
         "total_steps_default": int(exp_spec.total_steps),
         "total_steps_resolved": int(total_steps_override or exp_spec.total_steps),
-        "summary_value_kind": str(exp_spec.summary_value_kind),
-        "summary_value_label": str(exp_spec.summary_value_label),
         "trajectory_eval_interval": int(exp_spec.trajectory_eval_interval),
         "trajectory_eval_horizon": int(exp_spec.trajectory_eval_horizon),
         "trajectory_eval_samples": int(exp_spec.trajectory_eval_samples),
@@ -1786,6 +1731,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--base-dir", type=str, default="results/experiments")
+    parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--total-steps", type=int, default=None)
     parser.add_argument("--q-theta", type=float, default=1e-4)
     parser.add_argument("--parameter-prior-covariance", type=float, default=1.0)
@@ -1793,16 +1739,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
     parser.add_argument("--eig-gamma", type=float, default=1.0)
     parser.add_argument("--sampling-variance-samples", type=int, default=8)
-    parser.add_argument("--acq-map-interval", type=int, default=5)
-    parser.add_argument("--acq-map-grid", type=int, default=61)
-    parser.add_argument("--acq-map-lim", type=float, default=10.0)
     parser.add_argument("--stride", type=int, default=5)
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--grid-lim", type=float, default=10.0)
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, suite_entries: Mapping[str, Any] | None = None) -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
     catalog_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     catalog_parser.add_argument("--env-catalog", action="append", dest="env_catalogs")
@@ -1813,6 +1756,7 @@ def main(argv: list[str] | None = None) -> int:
         env_catalog_paths=catalog_args.env_catalogs,
         model_catalog_paths=catalog_args.model_catalogs,
         suite_catalog_paths=catalog_args.suite_catalogs,
+        suite_entries=suite_entries,
     )
     catalog_desc = describe_catalogs()
     env_catalogs = catalog_desc.get("environment")
@@ -1904,19 +1848,27 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.mode in {"summary", "all"}:
                 if __package__ in {None, ""}:
-                    from summarize_experiments import main as summarize_main
+                    from summarize import main as summarize_main
                 else:
-                    from .summarize_experiments import main as summarize_main
+                    from .summarize import main as summarize_main
 
                 for exp_id in exp_ids:
-                    summarize_main(
-                        ["--base-dir", str(base_dir), "--exp-id", exp_id, "--seeds", args.seeds]
-                    )
+                    summary_args = [
+                        "--base-dir",
+                        str(base_dir),
+                        "--exp-id",
+                        exp_id,
+                        "--seeds",
+                        args.seeds,
+                    ]
+                    if args.policy_ids:
+                        summary_args.extend(["--policy-ids", str(args.policy_ids)])
+                    summarize_main(summary_args)
             if args.mode in {"video", "all"}:
                 if __package__ in {None, ""}:
-                    from render_experiment_videos import main as render_main
+                    from render_videos import main as render_main
                 else:
-                    from .render_experiment_videos import main as render_main
+                    from .render_videos import main as render_main
 
                 for exp_id in exp_ids:
                     render_main(

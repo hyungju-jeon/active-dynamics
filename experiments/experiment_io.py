@@ -44,30 +44,6 @@ def write_json(path: str | Path, payload: Mapping[str, Any]) -> None:
         json.dump(dict(payload), f, indent=2, sort_keys=True)
 
 
-def list_session_dirs(base_dir: str | Path) -> list[Path]:
-    root = Path(base_dir)
-    if not root.exists():
-        return []
-    sessions: list[tuple[int, Path]] = []
-    for child in root.iterdir():
-        if not child.is_dir() or not child.name.startswith("session_"):
-            continue
-        suffix = child.name.split("session_", 1)[1]
-        if suffix.isdigit():
-            sessions.append((int(suffix), child))
-    sessions.sort(key=lambda item: item[0])
-    return [path for _, path in sessions]
-
-
-def has_experiment_dirs(base_dir: str | Path, exp_ids: Sequence[str] | None = None) -> bool:
-    root = Path(base_dir)
-    if not root.exists():
-        return False
-    if exp_ids:
-        return any((root / exp_id).is_dir() for exp_id in exp_ids)
-    return any(child.is_dir() and child.name.startswith("exp") for child in root.iterdir())
-
-
 def resolve_session_root(
     base_dir: str | Path,
     *,
@@ -79,20 +55,36 @@ def resolve_session_root(
         if create:
             root.mkdir(parents=True, exist_ok=True)
         return root
+
     if create:
         root.mkdir(parents=True, exist_ok=True)
-    if has_experiment_dirs(root, exp_ids=exp_ids):
+
+    if exp_ids:
+        has_existing_results = any((root / exp_id).is_dir() for exp_id in exp_ids)
+    else:
+        has_existing_results = root.exists() and any(
+            child.is_dir() and child.name.startswith("exp") for child in root.iterdir()
+        )
+    if has_existing_results:
         return root
-    sessions = list_session_dirs(root)
+
+    sessions: list[tuple[int, Path]] = []
+    if root.exists():
+        for child in root.iterdir():
+            if not child.is_dir() or not child.name.startswith("session_"):
+                continue
+            suffix = child.name.split("session_", 1)[1]
+            if suffix.isdigit():
+                sessions.append((int(suffix), child))
+    sessions.sort(key=lambda item: item[0])
+
     if create:
-        next_idx = 1
-        if sessions:
-            next_idx = max(int(path.name.split("session_", 1)[1]) for path in sessions) + 1
+        next_idx = sessions[-1][0] + 1 if sessions else 1
         session_root = root / f"session_{next_idx}"
         session_root.mkdir(parents=True, exist_ok=False)
         return session_root
     if sessions:
-        return sessions[-1]
+        return sessions[-1][1]
     return root
 
 
@@ -135,57 +127,15 @@ def find_nested_metadata_paths(
     return paths
 
 
-def nested_get(
-    payload: Mapping[str, Any],
-    key_path: Sequence[str],
-    default: Any = None,
-) -> Any:
-    current: Any = payload
-    for key in key_path:
-        if not isinstance(current, Mapping) or key not in current:
-            return default
-        current = current[key]
-    return current
-
-
-def align_trace_length(
-    trace: Any,
-    num_steps: int,
-    *,
-    dtype: np.dtype = np.float32,
-    empty_error: str,
-) -> np.ndarray:
-    values = np.asarray(trace, dtype=dtype)
-    if values.ndim == 1 and values.size > 0:
-        values = values.reshape(1, -1)
-    if values.size == 0:
-        raise ValueError(empty_error)
-    if values.shape[0] < num_steps:
-        pad = np.repeat(values[-1:], num_steps - values.shape[0], axis=0)
-        values = np.concatenate([values, pad], axis=0)
-    if values.shape[0] > num_steps:
-        values = values[:num_steps]
-    return values
-
-
-def frame_indices(n_steps: int, stride: int) -> list[int]:
-    if n_steps <= 0:
-        return [0]
-    idxs = list(range(0, n_steps, max(1, int(stride))))
-    if idxs[-1] != n_steps - 1:
-        idxs.append(n_steps - 1)
-    return idxs
-
-
 def get_environment_preset_from_metadata(metadata: Mapping[str, Any]) -> Any:
     try:
-        from experiment_specs import get_environment_preset, get_experiment_spec
+        from experiment_definitions import get_environment_preset, get_experiment_spec
     except ImportError:
         if __package__ in {None, ""}:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
-            from experiment_specs import get_environment_preset, get_experiment_spec
+            from experiment_definitions import get_environment_preset, get_experiment_spec
         else:
-            from .experiment_specs import get_environment_preset, get_experiment_spec
+            from .experiment_definitions import get_environment_preset, get_experiment_spec
 
     preset_id = str(metadata.get("env_preset_id", "")).strip()
     if preset_id:
@@ -212,11 +162,9 @@ def reconstruct_loglinear_rate_model(
     dt = float(metadata.get("dt", getattr(env_preset, "dt", dt_default)))
     torch.manual_seed(seed)
     layer = torch.nn.Linear(int(latent_dim), int(obs_dim))
-    c = layer.weight.detach().clone()
-    if bool(getattr(env_preset, "asymmetric_loading", False)):
-        c[:, 0] = torch.abs(c[:, 0])
-        if int(latent_dim) > 1:
-            c[:, 1] = c[:, 1] * 2.0
+    from actdyn.utils.experiment_runtime import apply_loglinear_loading_asymmetry
+
+    c = apply_loglinear_loading_asymmetry(layer.weight, env_preset)
     mean_firing = float(
         metadata.get(
             "mean_firing_rate_target",

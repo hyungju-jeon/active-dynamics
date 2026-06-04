@@ -20,9 +20,9 @@ ObjectiveKind = Literal[
     "state_information",
     "dynamics",
     "sampling_variance",
+    "corrected_sampling_variance",
 ]
-ExperimentKind = Literal["parameter", "rbf", "realdata"]
-SummaryValueKind = Literal["parameter_error", "dynamics_mse"]
+ExperimentKind = Literal["parameter", "rbf"]
 
 
 @dataclass(frozen=True)
@@ -144,7 +144,7 @@ class EnvironmentPreset:
                 )
             if e.shape[-1] >= full.shape[0]:
                 return e[..., : full.shape[0]]
-            tail = torch.as_tensor(full[e.shape[-1]:], dtype=e.dtype, device=e.device)
+            tail = torch.as_tensor(full[e.shape[-1] :], dtype=e.dtype, device=e.device)
             if e.ndim == 1:
                 return torch.cat((e, tail), dim=0)
             tail = tail.reshape(*([1] * (e.ndim - 1)), -1).expand(*e.shape[:-1], -1)
@@ -156,7 +156,7 @@ class EnvironmentPreset:
             )
         if e_np.shape[-1] >= full.shape[0]:
             return e_np[..., : full.shape[0]]
-        tail = full[e_np.shape[-1]:]
+        tail = full[e_np.shape[-1] :]
         if e_np.ndim == 1:
             return np.concatenate((e_np, tail), axis=0).astype(np.float32, copy=False)
         tail = np.broadcast_to(
@@ -240,14 +240,13 @@ class PolicySpec:
     schedule_id: str
     policy_type: str | None = None
     passive: bool = False
-    save_acq_map: bool = True
     shrinkage_kind: str | None = None
     shrinkage_min: float | None = None
     ambiguity_temperature: float | None = None
     ensemble_kind: str | None = None
     action_constraint: str | None = None
     action_radius: float | None = None
-    action_cost_weight: float = 0.01
+    action_cost_weight: float = 0.0
     flex_regularization: float | None = None
     flex_parameter_step_clip: float | None = None
     flex_parameter_min: float | None = None
@@ -271,8 +270,6 @@ class ExperimentSpec:
     total_steps: int
     env_preset_id: str
     policy_ids: tuple[str, ...]
-    summary_value_kind: SummaryValueKind
-    summary_value_label: str
     trajectory_eval_interval: int = 10
     trajectory_eval_horizon: int = 100
     trajectory_eval_samples: int = 16
@@ -294,13 +291,12 @@ class ExperimentCatalogBundle:
 
 
 CATALOG_DIR = Path(__file__).resolve().parent
-COSYNE_CATALOG_DIR = CATALOG_DIR / "cosyne"
 DEFAULT_ENV_CATALOG_PATHS = (CATALOG_DIR / "experiment_env.yaml",)
 DEFAULT_MODEL_CATALOG_PATHS = (CATALOG_DIR / "experiment_model.yaml",)
-DEFAULT_SUITE_CATALOG_PATHS = (COSYNE_CATALOG_DIR / "experiment_suite.yaml",)
+DEFAULT_SUITE_CATALOG_PATHS: tuple[Path, ...] = ()
 DEFAULT_ENV_CATALOG_PATH = DEFAULT_ENV_CATALOG_PATHS[0]
 DEFAULT_MODEL_CATALOG_PATH = DEFAULT_MODEL_CATALOG_PATHS[0]
-DEFAULT_SUITE_CATALOG_PATH = DEFAULT_SUITE_CATALOG_PATHS[0]
+DEFAULT_SUITE_CATALOG_PATH = None
 ENV_CATALOGS_ENVVAR = "ACTDYN_ENV_CATALOGS"
 MODEL_CATALOGS_ENVVAR = "ACTDYN_MODEL_CATALOGS"
 SUITE_CATALOGS_ENVVAR = "ACTDYN_SUITE_CATALOGS"
@@ -367,9 +363,7 @@ def _resolve_schedule_replan_interval(schedule_id: str, spec: Mapping[str, Any])
             "(planning_interval is accepted as an alias)."
         )
     first_key, first_value = next(iter(aliases.items()))
-    mismatched = {
-        key: value for key, value in aliases.items() if int(value) != int(first_value)
-    }
+    mismatched = {key: value for key, value in aliases.items() if int(value) != int(first_value)}
     if mismatched:
         parts = ", ".join(f"{key}={value}" for key, value in aliases.items())
         raise ValueError(
@@ -425,6 +419,8 @@ def _catalog_paths_from_env(
     default_paths: tuple[Path, ...],
 ) -> tuple[Path, ...]:
     raw = os.environ.get(env_var, "").strip()
+    if raw in {"-", "none", "None", "NONE"}:
+        return ()
     if not raw:
         return tuple(path.resolve() for path in default_paths)
     parts = [item.strip() for item in raw.split(os.pathsep) if item.strip()]
@@ -456,6 +452,7 @@ def load_catalog_bundle(
     env_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...],
     model_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...],
     suite_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...],
+    suite_entries: Mapping[str, Any] | None = None,
 ) -> ExperimentCatalogBundle:
     env_paths = _coerce_catalog_paths(env_catalog_paths)
     model_paths = _coerce_catalog_paths(model_catalog_paths)
@@ -473,10 +470,15 @@ def load_catalog_bundle(
         _merge_section_entries(model_paths, section_name="models"),
         section_name="models",
     )
-    suite_raw = _resolve_named_entries(
-        _merge_section_entries(suite_paths, section_name="suites"),
-        section_name="suites",
-    )
+    suite_entries_raw = _merge_section_entries(suite_paths, section_name="suites")
+    if suite_entries is not None:
+        suite_entries_raw.update(
+            {
+                str(name): _require_mapping(value, label=f"suites.{name}")
+                for name, value in suite_entries.items()
+            }
+        )
+    suite_raw = _resolve_named_entries(suite_entries_raw, section_name="suites")
 
     environment_presets: dict[str, EnvironmentPreset] = {
         preset_id: EnvironmentPreset(
@@ -498,15 +500,21 @@ def load_catalog_bundle(
                 if spec.get("estimator_dynamics_type") is None
                 else str(spec.get("estimator_dynamics_type"))
             ),
-            true_params=_as_float_tuple(spec.get("true_params"), label=f"environments.{preset_id}.true_params"),
+            true_params=_as_float_tuple(
+                spec.get("true_params"), label=f"environments.{preset_id}.true_params"
+            ),
             estimator_true_params=_as_float_tuple(
                 spec.get("estimator_true_params"),
                 label=f"environments.{preset_id}.estimator_true_params",
             ),
             state_low=_as_pair(spec.get("state_low"), label=f"environments.{preset_id}.state_low"),
-            state_high=_as_pair(spec.get("state_high"), label=f"environments.{preset_id}.state_high"),
+            state_high=_as_pair(
+                spec.get("state_high"), label=f"environments.{preset_id}.state_high"
+            ),
             min_embedding_dim=(
-                None if spec.get("min_embedding_dim") is None else int(spec.get("min_embedding_dim"))
+                None
+                if spec.get("min_embedding_dim") is None
+                else int(spec.get("min_embedding_dim"))
             ),
             asymmetric_loading=bool(spec.get("asymmetric_loading", False)),
             observation_primary_scale=float(spec.get("observation_primary_scale", 1.0)),
@@ -528,9 +536,7 @@ def load_catalog_bundle(
             mean_firing_rate_target=float(spec.get("mean_firing_rate_target", 25.0)),
             max_firing_rate_target=float(spec.get("max_firing_rate_target", 100.0)),
             real_data=bool(spec.get("real_data", False)),
-            dataset_id=(
-                None if spec.get("dataset_id") is None else str(spec.get("dataset_id"))
-            ),
+            dataset_id=(None if spec.get("dataset_id") is None else str(spec.get("dataset_id"))),
             dataset_path=(
                 None if spec.get("dataset_path") is None else str(spec.get("dataset_path"))
             ),
@@ -575,29 +581,41 @@ def load_catalog_bundle(
         for schedule_id, spec in schedule_raw.items()
     }
 
+    schedule_keys = {
+        "update_interval",
+        "replan_interval",
+        "planning_interval",
+        "planning_chunk",
+        "planning_horizon",
+        "predictive_only_window",
+    }
+    for policy_id, spec in model_raw.items():
+        if not any(key in spec for key in schedule_keys):
+            continue
+        schedule_id = str(spec.get("policy_id", policy_id))
+        schedule_specs[schedule_id] = ScheduleSpec(
+            schedule_id=schedule_id,
+            update_interval=int(spec["update_interval"]),
+            replan_interval=_resolve_schedule_replan_interval(schedule_id, spec),
+            planning_horizon=int(spec["planning_horizon"]),
+            predictive_only_window=bool(spec.get("predictive_only_window", False)),
+        )
+        spec["schedule_id"] = schedule_id
+
     policy_specs: dict[str, PolicySpec] = {
         policy_id: PolicySpec(
             policy_id=str(spec.get("policy_id", policy_id)),
             objective_kind=(
-                None
-                if spec.get("objective_kind") is None
-                else str(spec.get("objective_kind"))
+                None if spec.get("objective_kind") is None else str(spec.get("objective_kind"))
             ),
             schedule_id=str(spec["schedule_id"]),
-            policy_type=(
-                None if spec.get("policy_type") is None else str(spec.get("policy_type"))
-            ),
+            policy_type=(None if spec.get("policy_type") is None else str(spec.get("policy_type"))),
             passive=bool(spec.get("passive", False)),
-            save_acq_map=bool(spec.get("save_acq_map", True)),
             shrinkage_kind=(
-                None
-                if spec.get("shrinkage_kind") is None
-                else str(spec.get("shrinkage_kind"))
+                None if spec.get("shrinkage_kind") is None else str(spec.get("shrinkage_kind"))
             ),
             shrinkage_min=(
-                None
-                if spec.get("shrinkage_min") is None
-                else float(spec.get("shrinkage_min"))
+                None if spec.get("shrinkage_min") is None else float(spec.get("shrinkage_min"))
             ),
             ambiguity_temperature=(
                 None
@@ -605,9 +623,7 @@ def load_catalog_bundle(
                 else float(spec.get("ambiguity_temperature"))
             ),
             ensemble_kind=(
-                None
-                if spec.get("ensemble_kind") is None
-                else str(spec.get("ensemble_kind"))
+                None if spec.get("ensemble_kind") is None else str(spec.get("ensemble_kind"))
             ),
             action_constraint=(
                 None
@@ -615,11 +631,14 @@ def load_catalog_bundle(
                 else str(spec.get("action_constraint"))
             ),
             action_radius=(
-                None
-                if spec.get("action_radius") is None
-                else float(spec.get("action_radius"))
+                None if spec.get("action_radius") is None else float(spec.get("action_radius"))
             ),
-            action_cost_weight=float(spec.get("action_cost_weight", 0.01)),
+            action_cost_weight=float(
+                spec.get(
+                    "action_cost_weight",
+                    PolicySpec.__dataclass_fields__["action_cost_weight"].default,
+                )
+            ),
             flex_regularization=(
                 None
                 if spec.get("flex_regularization") is None
@@ -640,11 +659,7 @@ def load_catalog_bundle(
                 if spec.get("flex_parameter_max") is None
                 else float(spec.get("flex_parameter_max"))
             ),
-            flex_lr=(
-                None
-                if spec.get("flex_lr") is None
-                else float(spec.get("flex_lr"))
-            ),
+            flex_lr=(None if spec.get("flex_lr") is None else float(spec.get("flex_lr"))),
             coarse_dt_factor=int(spec.get("coarse_dt_factor", 1)),
             coarse_action_mapping=str(spec.get("coarse_action_mapping", "hold")),
             coarse_mapping_opt_steps=int(spec.get("coarse_mapping_opt_steps", 25)),
@@ -668,8 +683,6 @@ def load_catalog_bundle(
                 spec.get("model_ids", spec.get("policy_ids")),
                 label=f"suites.{exp_id}.model_ids",
             ),
-            summary_value_kind=str(spec["summary_value_kind"]),
-            summary_value_label=str(spec["summary_value_label"]),
             trajectory_eval_interval=int(spec.get("trajectory_eval_interval", 10)),
             trajectory_eval_horizon=int(spec.get("trajectory_eval_horizon", 100)),
             trajectory_eval_samples=int(spec.get("trajectory_eval_samples", 16)),
@@ -693,6 +706,7 @@ def configure_catalogs(
     env_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...] | None = None,
     model_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...] | None = None,
     suite_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...] | None = None,
+    suite_entries: Mapping[str, Any] | None = None,
 ) -> ExperimentCatalogBundle:
     global _CATALOGS, ENVIRONMENT_PRESETS, SCHEDULE_SPECS, POLICY_SPECS, MODEL_SPECS, EXPERIMENT_SPECS
 
@@ -715,6 +729,7 @@ def configure_catalogs(
         env_catalog_paths=resolved_env_paths,
         model_catalog_paths=resolved_model_paths,
         suite_catalog_paths=resolved_suite_paths,
+        suite_entries=suite_entries,
     )
     ENVIRONMENT_PRESETS = _CATALOGS.environment_presets
     SCHEDULE_SPECS = _CATALOGS.schedule_specs
