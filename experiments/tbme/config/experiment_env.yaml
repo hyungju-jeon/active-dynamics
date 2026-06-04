@@ -30,6 +30,17 @@ environments:
     state_high:
     - 5
     - 5
+    boundary_enabled: true
+    boundary_type: radial
+    boundary_radius: 8.0
+    boundary_barrier_enabled: true
+    boundary_projection_enabled: true
+    boundary_barrier_width: 0.5
+    boundary_barrier_strength: 5.0
+    boundary_barrier_temperature: 0.1
+    information_boundary_visibility_enabled: true
+    information_boundary_margin: 1.0
+    information_boundary_temperature: 0.15
 
   tbme_duffing_easy:
     extends: tbme_duffing
@@ -58,20 +69,29 @@ environments:
     - 0.5
     - 0.1
 
-  tbme_asymmetric_basin_boundary:
+  tbme_asymmetric_basin_weak_observation:
     extends: tbme_asymmetric_basin
-    system_label: Asymmetric basin with radial boundary
-    boundary_enabled: true
-    boundary_type: radial
-    boundary_radius: 10.0
-    boundary_barrier_enabled: true
-    boundary_projection_enabled: true
-    boundary_barrier_width: 0.5
-    boundary_barrier_strength: 5.0
-    boundary_barrier_temperature: 0.1
-    information_boundary_visibility_enabled: true
-    information_boundary_margin: 1.0
-    information_boundary_temperature: 0.15
+    system_label: Asymmetric basin / weak observations
+    observation_dim: 12
+    mean_firing_rate_target: 5.0
+    max_firing_rate_target: 40.0
+    observation_noise_scale: 1.5
+
+  tbme_asymmetric_basin_tight_action:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / tight actuation
+    action_max: 0.55
+    state_init_uncertainty: 4.0
+
+  tbme_asymmetric_basin_bottleneck:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / weak observation and tight actuation
+    observation_dim: 12
+    mean_firing_rate_target: 5.0
+    max_firing_rate_target: 40.0
+    observation_noise_scale: 1.5
+    action_max: 0.55
+    state_init_uncertainty: 4.0
 
   tbme_multi_stable:
     extends: tbme_duffing
@@ -101,16 +121,16 @@ environments:
     state_noise: 0.1
     state_init_uncertainty: 10.0
     firing_rate_scale: 0.5
-    action_max: 0.5
+    action_max: 1
 
-  tbme_damped_pendulum_asymmetry:
-    extends: tbme_damped_pendulum
+  tbme_damped_pendulum_hard:
+    extends: tbme_duffing_hard
+    system_id: damped_pendulum
+    system_dynamics_type: damped_pendulum
     system_label: damped pendulum with asymmetric loading
-    asymmetric_loading: true
-
 
   tbme_asymmetric_basin_hard:
-    extends: tbme_duffing_asymmetric
+    extends: tbme_duffing_hard
     system_id: asymmetric_basin
     system_label: Asymmetric basin
     dynamics_type: asymmetric_basin
@@ -130,6 +150,24 @@ environments:
     - -0.9
     - 0.2
 
+  tbme_duffing_parameter_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.15
+
+  tbme_duffing_parameter_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.3
+
   tbme_duffing_noise_mismatch:
     extends: tbme_duffing
     state_noise: 1
@@ -143,6 +181,28 @@ environments:
     - -0.1
     - -0.55
     - -0.5
+    embedding_dim: 3
+
+  tbme_asymmetric_basin_parameter_mismatch_mild:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / mild fixed-parameter mismatch
+    estimator_dynamics_type: asymmetric_basin
+    estimator_true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - -0.2
+    embedding_dim: 3
+
+  tbme_asymmetric_basin_parameter_mismatch_strong:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / strong fixed-parameter mismatch
+    estimator_dynamics_type: asymmetric_basin
+    estimator_true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - -1.0
     embedding_dim: 3
 
   tbme_mcrtt_spikes:
