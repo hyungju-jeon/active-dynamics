@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from experiments import analyze_results
+import actdyn.utils.training_log_analysis as training_log_analysis
 
 
 def _write_json(path: Path, payload) -> None:
@@ -28,19 +28,19 @@ def test_analyze_all_models_and_summary(tmp_path: Path):
         ],
     )
 
-    results = analyze_results.analyze_all_models(str(base))
+    results = training_log_analysis.analyze_all_models(str(base))
     assert "model_a" in results
     assert "log" in results["model_a"]
 
     metric_data = results["model_a"]["log"]
     assert sorted(set(metric_data["seed"])) == [1, 2]
 
-    plot_data = analyze_results.prepare_metric_plot_data(metric_data, "train_elbo")
+    plot_data = training_log_analysis.prepare_metric_plot_data(metric_data, "train_elbo")
     assert plot_data is not None
     assert plot_data["n_seeds"] == 2
     assert len(plot_data["time_steps"]) == 2
 
-    summary = analyze_results.summarize_results(results)
+    summary = training_log_analysis.summarize_results(results)
     assert "model_a" in summary
     assert "log" in summary["model_a"]
     assert "train_elbo_last_mean" in summary["model_a"]["log"]

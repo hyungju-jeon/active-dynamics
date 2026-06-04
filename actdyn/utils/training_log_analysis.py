@@ -1,9 +1,4 @@
-"""Utilities for analyzing experiment logs.
-
-The analyzer is designed for the remaining experiment tracks:
-- experiments/active_embedding
-- experiments/ciss
-"""
+"""Utilities for analyzing generic training log chunks."""
 
 from __future__ import annotations
 
@@ -14,58 +9,17 @@ from typing import Any, Optional
 
 import numpy as np
 
+from actdyn.utils.persistence import (
+    concatenate_log_chunk as _concatenate_chunks,
+    find_log_files as _find_log_files,
+    load_log_file as _load_log_file,
+)
+
 MetricData = dict[str, list[Any]]
 ModelData = dict[str, MetricData]
 AllResults = dict[str, ModelData]
 
 DEFAULT_METRIC_KEYWORDS = ("elbo", "loss", "objective", "train")
-
-
-def _load_log_file(file_path: Path) -> MetricData:
-    """Load a JSON log file as a dict[str, list[Any]]."""
-    try:
-        with file_path.open("r", encoding="utf-8") as f:
-            payload = json.load(f)
-    except Exception:
-        return {}
-
-    if isinstance(payload, list):
-        if payload and isinstance(payload[0], dict):
-            data: MetricData = {}
-            for row in payload:
-                for key, value in row.items():
-                    data.setdefault(key, []).append(value)
-            return data
-        return {"values": payload}
-
-    if isinstance(payload, dict):
-        if all(isinstance(v, list) for v in payload.values()):
-            return payload
-        return {k: [v] for k, v in payload.items()}
-
-    return {"value": [payload]}
-
-
-def _find_log_files(logs_dir: Path, patterns: list[str]) -> list[Path]:
-    files: list[Path] = []
-    for pattern in patterns:
-        files.extend(logs_dir.glob(pattern))
-
-    def sort_key(path: Path):
-        import re
-
-        parts = re.split(r"(\d+)", path.name)
-        return [int(p) if p.isdigit() else p for p in parts]
-
-    return sorted(files, key=sort_key)
-
-
-def _concatenate_chunks(left: MetricData, right: MetricData) -> MetricData:
-    if not left:
-        return right
-    if set(left.keys()) != set(right.keys()):
-        raise ValueError("log chunk keys do not match")
-    return {key: left[key] + right[key] for key in left}
 
 
 def _seed_sort_key(path: Path) -> tuple[int, str]:
@@ -317,7 +271,7 @@ def prepare_metric_plot_data(data: MetricData, metric_col: str) -> dict[str, Any
     }
 
 
-def plot_elbo_curve(ax, plot_data: dict[str, Any], metric_name: str, model_name: str) -> None:
+def plot_metric_curve(ax, plot_data: dict[str, Any], metric_name: str, model_name: str) -> None:
     """Plot mean/std metric curve for one model."""
     time_steps = plot_data["time_steps"]
     mean_values = plot_data["mean"]
@@ -336,7 +290,7 @@ def plot_elbo_curve(ax, plot_data: dict[str, Any], metric_name: str, model_name:
     ax.spines["right"].set_visible(False)
 
 
-def plot_elbo_over_time(
+def plot_metrics_over_time(
     results: AllResults,
     output_dir: Optional[str] = None,
     keywords: tuple[str, ...] = DEFAULT_METRIC_KEYWORDS,
@@ -357,7 +311,7 @@ def plot_elbo_over_time(
                     continue
 
                 _, ax = plt.subplots(figsize=(10, 6))
-                plot_elbo_curve(ax, plot_data, metric_col, model_name)
+                plot_metric_curve(ax, plot_data, metric_col, model_name)
 
                 filename = (
                     f"metric_plot_{_safe_slug(model_name)}_{_safe_slug(file_key)}_"
@@ -371,7 +325,7 @@ def plot_elbo_over_time(
     return saved_paths
 
 
-def plot_all_models_elbo_comparison(
+def plot_all_models_metric_comparison(
     results: AllResults,
     output_dir: Optional[str] = None,
     keywords: tuple[str, ...] = DEFAULT_METRIC_KEYWORDS,
@@ -503,12 +457,12 @@ def print_summary(results: AllResults) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Analyze experiment result logs.")
-    parser.add_argument("exp_folder", type=str, help="Path to result root directory")
+    parser = argparse.ArgumentParser(description="Analyze training result logs.")
+    parser.add_argument("exp_folder", type=str, help="Path to training result root directory")
     parser.add_argument("--offline", action="store_true", help="Use offline_* logs")
     parser.add_argument("--summary", action="store_true", help="Print summary to stdout")
-    parser.add_argument("--plot", action="store_true", help="Generate per-model plots")
-    parser.add_argument("--compare", action="store_true", help="Generate model comparison plots")
+    parser.add_argument("--plot", action="store_true", help="Generate per-model metric plots")
+    parser.add_argument("--compare", action="store_true", help="Generate metric comparison plots across models")
     parser.add_argument("--output-dir", type=str, default=None, help="Output directory for plots")
     parser.add_argument(
         "--save-summary",
@@ -527,10 +481,10 @@ def main() -> int:
     if args.save_summary:
         save_summary_results(results, exp_folder=args.exp_folder)
     if args.plot:
-        paths = plot_elbo_over_time(results, output_dir=args.output_dir)
+        paths = plot_metrics_over_time(results, output_dir=args.output_dir)
         print(f"Saved {len(paths)} plot(s).")
     if args.compare:
-        paths = plot_all_models_elbo_comparison(results, output_dir=args.output_dir)
+        paths = plot_all_models_metric_comparison(results, output_dir=args.output_dir)
         print(f"Saved {len(paths)} comparison plot(s).")
     return 0
 

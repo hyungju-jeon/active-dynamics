@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime
-import importlib
 from pathlib import Path
-import sys
 from typing import Iterable
 
 import numpy as np
 import torch
 
 from actdyn.config import ExperimentConfig
+import actdyn.utils.training_log_analysis as training_log_analysis
 
 _setup_experiment_fn = None
 
@@ -59,7 +58,7 @@ def _configure_device(cfg: ExperimentConfig) -> None:
 def _run_single_config(cfg: ExperimentConfig) -> None:
     global _setup_experiment_fn
     if _setup_experiment_fn is None:
-        from actdyn.utils.experiment_helpers import setup_experiment as _setup_experiment_fn_local
+        from actdyn.utils.experiment_setup import setup_experiment as _setup_experiment_fn_local
 
         _setup_experiment_fn = _setup_experiment_fn_local
 
@@ -161,46 +160,33 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
 
 def cmd_analyze(args: argparse.Namespace) -> int:
-    try:
-        analyzer = importlib.import_module("experiments.analyze_results")
-    except ModuleNotFoundError:
-        repo_root = Path(__file__).resolve().parents[1]
-        if str(repo_root) not in sys.path:
-            sys.path.insert(0, str(repo_root))
-        analyzer = importlib.import_module("experiments.analyze_results")
-
     base_dir = Path(args.exp_folder).expanduser().resolve()
     if not base_dir.exists():
         raise FileNotFoundError(f"Experiment folder not found: {base_dir}")
 
-    results = analyzer.analyze_all_models(str(base_dir), is_offline=args.offline)
+    results = training_log_analysis.analyze_all_models(str(base_dir), is_offline=args.offline)
     if not results:
         print("No analysis results found.")
         return 1
 
     if args.summary:
-        if hasattr(analyzer, "print_summary"):
-            analyzer.print_summary(results)
-        else:
-            print(f"Found {len(results)} model result set(s):")
-            for model_name, model_data in sorted(results.items()):
-                print(f"- {model_name}: {len(model_data)} log group(s)")
+        training_log_analysis.print_summary(results)
 
     if args.plot:
-        output_dir = args.output_dir
-        saved_paths = analyzer.plot_elbo_over_time(results, output_dir=output_dir)
+        saved_paths = training_log_analysis.plot_metrics_over_time(
+            results, output_dir=args.output_dir
+        )
         print(f"Saved {len(saved_paths)} plot(s).")
 
     if args.compare:
-        output_dir = args.output_dir
-        if hasattr(analyzer, "plot_all_models_elbo_comparison"):
-            saved_paths = analyzer.plot_all_models_elbo_comparison(results, output_dir=output_dir)
-            print(f"Saved {len(saved_paths)} comparison plot(s).")
+        saved_paths = training_log_analysis.plot_all_models_metric_comparison(
+            results, output_dir=args.output_dir
+        )
+        print(f"Saved {len(saved_paths)} comparison plot(s).")
 
     if args.save_summary:
-        if hasattr(analyzer, "save_summary_results"):
-            analyzer.save_summary_results(results, exp_folder=str(base_dir))
-            print("Saved analysis summary.")
+        training_log_analysis.save_summary_results(results, exp_folder=str(base_dir))
+        print("Saved analysis summary.")
 
     return 0
 
@@ -246,11 +232,11 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_parser.add_argument("exp_folder", type=str, help="Result directory to analyze")
     analyze_parser.add_argument("--offline", action="store_true", help="Analyze offline logs")
     analyze_parser.add_argument("--summary", action="store_true", help="Print summary table")
-    analyze_parser.add_argument("--plot", action="store_true", help="Generate ELBO plots")
+    analyze_parser.add_argument("--plot", action="store_true", help="Generate training metric plots")
     analyze_parser.add_argument(
         "--compare",
         action="store_true",
-        help="Generate comparison plots across models",
+        help="Generate training metric comparison plots across models",
     )
     analyze_parser.add_argument(
         "--save-summary",
