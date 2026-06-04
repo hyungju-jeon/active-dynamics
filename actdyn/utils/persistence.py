@@ -1,14 +1,15 @@
+from __future__ import annotations
+
 import os
 import io
 import json
 import pickle
-from typing import Dict, List, Any, Optional
+from typing import TYPE_CHECKING, Dict, List, Any, Optional
 from pathlib import Path
 
-import torch
-
-from actdyn.config import ExperimentConfig
-from actdyn.utils.rollout import Rollout, RolloutBuffer
+if TYPE_CHECKING:
+    from actdyn.config import ExperimentConfig
+    from actdyn.utils.rollout import Rollout
 
 
 def save_logger(logger, path="logs/log.json"):
@@ -31,6 +32,8 @@ def load_model(model, path="checkpoints/model"):
 
 def save_rollout(rollout, path="checkpoints/rollout.pkl"):
     """Save rollout buffer to disk."""
+    from actdyn.utils.rollout import Rollout, RolloutBuffer
+
     p = Path(path)
     if isinstance(rollout, Rollout):
         rollout_copy = rollout.copy()  # Ensure we don't modify the original
@@ -84,6 +87,8 @@ def save_config(config: ExperimentConfig, path=None):
 
 
 def _rollout_time_length(rollout: Rollout) -> int:
+    import torch
+
     lengths: list[int] = []
     for value in rollout._data.values():
         if isinstance(value, torch.Tensor):
@@ -103,11 +108,13 @@ def _rollout_end_step(path: Path) -> int | None:
         return None
 
 
-def _slice_rollout_dict(data: Dict[str, torch.Tensor], skip: int) -> Dict[str, torch.Tensor]:
+def _slice_rollout_dict(data, skip: int):
+    import torch
+
     if skip <= 0:
         return {key: value.clone() for key, value in data.items()}
 
-    sliced: Dict[str, torch.Tensor] = {}
+    sliced = {}
     for key, value in data.items():
         if not isinstance(value, torch.Tensor):
             continue
@@ -135,6 +142,8 @@ def load_and_concatenate_rollouts(
         rollout_files.sort(key=lambda x: int(x.stem.split("_")[1]))
     except Exception:
         rollout_files.sort()
+
+    from actdyn.utils.rollout import Rollout
 
     rollout = Rollout(device=device)
     prev_end_step: int | None = None

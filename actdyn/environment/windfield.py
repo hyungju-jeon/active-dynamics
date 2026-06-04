@@ -3,7 +3,7 @@
 import torch
 import numpy as np
 from actdyn.environment.vectorfield import VectorFieldEnv
-from actdyn.utils.vectorfield_definition import (
+from actdyn.utils.vectorfields import (
     LimitCycle,
     DoubleLimitCycle,
     MultiAttractor,

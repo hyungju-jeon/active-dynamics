@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from actdyn.utils.vectorfield_definition import (
+from actdyn.utils.vectorfields import (
     BistableLimitCycle,
     DampedPendulum,
     LimitCycle,
@@ -22,7 +22,7 @@ from actdyn.utils.vectorfield_definition import (
     AsymmetricBasin,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence
-from actdyn.utils.visualize import plot_vector_field
+from actdyn.utils.plotting import plot_vector_field
 from .boundary import boundary_barrier_drift, project_to_boundary
 
 

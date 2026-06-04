@@ -4,7 +4,7 @@ import torch
 import gymnasium as gym
 
 from actdyn.models.base import BaseDynamicsEnsemble
-from actdyn.utils.visualize import plot_vector_field
+from actdyn.utils.plotting import plot_vector_field
 from .base import BaseModel
 
 

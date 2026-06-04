@@ -158,7 +158,7 @@ def predict_planned_xy_trajectory(
 
 
 def extract_rollout_metrics(results_path: Path) -> dict[str, Any]:
-    from actdyn.utils import save_load
+    from actdyn.utils.persistence import load_and_concatenate_rollouts
     import torch
 
     rollouts_dir = results_path / "rollouts"
@@ -172,7 +172,7 @@ def extract_rollout_metrics(results_path: Path) -> dict[str, Any]:
             "action_abs_max": None,
         }
     try:
-        rollout = save_load.load_and_concatenate_rollouts(str(rollouts_dir))
+        rollout = load_and_concatenate_rollouts(str(rollouts_dir))
         env_state = rollout["env_state"][0]
         model_state = rollout["model_state"][0]
         diff = torch.linalg.norm(env_state - model_state, dim=-1)

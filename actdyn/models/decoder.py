@@ -4,10 +4,10 @@ import torch
 import torch.nn as nn
 from torch.distributions import Normal
 
-from actdyn.utils.helper import activation_from_str
+from actdyn.utils.torch_utils import activation_from_str
 from .base import BaseMapping, BaseNoise
 from torch.nn.functional import softplus
-from actdyn.utils.helper import eps
+from actdyn.utils.torch_utils import eps
 
 
 # --- Observation Mappings ---

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-General helper functions and constants
+Tensor, PyTorch, and numerical utility functions
 """
 
 import torch

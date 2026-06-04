@@ -7,7 +7,7 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LogNorm
 from matplotlib.colors import to_rgba
 
-from actdyn.utils.helper import to_np
+from actdyn.utils.torch_utils import to_np
 
 
 def set_matplotlib_style():
@@ -49,6 +49,60 @@ def set_matplotlib_style():
             "text.usetex": True,
         }
     )
+
+
+
+def apply_manuscript_figure_style(
+    plt_module=plt,
+    *,
+    font_size: float = 7.8,
+    stroke_color: str = "#3A3A3A",
+) -> None:
+    """Apply compact manuscript figure defaults used by experiment summaries."""
+    plt_module.rcParams.update(
+        {
+            "text.usetex": False,
+            "font.family": "serif",
+            "font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+            "font.size": float(font_size),
+            "figure.dpi": 300,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "axes.edgecolor": stroke_color,
+            "axes.linewidth": 0.55,
+            "axes.labelcolor": stroke_color,
+            "xtick.color": stroke_color,
+            "ytick.color": stroke_color,
+            "xtick.major.width": 0.45,
+            "ytick.major.width": 0.45,
+            "xtick.major.size": 2.0,
+            "ytick.major.size": 2.0,
+            "legend.frameon": False,
+            "savefig.bbox": "tight",
+            "savefig.pad_inches": 0.02,
+        }
+    )
+
+
+def style_manuscript_axis(
+    ax,
+    *,
+    grid_axis: str | None = None,
+    grid_color: str = "#C8C1B8",
+    grid_alpha: float = 0.42,
+    stroke_color: str = "#3A3A3A",
+    grid_linewidth: float = 0.35,
+    spine_linewidth: float = 0.55,
+) -> None:
+    """Apply compact axis styling for manuscript summary figures."""
+    if grid_axis is None:
+        ax.grid(color=grid_color, linewidth=grid_linewidth, alpha=grid_alpha)
+    else:
+        ax.grid(axis=grid_axis, color=grid_color, linewidth=grid_linewidth, alpha=grid_alpha)
+    for spine in ax.spines.values():
+        spine.set_color(stroke_color)
+        spine.set_linewidth(spine_linewidth)
+    ax.tick_params(width=0.45, length=2.0, colors=stroke_color)
 
 
 def create_grid(x_range=2, n_grid=50, device="cpu"):

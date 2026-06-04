@@ -7,7 +7,7 @@ from einops import rearrange
 import torch
 import torch.nn as nn
 from .base import BaseDynamics, BaseDynamicsEnsemble
-from actdyn.utils.helper import activation_from_str, eps
+from actdyn.utils.torch_utils import activation_from_str, eps
 from typing import Dict
 
 

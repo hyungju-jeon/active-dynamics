@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from actdyn.utils.helper import jacobian_wrt_param, make_uniform_sampler
+from actdyn.utils.torch_utils import jacobian_wrt_param, make_uniform_sampler
 
 
 def test_make_uniform_sampler_shape_and_bounds():

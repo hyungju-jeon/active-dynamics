@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from .helper import Belief, Transition, format_list, to_np, eps
 
 __all__ = [
     "setup_experiment",
@@ -24,20 +23,31 @@ __all__ = [
     "apply_loglinear_loading_asymmetry",
     "predict_planned_xy_trajectory",
     "extract_rollout_metrics",
-    "trajectory_r2_planar_system",
+    "trajectory_r2_vectorfield",
 ]
 
 
 def setup_experiment(*args, **kwargs):
     """Lazy import wrapper for setup_experiment."""
-    from .experiment_helpers import setup_experiment as _setup
+    from .experiment_setup import setup_experiment as _setup
 
     return _setup(*args, **kwargs)
 
 
 def __getattr__(name: str):
+    if name in {"Belief", "Transition", "format_list", "to_np", "eps"}:
+        from .torch_utils import Belief, Transition, eps, format_list, to_np
+
+        return {
+            "Belief": Belief,
+            "Transition": Transition,
+            "format_list": format_list,
+            "to_np": to_np,
+            "eps": eps,
+        }[name]
+
     if name in {"save_rollout", "load_rollout"}:
-        from .save_load import load_rollout, save_rollout
+        from .persistence import load_rollout, save_rollout
 
         return {"save_rollout": save_rollout, "load_rollout": load_rollout}[name]
 
@@ -79,10 +89,10 @@ def __getattr__(name: str):
             "extract_rollout_metrics": extract_rollout_metrics,
         }[name]
 
-    if name == "trajectory_r2_planar_system":
-        from .validation import trajectory_r2_planar_system
+    if name == "trajectory_r2_vectorfield":
+        from .validation import trajectory_r2_vectorfield
 
-        return trajectory_r2_planar_system
+        return trajectory_r2_vectorfield
 
     if name == "VideoRecorder":
         from .video import VideoRecorder
@@ -95,7 +105,7 @@ def __getattr__(name: str):
         "register_actdyn_configs",
         "setup_hydra_experiment",
     }:
-        from .hydra_integration import (
+        from .hydra_config import (
             HydraExperimentConfig,
             hydra_experiment,
             register_actdyn_configs,

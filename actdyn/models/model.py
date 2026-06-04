@@ -8,7 +8,7 @@ from einops import rearrange, repeat, einsum
 from torch.nn.functional import softplus
 
 from actdyn.environment.action import BaseAction
-from actdyn.utils.helper import safe_cholesky, symmetrize, eps, Belief
+from actdyn.utils.torch_utils import safe_cholesky, symmetrize, eps, Belief
 from actdyn.utils.rollout import RolloutBuffer
 
 from .base import BaseDynamicsEnsemble, BaseModel

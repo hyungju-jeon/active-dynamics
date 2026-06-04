@@ -13,7 +13,7 @@ from actdyn.metrics.information import (
     EmbeddingFisherMetric,
 )
 from actdyn.models.model import FilteringEmbedding
-from actdyn.utils.helper import safe_cholesky, symmetrize
+from actdyn.utils.torch_utils import safe_cholesky, symmetrize
 
 eps = 1e-12
 

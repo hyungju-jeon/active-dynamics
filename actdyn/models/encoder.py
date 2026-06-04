@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from torch.nn.functional import softplus
 from .base import BaseEncoder
-from actdyn.utils.helper import activation_from_str
+from actdyn.utils.torch_utils import activation_from_str
 
 
 # Small constant to prevent numerical instability

@@ -14,7 +14,7 @@ from tqdm import tqdm
 from actdyn.config import ExperimentConfig
 from actdyn.core.agent import Agent
 from actdyn.utils import to_np, format_list, VideoRecorder, Rollout, RolloutBuffer, save_rollout
-from actdyn.utils.save_load import load_and_concatenate_rollouts
+from actdyn.utils.persistence import load_and_concatenate_rollouts
 
 SESSION_DIR_PATTERN = re.compile(r"\d{8}_\d{4}_session\d{2}")
 

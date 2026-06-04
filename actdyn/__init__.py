@@ -19,7 +19,7 @@ def _try_export(import_stmt: str, symbol: str) -> None:
 
 
 _try_export("actdyn.config", "ExperimentConfig")
-_try_export("actdyn.utils.experiment_helpers", "setup_experiment")
+_try_export("actdyn.utils.experiment_setup", "setup_experiment")
 _try_export("actdyn.core.agent", "Agent")
 _try_export("actdyn.core.agent", "AsyncAgent")
 _try_export("actdyn.core.experiment", "Experiment")

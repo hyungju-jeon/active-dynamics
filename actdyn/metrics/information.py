@@ -11,7 +11,7 @@ from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from .base import BaseMetric
 from torch.nn.functional import softplus
-from actdyn.utils.helper import safe_cholesky, symmetrize
+from actdyn.utils.torch_utils import safe_cholesky, symmetrize
 
 eps = 1e-12
 
