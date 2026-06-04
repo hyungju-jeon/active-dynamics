@@ -5,9 +5,7 @@ Active learning framework for latent dynamical system identification.
 ## Installation
 
 ```bash
-conda env create -f environment.yml
-conda activate active-dynamics
-pip install -e .
+uv sync
 ```
 
 ## Supported Experiment Tracks
@@ -21,17 +19,20 @@ pip install -e .
 Use the package CLI as the standard runner:
 
 ```bash
-python -m actdyn --help
-python -m actdyn run --config experiments/active_embedding/conf/config.yaml
-python -m actdyn sweep --config-path experiments/ciss/conf
-python -m actdyn analyze results
-python -m actdyn analyze results --summary --save-summary
+uv run actdyn --help
+uv run actdyn run --config experiments/active_embedding/conf/config.yaml
+uv run actdyn sweep --config-path experiments/ciss/conf
+uv run actdyn analyze results
+uv run actdyn analyze results --summary --save-summary
 ```
 
-Legacy wrappers still exist and forward to the CLI:
+Shared experiment modules are named by role:
 
-- `experiments/run_experiment.py` -> `actdyn run`
-- `experiments/run_hydra.py` -> `actdyn sweep`
+- `experiments/run.py` -> catalog-driven experiment runner
+- `experiments/summarize.py` -> aggregate traces and summary figures
+- `experiments/render_videos.py` -> render experiment videos
+
+Generic training-log analysis lives in `actdyn/utils/training_log_analysis.py` and backs `actdyn analyze`.
 
 ## Notes
 

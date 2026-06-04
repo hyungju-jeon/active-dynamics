@@ -103,7 +103,7 @@ Real Environment                     Model (SeqVAE)
 - `actdyn.environment`: Gym-compatible environments and wrappers
 - `actdyn.policy`: MPC-iCEM and baseline policies  
 - `actdyn.metrics`: Fisher Information, costs, rewards
-- `actdyn.utils`: Rollout buffers, helpers, visualization
+- `actdyn.utils`: Rollout buffers, tensor utilities, plotting
 
 **External:**
 - **PyTorch** (≥2.0): Core neural network framework
@@ -495,7 +495,7 @@ Rollout.copy()                  # Deep copy
 RolloutBuffer.get_dataloader(batch_size, chunk_size, shuffle)
 ```
 
-#### `experiment_helpers.py` - Setup Functions
+#### `experiment_setup.py` - Setup Functions
 
 **Main Entry Point:**
 ```python
@@ -511,7 +511,7 @@ setup_metric(config, model) -> BaseMetric
 setup_policy(config, env, model, metric) -> BasePolicy
 ```
 
-#### `helper.py` - General Utilities
+#### `torch_utils.py` - General Utilities
 
 | Function | Purpose |
 |----------|---------|
@@ -521,7 +521,7 @@ setup_policy(config, env, model, metric) -> BasePolicy
 | `activation_from_str(name)` | String → activation function |
 | `format_list(x)` | Pretty-print for logging |
 
-#### `vectorfield_definition.py` - Dynamics Definitions
+#### `vectorfields.py` - Dynamics Definitions
 
 | Class | Dynamics |
 |-------|----------|
@@ -531,7 +531,7 @@ setup_policy(config, env, model, metric) -> BasePolicy
 | `VanDerPol` | `ẍ = μ(1-x²)ẋ - x` |
 | `Duffing` | `ẍ = -δẋ - αx - βx³` |
 
-#### `visualize.py` - Plotting Utilities
+#### `plotting.py` - Plotting Utilities
 
 ```python
 plot_vector_field(dynamics, x_range, n_grid, device, ax)
@@ -550,7 +550,7 @@ VideoRecorder(path, fps, codec)
 
 **Codecs:** `h264` (default), `prores` (Keynote), `lossless`
 
-#### `save_load.py` - Persistence
+#### `persistence.py` - Persistence
 
 ```python
 save_rollout(rollout, path)
@@ -559,7 +559,7 @@ save_config(config, path)
 load_and_concatenate_rollouts(dir, pattern) -> Rollout
 ```
 
-#### `hydra_integration.py` - Hydra Support
+#### `hydra_config.py` - Hydra Support
 
 ```python
 @hydra_experiment(config_path="conf")
@@ -577,28 +577,26 @@ register_actdyn_configs()  # Register with ConfigStore
 #### Structure
 ```
 experiments/
-├── run_experiment.py      # Thin wrapper -> `python -m actdyn run`
-├── run_hydra.py           # Thin wrapper -> `python -m actdyn sweep`
-├── analyze_results.py     # Analysis utility used by `actdyn analyze`
-├── active_embedding/      # Active embedding experiments
-├── ciss/                  # CISS experiments
+├── experiment_definitions.py # Environment, policy, schedule, and suite definitions
+├── experiment_io.py      # Metadata, artifact, and argument parsing helpers
+├── run.py                 # Catalog-driven experiment runner
+├── summarize.py           # Trace aggregation and summary figures
+├── render_videos.py       # Experiment video rendering
+├── tbme/                  # TBME experiment suites and figures
 ├── _hydra_templates/      # Shared config templates
 ```
 
 #### Running Experiments
 ```bash
 # Primary entry point
-python -m actdyn run --config experiments/active_embedding/conf/config.yaml
+uv run actdyn run --config experiments/active_embedding/conf/config.yaml
 
 # Sweep
-python -m actdyn sweep --config-path experiments/ciss/conf
+uv run actdyn sweep --config-path experiments/ciss/conf
 
 # Analyze
-python -m actdyn analyze results
+uv run actdyn analyze results
 
-# Legacy wrappers (compatibility)
-python experiments/run_experiment.py --config experiments/active_embedding/conf/config.yaml
-python experiments/run_hydra.py --config-path experiments/ciss/conf
 ```
 
 ---
@@ -620,8 +618,8 @@ Current baseline focuses on smoke + contract coverage for the refactored entry p
 
 **Running Tests:**
 ```bash
-pytest -q
-python -m compileall -q actdyn experiments tests
+uv run pytest -q
+uv run python -m compileall -q actdyn experiments tests
 ```
 
 ---
@@ -712,12 +710,12 @@ training:
 
 #### CLI Invocation
 ```bash
-python -m actdyn run \
+uv run actdyn run \
   --config experiments/active_embedding/conf/config.yaml \
   --seed 1 \
   --device cpu
 
-python -m actdyn sweep \
+uv run actdyn sweep \
   --config-path experiments/ciss/conf \
   --dry-run
 ```
@@ -726,9 +724,11 @@ python -m actdyn sweep \
 
 | Script | Purpose |
 |--------|---------|
-| `python -m actdyn` | Canonical CLI (`run`, `sweep`, `analyze`) |
-| `experiments/run_experiment.py` | Compatibility wrapper to `actdyn run` |
-| `experiments/run_hydra.py` | Compatibility wrapper to `actdyn sweep` |
+| `uv run actdyn` | Canonical CLI (`run`, `sweep`, `analyze`) |
+| `experiments/run.py` | Catalog-driven experiment runner |
+| `experiments/summarize.py` | Summary CSV and figure generation |
+| `experiments/render_videos.py` | Experiment video rendering |
+| `actdyn/utils/training_log_analysis.py` | Generic training-log analysis backend for `actdyn analyze` |
 
 ### Expected Inputs/Outputs
 
@@ -815,9 +815,9 @@ cost: Tensor  # Shape: (batch,)
 | `metrics/information.py` | 551 | Fisher Information |
 | `metrics/base.py` | 100 | Metric base classes |
 | `utils/rollout.py` | 909 | Data storage |
-| `utils/experiment_helpers.py` | 286 | Setup functions |
-| `utils/visualize.py` | 270 | Plotting |
-| `utils/hydra_integration.py` | 160 | Hydra support |
+| `utils/experiment_setup.py` | 286 | Setup functions |
+| `utils/plotting.py` | 270 | Plotting |
+| `utils/hydra_config.py` | 160 | Hydra support |
 
 ### Tests (`tests/`)
 | File | Tests | Coverage |
@@ -853,9 +853,10 @@ cost: Tensor  # Shape: (batch,)
 | `policy_from_str(key)` | `type[BasePolicy]` | `random`, `off-policy`, `mpc-icem` |
 | `metric_from_str(key)` | `type[BaseMetric]` | `a-optimality`, `d-optimality`, `action`, `goal-distance`, `reward` |
 
-### Conda Environment
+### uv Environment
 ```bash
-conda activate active-dynamics
+uv sync
+uv run actdyn --help
 ```
 
 ### Common Imports

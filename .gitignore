@@ -5,6 +5,7 @@
 *.fdb_latexmk
 *.bbl
 *.blg
+*.pdf
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -51,6 +52,7 @@ pip-delete-this-directory.txt
 venv/
 env/
 ENV/
+uv.lock
 
 # IDE
 .idea/
@@ -83,12 +85,15 @@ htmlcov/
 coverage.xml
 *.cover
 .hypothesis/
-tests/
+tests/*
+!tests/test_boundary_constraints.py
 
 # Documentation
 docs/_build/
 docs/plans/
 docs/presentation/
+docs/figs/
+docs/tables/
 site/
 
 # Jupyter Notebook
