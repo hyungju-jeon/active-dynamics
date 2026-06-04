@@ -18,7 +18,23 @@ from .base import (
 from .decoder import Decoder
 from .model_wrapper import ModelWrapper
 from .model import SeqVae, FilteringEmbedding
-from .planning_surrogates import LocalRBFBayesianLinearDynamics, RFFBayesianLinearDynamics
+
+
+class _MissingPlanningSurrogate:
+    def __init__(self, *args, **kwargs) -> None:
+        del args, kwargs
+        raise ModuleNotFoundError(
+            "CasADi-backed planning surrogates require the optional 'casadi' package."
+        )
+
+
+try:
+    from .planning_surrogates import LocalRBFBayesianLinearDynamics, RFFBayesianLinearDynamics
+except ModuleNotFoundError as exc:
+    if exc.name != "casadi":
+        raise
+    LocalRBFBayesianLinearDynamics = _MissingPlanningSurrogate
+    RFFBayesianLinearDynamics = _MissingPlanningSurrogate
 
 __all__ = [
     # Base classes
