@@ -7,7 +7,6 @@ import math
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-import sys
 from typing import Any, Iterable, Sequence
 
 import matplotlib
@@ -15,106 +14,65 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
 from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
 import numpy as np
 
-if __package__ in {None, ""}:
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from experiment_io import (
-        find_nested_metadata_paths,
-        get_environment_preset_from_metadata,
-        load_json,
-        reconstruct_loglinear_rate_model,
-        resolve_artifact_path,
-    )
+from actdyn.environment import residual_np
+from actdyn.environment.vectorfield import ResidualDynamicsCallable
+from actdyn.utils.experiment_runtime import read_trace_csv
+from actdyn.utils.plotting import (
+    apply_manuscript_figure_style,
+    compute_vector_field,
+    decorate_phase_space_axis,
+    style_manuscript_axis,
+)
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from actdyn.environment import residual_np
-    from actdyn.environment.vectorfield import residual_torch
-    from actdyn.utils.plotting import (
-        VectorFieldResidualDynamics,
-        apply_manuscript_figure_style,
-        compute_vector_field,
-        decorate_phase_space_axis,
-        style_manuscript_axis,
-    )
-    from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs, set_tbme_catalog_env
+from ..experiment_definitions import get_environment_preset, get_experiment_spec
+from ..experiment_io import (
+    expected_loglinear_rate_hz,
+    find_nested_metadata_paths,
+    get_environment_preset_from_metadata,
+    load_json,
+    reconstruct_loglinear_rate_model,
+    resolve_artifact_path,
+)
+from ..visualize import (
+    _parse_figure_formats,
+    plot_final_value_by_policy,
+    plot_information_colormap,
+    plot_metric_over_cpu_time,
+    plot_metric_over_steps,
+    plot_neuron_tuning_curve_colormap,
+    plot_parameter_covariance_trace_over_steps,
+)
+from .run_tbme_experiments import configure_tbme_catalogs
 
-    set_tbme_catalog_env()
-    from experiment_definitions import get_environment_preset, get_experiment_spec
-    from experiments.summarize import (
-        _parse_figure_formats,
-        _plot_curves,
-        _plot_information_colormap,
-        _plot_neuron_tuning_curve_colormap,
-    )
-else:
-    from .run_tbme_experiments import configure_tbme_catalogs, set_tbme_catalog_env
+configure_tbme_catalogs()
 
-    set_tbme_catalog_env()
-    from ..experiment_io import (
-        find_nested_metadata_paths,
-        get_environment_preset_from_metadata,
-        load_json,
-        reconstruct_loglinear_rate_model,
-        resolve_artifact_path,
-    )
-    from ..experiment_definitions import get_environment_preset, get_experiment_spec
-    from ..summarize import (
-        _parse_figure_formats,
-        _plot_curves,
-        _plot_information_colormap,
-        _plot_neuron_tuning_curve_colormap,
-    )
-    from actdyn.environment import residual_np
-    from actdyn.environment.vectorfield import residual_torch
-    from actdyn.utils.plotting import (
-        VectorFieldResidualDynamics,
-        apply_manuscript_figure_style,
-        compute_vector_field,
-        decorate_phase_space_axis,
-        style_manuscript_axis,
-    )
 
+# GROUPS is evaluated at import time, so this constructor stays before the global table.
+def _asset_latest_session(base: Path) -> Path:
+    sessions = [
+        path
+        for path in base.glob("session_*")
+        if path.is_dir() and path.name.removeprefix("session_").isdigit()
+    ]
+    if not sessions:
+        return base / "session_1"
+    return max(sessions, key=lambda path: int(path.name.removeprefix("session_")))
+
+
+# Global configuration
 _TBME_STROKE_COLOR = "#3A3A3A"
 _TBME_GRID_COLOR = "#DDD7CE"
-
-
-def _apply_style(plt_module: Any | None = None) -> None:
-    if plt_module is None:
-        plt_module = plt
-    apply_manuscript_figure_style(plt_module, stroke_color=_TBME_STROKE_COLOR)
-
-
-def _style_manuscript_axis(
-    ax: Any,
-    *,
-    grid_axis: str | None = None,
-    grid_color: str = _TBME_GRID_COLOR,
-    grid_alpha: float = 0.42,
-) -> None:
-    style_manuscript_axis(
-        ax,
-        grid_axis=grid_axis,
-        grid_color=grid_color,
-        grid_alpha=float(grid_alpha),
-        stroke_color=_TBME_STROKE_COLOR,
-    )
-
-
-def _style_requested_axis(ax: Any) -> None:
-    _style_manuscript_axis(ax, grid_alpha=0.55)
-
-
-_requested_style_axis = _style_requested_axis
-_additional_style_axis = _style_manuscript_axis
 
 
 # Current TBME manuscript asset export
 _asset_REPO_ROOT = Path(__file__).resolve().parents[2]
 _asset_FIG_DIR = _asset_REPO_ROOT / "docs" / "figs" / "tbme" / "generated"
 _asset_TEX_DIR = _asset_REPO_ROOT / "docs" / "tables"
+_asset_RESULTS_DIR = _asset_REPO_ROOT / "results" / "tbme"
 _asset_R2_THRESHOLDS = (0.90, 0.95, 0.99)
 _asset_C_WRITE = "#1F4FA8"
 _asset_C_WRITE_SOFT = "#6F8EC8"
@@ -132,17 +90,6 @@ _asset_R2_THRESHOLD_POINT_COLORS = {
 }
 
 
-def _asset_latest_session(base: Path) -> Path:
-    sessions = [
-        path
-        for path in base.glob("session_*")
-        if path.is_dir() and path.name.removeprefix("session_").isdigit()
-    ]
-    if not sessions:
-        return base / "session_1"
-    return max(sessions, key=lambda path: int(path.name.removeprefix("session_")))
-
-
 @dataclass(frozen=True)
 class SuiteRef:
     suite_id: str
@@ -152,81 +99,142 @@ class SuiteRef:
 
 
 GROUPS: dict[str, list[SuiteRef]] = {
-    "exp1_main": [
+    "exp01_base": [
         SuiteRef(
-            "exp1_duffing",
+            "exp01_duffing",
             "Duffing",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1"),
+            _asset_latest_session(_asset_RESULTS_DIR / "exp01_base"),
             "duffing",
         ),
         SuiteRef(
-            "exp1_damped_pendulum",
+            "exp01_damped_pendulum",
             "Damped pendulum",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1"),
+            _asset_latest_session(_asset_RESULTS_DIR / "exp01_base"),
             "damped_pendulum",
         ),
         SuiteRef(
-            "exp1_asymmetric_basin",
+            "exp01_asymmetric_basin",
             "Asymmetric basin",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1"),
+            _asset_latest_session(_asset_RESULTS_DIR / "exp01_base"),
             "asymmetric_basin",
         ),
     ],
-    "exp1_schedule": [
+    "exp02_hard": [
         SuiteRef(
-            "exp1_schedule_duffing",
-            "Duffing",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1_1_schedule"),
-            "duffing",
-        ),
-        SuiteRef(
-            "exp1_schedule_damped_pendulum",
-            "Damped pendulum",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1_1_schedule"),
-            "damped_pendulum",
-        ),
-        SuiteRef(
-            "exp1_schedule_asymmetric_basin",
-            "Asymmetric basin",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1_1_schedule"),
-            "asymmetric_basin",
-        ),
-    ],
-    "exp1_hard": [
-        SuiteRef(
-            "exp1_hard_duffing",
+            "exp02_hard_duffing",
             "Duffing hard",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1_2_hard"),
+            _asset_latest_session(_asset_RESULTS_DIR / "exp02_hard"),
             "duffing_hard",
         ),
         SuiteRef(
-            "exp1_hard_asymmetric_basin",
+            "exp02_hard_asymmetric_basin",
             "Asymmetric basin hard",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1_2_hard"),
+            _asset_latest_session(_asset_RESULTS_DIR / "exp02_hard"),
             "asymmetric_basin_hard",
         ),
         SuiteRef(
-            "exp1_hard_damped_pendulum",
+            "exp02_hard_damped_pendulum",
             "Damped pendulum hard",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp1_2_hard"),
+            _asset_latest_session(_asset_RESULTS_DIR / "exp02_hard"),
             "damped_pendulum_hard",
         ),
     ],
-    "exp2": [
+    "exp03_schedule": [
         SuiteRef(
-            "exp2_duffing_parameter_mismatch",
+            "exp03_schedule_duffing",
+            "Duffing",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp03_schedule"),
+            "duffing",
+        ),
+        SuiteRef(
+            "exp03_schedule_damped_pendulum",
+            "Damped pendulum",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp03_schedule"),
+            "damped_pendulum",
+        ),
+        SuiteRef(
+            "exp03_schedule_asymmetric_basin",
+            "Asymmetric basin",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp03_schedule"),
+            "asymmetric_basin",
+        ),
+    ],
+    "exp04_mismatch": [
+        SuiteRef(
+            "exp04_duffing_parameter_mismatch",
             "Duffing parameter mismatch",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp2"),
+            _asset_latest_session(_asset_RESULTS_DIR / "exp04_mismatch"),
             "duffing_parameter_mismatch",
         ),
         SuiteRef(
-            "exp2_asymmetric_basin_parameter_mismatch",
+            "exp04_asymmetric_basin_parameter_mismatch",
             "Asymmetric basin parameter mismatch",
-            _asset_latest_session(_asset_REPO_ROOT / "results" / "tbme" / "exp2"),
+            _asset_latest_session(_asset_RESULTS_DIR / "exp04_mismatch"),
             "asymmetric_basin_parameter_mismatch",
         ),
     ],
+    "exp05_ablation": [
+        SuiteRef(
+            "exp05_asymmetric_basin_objective_ablation",
+            "Asymmetric basin objective ablation",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp05_ablation"),
+            "asymmetric_basin_objective_ablation",
+        ),
+        SuiteRef(
+            "exp05_hard_asymmetric_basin_objective_ablation",
+            "Hard asymmetric basin objective ablation",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp05_ablation"),
+            "hard_asymmetric_basin_objective_ablation",
+        ),
+    ],
+    "exp06_bottleneck": [
+        SuiteRef(
+            "exp06_asymmetric_basin_bottleneck_weak_observation",
+            "Asymmetric basin weak observation",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp06_bottleneck"),
+            "asymmetric_basin_bottleneck_weak_observation",
+        ),
+        SuiteRef(
+            "exp06_asymmetric_basin_bottleneck_tight_action",
+            "Asymmetric basin tight action",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp06_bottleneck"),
+            "asymmetric_basin_bottleneck_tight_action",
+        ),
+        SuiteRef(
+            "exp06_asymmetric_basin_bottleneck_combined",
+            "Asymmetric basin bottleneck",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp06_bottleneck"),
+            "asymmetric_basin_bottleneck_combined",
+        ),
+    ],
+    "exp07_mismatch_stress": [
+        SuiteRef(
+            "exp07_duffing_parameter_mismatch_mild",
+            "Duffing parameter mismatch mild",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp07_mismatch_stress"),
+            "duffing_parameter_mismatch_mild",
+        ),
+        SuiteRef(
+            "exp07_duffing_parameter_mismatch_strong",
+            "Duffing parameter mismatch strong",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp07_mismatch_stress"),
+            "duffing_parameter_mismatch_strong",
+        ),
+        SuiteRef(
+            "exp07_asymmetric_basin_parameter_mismatch_mild",
+            "Asymmetric basin parameter mismatch mild",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp07_mismatch_stress"),
+            "asymmetric_basin_parameter_mismatch_mild",
+        ),
+        SuiteRef(
+            "exp07_asymmetric_basin_parameter_mismatch_strong",
+            "Asymmetric basin parameter mismatch strong",
+            _asset_latest_session(_asset_RESULTS_DIR / "exp07_mismatch_stress"),
+            "asymmetric_basin_parameter_mismatch_strong",
+        ),
+    ],
 }
+
 
 POLICY_LABELS = {
     "active_planning": "Planning",
@@ -276,10 +284,336 @@ POLICY_ORDER = [
     "rhc",
 ]
 
+POLICY_COLORS = {
+    "active_planning": "#1F4FA8",
+    "active_planning_u1_r1_h40": "#4B74B9",
+    "active_planning_u5_r5_h40": "#2F6F9F",
+    "active_planning_u1_r5_h40": "#5B8D5A",
+    "active_planning_u10_r10_h40": "#7A6AAE",
+    "active_planning_u5_r10_h40": "#4B8F8C",
+    "active_planning_u20_r20_h40": "#1F4FA8",
+    "active_planning_u5_r20_h40": "#6F8EC8",
+    "active_planning_u10_r20_h40": "#3C6D99",
+    "active_fully_observable_u20_r20_h40": "#5B8D5A",
+    "active_e_optimality_u20_r20_h40": "#7E5AA6",
+    "active_state_information_u20_r20_h40": "#C27A2C",
+    "active_dynamics_u20_r20_h40": "#2F7C7A",
+    "active_sampling_variance_u20_r20_h40": "#9C5C38",
+    "active_myopic": "#B5361C",
+    "prbs": "#7C6A45",
+    "random": "#6F6A62",
+    "flex": "#7E5AA6",
+    "flex_true_state": "#4F8A62",
+    "ensemble": "#C27A2C",
+    "rhc": "#2F7C7A",
+}
+FALLBACK_COLORS = (
+    "#1F4FA8",
+    "#B5361C",
+    "#4F8A62",
+    "#7E5AA6",
+    "#C27A2C",
+    "#6F6A62",
+    "#2F7C7A",
+    "#6F8EC8",
+)
 
-def _asset_read_csv(path: Path) -> list[dict[str, str]]:
-    with path.open("r", newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+
+# Current TBME summary figure export
+_summary_TBME_DIR = Path(__file__).resolve().parent
+_summary_EXPERIMENTS_DIR = _summary_TBME_DIR.parent
+
+
+# Trajectory figure family
+_trajectory_C_WRITE = "#1F4FA8"
+_trajectory_C_READ = "#B5361C"
+_trajectory_C_STROKE = "#3A3A3A"
+_trajectory_C_NEUTRAL = "#6F6A62"
+_trajectory_C_NEUTRAL_LIGHT = "#C8C1B8"
+_trajectory_C_NEUTRAL_FILL = "#F4F1EC"
+_trajectory_C_WHITE = "#FFFFFF"
+_trajectory_TBME_DIR = Path(__file__).resolve().parent
+_trajectory_EXPERIMENTS_DIR = _trajectory_TBME_DIR.parent
+
+
+# Requested figure family
+_requested_REPO_ROOT = Path(__file__).resolve().parents[2]
+_requested_TBME_DIR = Path(__file__).resolve().parent
+_requested_EXPERIMENTS_DIR = _requested_TBME_DIR.parent
+_requested_FIGURE_DIR = _requested_REPO_ROOT / "docs" / "figs"
+_requested_GENERATED_DIR = _requested_REPO_ROOT / "docs" / "tables"
+
+_requested_C_WRITE = "#1F4FA8"
+_requested_C_READ = "#B5361C"
+_requested_C_ENSEMBLE = "#C27A2C"
+_requested_C_PRBS = "#7C6A45"
+_requested_C_RANDOM = "#6F6A62"
+_requested_C_STROKE = "#3A3A3A"
+_requested_C_NEUTRAL = "#6F6A62"
+_requested_C_NEUTRAL_LIGHT = "#C8C1B8"
+_requested_C_NEUTRAL_FILL = "#F4F1EC"
+_requested_C_GRID = "#DDD7CE"
+_requested_POLICY_COLORS = {
+    "active_planning_u20_r20_h40": _requested_C_WRITE,
+    "active_fully_observable_u20_r20_h40": "#5B8D5A",
+    "active_e_optimality_u20_r20_h40": "#7E5AA6",
+    "active_state_information_u20_r20_h40": _requested_C_ENSEMBLE,
+    "active_dynamics_u20_r20_h40": "#2F7C7A",
+    "active_sampling_variance_u20_r20_h40": "#9C5C38",
+    "active_myopic": _requested_C_READ,
+    "ensemble": _requested_C_ENSEMBLE,
+    "prbs": _requested_C_PRBS,
+    "random": _requested_C_RANDOM,
+}
+
+_requested_BOTTLENECK_POLICIES = [
+    "active_planning_u20_r20_h40",
+    "active_myopic",
+    "ensemble",
+    "prbs",
+    "random",
+]
+_requested_OBJECTIVE_POLICIES = [
+    "active_planning_u20_r20_h40",
+    "active_fully_observable_u20_r20_h40",
+    "active_state_information_u20_r20_h40",
+    "active_dynamics_u20_r20_h40",
+    "active_sampling_variance_u20_r20_h40",
+    "active_e_optimality_u20_r20_h40",
+    "ensemble",
+    "prbs",
+]
+_requested_OBJECTIVE_DEFINITIONS = [
+    {
+        "policy_id": "active_planning_u20_r20_h40",
+        "objective_name": "Parameter EIG",
+        "objective_formula": (
+            r"$J(u_{0:H-1})=\frac{1}{2}\log\det(I+P_\theta "
+            r"\sum_{i=0}^{H-1}\gamma^i \Delta\Lambda_i)$, "
+            r"$\Delta\Lambda_i=S_i^\top(I+P_i^- I_{z,i})^{-1}I_{z,i}S_i$"
+        ),
+        "objective_notes": "Main objective; partial-observation attenuation uses the predicted latent covariance.",
+    },
+    {
+        "policy_id": "active_fully_observable_u20_r20_h40",
+        "objective_name": "Full-observable EIG",
+        "objective_formula": (
+            r"$J(u_{0:H-1})=\frac{1}{2}\log\det(I+P_\theta "
+            r"\sum_{i=0}^{H-1}\gamma^i S_i^\top I_{z,i}S_i)$"
+        ),
+        "objective_notes": "Ablation that removes partial-observation attenuation.",
+    },
+    {
+        "policy_id": "active_state_information_u20_r20_h40",
+        "objective_name": "State information",
+        "objective_formula": (
+            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
+            r"\log\det\operatorname{chol}(I+P_i^- I_{z,i})$"
+        ),
+        "objective_notes": "Scores latent-state observability, not parameter sensitivity.",
+    },
+    {
+        "policy_id": "active_dynamics_u20_r20_h40",
+        "objective_name": "Dynamics sensitivity",
+        "objective_formula": (
+            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i " r"\operatorname{tr}(S_i^\top P_i^- S_i)$"
+        ),
+        "objective_notes": "Scores predicted state sensitivity to parameters without the decoder Fisher term.",
+    },
+    {
+        "policy_id": "active_sampling_variance_u20_r20_h40",
+        "objective_name": "Sampling variance",
+        "objective_formula": (
+            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
+            r"\sum_j\log(1+\operatorname{Var}_{\theta\sim q(\theta)}"
+            r"[\lambda_j(z_i(\theta))])$"
+        ),
+        "objective_notes": "Monte Carlo objective using posterior samples of the dynamics parameters.",
+    },
+    {
+        "policy_id": "active_e_optimality_u20_r20_h40",
+        "objective_name": "E-optimality",
+        "objective_formula": (
+            r"$J(u_{0:H-1})=\lambda_{\min}(P_\theta " r"\sum_{i=0}^{H-1}\gamma^i \Delta\Lambda_i)$"
+        ),
+        "objective_notes": "Maximizes the least-informed parameter direction.",
+    },
+    {
+        "policy_id": "ensemble",
+        "objective_name": "Ensemble state variance",
+        "objective_formula": (
+            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
+            r"\sum_d \operatorname{Var}_{\theta\sim q(\theta)}[z_{i,d}(\theta)]$"
+        ),
+        "objective_notes": "Practical adaptive baseline; it is not a Fisher-information objective.",
+    },
+    {
+        "policy_id": "prbs",
+        "objective_name": "PRBS",
+        "objective_formula": r"Preset pseudo-random binary excitation sequence.",
+        "objective_notes": "Passive baseline with no model-based acquisition optimization.",
+    },
+]
+_requested_DOSE_POLICIES = [
+    "active_planning_u20_r20_h40",
+    "active_myopic",
+    "ensemble",
+    "prbs",
+    "random",
+]
+
+
+@dataclass(frozen=True)
+class _requested_SuiteSource:
+    exp_id: str
+    label: str
+    suite_dir: Path
+    dose: str | None = None
+    family: str | None = None
+
+
+@dataclass(frozen=True)
+class _requested_RunRecord:
+    policy_id: str
+    seed: int
+    run_dir: Path
+    metadata: dict[str, Any]
+
+
+_requested_PLOTS = (
+    "bottleneck_sweep",
+    "objective_ablation",
+    "mismatch_dose_response",
+    "downstream_control",
+)
+_requested_OBJECTIVE_DEFINITION_PLOTS = {"objective_ablation", "downstream_control"}
+_requested_REQUIRED_SUITES_BY_PLOT = {
+    "bottleneck_sweep": (
+        ("exp01_base", "exp01_asymmetric_basin"),
+        ("exp06_bottleneck", "exp06_asymmetric_basin_bottleneck_weak_observation"),
+        ("exp06_bottleneck", "exp06_asymmetric_basin_bottleneck_tight_action"),
+        ("exp06_bottleneck", "exp06_asymmetric_basin_bottleneck_combined"),
+    ),
+    "objective_ablation": (
+        ("exp05_ablation", "exp05_asymmetric_basin_objective_ablation"),
+        ("exp05_ablation", "exp05_hard_asymmetric_basin_objective_ablation"),
+    ),
+    "mismatch_dose_response": (
+        ("exp01_base", "exp01_duffing"),
+        ("exp01_base", "exp01_asymmetric_basin"),
+        ("exp04_mismatch", "exp04_duffing_parameter_mismatch"),
+        ("exp04_mismatch", "exp04_asymmetric_basin_parameter_mismatch"),
+        ("exp07_mismatch_stress", "exp07_duffing_parameter_mismatch_mild"),
+        ("exp07_mismatch_stress", "exp07_duffing_parameter_mismatch_strong"),
+        ("exp07_mismatch_stress", "exp07_asymmetric_basin_parameter_mismatch_mild"),
+        ("exp07_mismatch_stress", "exp07_asymmetric_basin_parameter_mismatch_strong"),
+    ),
+    "downstream_control": (("exp05_ablation", "exp05_asymmetric_basin_objective_ablation"),),
+}
+
+
+# Additional figure family
+_additional_REPO_ROOT = Path(__file__).resolve().parents[2]
+_additional_TBME_DIR = Path(__file__).resolve().parent
+_additional_EXPERIMENTS_DIR = _additional_TBME_DIR.parent
+_additional_FIGURE_DIR = _additional_REPO_ROOT / "docs" / "figs"
+_additional_GENERATED_DIR = _additional_REPO_ROOT / "docs" / "tables"
+
+_additional_C_WRITE = "#1F4FA8"
+_additional_C_READ = "#B5361C"
+_additional_C_ENSEMBLE = "#C27A2C"
+_additional_C_PRBS = "#7C6A45"
+_additional_C_RANDOM = "#6F6A62"
+_additional_C_RHC = "#2F7C7A"
+_additional_C_STROKE = "#3A3A3A"
+_additional_C_NEUTRAL = "#6F6A62"
+_additional_C_NEUTRAL_LIGHT = "#C8C1B8"
+_additional_C_NEUTRAL_FILL = "#F4F1EC"
+_additional_C_GRID = "#DDD7CE"
+_additional_POLICY_COLORS = {
+    "active_planning_u20_r20_h40": _additional_C_WRITE,
+    "active_planning_u5_r5_h40": "#2F6F9F",
+    "active_planning_u10_r10_h40": "#7A6AAE",
+    "active_planning_u5_r10_h40": "#4B8F8C",
+    "active_planning_u5_r20_h40": "#6F8EC8",
+    "active_planning_u10_r20_h40": "#3C6D99",
+    "active_myopic": _additional_C_READ,
+    "prbs": _additional_C_PRBS,
+    "random": _additional_C_RANDOM,
+    "ensemble": _additional_C_ENSEMBLE,
+    "rhc": _additional_C_RHC,
+    "flex": "#7E5AA6",
+    "flex_true_state": "#4F8A62",
+}
+
+
+@dataclass(frozen=True)
+class _additional_RunRecord:
+    policy_id: str
+    seed: int
+    run_dir: Path
+    metadata: dict[str, Any]
+
+
+_additional_PLOTS = (
+    "true_dynamics_all",
+    "asymmetric_basin_mechanism",
+    "learned_vectorfield_snapshots",
+    "sample_efficiency_thresholds",
+    "compute_accuracy_pareto",
+    "per_parameter_recovery",
+    "information_learning_coupling",
+)
+
+# Helper functions
+
+
+def _apply_style(plt_module: Any | None = None) -> None:
+    if plt_module is None:
+        plt_module = plt
+    apply_manuscript_figure_style(plt_module, stroke_color=_TBME_STROKE_COLOR)
+
+
+def _style_manuscript_axis(
+    ax: Any,
+    *,
+    grid_axis: str | None = None,
+    grid_color: str = _TBME_GRID_COLOR,
+    grid_alpha: float = 0.42,
+) -> None:
+    style_manuscript_axis(
+        ax,
+        grid_axis=grid_axis,
+        grid_color=grid_color,
+        grid_alpha=float(grid_alpha),
+        stroke_color=_TBME_STROKE_COLOR,
+    )
+
+
+def _style_requested_axis(ax: Any) -> None:
+    _style_manuscript_axis(ax, grid_alpha=0.55)
+
+
+def _suite_dir(group_name: str, suite_id: str) -> Path:
+    for ref in GROUPS[group_name]:
+        if ref.suite_id == suite_id:
+            return ref.session_root / ref.suite_id
+    raise KeyError(f"Unknown suite {group_name}/{suite_id}")
+
+
+def _policy_sort_key(policy_id: str) -> tuple[int, str]:
+    try:
+        return POLICY_ORDER.index(policy_id), policy_id
+    except ValueError:
+        return len(POLICY_ORDER), policy_id
+
+
+def _policy_label(policy_id: str) -> str:
+    return POLICY_LABELS.get(policy_id, policy_id.replace("_", " "))
+
+
+def _policy_color(policy_id: str, fallback_idx: int = 0) -> str:
+    return POLICY_COLORS.get(policy_id, FALLBACK_COLORS[fallback_idx % len(FALLBACK_COLORS)])
 
 
 def _asset_safe_float(raw: object) -> float | None:
@@ -315,7 +649,10 @@ def _asset_fmt(mean: float, std: float, digits: int = 3) -> str:
 
 
 def _asset_aggregate_suite(ref: SuiteRef) -> list[dict[str, object]]:
-    rows = _asset_read_csv(_asset_summary_dir(ref) / "metrics.csv")
+    metrics_path = _asset_summary_dir(ref) / "metrics.csv"
+    if not metrics_path.exists():
+        raise FileNotFoundError(metrics_path)
+    rows = read_trace_csv(metrics_path)
     grouped: dict[str, dict[str, list[float]]] = {}
     for row in rows:
         if row.get("status") != "completed":
@@ -419,7 +756,7 @@ def _asset_threshold_suffix(threshold: float) -> str:
 def _asset_threshold_rows_for_suite(ref: SuiteRef) -> list[dict[str, object]]:
     threshold_path = _asset_summary_dir(ref) / "trajectory_r2_thresholds.csv"
     if threshold_path.exists():
-        rows = _asset_read_csv(threshold_path)
+        rows = read_trace_csv(threshold_path)
         out: list[dict[str, object]] = []
         for row in rows:
             payload: dict[str, object] = {
@@ -442,7 +779,7 @@ def _asset_threshold_rows_for_suite(ref: SuiteRef) -> list[dict[str, object]]:
     if not trace_path.exists():
         return []
     by_policy: dict[str, list[dict[str, str]]] = {}
-    for row in _asset_read_csv(trace_path):
+    for row in read_trace_csv(trace_path):
         by_policy.setdefault(row["policy_id"], []).append(row)
 
     out = []
@@ -884,7 +1221,7 @@ def _asset_plot_r2_threshold_stacked_bars(
     return out_path
 
 
-def _asset_plot_exp1_schedule_threshold_pareto() -> Path | None:
+def _asset_plot_schedule_threshold_pareto() -> Path | None:
     try:
         import matplotlib
 
@@ -895,14 +1232,14 @@ def _asset_plot_exp1_schedule_threshold_pareto() -> Path | None:
         return None
 
     schedule_rows: list[dict[str, object]] = []
-    for ref in GROUPS["exp1_schedule"]:
+    for ref in GROUPS["exp03_schedule"]:
         schedule_rows.extend(
             row
             for row in _asset_threshold_rows_for_suite(ref)
             if str(row["policy_id"]).startswith("active_planning")
         )
     myopic_rows: list[dict[str, object]] = []
-    for ref in GROUPS["exp1_main"]:
+    for ref in GROUPS["exp01_base"]:
         myopic_rows.extend(
             row
             for row in _asset_threshold_rows_for_suite(ref)
@@ -913,7 +1250,7 @@ def _asset_plot_exp1_schedule_threshold_pareto() -> Path | None:
         return None
 
     _asset_apply_plot_style(plt)
-    env_labels = [ref.label for ref in GROUPS["exp1_schedule"]]
+    env_labels = [ref.label for ref in GROUPS["exp03_schedule"]]
     policy_ids = sorted({str(row["policy_id"]) for row in rows}, key=_asset_policy_sort_key)
     policy_offsets = {
         policy_id: ((idx % 4) - 1.5, (idx // 4) - 0.5) for idx, policy_id in enumerate(policy_ids)
@@ -977,7 +1314,7 @@ def _asset_plot_exp1_schedule_threshold_pareto() -> Path | None:
         ax.tick_params(width=0.45, length=2.0, colors=_asset_C_STROKE)
     axes[0].set_ylabel("Environment steps")
     axes[0].set_ylim(bottom=0.0, top=max_step_seen * 1.16)
-    fig.suptitle("Exp1 schedule Pareto: time and steps to trajectory R2 thresholds", y=0.99)
+    fig.suptitle("Exp03 schedule Pareto: time and steps to trajectory R2 thresholds", y=0.99)
     threshold_handles = [
         Line2D(
             [0],
@@ -1024,7 +1361,7 @@ def _asset_plot_exp1_schedule_threshold_pareto() -> Path | None:
         handlelength=1.0,
     )
     fig.subplots_adjust(left=0.07, right=0.995, top=0.73, bottom=0.18, wspace=0.22)
-    out_path = _asset_FIG_DIR / "exp1_schedule" / "r2_threshold_pareto_step_cpu_by_environment.pdf"
+    out_path = _asset_FIG_DIR / "exp03_schedule" / "r2_threshold_pareto_step_cpu_by_environment.pdf"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path)
     plt.close(fig)
@@ -1081,46 +1418,21 @@ def _asset_export_group(
     return rows, copied
 
 
-def _asset_main() -> int:
-    summary_lines = []
-    copied_by_group: dict[str, list[Path]] = {}
-    for group_name, refs in GROUPS.items():
-        rows, copied = _asset_export_group(group_name, refs)
-        copied_by_group[group_name] = copied
-        summary_lines.append(f"{group_name}: {len(rows)} table rows, {len(copied)} copied figures")
-    pareto_path = _asset_plot_exp1_schedule_threshold_pareto()
-    if pareto_path is not None:
-        copied_by_group.setdefault("exp1_schedule", []).append(pareto_path)
-        summary_lines.append(f"exp1_schedule_pareto: 1 copied figure")
-    manifest = _asset_TEX_DIR / "tbme_current_export_manifest.txt"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
-    print("\n".join(summary_lines))
-    print(manifest)
-    return 0
-
-
-# Current TBME summary figure regeneration
-_summary_TBME_DIR = Path(__file__).resolve().parent
-_summary_EXPERIMENTS_DIR = _summary_TBME_DIR.parent
-
-
-def _summary_read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-    with path.open("r", newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
 def _summary_curve_rows(path: Path, value_column: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for row in _summary_read_csv(path):
+    for row in read_trace_csv(path):
         if value_column not in row:
             continue
         payload: dict[str, Any] = dict(row)
         payload["value_mean"] = row[value_column]
         rows.append(payload)
     return rows
+
+
+def _summary_style_colorbar(cbar: Any) -> None:
+    cbar.outline.set_edgecolor(_TBME_STROKE_COLOR)
+    cbar.outline.set_linewidth(0.45)
+    cbar.ax.tick_params(width=0.45, length=2.0, colors=_TBME_STROKE_COLOR)
 
 
 def _summary_existing_records(suite_dir: Path, policy_ids: Sequence[str]) -> list[dict[str, Any]]:
@@ -1151,13 +1463,13 @@ def _summary_existing_records(suite_dir: Path, policy_ids: Sequence[str]) -> lis
     return records
 
 
-def _summary_regenerate_suite(suite_dir: Path, figure_formats: Sequence[str]) -> list[Path]:
+def _summary_write_figures(suite_dir: Path, figure_formats: Sequence[str]) -> list[Path]:
     exp_spec = get_experiment_spec(suite_dir.name)
     summary_dir = suite_dir / "summary"
     figures_dir = summary_dir / "figures"
     value_prefix = "parameter_error"
     value_label = "Parameter Error"
-    rows = _summary_read_csv(summary_dir / "metrics.csv")
+    rows = read_trace_csv(summary_dir / "metrics.csv")
     trace_rows = _summary_curve_rows(
         summary_dir / f"{value_prefix}_over_steps.csv",
         f"{value_prefix}_mean",
@@ -1169,24 +1481,123 @@ def _summary_regenerate_suite(suite_dir: Path, figure_formats: Sequence[str]) ->
         summary_dir / "parameter_covariance_trace_over_steps.csv",
         "parameter_covariance_trace_mean",
     )
-    _plot_curves(
+    plot_final_value_by_policy(
         figures_dir,
         rows=rows,
-        trace_rows=trace_rows,
-        cov_rows=cov_rows,
-        traj_rows=traj_rows,
-        value_label=value_label,
-        value_prefix=value_prefix,
+        ylabel=f"Final {value_label} (mean +/- SEM over seeds)",
+        title=f"{value_label} by Policy",
+        output_stem=f"final_{value_prefix}_by_policy",
         figure_formats=figure_formats,
+        policy_sort_key=_policy_sort_key,
+        policy_label=_policy_label,
+        policy_color=_policy_color,
+        apply_style=_apply_style,
+        style_axis=_style_manuscript_axis,
+        stroke_color=_TBME_STROKE_COLOR,
+    )
+    plot_metric_over_steps(
+        figures_dir,
+        rows=trace_rows,
+        ylabel=f"{value_label} (mean ± SEM)",
+        title=f"{value_label} Over Steps",
+        output_stem=f"{value_prefix}_over_steps",
+        figure_formats=figure_formats,
+        policy_sort_key=_policy_sort_key,
+        policy_label=_policy_label,
+        policy_color=_policy_color,
+        apply_style=_apply_style,
+        style_axis=_style_manuscript_axis,
+    )
+    plot_metric_over_cpu_time(
+        figures_dir,
+        rows=trace_rows,
+        ylabel=f"{value_label} (mean ± SEM)",
+        title=f"{value_label} Over CPU Time",
+        output_stem=f"{value_prefix}_over_cpu_time",
+        figure_formats=figure_formats,
+        policy_sort_key=_policy_sort_key,
+        policy_label=_policy_label,
+        policy_color=_policy_color,
+        apply_style=_apply_style,
+        style_axis=_style_manuscript_axis,
+    )
+    plot_metric_over_steps(
+        figures_dir,
+        rows=traj_rows,
+        ylabel="Trajectory R2 (mean ± SEM)",
+        title="Trajectory R2 Over Steps",
+        output_stem="trajectory_r2_over_steps",
+        figure_formats=figure_formats,
+        ylim=(0.0, 1.0),
+        policy_sort_key=_policy_sort_key,
+        policy_label=_policy_label,
+        policy_color=_policy_color,
+        apply_style=_apply_style,
+        style_axis=_style_manuscript_axis,
+    )
+    plot_metric_over_cpu_time(
+        figures_dir,
+        rows=traj_rows,
+        ylabel="Trajectory R2 (mean ± SEM)",
+        title="Trajectory R2 Over CPU Time",
+        output_stem="trajectory_r2_over_cpu_time",
+        figure_formats=figure_formats,
+        policy_sort_key=_policy_sort_key,
+        policy_label=_policy_label,
+        policy_color=_policy_color,
+        apply_style=_apply_style,
+        style_axis=_style_manuscript_axis,
+    )
+    plot_parameter_covariance_trace_over_steps(
+        figures_dir,
+        cov_rows=cov_rows,
+        figure_formats=figure_formats,
+        ylabel="Trace of Parameter Covariance (mean +/- SEM)",
+        title="Trace of Parameter Covariance Over Steps",
+        output_stem="parameter_covariance_trace_over_steps",
+        policy_sort_key=_policy_sort_key,
+        policy_label=_policy_label,
+        policy_color=_policy_color,
+        apply_style=_apply_style,
+        style_axis=_style_manuscript_axis,
     )
     records = _summary_existing_records(suite_dir, exp_spec.policy_ids)
-    for plotter in (_plot_neuron_tuning_curve_colormap, _plot_information_colormap):
-        plotter(figures_dir, records=records, figure_formats=figure_formats)
+    plot_neuron_tuning_curve_colormap(
+        figures_dir,
+        records=records,
+        figure_formats=figure_formats,
+        get_environment_preset_from_metadata=get_environment_preset_from_metadata,
+        reconstruct_loglinear_rate_model=reconstruct_loglinear_rate_model,
+        expected_loglinear_rate_hz=expected_loglinear_rate_hz,
+        apply_style=_apply_style,
+        style_axis=_style_manuscript_axis,
+        style_colorbar=_summary_style_colorbar,
+        output_stem="neuron_tuning_curve_colormap",
+        axis_labels=("x", "v"),
+        colorbar_label="Total firing rate (Hz)",
+        title_template="Total firing rate (mean over {n_seeds} seeds)",
+    )
+    plot_information_colormap(
+        figures_dir,
+        records=records,
+        figure_formats=figure_formats,
+        get_environment_preset_from_metadata=get_environment_preset_from_metadata,
+        reconstruct_loglinear_rate_model=reconstruct_loglinear_rate_model,
+        expected_loglinear_rate_hz=expected_loglinear_rate_hz,
+        apply_style=_apply_style,
+        style_axis=_style_manuscript_axis,
+        style_colorbar=_summary_style_colorbar,
+        output_stem="I_z_t_colormap",
+        axis_labels=("x", "v"),
+        colorbar_label="log det(I_z)",
+        title_template="log det(I_z) (mean over {n_seeds} seeds)",
+    )
     stems = [
         f"final_{value_prefix}_by_policy",
         f"{value_prefix}_over_steps",
         f"{value_prefix}_over_cpu_time",
         "trajectory_r2_over_steps",
+        "trajectory_r2_over_cpu_time",
         "parameter_covariance_trace_over_steps",
         "neuron_tuning_curve_colormap",
         "I_z_t_colormap",
@@ -1200,7 +1611,9 @@ def _summary_regenerate_suite(suite_dir: Path, figure_formats: Sequence[str]) ->
 
 
 def _summary_build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Regenerate current TBME summary figures.")
+    parser = argparse.ArgumentParser(
+        description="Write current TBME summary figures from existing summary CSV files."
+    )
     parser.add_argument(
         "--groups",
         type=str,
@@ -1209,39 +1622,6 @@ def _summary_build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--figure-formats", type=str, default=".pdf")
     return parser
-
-
-def _summary_main(argv: list[str] | None = None) -> int:
-    configure_tbme_catalogs()
-    args = _summary_build_parser().parse_args(argv)
-    groups = [item.strip() for item in str(args.groups).split(",") if item.strip()]
-    unknown = sorted(set(groups) - set(GROUPS))
-    if unknown:
-        raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
-    figure_formats = _parse_figure_formats(str(args.figure_formats))
-
-    written: list[Path] = []
-    for group_name in groups:
-        for ref in GROUPS[group_name]:
-            suite_dir = ref.session_root / ref.suite_id
-            if suite_dir.exists():
-                written.extend(_summary_regenerate_suite(suite_dir, figure_formats))
-    for path in written:
-        print(path)
-    print(f"regenerated {len(written)} summary figure files")
-    return 0
-
-
-# Trajectory figure family
-_trajectory_C_WRITE = "#1F4FA8"
-_trajectory_C_READ = "#B5361C"
-_trajectory_C_STROKE = "#3A3A3A"
-_trajectory_C_NEUTRAL = "#6F6A62"
-_trajectory_C_NEUTRAL_LIGHT = "#C8C1B8"
-_trajectory_C_NEUTRAL_FILL = "#F4F1EC"
-_trajectory_C_WHITE = "#FFFFFF"
-_trajectory_TBME_DIR = Path(__file__).resolve().parent
-_trajectory_EXPERIMENTS_DIR = _trajectory_TBME_DIR.parent
 
 
 def _trajectory_policy_sort_key(policy_id: str) -> tuple[int, str]:
@@ -1275,15 +1655,14 @@ def _trajectory_policy_label(policy_id: str) -> str:
 
 def _trajectory_read_trace_xy(path: Path) -> np.ndarray:
     pts: list[tuple[float, float]] = []
-    with path.open("r", newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            try:
-                x_val = float(row["true_x"])
-                v_val = float(row["true_v"])
-            except (KeyError, TypeError, ValueError):
-                continue
-            if math.isfinite(x_val) and math.isfinite(v_val):
-                pts.append((x_val, v_val))
+    for row in read_trace_csv(path):
+        try:
+            x_val = float(row["true_x"])
+            v_val = float(row["true_v"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if math.isfinite(x_val) and math.isfinite(v_val):
+            pts.append((x_val, v_val))
     return np.asarray(pts, dtype=np.float32)
 
 
@@ -1337,10 +1716,9 @@ def _trajectory_build_true_dynamics(metadata: dict[str, Any]) -> tuple[Any, floa
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=np.float32)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 0.7))
     grid_lim = float(env_preset.resolved_plot_limit())
-    dyn_true = VectorFieldResidualDynamics(
+    dyn_true = ResidualDynamicsCallable(
         dynamics_type=env_preset.resolved_dynamics_type(),
         dyn_params=env_preset.params_from_embedding(theta_true),
-        residual_fn=residual_torch,
         dynamics_alpha=dynamics_alpha,
         device="cpu",
     )
@@ -1591,7 +1969,7 @@ def _trajectory_build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--groups",
         type=str,
-        default="exp1_main,exp1_schedule,exp1_hard,exp2",
+        default=",".join(GROUPS),
         help="Comma-separated TBME group names.",
     )
     parser.add_argument("--max-seeds", type=int, default=50)
@@ -1599,244 +1977,23 @@ def _trajectory_build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _trajectory_main(argv: list[str] | None = None) -> int:
-    _apply_style()
-    configure_tbme_catalogs()
-    args = _trajectory_build_parser().parse_args(argv)
-    groups = [item.strip() for item in str(args.groups).split(",") if item.strip()]
-    unknown = sorted(set(groups) - set(GROUPS))
+def _requested_parse_plots(raw: str) -> list[str]:
+    plot_ids = [item.strip() for item in str(raw).split(",") if item.strip()]
+    unknown = sorted(set(plot_ids) - set(_requested_PLOTS))
     if unknown:
-        raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
-
-    written: list[Path] = []
-    for suite_dir in _trajectory_suite_dirs(groups):
-        metadata = _trajectory_reference_metadata(suite_dir)
-        if metadata is None:
-            continue
-        dynamics_payload = _trajectory_build_true_dynamics(metadata)
-        if dynamics_payload is None:
-            continue
-        dyn_true, grid_lim, system_label = dynamics_payload
-        grouped = _trajectory_collect_policy_traces(suite_dir, max_seeds=int(args.max_seeds))
-        if not grouped:
-            continue
-        written.append(
-            _trajectory_plot_overlay_figure(
-                suite_dir,
-                grouped=grouped,
-                dyn_true=dyn_true,
-                grid_lim=grid_lim,
-                system_label=system_label,
-                max_seeds=int(args.max_seeds),
-            )
-        )
-        written.append(
-            _trajectory_plot_density_figure(
-                suite_dir,
-                grouped=grouped,
-                dyn_true=dyn_true,
-                grid_lim=grid_lim,
-                system_label=system_label,
-                max_seeds=int(args.max_seeds),
-                bins=int(args.density_bins),
-            )
-        )
-    for path in written:
-        print(path)
-    print(f"wrote {len(written)} trajectory summary figures")
-    return 0
+        raise ValueError(f"Unknown requested plot(s): {', '.join(unknown)}")
+    return plot_ids
 
 
-# Requested figure family
-_requested_REPO_ROOT = Path(__file__).resolve().parents[2]
-_requested_TBME_DIR = Path(__file__).resolve().parent
-_requested_EXPERIMENTS_DIR = _requested_TBME_DIR.parent
-_requested_FIGURE_DIR = _requested_REPO_ROOT / "docs" / "figs"
-_requested_GENERATED_DIR = _requested_REPO_ROOT / "docs" / "tables"
-
-_requested_C_WRITE = "#1F4FA8"
-_requested_C_READ = "#B5361C"
-_requested_C_ENSEMBLE = "#C27A2C"
-_requested_C_PRBS = "#7C6A45"
-_requested_C_RANDOM = "#6F6A62"
-_requested_C_STROKE = "#3A3A3A"
-_requested_C_NEUTRAL = "#6F6A62"
-_requested_C_NEUTRAL_LIGHT = "#C8C1B8"
-_requested_C_NEUTRAL_FILL = "#F4F1EC"
-_requested_C_GRID = "#DDD7CE"
-_requested_POLICY_COLORS = {
-    "active_planning_u20_r20_h40": _requested_C_WRITE,
-    "active_fully_observable_u20_r20_h40": "#5B8D5A",
-    "active_e_optimality_u20_r20_h40": "#7E5AA6",
-    "active_state_information_u20_r20_h40": _requested_C_ENSEMBLE,
-    "active_dynamics_u20_r20_h40": "#2F7C7A",
-    "active_sampling_variance_u20_r20_h40": "#9C5C38",
-    "active_myopic": _requested_C_READ,
-    "ensemble": _requested_C_ENSEMBLE,
-    "prbs": _requested_C_PRBS,
-    "random": _requested_C_RANDOM,
-}
-
-_requested_BOTTLENECK_POLICIES = [
-    "active_planning_u20_r20_h40",
-    "active_myopic",
-    "ensemble",
-    "prbs",
-    "random",
-]
-_requested_OBJECTIVE_POLICIES = [
-    "active_planning_u20_r20_h40",
-    "active_fully_observable_u20_r20_h40",
-    "active_state_information_u20_r20_h40",
-    "active_dynamics_u20_r20_h40",
-    "active_sampling_variance_u20_r20_h40",
-    "active_e_optimality_u20_r20_h40",
-    "ensemble",
-    "prbs",
-]
-_requested_OBJECTIVE_DEFINITIONS = [
-    {
-        "policy_id": "active_planning_u20_r20_h40",
-        "objective_name": "Parameter EIG",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\frac{1}{2}\log\det(I+P_\theta "
-            r"\sum_{i=0}^{H-1}\gamma^i \Delta\Lambda_i)$, "
-            r"$\Delta\Lambda_i=S_i^\top(I+P_i^- I_{z,i})^{-1}I_{z,i}S_i$"
-        ),
-        "objective_notes": "Main objective; partial-observation attenuation uses the predicted latent covariance.",
-    },
-    {
-        "policy_id": "active_fully_observable_u20_r20_h40",
-        "objective_name": "Full-observable EIG",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\frac{1}{2}\log\det(I+P_\theta "
-            r"\sum_{i=0}^{H-1}\gamma^i S_i^\top I_{z,i}S_i)$"
-        ),
-        "objective_notes": "Ablation that removes partial-observation attenuation.",
-    },
-    {
-        "policy_id": "active_state_information_u20_r20_h40",
-        "objective_name": "State information",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
-            r"\log\det\operatorname{chol}(I+P_i^- I_{z,i})$"
-        ),
-        "objective_notes": "Scores latent-state observability, not parameter sensitivity.",
-    },
-    {
-        "policy_id": "active_dynamics_u20_r20_h40",
-        "objective_name": "Dynamics sensitivity",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i " r"\operatorname{tr}(S_i^\top P_i^- S_i)$"
-        ),
-        "objective_notes": "Scores predicted state sensitivity to parameters without the decoder Fisher term.",
-    },
-    {
-        "policy_id": "active_sampling_variance_u20_r20_h40",
-        "objective_name": "Sampling variance",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
-            r"\sum_j\log(1+\operatorname{Var}_{\theta\sim q(\theta)}"
-            r"[\lambda_j(z_i(\theta))])$"
-        ),
-        "objective_notes": "Monte Carlo objective using posterior samples of the dynamics parameters.",
-    },
-    {
-        "policy_id": "active_e_optimality_u20_r20_h40",
-        "objective_name": "E-optimality",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\lambda_{\min}(P_\theta " r"\sum_{i=0}^{H-1}\gamma^i \Delta\Lambda_i)$"
-        ),
-        "objective_notes": "Maximizes the least-informed parameter direction.",
-    },
-    {
-        "policy_id": "ensemble",
-        "objective_name": "Ensemble state variance",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
-            r"\sum_d \operatorname{Var}_{\theta\sim q(\theta)}[z_{i,d}(\theta)]$"
-        ),
-        "objective_notes": "Practical adaptive baseline; it is not a Fisher-information objective.",
-    },
-    {
-        "policy_id": "prbs",
-        "objective_name": "PRBS",
-        "objective_formula": r"Preset pseudo-random binary excitation sequence.",
-        "objective_notes": "Passive baseline with no model-based acquisition optimization.",
-    },
-]
-_requested_DOSE_POLICIES = [
-    "active_planning_u20_r20_h40",
-    "active_myopic",
-    "ensemble",
-    "prbs",
-    "random",
-]
-
-
-@dataclass(frozen=True)
-class _requested_SuiteSource:
-    exp_id: str
-    label: str
-    suite_dir: Path
-    dose: str | None = None
-    family: str | None = None
-
-
-@dataclass(frozen=True)
-class _requested_RunRecord:
-    policy_id: str
-    seed: int
-    run_dir: Path
-    metadata: dict[str, Any]
-
-
-def _requested_latest_session(base: Path) -> Path:
-    sessions = [
-        path
-        for path in base.glob("session_*")
-        if path.is_dir() and path.name.removeprefix("session_").isdigit()
-    ]
-    if not sessions:
-        return base / "session_1"
-    return max(sessions, key=lambda path: int(path.name.removeprefix("session_")))
-
-
-_requested_REQUIRED_ADDITIONAL_SUMMARIES = (
-    "exp1_asymmetric_basin_objective_ablation",
-    "exp1_hard_asymmetric_basin_objective_ablation",
-    "exp1_asymmetric_basin_bottleneck_weak_observation",
-    "exp1_asymmetric_basin_bottleneck_tight_action",
-    "exp1_asymmetric_basin_bottleneck_combined",
-    "exp2_duffing_parameter_mismatch_mild",
-    "exp2_duffing_parameter_mismatch_strong",
-    "exp2_asymmetric_basin_parameter_mismatch_mild",
-    "exp2_asymmetric_basin_parameter_mismatch_strong",
-)
-
-
-def _requested_latest_summarized_additional_session(base: Path) -> Path:
-    sessions = [
-        path
-        for path in base.glob("session_*")
-        if path.is_dir() and path.name.removeprefix("session_").isdigit()
-    ]
-    for session in sorted(
-        sessions, key=lambda path: int(path.name.removeprefix("session_")), reverse=True
-    ):
-        if all(
-            (session / exp_id / "summary" / "metrics.csv").exists()
-            for exp_id in _requested_REQUIRED_ADDITIONAL_SUMMARIES
-        ):
-            return session
-    return _requested_latest_session(base)
-
-
-def _requested_read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-    with path.open("r", newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
+def _requested_required_suite_dirs(plot_ids: Sequence[str]) -> list[Path]:
+    suite_keys: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for plot_id in plot_ids:
+        for key in _requested_REQUIRED_SUITES_BY_PLOT[plot_id]:
+            if key not in seen:
+                suite_keys.append(key)
+                seen.add(key)
+    return [_suite_dir(group_name, suite_id) for group_name, suite_id in suite_keys]
 
 
 def _requested_write_csv(path: Path, rows: list[dict[str, Any]], fields: Sequence[str]) -> None:
@@ -1898,15 +2055,12 @@ def _requested_escape_tex(text: object) -> str:
     return str(text).replace("&", r"\&").replace("%", r"\%").replace("_", r"\_")
 
 
-def _requested_main_suite_dir(group_name: str, exp_id: str) -> Path:
-    for ref in GROUPS[group_name]:
-        if ref.suite_id == exp_id:
-            return ref.session_root / ref.suite_id
-    raise KeyError(f"Unknown main suite {group_name}/{exp_id}")
+def _requested_suite_dir(group_name: str, exp_id: str) -> Path:
+    return _suite_dir(group_name, exp_id)
 
 
 def _requested_metrics_by_policy(suite_dir: Path) -> dict[str, list[dict[str, str]]]:
-    rows = _requested_read_csv(suite_dir / "summary" / "metrics.csv")
+    rows = read_trace_csv(suite_dir / "summary" / "metrics.csv")
     grouped: dict[str, list[dict[str, str]]] = {}
     for row in rows:
         if row.get("status") not in {None, "", "completed"}:
@@ -1937,7 +2091,7 @@ def _requested_curve_rows(
     suite_dir: Path, name: str, value_col: str
 ) -> dict[str, list[dict[str, float]]]:
     grouped: dict[str, list[dict[str, float]]] = {}
-    for row in _requested_read_csv(suite_dir / "summary" / name):
+    for row in read_trace_csv(suite_dir / "summary" / name):
         policy_id = str(row.get("policy_id", ""))
         step = _requested_safe_float(row.get("step"))
         value = _requested_safe_float(row.get(value_col))
@@ -1956,7 +2110,7 @@ def _requested_r2_threshold_step(
     suite_dir: Path, policy_id: str, threshold: float = 0.90
 ) -> float | None:
     suffix = f"{float(threshold):.2f}".replace(".", "p")
-    for row in _requested_read_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv"):
+    for row in read_trace_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv"):
         if str(row.get("policy_id", "")) != policy_id:
             continue
         return _requested_safe_float(row.get(f"step_to_r2_{suffix}"))
@@ -1969,7 +2123,7 @@ def _requested_r2_threshold_times(
     threshold: float,
 ) -> tuple[float | None, float | None, float | None]:
     suffix = f"{float(threshold):.2f}".replace(".", "p")
-    for row in _requested_read_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv"):
+    for row in read_trace_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv"):
         if str(row.get("policy_id", "")) != policy_id:
             continue
         return (
@@ -1986,27 +2140,36 @@ def _requested_save_pdf(fig: Any, path: Path) -> Path:
     return path
 
 
-def _requested_plot_bottleneck_sweep(additional_session: Path, plt: Any) -> tuple[Path, Path]:
+def _requested_plot_bottleneck_sweep(plt: Any) -> tuple[Path, Path]:
     sources = [
         _requested_SuiteSource(
-            "exp1_asymmetric_basin",
+            "exp01_asymmetric_basin",
             "Nominal",
-            _requested_main_suite_dir("exp1_main", "exp1_asymmetric_basin"),
+            _requested_suite_dir("exp01_base", "exp01_asymmetric_basin"),
         ),
         _requested_SuiteSource(
-            "exp1_asymmetric_basin_bottleneck_weak_observation",
+            "exp06_asymmetric_basin_bottleneck_weak_observation",
             "Weak obs.",
-            additional_session / "exp1_asymmetric_basin_bottleneck_weak_observation",
+            _requested_suite_dir(
+                "exp06_bottleneck",
+                "exp06_asymmetric_basin_bottleneck_weak_observation",
+            ),
         ),
         _requested_SuiteSource(
-            "exp1_asymmetric_basin_bottleneck_tight_action",
+            "exp06_asymmetric_basin_bottleneck_tight_action",
             "Tight action",
-            additional_session / "exp1_asymmetric_basin_bottleneck_tight_action",
+            _requested_suite_dir(
+                "exp06_bottleneck",
+                "exp06_asymmetric_basin_bottleneck_tight_action",
+            ),
         ),
         _requested_SuiteSource(
-            "exp1_asymmetric_basin_bottleneck_combined",
+            "exp06_asymmetric_basin_bottleneck_combined",
             "Combined",
-            additional_session / "exp1_asymmetric_basin_bottleneck_combined",
+            _requested_suite_dir(
+                "exp06_bottleneck",
+                "exp06_asymmetric_basin_bottleneck_combined",
+            ),
         ),
     ]
     rows: list[dict[str, Any]] = []
@@ -2089,7 +2252,7 @@ def _requested_plot_bottleneck_sweep(additional_session: Path, plt: Any) -> tupl
                 linewidths=0.75,
             )
     for ax in axes:
-        _requested_style_axis(ax)
+        _style_requested_axis(ax)
         ax.set_xticks(x)
         ax.set_xticklabels([source.label for source in sources], rotation=18, ha="right")
     axes[0].set_ylabel("Final prediction R2")
@@ -2122,17 +2285,23 @@ def _requested_plot_bottleneck_sweep(additional_session: Path, plt: Any) -> tupl
     )
 
 
-def _requested_objective_sources(additional_session: Path) -> list[_requested_SuiteSource]:
+def _requested_objective_sources() -> list[_requested_SuiteSource]:
     return [
         _requested_SuiteSource(
-            "exp1_asymmetric_basin_objective_ablation",
+            "exp05_asymmetric_basin_objective_ablation",
             "Nominal asymmetric basin",
-            additional_session / "exp1_asymmetric_basin_objective_ablation",
+            _requested_suite_dir(
+                "exp05_ablation",
+                "exp05_asymmetric_basin_objective_ablation",
+            ),
         ),
         _requested_SuiteSource(
-            "exp1_hard_asymmetric_basin_objective_ablation",
+            "exp05_hard_asymmetric_basin_objective_ablation",
             "Hard asymmetric basin",
-            additional_session / "exp1_hard_asymmetric_basin_objective_ablation",
+            _requested_suite_dir(
+                "exp05_ablation",
+                "exp05_hard_asymmetric_basin_objective_ablation",
+            ),
         ),
     ]
 
@@ -2194,8 +2363,8 @@ def _requested_write_objective_definition_tables() -> tuple[Path, Path]:
     return csv_path, tex_path
 
 
-def _requested_plot_objective_ablation(additional_session: Path, plt: Any) -> tuple[Path, Path]:
-    sources = _requested_objective_sources(additional_session)
+def _requested_plot_objective_ablation(plt: Any) -> tuple[Path, Path]:
+    sources = _requested_objective_sources()
     threshold = 0.95
     metric_rows: list[dict[str, Any]] = []
     curves_by_source: dict[str, dict[str, list[dict[str, float]]]] = {}
@@ -2266,7 +2435,7 @@ def _requested_plot_objective_ablation(additional_session: Path, plt: Any) -> tu
         ax_bar.set_ylabel("Steps to prediction R2 >= 0.95")
         ax_bar.set_ylim(0.0, max_step * 1.18)
         ax_bar.set_title(f"{letters[2 * source_idx]}. {source.label}: threshold")
-        _requested_style_axis(ax_bar)
+        _style_requested_axis(ax_bar)
 
         curves = curves_by_source[source.exp_id]
         for policy_id in _requested_OBJECTIVE_POLICIES:
@@ -2298,7 +2467,7 @@ def _requested_plot_objective_ablation(additional_session: Path, plt: Any) -> tu
         ax_curve.set_ylabel("Prediction R2")
         ax_curve.set_ylim(-0.1, 1.05)
         ax_curve.set_title(f"{letters[2 * source_idx + 1]}. {source.label}: recovery")
-        _requested_style_axis(ax_curve)
+        _style_requested_axis(ax_curve)
     handles, labels = axes[0, 1].get_legend_handles_labels()
     fig.legend(
         handles,
@@ -2340,69 +2509,81 @@ def _requested_plot_objective_ablation(additional_session: Path, plt: Any) -> tu
     )
 
 
-def _requested_dose_sources(additional_session: Path) -> list[_requested_SuiteSource]:
+def _requested_dose_sources() -> list[_requested_SuiteSource]:
     return [
         _requested_SuiteSource(
-            "exp1_duffing",
+            "exp01_duffing",
             "None",
-            _requested_main_suite_dir("exp1_main", "exp1_duffing"),
+            _requested_suite_dir("exp01_base", "exp01_duffing"),
             dose="none",
             family="Duffing",
         ),
         _requested_SuiteSource(
-            "exp2_duffing_parameter_mismatch_mild",
+            "exp07_duffing_parameter_mismatch_mild",
             "Mild",
-            additional_session / "exp2_duffing_parameter_mismatch_mild",
+            _requested_suite_dir(
+                "exp07_mismatch_stress",
+                "exp07_duffing_parameter_mismatch_mild",
+            ),
             dose="mild",
             family="Duffing",
         ),
         _requested_SuiteSource(
-            "exp2_duffing_parameter_mismatch",
+            "exp04_duffing_parameter_mismatch",
             "Medium",
-            _requested_main_suite_dir("exp2", "exp2_duffing_parameter_mismatch"),
+            _requested_suite_dir("exp04_mismatch", "exp04_duffing_parameter_mismatch"),
             dose="medium",
             family="Duffing",
         ),
         _requested_SuiteSource(
-            "exp2_duffing_parameter_mismatch_strong",
+            "exp07_duffing_parameter_mismatch_strong",
             "Strong",
-            additional_session / "exp2_duffing_parameter_mismatch_strong",
+            _requested_suite_dir(
+                "exp07_mismatch_stress",
+                "exp07_duffing_parameter_mismatch_strong",
+            ),
             dose="strong",
             family="Duffing",
         ),
         _requested_SuiteSource(
-            "exp1_asymmetric_basin",
+            "exp01_asymmetric_basin",
             "None",
-            _requested_main_suite_dir("exp1_main", "exp1_asymmetric_basin"),
+            _requested_suite_dir("exp01_base", "exp01_asymmetric_basin"),
             dose="none",
             family="Asymmetric basin",
         ),
         _requested_SuiteSource(
-            "exp2_asymmetric_basin_parameter_mismatch_mild",
+            "exp07_asymmetric_basin_parameter_mismatch_mild",
             "Mild",
-            additional_session / "exp2_asymmetric_basin_parameter_mismatch_mild",
+            _requested_suite_dir(
+                "exp07_mismatch_stress",
+                "exp07_asymmetric_basin_parameter_mismatch_mild",
+            ),
             dose="mild",
             family="Asymmetric basin",
         ),
         _requested_SuiteSource(
-            "exp2_asymmetric_basin_parameter_mismatch",
+            "exp04_asymmetric_basin_parameter_mismatch",
             "Medium",
-            _requested_main_suite_dir("exp2", "exp2_asymmetric_basin_parameter_mismatch"),
+            _requested_suite_dir("exp04_mismatch", "exp04_asymmetric_basin_parameter_mismatch"),
             dose="medium",
             family="Asymmetric basin",
         ),
         _requested_SuiteSource(
-            "exp2_asymmetric_basin_parameter_mismatch_strong",
+            "exp07_asymmetric_basin_parameter_mismatch_strong",
             "Strong",
-            additional_session / "exp2_asymmetric_basin_parameter_mismatch_strong",
+            _requested_suite_dir(
+                "exp07_mismatch_stress",
+                "exp07_asymmetric_basin_parameter_mismatch_strong",
+            ),
             dose="strong",
             family="Asymmetric basin",
         ),
     ]
 
 
-def _requested_plot_mismatch_dose_response(additional_session: Path, plt: Any) -> tuple[Path, Path]:
-    sources = _requested_dose_sources(additional_session)
+def _requested_plot_mismatch_dose_response(plt: Any) -> tuple[Path, Path]:
+    sources = _requested_dose_sources()
     rows: list[dict[str, Any]] = []
     for source in sources:
         for policy_id in _requested_DOSE_POLICIES:
@@ -2475,7 +2656,7 @@ def _requested_plot_mismatch_dose_response(additional_session: Path, plt: Any) -
             1.05,
         )
         ax.set_title(f"{family} mismatch dose-response")
-        _requested_style_axis(ax)
+        _style_requested_axis(ax)
     axes[1].legend(loc="upper left", fontsize=6.4)
     fig.tight_layout(w_pad=1.0)
 
@@ -2655,8 +2836,11 @@ def _requested_control_tasks() -> tuple[np.ndarray, np.ndarray]:
     return starts, targets
 
 
-def _requested_compute_downstream_rows(additional_session: Path) -> list[dict[str, Any]]:
-    suite_dir = additional_session / "exp1_asymmetric_basin_objective_ablation"
+def _requested_compute_downstream_rows() -> list[dict[str, Any]]:
+    suite_dir = _requested_suite_dir(
+        "exp05_ablation",
+        "exp05_asymmetric_basin_objective_ablation",
+    )
     records = _requested_collect_records(suite_dir, _requested_OBJECTIVE_POLICIES)
     starts, targets = _requested_control_tasks()
     rows: list[dict[str, Any]] = []
@@ -2720,8 +2904,8 @@ def _requested_compute_downstream_rows(additional_session: Path) -> list[dict[st
     return rows
 
 
-def _requested_plot_downstream_control(additional_session: Path, plt: Any) -> tuple[Path, Path]:
-    rows = _requested_compute_downstream_rows(additional_session)
+def _requested_plot_downstream_control(plt: Any) -> tuple[Path, Path]:
+    rows = _requested_compute_downstream_rows()
     policy_ids = [*_requested_OBJECTIVE_POLICIES, "oracle_true_model"]
     grouped: dict[str, list[dict[str, Any]]] = {
         policy_id: [row for row in rows if row["policy_id"] == policy_id]
@@ -2783,7 +2967,7 @@ def _requested_plot_downstream_control(additional_session: Path, plt: Any) -> tu
     )
     axes[0].set_ylabel("Control cost / oracle")
     axes[0].set_title("A. Downstream control utility")
-    _requested_style_axis(axes[0])
+    _style_requested_axis(axes[0])
 
     for row in rows:
         if row["policy_id"] == "oracle_true_model":
@@ -2809,7 +2993,7 @@ def _requested_plot_downstream_control(additional_session: Path, plt: Any) -> tu
     axes[1].set_ylabel("Control cost / oracle")
     axes[1].set_title("B. Prediction quality vs control cost")
     axes[1].legend(dedup.values(), dedup.keys(), fontsize=6.0, loc="upper left")
-    _requested_style_axis(axes[1])
+    _style_requested_axis(axes[1])
     fig.tight_layout(w_pad=1.0)
 
     csv_path = _requested_GENERATED_DIR / "tbme_requested_downstream_control_utility.csv"
@@ -2853,98 +3037,12 @@ def _requested_build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     parser.add_argument(
-        "--additional-session",
-        type=Path,
-        default=_requested_latest_summarized_additional_session(
-            _requested_REPO_ROOT / "results" / "tbme" / "additional_seed0"
-        ),
-        help="Session directory containing completed additional follow-up suites.",
+        "--plots",
+        type=str,
+        default=",".join(_requested_PLOTS),
+        help="Comma-separated requested TBME plot ids.",
     )
     return parser
-
-
-def _requested_main(argv: list[str] | None = None) -> int:
-    args = _requested_build_parser().parse_args(argv)
-    configure_tbme_catalogs()
-    additional_session = Path(args.additional_session)
-    if not additional_session.exists():
-        raise FileNotFoundError(f"Missing additional experiment session: {additional_session}")
-
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    _apply_style(plt)
-    figure_paths: list[Path] = []
-    csv_paths: list[Path] = []
-    objective_definition_csv, objective_definition_tex = (
-        _requested_write_objective_definition_tables()
-    )
-    csv_paths.extend([objective_definition_csv, objective_definition_tex])
-    for figure_path, csv_path in [
-        _requested_plot_bottleneck_sweep(additional_session, plt),
-        _requested_plot_objective_ablation(additional_session, plt),
-        _requested_plot_mismatch_dose_response(additional_session, plt),
-        _requested_plot_downstream_control(additional_session, plt),
-    ]:
-        figure_paths.append(figure_path)
-        csv_paths.append(csv_path)
-        plt.close("all")
-    manifest_path = _requested_write_manifest([*figure_paths, *csv_paths])
-    for path in [*figure_paths, *csv_paths, manifest_path]:
-        print(path)
-    return 0
-
-
-# Additional figure family
-_additional_REPO_ROOT = Path(__file__).resolve().parents[2]
-_additional_TBME_DIR = Path(__file__).resolve().parent
-_additional_EXPERIMENTS_DIR = _additional_TBME_DIR.parent
-_additional_FIGURE_DIR = _additional_REPO_ROOT / "docs" / "figs"
-_additional_GENERATED_DIR = _additional_REPO_ROOT / "docs" / "tables"
-
-_additional_C_WRITE = "#1F4FA8"
-_additional_C_READ = "#B5361C"
-_additional_C_ENSEMBLE = "#C27A2C"
-_additional_C_PRBS = "#7C6A45"
-_additional_C_RANDOM = "#6F6A62"
-_additional_C_RHC = "#2F7C7A"
-_additional_C_STROKE = "#3A3A3A"
-_additional_C_NEUTRAL = "#6F6A62"
-_additional_C_NEUTRAL_LIGHT = "#C8C1B8"
-_additional_C_NEUTRAL_FILL = "#F4F1EC"
-_additional_C_GRID = "#DDD7CE"
-_additional_POLICY_COLORS = {
-    "active_planning_u20_r20_h40": _additional_C_WRITE,
-    "active_planning_u5_r5_h40": "#2F6F9F",
-    "active_planning_u10_r10_h40": "#7A6AAE",
-    "active_planning_u5_r10_h40": "#4B8F8C",
-    "active_planning_u5_r20_h40": "#6F8EC8",
-    "active_planning_u10_r20_h40": "#3C6D99",
-    "active_myopic": _additional_C_READ,
-    "prbs": _additional_C_PRBS,
-    "random": _additional_C_RANDOM,
-    "ensemble": _additional_C_ENSEMBLE,
-    "rhc": _additional_C_RHC,
-    "flex": "#7E5AA6",
-    "flex_true_state": "#4F8A62",
-}
-
-
-@dataclass(frozen=True)
-class _additional_RunRecord:
-    policy_id: str
-    seed: int
-    run_dir: Path
-    metadata: dict[str, Any]
-
-
-def _additional_read_csv(path: Path) -> list[dict[str, str]]:
-    if not path.exists():
-        return []
-    with path.open("r", newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
 
 
 def _additional_safe_float(raw: object) -> float | None:
@@ -3008,10 +3106,7 @@ def _additional_policy_color(policy_id: str) -> str:
 
 
 def _additional_suite_dir(group_name: str, suite_id: str) -> Path:
-    for ref in GROUPS[group_name]:
-        if ref.suite_id == suite_id:
-            return ref.session_root / ref.suite_id
-    raise KeyError(f"Unknown suite {group_name}/{suite_id}")
+    return _suite_dir(group_name, suite_id)
 
 
 def _additional_state_bounds_from_metadata(metadata: dict[str, Any]) -> tuple[float, float]:
@@ -3063,7 +3158,7 @@ def _additional_trace_path(
 def _additional_load_xy_trace(record: _additional_RunRecord) -> np.ndarray:
     path = _additional_trace_path(record, "state_action_trace_path", "state_action_trace.csv")
     points: list[tuple[float, float]] = []
-    for row in _additional_read_csv(path):
+    for row in read_trace_csv(path):
         x_val = _additional_safe_float(row.get("true_x"))
         v_val = _additional_safe_float(row.get("true_v"))
         if x_val is None or v_val is None:
@@ -3175,15 +3270,14 @@ def _additional_make_mean_information_grid(
     return x_axis, y_axis, np.nanmean(np.stack(maps, axis=0), axis=0)
 
 
-def _additional_true_vectorfield_dynamics(metadata: dict[str, Any]) -> VectorFieldResidualDynamics:
+def _additional_true_vectorfield_dynamics(metadata: dict[str, Any]) -> ResidualDynamicsCallable:
     env_preset = get_environment_preset_from_metadata(metadata)
     theta_true = np.asarray(metadata.get("embedding_true", []), dtype=np.float32)
     if theta_true.size == 0:
         theta_true = np.asarray(env_preset.true_embedding_vector(), dtype=np.float32)
-    return VectorFieldResidualDynamics(
+    return ResidualDynamicsCallable(
         dynamics_type=env_preset.resolved_dynamics_type(),
         dyn_params=env_preset.params_from_embedding(theta_true),
-        residual_fn=residual_torch,
         dynamics_alpha=float(metadata.get("dynamics_alpha", 1.0)),
         device="cpu",
     )
@@ -3192,12 +3286,11 @@ def _additional_true_vectorfield_dynamics(metadata: dict[str, Any]) -> VectorFie
 def _additional_learned_vectorfield_dynamics(
     metadata: dict[str, Any],
     theta: np.ndarray,
-) -> VectorFieldResidualDynamics:
+) -> ResidualDynamicsCallable:
     env_preset = get_environment_preset_from_metadata(metadata)
-    return VectorFieldResidualDynamics(
+    return ResidualDynamicsCallable(
         dynamics_type=env_preset.resolved_dynamics_type(estimator=True),
         dyn_params=env_preset.params_from_embedding(theta, estimator=True),
-        residual_fn=residual_torch,
         dynamics_alpha=float(metadata.get("dynamics_alpha", 1.0)),
         device="cpu",
     )
@@ -3205,7 +3298,7 @@ def _additional_learned_vectorfield_dynamics(
 
 def _additional_plot_neutral_vector_field(
     ax: Any,
-    dynamics: VectorFieldResidualDynamics,
+    dynamics: ResidualDynamicsCallable,
     *,
     grid_lim: float,
     n_grid: int,
@@ -3261,10 +3354,9 @@ def _additional_plot_true_dynamics_all() -> Path:
     for preset_id, title in panel_specs:
         env_preset = get_environment_preset(preset_id)
         theta_true = env_preset.true_embedding_vector()
-        dynamics = VectorFieldResidualDynamics(
+        dynamics = ResidualDynamicsCallable(
             dynamics_type=env_preset.resolved_dynamics_type(),
             dyn_params=env_preset.params_from_embedding(theta_true),
-            residual_fn=residual_torch,
             dynamics_alpha=float(env_preset.dynamics_alpha),
             device="cpu",
         )
@@ -3357,7 +3449,7 @@ def _additional_plot_asymmetric_basin_mechanism(max_seeds: int) -> Path:
     from matplotlib.lines import Line2D
 
     _apply_style(plt)
-    suite_dir = _additional_suite_dir("exp1_hard", "exp1_hard_asymmetric_basin")
+    suite_dir = _additional_suite_dir("exp02_hard", "exp02_hard_asymmetric_basin")
     policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
     records = _additional_collect_records(suite_dir, policy_ids, max_seeds=max_seeds)
     if not records:
@@ -3427,7 +3519,7 @@ def _additional_plot_asymmetric_basin_mechanism(max_seeds: int) -> Path:
         )
         coverage_fraction[record.policy_id].append(float(np.count_nonzero(hist) / hist.size))
 
-    metrics = _additional_read_csv(suite_dir / "summary" / "metrics.csv")
+    metrics = read_trace_csv(suite_dir / "summary" / "metrics.csv")
     final_r2: dict[str, list[float]] = {policy_id: [] for policy_id in policy_ids}
     for row in metrics:
         policy_id = str(row.get("policy_id", ""))
@@ -3486,7 +3578,7 @@ def _additional_plot_asymmetric_basin_mechanism(max_seeds: int) -> Path:
         title="A. Hard asymmetric-basin information and vector field",
         grid_alpha=0.20,
     )
-    _additional_style_axis(ax)
+    _style_manuscript_axis(ax)
     ax.legend(
         handles=[
             Line2D(
@@ -3538,7 +3630,7 @@ def _additional_plot_asymmetric_basin_mechanism(max_seeds: int) -> Path:
         ax_i.set_xticklabels(labels, rotation=25, ha="right")
         ax_i.set_ylabel(ylabel)
         ax_i.set_title(title)
-        _additional_style_axis(ax_i, grid_axis="y")
+        _style_manuscript_axis(ax_i, grid_axis="y")
     axes[1, 1].set_ylim(-0.05, 1.05)
     fig.suptitle(
         "Hard asymmetric-basin mechanism: information geometry, coverage, and prediction",
@@ -3574,7 +3666,7 @@ def _additional_embedding_at_step(record: _additional_RunRecord, step: int) -> n
     selected_step = -math.inf
     fallback: dict[str, str] | None = None
     fallback_step = math.inf
-    for row in _additional_read_csv(path):
+    for row in read_trace_csv(path):
         row_step = _additional_safe_float(row.get("step"))
         if row_step is None:
             continue
@@ -3602,7 +3694,7 @@ def _additional_embedding_at_step(record: _additional_RunRecord, step: int) -> n
 def _additional_xy_trace_until(record: _additional_RunRecord, step: int) -> np.ndarray:
     path = _additional_trace_path(record, "state_action_trace_path", "state_action_trace.csv")
     points: list[tuple[float, float]] = []
-    for row in _additional_read_csv(path):
+    for row in read_trace_csv(path):
         row_step = _additional_safe_float(row.get("step"))
         x_val = _additional_safe_float(row.get("true_x"))
         v_val = _additional_safe_float(row.get("true_v"))
@@ -3620,7 +3712,7 @@ def _additional_plot_learned_vectorfield_snapshots(max_seeds: int) -> Path:
     import matplotlib.pyplot as plt
 
     _apply_style(plt)
-    suite_dir = _additional_suite_dir("exp1_hard", "exp1_hard_asymmetric_basin")
+    suite_dir = _additional_suite_dir("exp02_hard", "exp02_hard_asymmetric_basin")
     policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
     checkpoints = [250, 500, 1000]
     row_ids = ["true", *policy_ids]
@@ -3748,12 +3840,12 @@ def _additional_plot_sample_efficiency_thresholds() -> Path:
 
     _apply_style(plt)
     selected = [
-        ("exp1_main", "exp1_duffing", "Duffing"),
-        ("exp1_main", "exp1_asymmetric_basin", "Asym. basin"),
-        ("exp1_hard", "exp1_hard_duffing", "Hard Duffing"),
-        ("exp1_hard", "exp1_hard_asymmetric_basin", "Hard asym."),
-        ("exp2", "exp2_duffing_parameter_mismatch", "Duffing mismatch"),
-        ("exp2", "exp2_asymmetric_basin_parameter_mismatch", "Asym. mismatch"),
+        ("exp01_base", "exp01_duffing", "Duffing"),
+        ("exp01_base", "exp01_asymmetric_basin", "Asym. basin"),
+        ("exp02_hard", "exp02_hard_duffing", "Hard Duffing"),
+        ("exp02_hard", "exp02_hard_asymmetric_basin", "Hard asym."),
+        ("exp04_mismatch", "exp04_duffing_parameter_mismatch", "Duffing mismatch"),
+        ("exp04_mismatch", "exp04_asymmetric_basin_parameter_mismatch", "Asym. mismatch"),
     ]
     policy_ids = [
         "active_planning_u20_r20_h40",
@@ -3764,8 +3856,8 @@ def _additional_plot_sample_efficiency_thresholds() -> Path:
         "rhc",
     ]
     thresholds = {
-        "exp2_duffing_parameter_mismatch": 0.90,
-        "exp2_asymmetric_basin_parameter_mismatch": 0.90,
+        "exp04_duffing_parameter_mismatch": 0.90,
+        "exp04_asymmetric_basin_parameter_mismatch": 0.90,
     }
     default_threshold = 0.95
 
@@ -3774,7 +3866,7 @@ def _additional_plot_sample_efficiency_thresholds() -> Path:
     for group_name, suite_id, suite_label in selected:
         suite_dir = _additional_suite_dir(group_name, suite_id)
         threshold = thresholds.get(suite_id, default_threshold)
-        rows = _additional_read_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv")
+        rows = read_trace_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv")
         row_by_policy = {str(row.get("policy_id", "")): row for row in rows}
         for policy_id in policy_ids:
             step = _additional_threshold_value(row_by_policy.get(policy_id, {}), threshold)
@@ -3825,7 +3917,7 @@ def _additional_plot_sample_efficiency_thresholds() -> Path:
     ax.text(
         0.02,
         0.97,
-        "Exp1 bars use R2 >= 0.95; mismatch bars use R2 >= 0.90. x = threshold not reached.",
+        "Base and hard bars use R2 >= 0.95; mismatch bars use R2 >= 0.90. x = threshold not reached.",
         transform=ax.transAxes,
         ha="left",
         va="top",
@@ -3833,7 +3925,7 @@ def _additional_plot_sample_efficiency_thresholds() -> Path:
         color=_additional_C_STROKE,
     )
     ax.set_ylim(0.0, max_step * 1.18)
-    _additional_style_axis(ax, grid_axis="y")
+    _style_manuscript_axis(ax, grid_axis="y")
     ax.legend(loc="upper left", bbox_to_anchor=(1.005, 1.0), fontsize=6.3)
     fig.tight_layout()
     return _additional_save_pdf(
@@ -3845,7 +3937,7 @@ def _additional_aggregate_metric_rows(group_name: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for ref in GROUPS[group_name]:
         summary_path = ref.session_root / ref.suite_id / "summary" / "metrics.csv"
-        for row in _additional_read_csv(summary_path):
+        for row in read_trace_csv(summary_path):
             if row.get("status") != "completed":
                 continue
             value = _additional_safe_float(row.get("value_final_mean"))
@@ -3911,7 +4003,7 @@ def _additional_plot_compute_accuracy_pareto() -> Path:
     fig, axes = plt.subplots(1, 2, figsize=(7.1, 3.15))
 
     schedule_rows = _additional_mean_rows_by_policy(
-        _additional_aggregate_metric_rows("exp1_schedule")
+        _additional_aggregate_metric_rows("exp03_schedule")
     )
     markers = {"Duffing": "o", "Damped pendulum": "s", "Asymmetric basin": "^"}
     ax = axes[0]
@@ -3946,10 +4038,10 @@ def _additional_plot_compute_accuracy_pareto() -> Path:
     ax.set_ylabel("Final prediction R2")
     ax.set_ylim(-0.1, 1.05)
     ax.set_title("A. Planning schedule prediction-cost tradeoff")
-    _additional_style_axis(ax)
+    _style_manuscript_axis(ax)
 
     group_rows = []
-    for group_name in ("exp1_main", "exp1_hard", "exp2"):
+    for group_name in ("exp01_base", "exp02_hard", "exp04_mismatch"):
         group_rows.extend(
             _additional_mean_rows_by_policy(_additional_aggregate_metric_rows(group_name))
         )
@@ -3996,7 +4088,7 @@ def _additional_plot_compute_accuracy_pareto() -> Path:
     ax.set_ylabel("Final prediction R2")
     ax.set_ylim(-0.25, 1.05)
     ax.set_title("B. Policy-level prediction-cost tradeoff")
-    _additional_style_axis(ax)
+    _style_manuscript_axis(ax)
     ax.legend([h for h, _l in unique], [l for _h, l in unique], fontsize=6.0, loc="upper right")
     fig.tight_layout()
     return _additional_save_pdf(
@@ -4020,7 +4112,7 @@ def _additional_aggregate_parameter_traces(
         path = _additional_trace_path(
             record, "embedding_estimate_trace_path", "embedding_estimate_trace.csv"
         )
-        for row in _additional_read_csv(path):
+        for row in read_trace_csv(path):
             step_raw = _additional_safe_float(row.get("step"))
             if step_raw is None:
                 continue
@@ -4048,7 +4140,7 @@ def _additional_plot_per_parameter_recovery(max_seeds: int) -> Path:
     import matplotlib.pyplot as plt
 
     _apply_style(plt)
-    suite_dir = _additional_suite_dir("exp1_main", "exp1_asymmetric_basin")
+    suite_dir = _additional_suite_dir("exp01_base", "exp01_asymmetric_basin")
     policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
     traces, true_params = _additional_aggregate_parameter_traces(
         suite_dir,
@@ -4094,7 +4186,7 @@ def _additional_plot_per_parameter_recovery(max_seeds: int) -> Path:
         )
         ax.set_title(f"{chr(65 + param_idx)}. {names[param_idx]}")
         ax.set_ylabel("Estimate")
-        _additional_style_axis(ax)
+        _style_manuscript_axis(ax)
     axes[1, 0].set_xlabel("Environment step")
     axes[1, 1].set_xlabel("Environment step")
     handles, labels = axes[0, 0].get_legend_handles_labels()
@@ -4115,7 +4207,7 @@ def _additional_plot_information_learning_coupling(max_seeds: int) -> Path:
     import matplotlib.pyplot as plt
 
     _apply_style(plt)
-    suite_dir = _additional_suite_dir("exp1_main", "exp1_asymmetric_basin")
+    suite_dir = _additional_suite_dir("exp01_base", "exp01_asymmetric_basin")
     policy_ids = [
         "active_planning_u20_r20_h40",
         "active_myopic",
@@ -4129,10 +4221,10 @@ def _additional_plot_information_learning_coupling(max_seeds: int) -> Path:
         policy_id: [] for policy_id in policy_ids
     }
     for record in records:
-        info_rows = _additional_read_csv(
+        info_rows = read_trace_csv(
             _additional_trace_path(record, "information_trace_path", "information_trace.csv")
         )
-        r2_rows = _additional_read_csv(
+        r2_rows = read_trace_csv(
             _additional_trace_path(record, "trajectory_r2_trace_path", "trajectory_r2_trace.csv")
         )
         info_vals = [
@@ -4202,7 +4294,7 @@ def _additional_plot_information_learning_coupling(max_seeds: int) -> Path:
     axes[1].set_xlabel("log10(1 + cumulative I_theta)")
     axes[1].set_ylabel("Final minus initial prediction R2")
     for ax in axes:
-        _additional_style_axis(ax)
+        _style_manuscript_axis(ax)
     axes[0].legend(fontsize=6.0, loc="best")
     fig.tight_layout()
     return _additional_save_pdf(
@@ -4282,6 +4374,14 @@ def _additional_write_latex_snippet(paths: Sequence[Path]) -> Path:
     return snippet
 
 
+def _additional_parse_plots(raw: str) -> list[str]:
+    plot_ids = [item.strip() for item in str(raw).split(",") if item.strip()]
+    unknown = sorted(set(plot_ids) - set(_additional_PLOTS))
+    if unknown:
+        raise ValueError(f"Unknown additional plot(s): {', '.join(unknown)}")
+    return plot_ids
+
+
 def _additional_build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate additive TBME manuscript figures from existing experiment logs."
@@ -4292,22 +4392,169 @@ def _additional_build_parser() -> argparse.ArgumentParser:
         default=100,
         help="Maximum seeds per policy to read for trace-derived figures.",
     )
+    parser.add_argument(
+        "--plots",
+        type=str,
+        default=",".join(_additional_PLOTS),
+        help="Comma-separated additional TBME plot ids.",
+    )
     return parser
 
+# Main functions
+def asset_main() -> int:
+    summary_lines = []
+    copied_by_group: dict[str, list[Path]] = {}
+    for group_name, refs in GROUPS.items():
+        rows, copied = _asset_export_group(group_name, refs)
+        copied_by_group[group_name] = copied
+        summary_lines.append(f"{group_name}: {len(rows)} table rows, {len(copied)} copied figures")
+    pareto_path = _asset_plot_schedule_threshold_pareto()
+    if pareto_path is not None:
+        copied_by_group.setdefault("exp03_schedule", []).append(pareto_path)
+        summary_lines.append(f"exp03_schedule_pareto: 1 copied figure")
+    manifest = _asset_TEX_DIR / "tbme_current_export_manifest.txt"
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("\n".join(summary_lines) + "\n", encoding="utf-8")
+    print("\n".join(summary_lines))
+    print(manifest)
+    return 0
 
-def _additional_main(argv: list[str] | None = None) -> int:
-    configure_tbme_catalogs()
+
+def summary_main(argv: list[str] | None = None) -> int:
+    args = _summary_build_parser().parse_args(argv)
+    groups = [item.strip() for item in str(args.groups).split(",") if item.strip()]
+    unknown = sorted(set(groups) - set(GROUPS))
+    if unknown:
+        raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
+    figure_formats = _parse_figure_formats(str(args.figure_formats))
+
+    written: list[Path] = []
+    for group_name in groups:
+        for ref in GROUPS[group_name]:
+            suite_dir = ref.session_root / ref.suite_id
+            if suite_dir.exists():
+                written.extend(_summary_write_figures(suite_dir, figure_formats))
+    for path in written:
+        print(path)
+    print(f"wrote {len(written)} summary figure files")
+    return 0
+
+
+def trajectory_main(argv: list[str] | None = None) -> int:
+    _apply_style()
+    args = _trajectory_build_parser().parse_args(argv)
+    groups = [item.strip() for item in str(args.groups).split(",") if item.strip()]
+    unknown = sorted(set(groups) - set(GROUPS))
+    if unknown:
+        raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
+
+    written: list[Path] = []
+    for suite_dir in _trajectory_suite_dirs(groups):
+        metadata = _trajectory_reference_metadata(suite_dir)
+        if metadata is None:
+            continue
+        dynamics_payload = _trajectory_build_true_dynamics(metadata)
+        if dynamics_payload is None:
+            continue
+        dyn_true, grid_lim, system_label = dynamics_payload
+        grouped = _trajectory_collect_policy_traces(suite_dir, max_seeds=int(args.max_seeds))
+        if not grouped:
+            continue
+        written.append(
+            _trajectory_plot_overlay_figure(
+                suite_dir,
+                grouped=grouped,
+                dyn_true=dyn_true,
+                grid_lim=grid_lim,
+                system_label=system_label,
+                max_seeds=int(args.max_seeds),
+            )
+        )
+        written.append(
+            _trajectory_plot_density_figure(
+                suite_dir,
+                grouped=grouped,
+                dyn_true=dyn_true,
+                grid_lim=grid_lim,
+                system_label=system_label,
+                max_seeds=int(args.max_seeds),
+                bins=int(args.density_bins),
+            )
+        )
+    for path in written:
+        print(path)
+    print(f"wrote {len(written)} trajectory summary figures")
+    return 0
+
+
+def requested_main(argv: list[str] | None = None) -> int:
+    args = _requested_build_parser().parse_args(argv)
+    plot_ids = _requested_parse_plots(str(args.plots))
+    missing_suite_dirs = sorted(
+        (
+            suite_dir
+            for suite_dir in _requested_required_suite_dirs(plot_ids)
+            if not suite_dir.exists()
+        ),
+        key=str,
+    )
+    if missing_suite_dirs:
+        missing_text = ", ".join(str(path) for path in missing_suite_dirs)
+        raise FileNotFoundError(f"Missing requested experiment suite(s): {missing_text}")
+
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    _apply_style(plt)
+    figure_paths: list[Path] = []
+    csv_paths: list[Path] = []
+    if any(plot_id in _requested_OBJECTIVE_DEFINITION_PLOTS for plot_id in plot_ids):
+        objective_definition_csv, objective_definition_tex = (
+            _requested_write_objective_definition_tables()
+        )
+        csv_paths.extend([objective_definition_csv, objective_definition_tex])
+
+    plotters = {
+        "bottleneck_sweep": lambda: _requested_plot_bottleneck_sweep(plt),
+        "objective_ablation": lambda: _requested_plot_objective_ablation(plt),
+        "mismatch_dose_response": lambda: _requested_plot_mismatch_dose_response(plt),
+        "downstream_control": lambda: _requested_plot_downstream_control(plt),
+    }
+    for plot_id in plot_ids:
+        figure_path, csv_path = plotters[plot_id]()
+        figure_paths.append(figure_path)
+        csv_paths.append(csv_path)
+        plt.close("all")
+    manifest_path = _requested_write_manifest([*figure_paths, *csv_paths])
+    for path in [*figure_paths, *csv_paths, manifest_path]:
+        print(path)
+    return 0
+
+
+def additional_main(argv: list[str] | None = None) -> int:
     args = _additional_build_parser().parse_args(argv)
     max_seeds = int(args.max_seeds)
-    paths = [
-        _additional_plot_true_dynamics_all(),
-        _additional_plot_asymmetric_basin_mechanism(max_seeds=max_seeds),
-        _additional_plot_learned_vectorfield_snapshots(max_seeds=max_seeds),
-        _additional_plot_sample_efficiency_thresholds(),
-        _additional_plot_compute_accuracy_pareto(),
-        _additional_plot_per_parameter_recovery(max_seeds=max_seeds),
-        _additional_plot_information_learning_coupling(max_seeds=max_seeds),
-    ]
+    plot_ids = _additional_parse_plots(str(args.plots))
+    plotters = {
+        "true_dynamics_all": lambda: _additional_plot_true_dynamics_all(),
+        "asymmetric_basin_mechanism": lambda: _additional_plot_asymmetric_basin_mechanism(
+            max_seeds=max_seeds
+        ),
+        "learned_vectorfield_snapshots": lambda: _additional_plot_learned_vectorfield_snapshots(
+            max_seeds=max_seeds
+        ),
+        "sample_efficiency_thresholds": lambda: _additional_plot_sample_efficiency_thresholds(),
+        "compute_accuracy_pareto": lambda: _additional_plot_compute_accuracy_pareto(),
+        "per_parameter_recovery": lambda: _additional_plot_per_parameter_recovery(
+            max_seeds=max_seeds
+        ),
+        "information_learning_coupling": lambda: _additional_plot_information_learning_coupling(
+            max_seeds=max_seeds
+        ),
+    }
+    paths = [plotters[plot_id]() for plot_id in plot_ids]
     manifest = _additional_write_manifest(paths)
     snippet = _additional_write_latex_snippet(paths)
     for path in paths:
@@ -4315,30 +4562,3 @@ def _additional_main(argv: list[str] | None = None) -> int:
     print(manifest)
     print(snippet)
     return 0
-
-
-def run_current_asset_export(argv: list[str] | None = None) -> int:
-    """Export current TBME manuscript tables and copied summary assets."""
-    parser = argparse.ArgumentParser(description="Export current TBME manuscript assets.")
-    parser.parse_args(argv)
-    return int(_asset_main())
-
-
-def run_summary_figure_regeneration(argv: list[str] | None = None) -> int:
-    """Regenerate TBME summary figures from existing summary CSV files."""
-    return int(_summary_main(argv))
-
-
-def run_trajectory_summary_figures(argv: list[str] | None = None) -> int:
-    """Generate TBME trajectory overlay and density figures."""
-    return int(_trajectory_main(argv))
-
-
-def run_requested_experiment_figures(argv: list[str] | None = None) -> int:
-    """Generate requested TBME follow-up figures."""
-    return int(_requested_main(argv))
-
-
-def run_additional_manuscript_figures(argv: list[str] | None = None) -> int:
-    """Generate additional TBME manuscript figures."""
-    return int(_additional_main(argv))

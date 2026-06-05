@@ -21,7 +21,7 @@ There is no TBME suite YAML file in the current structure. Suite definitions liv
 - `exp07_mismatch_stress.py`: mild and strong mismatch stress tests.
 - `run_tbme_experiments.py`: helper that connects each explicit TBME suite module to `experiments.run`.
 - `generate_figures.py`: single entrypoint for TBME figure and asset generation.
-- `visualize.py`: plotting and asset-export implementation used by `generate_figures.py`.
+- `tbme_figures.py`: TBME plotting and asset-export implementation used by `generate_figures.py`.
 
 The shared experiment runtime remains outside this directory:
 
@@ -140,12 +140,11 @@ Use `generate_figures.py` as the single figure entrypoint:
 ./.venv/bin/python -m experiments.tbme.generate_figures summary
 ./.venv/bin/python -m experiments.tbme.generate_figures trajectory
 ./.venv/bin/python -m experiments.tbme.generate_figures assets
-./.venv/bin/python -m experiments.tbme.generate_figures requested
-./.venv/bin/python -m experiments.tbme.generate_figures additional
+./.venv/bin/python -m experiments.tbme.generate_figures experiment
 ./.venv/bin/python -m experiments.tbme.generate_figures all
 ```
 
-The figure code currently keeps legacy visualization group names in `visualize.py`: `exp1_main`, `exp1_schedule`, `exp1_hard`, and `exp2`. These groups refer to existing result-directory conventions used by the plotting code, not necessarily the new `exp01` to `exp07` module names. If result roots are renamed, update the `GROUPS` table in `visualize.py` before relying on the summary or trajectory figure commands.
+The figure code keeps TBME result-group definitions in `tbme_figures.py`. If result roots are renamed, update the `GROUPS` table there before relying on the summary or trajectory figure commands.
 
 ## Reproducibility Checklist
 

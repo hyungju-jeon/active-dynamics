@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import os
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 import sys
 from types import ModuleType
 from typing import Any
+
 
 TBME_DIR = Path(__file__).resolve().parent
 EXPERIMENTS_DIR = TBME_DIR.parent
@@ -23,9 +23,7 @@ TBME_MODEL_CATALOG = TBME_CONFIG_DIR / "experiment_model.yaml"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-
-def _catalog_env(paths: list[Path]) -> str:
-    return os.pathsep.join(str(path.resolve()) for path in paths)
+from actdyn.utils.experiment_runtime import seed_range_csv
 
 
 def tbme_catalog_paths() -> dict[str, list[Path]]:
@@ -34,24 +32,6 @@ def tbme_catalog_paths() -> dict[str, list[Path]]:
         "env_catalog_paths": [BASE_ENV_CATALOG, TBME_ENV_CATALOG],
         "model_catalog_paths": [BASE_MODEL_CATALOG, TBME_MODEL_CATALOG],
     }
-
-
-def set_tbme_catalog_env() -> dict[str, str | None]:
-    """Install TBME env/model catalogs and disable file-backed suite catalogs."""
-    previous = {
-        "ACTDYN_ENV_CATALOGS": os.environ.get("ACTDYN_ENV_CATALOGS"),
-        "ACTDYN_MODEL_CATALOGS": os.environ.get("ACTDYN_MODEL_CATALOGS"),
-        "ACTDYN_SUITE_CATALOGS": os.environ.get("ACTDYN_SUITE_CATALOGS"),
-    }
-    paths = tbme_catalog_paths()
-    os.environ["ACTDYN_ENV_CATALOGS"] = _catalog_env(paths["env_catalog_paths"])
-    os.environ["ACTDYN_MODEL_CATALOGS"] = _catalog_env(paths["model_catalog_paths"])
-    os.environ["ACTDYN_SUITE_CATALOGS"] = "-"
-    return previous
-
-
-def _seed_range(count: int) -> str:
-    return ",".join(str(seed) for seed in range(int(count)))
 
 
 @dataclass(frozen=True)
@@ -110,7 +90,7 @@ def _family_from_suite_data(
         )
     seeds = default_seeds
     if seeds is None:
-        seeds = _seed_range(int(default_seed_count)) if default_seed_count is not None else "0"
+        seeds = seed_range_csv(int(default_seed_count)) if default_seed_count is not None else "0"
     return TbmeExperimentFamily(
         exp_ids=exp_ids,
         base_dir=default_base_dir or "results/tbme",
@@ -153,7 +133,6 @@ def all_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
 
 def configure_tbme_catalogs(suite_entries: dict[str, dict[str, Any]] | None = None):
     """Configure `experiments.experiment_definitions` with TBME catalogs and suites."""
-    set_tbme_catalog_env()
     from experiments.experiment_definitions import configure_catalogs
 
     paths = tbme_catalog_paths()
@@ -164,8 +143,6 @@ def configure_tbme_catalogs(suite_entries: dict[str, dict[str, Any]] | None = No
         suite_entries=all_tbme_experiment_suites() if suite_entries is None else suite_entries,
     )
 
-
-set_tbme_catalog_env()
 
 if __package__ in {None, ""}:
     from experiments import run as shared_run
