@@ -16,7 +16,9 @@ __all__ = [
     "format_list",
     "to_np",
     "eps",
+    "read_trace_csv",
     "write_trace_csv",
+    "seed_range_csv",
     "to_xy_pair",
     "as_bool",
     "extract_remaining_plan_actions",
@@ -62,6 +64,8 @@ def __getattr__(name: str):
 
     if name in {
         "write_trace_csv",
+        "read_trace_csv",
+        "seed_range_csv",
         "to_xy_pair",
         "as_bool",
         "extract_remaining_plan_actions",
@@ -75,12 +79,16 @@ def __getattr__(name: str):
             extract_remaining_plan_actions,
             extract_rollout_metrics,
             predict_planned_xy_trajectory,
+            read_trace_csv,
             to_xy_pair,
+            seed_range_csv,
             write_trace_csv,
         )
 
         return {
+            "read_trace_csv": read_trace_csv,
             "write_trace_csv": write_trace_csv,
+            "seed_range_csv": seed_range_csv,
             "to_xy_pair": to_xy_pair,
             "as_bool": as_bool,
             "extract_remaining_plan_actions": extract_remaining_plan_actions,

@@ -15,6 +15,17 @@ def write_trace_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -
         writer.writerows(rows)
 
 
+def read_trace_csv(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open("r", newline="", encoding="utf-8") as f:
+        return list(csv.DictReader(f))
+
+
+def seed_range_csv(count: int) -> str:
+    """Return the canonical comma-separated seed range `0,...,count-1`."""
+    return ",".join(str(seed) for seed in range(int(count)))
+
 
 def to_xy_pair(value: Any) -> tuple[float, float]:
     import torch
