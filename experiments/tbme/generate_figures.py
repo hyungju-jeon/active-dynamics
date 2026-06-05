@@ -71,6 +71,10 @@ def _summary_args(args: argparse.Namespace) -> list[str]:
     return ["--groups", str(args.groups), "--figure-formats", str(args.figure_formats)]
 
 
+def _overview_args(args: argparse.Namespace) -> list[str]:
+    return ["--groups", str(args.groups)]
+
+
 def _trajectory_args(args: argparse.Namespace, *, max_seeds: int | None = None) -> list[str]:
     return [
         "--groups",
@@ -151,10 +155,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     summary.add_argument("--figure-formats", type=str, default=".pdf")
 
-    # Assets : Export current manuscript tables
-    subparsers.add_parser(
-        "assets",
-        help="Export current manuscript tables and copied summary assets.",
+    # Overview : Write group-level overview tables and figures.
+    overview = subparsers.add_parser(
+        "overview",
+        help="Write group-level overview tables and figures into results/tbme.",
+    )
+    overview.add_argument(
+        "--groups",
+        type=str,
+        default=DEFAULT_GROUPS,
+        help="Comma-separated TBME group names.",
     )
 
     # Trajectory : Generate trajectory overlay and density summary figures.
@@ -205,8 +215,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.output_set == "summary":
         return int(tbme_figures.summary_main(_summary_args(args)))
-    if args.output_set == "assets":
-        return int(tbme_figures.asset_main())
+    if args.output_set == "overview":
+        return int(tbme_figures.group_overview_main(_overview_args(args)))
     if args.output_set == "trajectory":
         return int(tbme_figures.trajectory_main(_trajectory_args(args)))
     if args.output_set == "experiment":
@@ -218,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
         code = int(tbme_figures.summary_main(_summary_args(args)))
         if code != 0:
             return code
-        code = int(tbme_figures.asset_main())
+        code = int(tbme_figures.group_overview_main(_overview_args(args)))
         if code != 0:
             return code
         code = int(

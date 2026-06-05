@@ -139,7 +139,7 @@ Use `generate_figures.py` as the single figure entrypoint:
 ./.venv/bin/python -m experiments.tbme.generate_figures --help
 ./.venv/bin/python -m experiments.tbme.generate_figures summary
 ./.venv/bin/python -m experiments.tbme.generate_figures trajectory
-./.venv/bin/python -m experiments.tbme.generate_figures assets
+./.venv/bin/python -m experiments.tbme.generate_figures overview
 ./.venv/bin/python -m experiments.tbme.generate_figures experiment
 ./.venv/bin/python -m experiments.tbme.generate_figures all
 ```
