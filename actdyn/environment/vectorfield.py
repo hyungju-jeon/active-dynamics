@@ -6,7 +6,7 @@ import torch
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from actdyn.utils.vectorfields import (
+from actdyn.utils.vectorfields_eqn import (
     BistableLimitCycle,
     DampedPendulum,
     LimitCycle,
@@ -21,7 +21,7 @@ from actdyn.utils.vectorfields import (
     SnowMan,
     AsymmetricBasin,
 )
-from typing import Optional, Tuple, Dict, Any, Sequence
+from typing import Optional, Tuple, Dict, Any, Sequence, Callable
 from actdyn.utils.plotting import plot_vector_field
 from .boundary import boundary_barrier_drift, project_to_boundary
 
@@ -134,6 +134,45 @@ def residual_torch(
     )
     drift = vf.compute(flat_state)
     return drift.reshape(state_t.shape)
+
+
+class ResidualDynamicsCallable:
+    """Bind vector-field residual metadata into a state-to-drift callable.
+
+    The callable maps states with shape (..., state_dim) to residual dynamics
+    with the same shape. It is intended for plotting and summary code that
+    needs f_theta(x) without constructing a full VectorFieldEnv.
+    """
+
+    def __init__(
+        self,
+        *,
+        dynamics_type: str,
+        dyn_params,
+        dynamics_alpha: float = 1.0,
+        device: str = "cpu",
+        residual_fn: Callable[..., torch.Tensor] | None = None,
+    ) -> None:
+        self.dynamics_type = str(dynamics_type)
+        self.dyn_params = dyn_params
+        self.dynamics_alpha = float(dynamics_alpha)
+        self.device = torch.device(device)
+        self.residual_fn = residual_torch if residual_fn is None else residual_fn
+
+    def __call__(self, state: torch.Tensor) -> torch.Tensor:
+        state = torch.as_tensor(state, device=self.device, dtype=torch.float32)
+        if isinstance(self.dyn_params, dict):
+            dyn_params = self.dyn_params
+        else:
+            dyn_params = torch.as_tensor(
+                self.dyn_params, device=self.device, dtype=torch.float32
+            )
+        return self.residual_fn(
+            self.dynamics_type,
+            state,
+            dyn_params,
+            dynamics_alpha=self.dynamics_alpha,
+        )
 
 
 def jacobian_state_torch(

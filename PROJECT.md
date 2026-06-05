@@ -521,7 +521,7 @@ setup_policy(config, env, model, metric) -> BasePolicy
 | `activation_from_str(name)` | String → activation function |
 | `format_list(x)` | Pretty-print for logging |
 
-#### `vectorfields.py` - Dynamics Definitions
+#### `vectorfields_eqn.py` - Dynamics Definitions
 
 | Class | Dynamics |
 |-------|----------|

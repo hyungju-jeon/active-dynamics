@@ -15,6 +15,7 @@ from .base import BaseAction, BaseObservation
 from .env_wrapper import EnvWrapper
 from .boundary import boundary_barrier_drift, boundary_visibility, project_to_boundary
 from .vectorfield import (
+    ResidualDynamicsCallable,
     build_system_jacobians,
     jacobian_param_torch,
     jacobian_state_torch,
@@ -29,6 +30,7 @@ __all__ = [
     "observation_from_str",
     "action_from_str",
     "EnvWrapper",
+    "ResidualDynamicsCallable",
     "residual_torch",
     "residual_np",
     "jacobian_state_torch",

@@ -26,7 +26,7 @@ if __package__ in {None, ""}:
         resolve_session_root,
     )
     from experiment_definitions import get_experiment_spec, list_experiment_ids
-    from actdyn.environment.vectorfield import residual_torch
+    from actdyn.environment.vectorfield import ResidualDynamicsCallable
 else:
     from .experiment_io import (
         expected_loglinear_rate_hz,
@@ -38,11 +38,10 @@ else:
         resolve_session_root,
     )
     from .experiment_definitions import get_experiment_spec, list_experiment_ids
-    from actdyn.environment.vectorfield import residual_torch
+    from actdyn.environment.vectorfield import ResidualDynamicsCallable
 from actdyn.utils.video import figure_to_rgb_array, write_video_frames
 from actdyn.utils.plotting import (
     RbfVectorFieldDynamics,
-    VectorFieldResidualDynamics,
     annotate_action_arrow,
     decorate_phase_space_axis,
     overlay_planned_xy,
@@ -475,10 +474,9 @@ def _render_rbf_vectorfield_video(
     env_preset = get_environment_preset_from_metadata(metadata)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 1.0))
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=float)
-    dyn_true = VectorFieldResidualDynamics(
+    dyn_true = ResidualDynamicsCallable(
         dynamics_type=env_preset.resolved_dynamics_type(),
         dyn_params=env_preset.params_from_embedding(theta_true),
-        residual_fn=residual_torch,
         dynamics_alpha=dynamics_alpha,
     )
 
@@ -545,10 +543,9 @@ def render_vectorfield_video(
     env_preset = get_environment_preset_from_metadata(metadata)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 1.0))
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=float)
-    dyn_true = VectorFieldResidualDynamics(
+    dyn_true = ResidualDynamicsCallable(
         dynamics_type=env_preset.resolved_dynamics_type(),
         dyn_params=env_preset.params_from_embedding(theta_true),
-        residual_fn=residual_torch,
         dynamics_alpha=dynamics_alpha,
     )
 
@@ -559,10 +556,9 @@ def render_vectorfield_video(
             dtype=float,
         )
         return (
-            VectorFieldResidualDynamics(
+            ResidualDynamicsCallable(
                 dynamics_type=env_preset.resolved_dynamics_type(),
                 dyn_params=env_preset.params_from_embedding(theta_est),
-                residual_fn=residual_torch,
                 dynamics_alpha=dynamics_alpha,
             ),
             (
