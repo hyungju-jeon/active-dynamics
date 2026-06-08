@@ -6,6 +6,7 @@ import sys
 
 import numpy as np
 import pytest
+import torch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -27,8 +28,25 @@ def _load_module(name: str, rel_path: str):
 
 def test_planar_systems_include_tbme_dynamics():
     module = _load_module("cosyne_planar_tbme", "experiments/cosyne/planar_systems.py")
-    assert module.has_planar_system_spec("damped_pendulum")
-    assert module.has_planar_system_spec("double_integrator")
+    assert module.has_planar_system_defaults("damped_pendulum")
+    assert module.has_planar_system_defaults("double_integrator")
+    assert module.has_planar_system_defaults("two_basin_bridge")
+
+    init_state = module.sample_initial_state("two_basin_bridge", seed=0)
+    assert init_state.shape == (2,)
+    assert -2.4 <= float(init_state[0]) <= -0.8
+
+    emb = module.true_embedding("two_basin_bridge")
+    assert emb.shape == (4,)
+    jac = module.jacobian_param_torch(
+        "two_basin_bridge",
+        torch.tensor([[[-1.5, 0.2]]], dtype=torch.float32),
+        torch.tensor(emb.reshape(1, 1, -1), dtype=torch.float32),
+        dynamics_alpha=1.0,
+    )
+    assert jac.shape == (1, 1, 2, 4)
+    assert float(jac[0, 0, 1, 0]) != 0.0
+    assert abs(float(jac[0, 0, 1, 2])) < abs(float(jac[0, 0, 1, 0]))
 
     state = np.asarray([[0.2, -0.1]], dtype=np.float32)
     pend = module.residual_np(
@@ -113,7 +131,7 @@ def test_realdata_split_and_ridge_helpers(tmp_path: Path):
 
 
 def test_video_renderer_skips_realdata_experiment(tmp_path: Path):
-    module = _load_module("tbme_video_tbme", "experiments/tbme/render_experiment_videos.py")
+    module = _load_module("tbme_video_tbme", "experiments/tbme/render_videos.py")
     exit_code = module.main(
         [
             "--base-dir",
@@ -123,3 +141,100 @@ def test_video_renderer_skips_realdata_experiment(tmp_path: Path):
         ]
     )
     assert exit_code == 0
+
+
+def test_prepare_realdata_binning_helpers():
+    module = _load_module("tbme_prepare_realdata", "experiments/tbme/prepare_exp3_data.py")
+    behavior = np.arange(24, dtype=np.float32).reshape(12, 2)
+    binned = module.bin_regular_timeseries(behavior, sample_rate_hz=100.0, bin_ms=20.0)
+    assert binned.shape == (6, 2)
+    assert np.allclose(binned[0], np.asarray([1.0, 2.0], dtype=np.float32))
+    assert np.allclose(binned[-1], np.asarray([21.0, 22.0], dtype=np.float32))
+
+    spike_trains = [
+        np.asarray([0.001, 0.019, 0.020, 0.041], dtype=np.float64),
+        np.asarray([0.0, 0.039], dtype=np.float64),
+    ]
+    spike_counts = module.bin_spike_trains(spike_trains, num_bins=3, dt_sec=0.02)
+    assert spike_counts.shape == (3, 2)
+    assert np.array_equal(
+        spike_counts,
+        np.asarray(
+            [
+                [2.0, 1.0],
+                [1.0, 1.0],
+                [1.0, 0.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+def test_prepare_realdata_repairs_missing_behavior_samples():
+    module = _load_module("tbme_prepare_realdata_fill", "experiments/tbme/prepare_exp3_data.py")
+    behavior = np.asarray(
+        [
+            [0.0, 10.0],
+            [np.nan, np.nan],
+            [2.0, 14.0],
+            [3.0, 16.0],
+            [np.nan, 18.0],
+            [5.0, 20.0],
+        ],
+        dtype=np.float32,
+    )
+    repaired = module.fill_nan_timeseries(behavior)
+    assert repaired.shape == behavior.shape
+    assert not np.isnan(repaired).any()
+    assert np.allclose(
+        repaired,
+        np.asarray(
+            [
+                [0.0, 10.0],
+                [1.0, 12.0],
+                [2.0, 14.0],
+                [3.0, 16.0],
+                [4.0, 18.0],
+                [5.0, 20.0],
+            ],
+            dtype=np.float32,
+        ),
+    )
+
+
+
+def test_tbme_exp1_launcher_includes_two_basin_schedule_ablation():
+    module = _load_module("tbme_run_exp1_schedule_addition", "experiments/tbme/run_exp1.py")
+    assert "tbme_exp1_two_basin_schedule_ablation" in module.EXP1_SUITES
+
+
+
+def test_timevarying_hotspots_prototype_smoke(tmp_path: Path):
+    module = _load_module(
+        "tbme_timevarying_hotspots",
+        "experiments/tbme/run_circular_timevarying_hotspots_experiment.py",
+    )
+    out_dir = tmp_path / "hotspots"
+    exit_code = module.main(
+        [
+            "--output-dir",
+            str(out_dir),
+            "--seeds",
+            "0",
+            "--total-steps",
+            "12",
+            "--skip-figures",
+        ]
+    )
+    assert exit_code == 0
+    summary_path = out_dir / "summary.json"
+    trace_path = out_dir / "trace.csv"
+    assert summary_path.exists()
+    assert trace_path.exists()
+    payload = __import__("json").loads(summary_path.read_text(encoding="utf-8"))
+    assert payload["config"]["total_steps"] == 12
+    assert set(payload["policies"].keys()) == {
+        "radius_greedy",
+        "hotspot_greedy",
+        "hotspot_intercept",
+    }
