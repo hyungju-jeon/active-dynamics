@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -52,9 +53,6 @@ _TBME_GRID_COLOR = "#DDD7CE"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RESULTS_ROOT = _REPO_ROOT / "results"
 _TBME_RESULTS_DIR = _RESULTS_ROOT / "tbme"
-_DOCS_DIR = _REPO_ROOT / "docs"
-_DOCS_FIGURE_DIR = _DOCS_DIR / "figs"
-_DOCS_TABLE_DIR = _DOCS_DIR / "tables"
 
 
 # GROUPS is evaluated at import time, so this constructor stays before GROUPS.
@@ -387,6 +385,22 @@ def _write_csv(path: Path, rows: Iterable[dict[str, Any]], fields: Sequence[str]
         writer = csv.DictWriter(f, fieldnames=list(fields))
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _unique_paths(paths: Iterable[Path]) -> list[Path]:
+    out: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        out.append(path)
+        seen.add(path)
+    return out
 
 
 # TBME figure layout functions
@@ -1214,79 +1228,6 @@ def plot_tbme_mismatch_dose_response(
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
-def plot_tbme_true_dynamics_all(
-    output_path: Path,
-    *,
-    fields: Sequence[tuple[str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
-    grid_lim: float,
-    apply_style: Callable[[Any], None] | None,
-    stroke_color: str,
-) -> Path:
-    """Plot the true vector fields for the TBME synthetic systems."""
-    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    from actdyn.utils.plotting import decorate_phase_space_axis
-    from matplotlib.cm import ScalarMappable
-    from matplotlib.colors import Normalize
-
-    finite_speed = np.concatenate([arr[np.isfinite(arr)].reshape(-1) for *_rest, arr in fields])
-    vmax = float(np.percentile(finite_speed, 98.0)) if finite_speed.size else 1.0
-    norm = Normalize(vmin=0.0, vmax=max(vmax, 1e-6))
-
-    fig = plt_module.figure(figsize=(7.25, 4.05))
-    gs = fig.add_gridspec(2, 7, wspace=0.36, hspace=0.42, width_ratios=[1, 1, 1, 1, 1, 1, 0.08])
-    axes = [
-        fig.add_subplot(gs[0, 0:2]),
-        fig.add_subplot(gs[0, 2:4]),
-        fig.add_subplot(gs[0, 4:6]),
-        fig.add_subplot(gs[1, 1:3]),
-        fig.add_subplot(gs[1, 3:5]),
-    ]
-    cax = fig.add_subplot(gs[:, 6])
-    for panel_idx, (ax, (title, x_np, y_np, u_np, v_np, log_speed)) in enumerate(zip(axes, fields)):
-        ax.pcolormesh(
-            x_np,
-            y_np,
-            log_speed,
-            cmap="viridis",
-            norm=norm,
-            shading="auto",
-            alpha=0.82,
-            rasterized=True,
-            zorder=0,
-        )
-        ax.streamplot(
-            x_np,
-            y_np,
-            u_np,
-            v_np,
-            color=stroke_color,
-            linewidth=0.38,
-            density=1.25,
-            arrowsize=0.62,
-            zorder=2,
-        )
-        decorate_phase_space_axis(
-            ax,
-            xlim=(-grid_lim, grid_lim),
-            ylim=(-grid_lim, grid_lim),
-            title=f"{chr(ord('A') + panel_idx)}. {title}",
-            xlabel="x",
-            ylabel="v",
-            grid_alpha=0.20,
-        )
-        ax.set_xticks([-6, 0, 6])
-        ax.set_yticks([-6, 0, 6])
-
-    sm = ScalarMappable(norm=norm, cmap="viridis")
-    sm.set_array([])
-    cbar = fig.colorbar(sm, cax=cax)
-    cbar.set_label(r"$\log(1 + \|f(z)\|)$")
-    cbar.outline.set_linewidth(0.45)
-    return save_figure(fig, output_path, plt_module=plt_module)
-
-
 def plot_tbme_neutral_vector_field(
     ax: Any,
     dynamics: Any,
@@ -1453,6 +1394,7 @@ def plot_tbme_learned_vectorfield_snapshots(
     checkpoints: Sequence[int],
     dynamics_by_cell: Mapping[tuple[str, int], Any],
     traces_by_cell: Mapping[tuple[str, int], np.ndarray],
+    initial_state: np.ndarray,
     plot_abs: float,
     short_policy_label: Callable[[str], str],
     policy_color: Callable[[str], str],
@@ -1461,10 +1403,16 @@ def plot_tbme_learned_vectorfield_snapshots(
     neutral_fill: str,
     grid_color: str,
 ) -> Path:
-    """Plot true and learned vector-field snapshots for a shared seed."""
+    """Plot true and learned vector-field snapshots for a shared seed.
+
+    ``initial_state`` is the shared latent initial condition with shape ``(2,)``
+    or a longer embedding whose first two entries are the plotted phase-space
+    coordinates.
+    """
     plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
+    z0 = np.asarray(initial_state, dtype=np.float32).reshape(-1)
     fig, axes = plt_module.subplots(
         len(row_ids), len(checkpoints), figsize=(7.25, 8.85), sharex=True, sharey=True
     )
@@ -1493,15 +1441,25 @@ def plot_tbme_learned_vectorfield_snapshots(
                     linewidth=0.35,
                     zorder=5,
                 )
+            if z0.size >= 2 and np.isfinite(z0[:2]).all():
                 ax.scatter(
-                    [traj[0, 0]],
-                    [traj[0, 1]],
-                    s=9,
+                    [z0[0]],
+                    [z0[1]],
+                    s=18,
                     color=neutral_fill,
                     edgecolor=stroke_color,
-                    linewidth=0.3,
-                    zorder=5,
+                    linewidth=0.45,
+                    zorder=6,
                 )
+                if row_idx == 0 and col_idx == 0:
+                    ax.annotate(
+                        r"$z_0$",
+                        (z0[0], z0[1]),
+                        xytext=(3.0, 3.0),
+                        textcoords="offset points",
+                        fontsize=6.2,
+                        color=stroke_color,
+                    )
             ax.set_xlim(-plot_abs, plot_abs)
             ax.set_ylim(-plot_abs, plot_abs)
             ax.set_aspect("equal", adjustable="box")
@@ -2589,6 +2547,52 @@ _experiment_REQUIRED_SUITES_BY_PLOT = {
 }
 
 
+def _experiment_artifact_paths(
+    suite_dirs: Sequence[Path],
+    *,
+    subdir: str,
+    filename: str,
+) -> list[Path]:
+    return _unique_paths(
+        suite_dir / "experiment" / subdir / filename for suite_dir in suite_dirs
+    )
+
+
+def _experiment_write_csv_artifacts(
+    suite_dirs: Sequence[Path],
+    *,
+    filename: str,
+    rows: Iterable[dict[str, Any]],
+    fields: Sequence[str],
+) -> list[Path]:
+    paths = _experiment_artifact_paths(suite_dirs, subdir="tables", filename=filename)
+    row_list = list(rows)
+    for path in paths:
+        _write_csv(path, row_list, fields)
+    return paths
+
+
+def _experiment_write_text_artifacts(
+    suite_dirs: Sequence[Path],
+    *,
+    filename: str,
+    text: str,
+) -> list[Path]:
+    paths = _experiment_artifact_paths(suite_dirs, subdir="tables", filename=filename)
+    for path in paths:
+        _write_text(path, text)
+    return paths
+
+
+def _experiment_copy_artifact(source_path: Path, paths: Sequence[Path]) -> list[Path]:
+    for path in paths:
+        if path == source_path:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, path)
+    return list(paths)
+
+
 def _style_experiment_axis(ax: Any) -> None:
     _style_manuscript_axis(ax, grid_alpha=0.55)
 
@@ -2714,7 +2718,7 @@ def _experiment_r2_threshold_times(
     return None, None, None
 
 
-def _experiment_plot_bottleneck_sweep() -> tuple[Path, Path]:
+def _experiment_plot_bottleneck_sweep() -> list[Path]:
     sources = [
         _ExperimentSuiteSource(
             "exp01_asymmetric_basin",
@@ -2766,11 +2770,12 @@ def _experiment_plot_bottleneck_sweep() -> tuple[Path, Path]:
                 }
             )
 
-    csv_path = _DOCS_TABLE_DIR / "tbme_experiment_bottleneck_sweep.csv"
-    _write_csv(
-        csv_path,
-        rows,
-        [
+    suite_dirs = [source.suite_dir for source in sources]
+    csv_paths = _experiment_write_csv_artifacts(
+        suite_dirs,
+        filename="tbme_experiment_bottleneck_sweep.csv",
+        rows=rows,
+        fields=[
             "experiment",
             "condition",
             "policy_id",
@@ -2781,8 +2786,13 @@ def _experiment_plot_bottleneck_sweep() -> tuple[Path, Path]:
             "n_r2",
         ],
     )
+    figure_paths = _experiment_artifact_paths(
+        suite_dirs,
+        subdir="figures",
+        filename="tbme_experiment_bottleneck_sweep.pdf",
+    )
     figure_path = plot_tbme_bottleneck_sweep(
-        _DOCS_FIGURE_DIR / "tbme_experiment_bottleneck_sweep.pdf",
+        figure_paths[0],
         sources=sources,
         rows=rows,
         policy_ids=_experiment_BOTTLENECK_POLICIES,
@@ -2791,10 +2801,7 @@ def _experiment_plot_bottleneck_sweep() -> tuple[Path, Path]:
         apply_style=_apply_style,
         style_axis=_style_experiment_axis,
     )
-    return (
-        figure_path,
-        csv_path,
-    )
+    return [*_experiment_copy_artifact(figure_path, figure_paths), *csv_paths]
 
 
 def _experiment_objective_sources() -> list[_ExperimentSuiteSource]:
@@ -2818,7 +2825,7 @@ def _experiment_objective_sources() -> list[_ExperimentSuiteSource]:
     ]
 
 
-def _experiment_write_objective_definition_tables() -> tuple[Path, Path]:
+def _experiment_write_objective_definition_tables(suite_dirs: Sequence[Path]) -> list[Path]:
     rows = [
         {
             "policy_id": str(row["policy_id"]),
@@ -2829,11 +2836,11 @@ def _experiment_write_objective_definition_tables() -> tuple[Path, Path]:
         }
         for row in _experiment_OBJECTIVE_DEFINITIONS
     ]
-    csv_path = _DOCS_TABLE_DIR / "tbme_experiment_objective_ablation_objectives.csv"
-    _write_csv(
-        csv_path,
-        rows,
-        [
+    written = _experiment_write_csv_artifacts(
+        suite_dirs,
+        filename="tbme_experiment_objective_ablation_objectives.csv",
+        rows=rows,
+        fields=[
             "policy_id",
             "policy_label",
             "objective_name",
@@ -2842,7 +2849,6 @@ def _experiment_write_objective_definition_tables() -> tuple[Path, Path]:
         ],
     )
 
-    tex_path = _DOCS_TABLE_DIR / "tbme_experiment_objective_ablation_objectives.tex"
     lines = [
         "% Auto-generated by experiments/tbme/generate_figures.py experiment",
         (
@@ -2870,12 +2876,17 @@ def _experiment_write_objective_definition_tables() -> tuple[Path, Path]:
             + r" \\"
         )
     lines += [r"\bottomrule", r"\end{tabular}"]
-    tex_path.parent.mkdir(parents=True, exist_ok=True)
-    tex_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return csv_path, tex_path
+    written.extend(
+        _experiment_write_text_artifacts(
+            suite_dirs,
+            filename="tbme_experiment_objective_ablation_objectives.tex",
+            text="\n".join(lines) + "\n",
+        )
+    )
+    return written
 
 
-def _experiment_plot_objective_ablation() -> tuple[Path, Path]:
+def _experiment_plot_objective_ablation() -> list[Path]:
     sources = _experiment_objective_sources()
     threshold = 0.95
     metric_rows: list[dict[str, Any]] = []
@@ -2916,11 +2927,12 @@ def _experiment_plot_objective_ablation() -> tuple[Path, Path]:
                 }
             )
 
-    csv_path = _DOCS_TABLE_DIR / "tbme_experiment_objective_ablation.csv"
-    _write_csv(
-        csv_path,
-        metric_rows,
-        [
+    suite_dirs = [source.suite_dir for source in sources]
+    csv_paths = _experiment_write_csv_artifacts(
+        suite_dirs,
+        filename="tbme_experiment_objective_ablation.csv",
+        rows=metric_rows,
+        fields=[
             "experiment",
             "condition",
             "policy_id",
@@ -2936,8 +2948,13 @@ def _experiment_plot_objective_ablation() -> tuple[Path, Path]:
             "n_r2",
         ],
     )
+    figure_paths = _experiment_artifact_paths(
+        suite_dirs,
+        subdir="figures",
+        filename="tbme_experiment_objective_ablation_asymmetric_basin.pdf",
+    )
     figure_path = plot_tbme_objective_ablation(
-        _DOCS_FIGURE_DIR / "tbme_experiment_objective_ablation_asymmetric_basin.pdf",
+        figure_paths[0],
         sources=sources,
         metric_rows=metric_rows,
         curves_by_source=curves_by_source,
@@ -2949,10 +2966,7 @@ def _experiment_plot_objective_ablation() -> tuple[Path, Path]:
         stroke_color=_experiment_C_STROKE,
         neutral_light=_experiment_C_NEUTRAL_LIGHT,
     )
-    return (
-        figure_path,
-        csv_path,
-    )
+    return [*_experiment_copy_artifact(figure_path, figure_paths), *csv_paths]
 
 
 def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
@@ -3028,7 +3042,7 @@ def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
     ]
 
 
-def _experiment_plot_mismatch_dose_response() -> tuple[Path, Path]:
+def _experiment_plot_mismatch_dose_response() -> list[Path]:
     sources = _experiment_dose_sources()
     rows: list[dict[str, Any]] = []
     for source in sources:
@@ -3056,11 +3070,12 @@ def _experiment_plot_mismatch_dose_response() -> tuple[Path, Path]:
                 }
             )
 
-    csv_path = _DOCS_TABLE_DIR / "tbme_experiment_mismatch_dose_response.csv"
-    _write_csv(
-        csv_path,
-        rows,
-        [
+    suite_dirs = [source.suite_dir for source in sources]
+    csv_paths = _experiment_write_csv_artifacts(
+        suite_dirs,
+        filename="tbme_experiment_mismatch_dose_response.csv",
+        rows=rows,
+        fields=[
             "family",
             "dose",
             "dose_label",
@@ -3075,8 +3090,13 @@ def _experiment_plot_mismatch_dose_response() -> tuple[Path, Path]:
             "n_r2",
         ],
     )
+    figure_paths = _experiment_artifact_paths(
+        suite_dirs,
+        subdir="figures",
+        filename="tbme_experiment_mismatch_dose_response.pdf",
+    )
     figure_path = plot_tbme_mismatch_dose_response(
-        _DOCS_FIGURE_DIR / "tbme_experiment_mismatch_dose_response.pdf",
+        figure_paths[0],
         rows=rows,
         policy_ids=_experiment_DOSE_POLICIES,
         policy_label=_experiment_policy_label,
@@ -3084,10 +3104,7 @@ def _experiment_plot_mismatch_dose_response() -> tuple[Path, Path]:
         apply_style=_apply_style,
         style_axis=_style_experiment_axis,
     )
-    return (
-        figure_path,
-        csv_path,
-    )
+    return [*_experiment_copy_artifact(figure_path, figure_paths), *csv_paths]
 
 
 def _experiment_collect_records(
@@ -3126,21 +3143,9 @@ def _experiment_collect_records(
     return records
 
 
-def _experiment_write_manifest(paths: Sequence[Path]) -> Path:
-    manifest = _DOCS_TABLE_DIR / "tbme_experiment_figures_manifest.txt"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(
-        "TBME experiment figures:\n"
-        + "\n".join(str(path.relative_to(_REPO_ROOT)) for path in paths)
-        + "\n",
-        encoding="utf-8",
-    )
-    return manifest
-
-
 def _experiment_build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate TBME experiment-level manuscript figures.",
+        description="Generate TBME experiment-level figures into suite result folders.",
         allow_abbrev=False,
     )
     parser.add_argument(
@@ -3155,7 +3160,27 @@ def _experiment_build_parser() -> argparse.ArgumentParser:
         default=",".join(EXPERIMENT_PLOTS),
         help="Comma-separated TBME experiment plot ids.",
     )
+    parser.add_argument(
+        "--groups",
+        type=str,
+        default=",".join(GROUPS),
+        help="Comma-separated TBME groups whose suite folders receive global experiment figures.",
+    )
     return parser
+
+
+def _experiment_suite_dirs_from_groups(raw: str) -> list[Path]:
+    group_ids = [item.strip() for item in str(raw).split(",") if item.strip()]
+    unknown = sorted(set(group_ids) - set(GROUPS))
+    if unknown:
+        raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
+    if not group_ids:
+        raise ValueError("At least one TBME group is required")
+    return _unique_paths(
+        ref.session_root / ref.suite_id
+        for group_id in group_ids
+        for ref in GROUPS[group_id]
+    )
 
 
 def _experiment_short_policy_label(policy_id: str) -> str:
@@ -3334,7 +3359,21 @@ def _experiment_learned_vectorfield_dynamics(
     )
 
 
-def _experiment_plot_true_dynamics_all() -> Path:
+def _experiment_plot_true_dynamics_all(suite_dirs: Sequence[Path]) -> list[Path]:
+    """Plot the true vector fields for the TBME synthetic systems."""
+    figure_paths = _experiment_artifact_paths(
+        suite_dirs,
+        subdir="figures",
+        filename="tbme_experiment_true_dynamics_all.pdf",
+    )
+    output_path = figure_paths[0]
+    plt_module = load_plotting(output_path, apply_style=_apply_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    from actdyn.utils.plotting import decorate_phase_space_axis
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
     panel_specs = [
         ("tbme_duffing", "Duffing"),
         ("tbme_damped_pendulum", "Damped pendulum"),
@@ -3367,16 +3406,78 @@ def _experiment_plot_true_dynamics_all() -> Path:
         speed = np.hypot(u_np, v_np)
         log_speed = np.log1p(np.nan_to_num(speed, nan=0.0, posinf=1e6, neginf=0.0))
         fields.append((title, x_np, y_np, u_np, v_np, log_speed))
-    return plot_tbme_true_dynamics_all(
-        _DOCS_FIGURE_DIR / "tbme_experiment_true_dynamics_all.pdf",
-        fields=fields,
-        grid_lim=grid_lim,
-        apply_style=_apply_style,
-        stroke_color=_experiment_C_STROKE,
+
+    finite_speed = np.concatenate([arr[np.isfinite(arr)].reshape(-1) for *_rest, arr in fields])
+    vmax = float(np.percentile(finite_speed, 98.0)) if finite_speed.size else 1.0
+    norm = Normalize(vmin=0.0, vmax=max(vmax, 1e-6))
+
+    fig = plt_module.figure(figsize=(7.25, 4.05))
+    gs = fig.add_gridspec(
+        2,
+        7,
+        wspace=0.36,
+        hspace=0.42,
+        width_ratios=[1, 1, 1, 1, 1, 1, 0.08],
     )
+    axes = [
+        fig.add_subplot(gs[0, 0:2]),
+        fig.add_subplot(gs[0, 2:4]),
+        fig.add_subplot(gs[0, 4:6]),
+        fig.add_subplot(gs[1, 1:3]),
+        fig.add_subplot(gs[1, 3:5]),
+    ]
+    cax = fig.add_subplot(gs[:, 6])
+    for panel_idx, (ax, (title, x_np, y_np, u_np, v_np, log_speed)) in enumerate(
+        zip(axes, fields)
+    ):
+        ax.pcolormesh(
+            x_np,
+            y_np,
+            log_speed,
+            cmap="viridis",
+            norm=norm,
+            shading="auto",
+            alpha=0.82,
+            rasterized=True,
+            zorder=0,
+        )
+        ax.streamplot(
+            x_np,
+            y_np,
+            u_np,
+            v_np,
+            color=_experiment_C_STROKE,
+            linewidth=0.38,
+            density=1.25,
+            arrowsize=0.62,
+            zorder=2,
+        )
+        decorate_phase_space_axis(
+            ax,
+            xlim=(-grid_lim, grid_lim),
+            ylim=(-grid_lim, grid_lim),
+            title=f"{chr(ord('A') + panel_idx)}. {title}",
+            xlabel="x",
+            ylabel="v",
+            grid_alpha=0.20,
+        )
+        ax.set_xticks([-6, 0, 6])
+        ax.set_yticks([-6, 0, 6])
+
+    sm = ScalarMappable(norm=norm, cmap="viridis")
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cax)
+    cbar.set_label(r"$\log(1 + \|f(z)\|)$")
+    cbar.outline.set_linewidth(0.45)
+    figure_path = save_figure(
+        fig,
+        output_path,
+        plt_module=plt_module,
+    )
+    return _experiment_copy_artifact(figure_path, figure_paths)
 
 
-def _experiment_plot_asymmetric_basin_mechanism(max_seeds: int) -> Path:
+def _experiment_plot_asymmetric_basin_mechanism(max_seeds: int) -> list[Path]:
     suite_dir = _suite_dir("exp02_hard", "exp02_hard_asymmetric_basin")
     policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
     records = _experiment_collect_records(suite_dir, policy_ids, max_seeds=max_seeds)
@@ -3457,8 +3558,13 @@ def _experiment_plot_asymmetric_basin_mechanism(max_seeds: int) -> Path:
         if value is not None:
             final_r2[policy_id].append(value)
 
-    return plot_tbme_asymmetric_basin_mechanism(
-        _DOCS_FIGURE_DIR / "tbme_experiment_asymmetric_basin_mechanism.pdf",
+    figure_paths = _experiment_artifact_paths(
+        [suite_dir],
+        subdir="figures",
+        filename="tbme_experiment_asymmetric_basin_mechanism.pdf",
+    )
+    figure_path = plot_tbme_asymmetric_basin_mechanism(
+        figure_paths[0],
         x_axis=x_axis,
         y_axis=y_axis,
         logdet_grid=logdet_grid,
@@ -3480,6 +3586,7 @@ def _experiment_plot_asymmetric_basin_mechanism(max_seeds: int) -> Path:
         style_axis=_style_manuscript_axis,
         stroke_color=_experiment_C_STROKE,
     )
+    return _experiment_copy_artifact(figure_path, figure_paths)
 
 
 def _experiment_common_seed(
@@ -3545,7 +3652,7 @@ def _experiment_xy_trace_until(record: _ExperimentRunRecord, step: int) -> np.nd
     return np.asarray(points, dtype=np.float32)
 
 
-def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> Path:
+def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> list[Path]:
     suite_dir = _suite_dir("exp02_hard", "exp02_hard_asymmetric_basin")
     policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
     checkpoints = [250, 500, 1000]
@@ -3569,6 +3676,13 @@ def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> Path:
 
     ref_metadata = record_by_policy[policy_ids[0]].metadata
     env_preset = get_environment_preset_from_metadata(ref_metadata)
+    initial_state = _experiment_xy_trace_until(record_by_policy[policy_ids[0]], 0)
+    if initial_state.size == 0:
+        initial_state = np.asarray(ref_metadata.get("initial_state_true", []), dtype=np.float32)
+        if initial_state.size == 0:
+            initial_state = np.asarray(env_preset.sample_initial_state(seed), dtype=np.float32)
+    else:
+        initial_state = initial_state[0]
     plot_abs = max(float(env_preset.resolved_plot_limit()), 6.0)
     boundary_radius = _safe_float(ref_metadata.get("boundary_radius"))
     if boundary_radius is None:
@@ -3599,13 +3713,19 @@ def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> Path:
                 if record is None
                 else _experiment_xy_trace_until(record, checkpoint)
             )
-    return plot_tbme_learned_vectorfield_snapshots(
-        _DOCS_FIGURE_DIR / "tbme_experiment_asymmetric_basin_learned_vectorfields.pdf",
+    figure_paths = _experiment_artifact_paths(
+        [suite_dir],
+        subdir="figures",
+        filename="tbme_experiment_asymmetric_basin_learned_vectorfields.pdf",
+    )
+    figure_path = plot_tbme_learned_vectorfield_snapshots(
+        figure_paths[0],
         seed=seed,
         row_ids=row_ids,
         checkpoints=checkpoints,
         dynamics_by_cell=dynamics_by_cell,
         traces_by_cell=traces_by_cell,
+        initial_state=initial_state,
         plot_abs=plot_abs,
         short_policy_label=_experiment_short_policy_label,
         policy_color=_policy_color,
@@ -3614,6 +3734,7 @@ def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> Path:
         neutral_fill=_experiment_C_NEUTRAL_FILL,
         grid_color=_experiment_C_GRID,
     )
+    return _experiment_copy_artifact(figure_path, figure_paths)
 
 
 def _experiment_aggregate_parameter_traces(
@@ -3653,7 +3774,7 @@ def _experiment_aggregate_parameter_traces(
     return traces, true_params
 
 
-def _experiment_plot_per_parameter_recovery(max_seeds: int) -> Path:
+def _experiment_plot_per_parameter_recovery(max_seeds: int) -> list[Path]:
     suite_dir = _suite_dir("exp01_base", "exp01_asymmetric_basin")
     policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
     traces, true_params = _experiment_aggregate_parameter_traces(
@@ -3662,8 +3783,13 @@ def _experiment_plot_per_parameter_recovery(max_seeds: int) -> Path:
         max_seeds=max_seeds,
         stride=20,
     )
-    return plot_tbme_per_parameter_recovery(
-        _DOCS_FIGURE_DIR / "tbme_experiment_asymmetric_basin_parameter_recovery.pdf",
+    figure_paths = _experiment_artifact_paths(
+        [suite_dir],
+        subdir="figures",
+        filename="tbme_experiment_asymmetric_basin_parameter_recovery.pdf",
+    )
+    figure_path = plot_tbme_per_parameter_recovery(
+        figure_paths[0],
         traces=traces,
         true_params=true_params,
         policy_ids=policy_ids,
@@ -3674,61 +3800,14 @@ def _experiment_plot_per_parameter_recovery(max_seeds: int) -> Path:
         style_axis=_style_manuscript_axis,
         stroke_color=_experiment_C_STROKE,
     )
-
-
-def _experiment_write_latex_snippet(paths: Sequence[Path]) -> Path:
-    _DOCS_TABLE_DIR.mkdir(parents=True, exist_ok=True)
-    snippet = _DOCS_TABLE_DIR / "tbme_experiment_figures.tex"
-    captions = {
-        "tbme_experiment_true_dynamics_all.pdf": (
-            "True phase portraits for the distinct TBME synthetic dynamics. Background color shows "
-            "log speed, and streamlines show the direction of the latent drift over $[-6, 6]^2$; "
-            "observation-only and mismatch-dose variants reuse one of these true vector fields."
-        ),
-        "tbme_experiment_asymmetric_basin_mechanism.pdf": (
-            "Hard asymmetric-basin mechanism diagnostics under asymmetric observation loading. "
-            "Panel A overlays trajectories and the true dynamics vector field on the seed-averaged "
-            "spatial observation information geometry; the remaining panels connect this geometry "
-            "to state-space coverage and endpoint prediction."
-        ),
-        "tbme_experiment_asymmetric_basin_learned_vectorfields.pdf": (
-            "Hard asymmetric-basin vector fields for one shared seed. The first row shows the true "
-            "vector field; remaining rows correspond to methods, and columns show checkpoints at "
-            "250, 500, and 1000 interaction steps. Learned-field panels overlay the trajectory "
-            "prefix on the vector field induced by the current parameter estimate."
-        ),
-        "tbme_experiment_asymmetric_basin_parameter_recovery.pdf": (
-            "Per-parameter recovery in the asymmetric-basin benchmark, including the FLEX baseline."
-        ),
-    }
-    labels = {
-        "tbme_experiment_true_dynamics_all.pdf": "fig:tbme_experiment_true_dynamics_all",
-        "tbme_experiment_asymmetric_basin_mechanism.pdf": "fig:tbme_experiment_asymmetric_basin_mechanism",
-        "tbme_experiment_asymmetric_basin_learned_vectorfields.pdf": "fig:tbme_experiment_learned_vectorfields",
-        "tbme_experiment_asymmetric_basin_parameter_recovery.pdf": "fig:tbme_experiment_parameter_recovery",
-    }
-    lines: list[str] = ["% Auto-generated by experiments/tbme/generate_figures.py experiment"]
-    for path in paths:
-        name = path.name
-        lines.extend(
-            [
-                r"\begin{figure*}[t]",
-                r"	\centering",
-                rf"	\includegraphics[width=\textwidth]{{../figs/{name}}}",
-                rf"	\caption{{{captions[name]}}}",
-                rf"	\label{{{labels[name]}}}",
-                r"\end{figure*}",
-                "",
-            ]
-        )
-    snippet.write_text("\n".join(lines), encoding="utf-8")
-    return snippet
+    return _experiment_copy_artifact(figure_path, figure_paths)
 
 
 def experiment_main(argv: list[str] | None = None) -> int:
     args = _experiment_build_parser().parse_args(argv)
     max_seeds = int(args.max_seeds)
     plot_ids = _experiment_parse_plots(str(args.plots))
+    output_suite_dirs = _experiment_suite_dirs_from_groups(str(args.groups))
     missing_suite_dirs = sorted(
         (
             suite_dir
@@ -3741,14 +3820,13 @@ def experiment_main(argv: list[str] | None = None) -> int:
         missing_text = ", ".join(str(path) for path in missing_suite_dirs)
         raise FileNotFoundError(f"Missing TBME experiment suite(s): {missing_text}")
 
-    figure_paths: list[Path] = []
-    csv_paths: list[Path] = []
-    figure_only_paths: list[Path] = []
+    written: list[Path] = []
     if any(plot_id in _experiment_OBJECTIVE_DEFINITION_PLOTS for plot_id in plot_ids):
-        objective_definition_csv, objective_definition_tex = (
-            _experiment_write_objective_definition_tables()
+        written.extend(
+            _experiment_write_objective_definition_tables(
+                _experiment_required_suite_dirs(["objective_ablation"])
+            )
         )
-        csv_paths.extend([objective_definition_csv, objective_definition_tex])
 
     experiment_plotters = {
         "bottleneck_sweep": _experiment_plot_bottleneck_sweep,
@@ -3756,7 +3834,7 @@ def experiment_main(argv: list[str] | None = None) -> int:
         "mismatch_dose_response": _experiment_plot_mismatch_dose_response,
     }
     figure_only_plotters = {
-        "true_dynamics_all": lambda: _experiment_plot_true_dynamics_all(),
+        "true_dynamics_all": lambda: _experiment_plot_true_dynamics_all(output_suite_dirs),
         "asymmetric_basin_mechanism": lambda: _experiment_plot_asymmetric_basin_mechanism(
             max_seeds=max_seeds
         ),
@@ -3769,17 +3847,60 @@ def experiment_main(argv: list[str] | None = None) -> int:
     }
     for plot_id in plot_ids:
         if plot_id in experiment_plotters:
-            figure_path, csv_path = experiment_plotters[plot_id]()
-            figure_paths.append(figure_path)
-            csv_paths.append(csv_path)
+            written.extend(experiment_plotters[plot_id]())
         else:
-            figure_only_paths.append(figure_only_plotters[plot_id]())
+            written.extend(figure_only_plotters[plot_id]())
 
-    written = [*figure_paths, *csv_paths, *figure_only_paths]
-    if figure_only_paths:
-        written.append(_experiment_write_latex_snippet(figure_only_paths))
-    if written:
-        written.append(_experiment_write_manifest(written))
     for path in written:
         print(path)
+    return 0
+
+
+def _assets_build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Prepare TBME manuscript asset assembly outputs.",
+        allow_abbrev=False,
+    )
+    parser.add_argument(
+        "--groups",
+        type=str,
+        default=",".join(GROUPS),
+        help="Comma-separated TBME groups to scan for component figures.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        default=_TBME_RESULTS_DIR / "assets",
+        help="Directory for assembled manuscript assets.",
+    )
+    return parser
+
+
+def assets_main(argv: list[str] | None = None) -> int:
+    args = _assets_build_parser().parse_args(argv)
+    group_ids = [item.strip() for item in str(args.groups).split(",") if item.strip()]
+    unknown = sorted(set(group_ids) - set(GROUPS))
+    if unknown:
+        raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
+    if not group_ids:
+        raise ValueError("At least one TBME group is required")
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "TBME manuscript asset assembly",
+        "",
+        "No multi-panel asset layouts are configured yet.",
+        "",
+        "Component roots:",
+    ]
+    for group_id in group_ids:
+        lines.append(str(_overview_figures_dir(group_id).relative_to(_REPO_ROOT)))
+        for ref in GROUPS[group_id]:
+            suite_dir = ref.session_root / ref.suite_id
+            lines.append(str((suite_dir / "summary" / "figures").relative_to(_REPO_ROOT)))
+            lines.append(str((suite_dir / "experiment" / "figures").relative_to(_REPO_ROOT)))
+    manifest = output_dir / "tbme_assets_manifest.txt"
+    _write_text(manifest, "\n".join(lines) + "\n")
+    print(manifest)
     return 0
