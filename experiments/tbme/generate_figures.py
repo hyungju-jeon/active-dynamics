@@ -6,50 +6,24 @@ import argparse
 from experiments.tbme import tbme_figures
 
 
-EXPERIMENT_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
-    "exp01_base": {
-        "plots": (
-            "true_dynamics_all",
-            "mismatch_dose_response",
-            "sample_efficiency_thresholds",
-            "compute_accuracy_pareto",
-            "per_parameter_recovery",
-            "information_learning_coupling",
-        ),
-    },
-    "exp02_hard": {
-        "plots": (
-            "asymmetric_basin_mechanism",
-            "learned_vectorfield_snapshots",
-            "sample_efficiency_thresholds",
-            "compute_accuracy_pareto",
-        ),
-    },
-    "exp03_schedule": {
-        "plots": ("compute_accuracy_pareto",),
-    },
-    "exp04_mismatch": {
-        "plots": (
-            "mismatch_dose_response",
-            "sample_efficiency_thresholds",
-            "compute_accuracy_pareto",
-        ),
-    },
-    "exp05_ablation": {
-        "plots": (
-            "objective_ablation",
-            "downstream_control",
-        ),
-    },
-    "exp06_bottleneck": {
-        "plots": ("bottleneck_sweep",),
-    },
-    "exp07_mismatch_stress": {
-        "plots": ("mismatch_dose_response",),
-    },
+EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
+    "exp01_base": (
+        "true_dynamics_all",
+        "mismatch_dose_response",
+        "per_parameter_recovery",
+    ),
+    "exp02_hard": (
+        "asymmetric_basin_mechanism",
+        "learned_vectorfield_snapshots",
+    ),
+    "exp03_schedule": (),
+    "exp04_mismatch": ("mismatch_dose_response",),
+    "exp05_ablation": ("objective_ablation",),
+    "exp06_bottleneck": ("bottleneck_sweep",),
+    "exp07_mismatch_stress": ("mismatch_dose_response",),
 }
 
-DEFAULT_GROUPS = ",".join(EXPERIMENT_GROUPS)
+DEFAULT_GROUPS = ",".join(tbme_figures.GROUPS)
 
 
 def _summary_args(args: argparse.Namespace) -> list[str]:
@@ -75,14 +49,17 @@ def _csv_items(raw: str) -> list[str]:
 
 def _experiment_plot_ids(group_csv: str) -> list[str]:
     group_ids = _csv_items(group_csv)
-    unknown = sorted(set(group_ids) - set(EXPERIMENT_GROUPS))
+    unknown = sorted(set(group_ids) - set(tbme_figures.GROUPS))
     if unknown:
         raise ValueError(f"Unknown experiment group(s): {', '.join(unknown)}")
+    missing = sorted(set(group_ids) - set(EXPERIMENT_PLOTS_BY_GROUP))
+    if missing:
+        raise ValueError(f"No experiment plots configured for group(s): {', '.join(missing)}")
 
     plot_ids: list[str] = []
     seen: set[str] = set()
     for group_id in group_ids:
-        for plot_id in EXPERIMENT_GROUPS[group_id]["plots"]:
+        for plot_id in EXPERIMENT_PLOTS_BY_GROUP[group_id]:
             if plot_id not in seen:
                 plot_ids.append(plot_id)
                 seen.add(plot_id)

@@ -8,6 +8,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 from actdyn.utils.experiment_runtime import read_trace_csv, write_trace_csv
+from actdyn.utils.figure_io import sample_sem
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -161,7 +162,7 @@ def aggregate_custom_trace(
                     "policy_id": policy_id,
                     "step": step_i,
                     "value_mean": float(np.mean(values)),
-                    "value_sem": _sample_sem(values),
+                    "value_sem": sample_sem(values),
                     "cpu_time_sec_mean": float(np.mean(cpu_vals)) if cpu_vals else None,
                     "n_points": len(values),
                 }
@@ -340,7 +341,7 @@ def aggregate_trajectory_r2_trace(
                     "policy_id": policy_id,
                     "step": step_i,
                     "value_mean": float(np.mean(values)),
-                    "value_sem": _sample_sem(values),
+                    "value_sem": sample_sem(values),
                     "cpu_time_sec_mean": float(np.mean(cpu_vals)) if cpu_vals else None,
                     "n_points": len(values),
                 }
@@ -361,13 +362,6 @@ def _extract_parameter_covariance_trace(row: dict[str, Any]) -> float | None:
     if diag_values:
         return float(np.sum(np.asarray(diag_values, dtype=np.float64)))
     return safe_float(row.get("cov_diag_mean"))
-
-
-def _sample_sem(values: Sequence[float]) -> float:
-    arr = np.asarray(values, dtype=np.float64)
-    if arr.size <= 1:
-        return 0.0
-    return float(np.std(arr, ddof=1) / np.sqrt(arr.size))
 
 
 def _write_curve_csv(path: Path, rows: list[dict[str, Any]], value_name: str) -> None:

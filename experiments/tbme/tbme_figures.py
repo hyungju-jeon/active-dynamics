@@ -6,13 +6,18 @@ import csv
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 
-from actdyn.environment import residual_np
 from actdyn.environment.vectorfield import ResidualDynamicsCallable
 from actdyn.utils.experiment_runtime import read_trace_csv
+from actdyn.utils.figure_io import (
+    load_plotting,
+    parse_figure_formats,
+    sample_sem,
+    save_figure,
+)
 from actdyn.utils.plotting import (
     apply_manuscript_figure_style,
     compute_vector_field,
@@ -29,35 +34,18 @@ from ..experiment_io import (
     resolve_artifact_path,
 )
 from ..visualize import (
-    _parse_figure_formats,
-    apply_tbme_asset_plot_style,
     plot_final_value_by_policy,
     plot_information_colormap,
     plot_metric_over_cpu_time,
     plot_metric_over_steps,
     plot_neuron_tuning_curve_colormap,
-    plot_tbme_asymmetric_basin_mechanism,
-    plot_tbme_bottleneck_sweep,
-    plot_tbme_compute_accuracy_pareto,
-    plot_tbme_downstream_control,
-    plot_tbme_information_learning_coupling,
-    plot_tbme_learned_vectorfield_snapshots,
-    plot_tbme_mismatch_dose_response,
-    plot_tbme_objective_ablation,
-    plot_tbme_per_parameter_recovery,
-    plot_tbme_r2_threshold_stacked_bars,
-    plot_tbme_sample_efficiency_thresholds,
-    plot_tbme_schedule_threshold_pareto,
-    plot_tbme_trajectory_density,
-    plot_tbme_trajectory_overlay,
-    plot_tbme_true_dynamics_all,
 )
 from .run_tbme_experiments import configure_tbme_catalogs
 
 configure_tbme_catalogs()
 
 
-# Common variables
+# Shared configuration
 _TBME_STROKE_COLOR = "#3A3A3A"
 _TBME_GRID_COLOR = "#DDD7CE"
 
@@ -310,7 +298,7 @@ FALLBACK_COLORS = (
 )
 
 
-# Shared helpers
+# Shared TBME helpers
 
 
 def _apply_style(plt_module: Any | None = None) -> None:
@@ -375,9 +363,7 @@ def _safe_float(raw: object) -> float | None:
 def _sem(values: Sequence[float]) -> float:
     arr = np.asarray(values, dtype=np.float64)
     arr = arr[np.isfinite(arr)]
-    if arr.size <= 1:
-        return 0.0
-    return float(arr.std(ddof=1) / math.sqrt(arr.size))
+    return sample_sem(arr.tolist())
 
 
 def _r2_threshold_suffix(threshold: float) -> str:
@@ -395,12 +381,1209 @@ def _read_xy_trace(path: Path) -> np.ndarray:
     return np.asarray(points, dtype=np.float32)
 
 
-# summary_main variables
+def _write_csv(path: Path, rows: Iterable[dict[str, Any]], fields: Sequence[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(fields))
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+# TBME figure layout functions
+
+def apply_tbme_asset_plot_style(plt_module: Any, *, stroke_color: str = "#3A3A3A") -> None:
+    """Apply compact TBME overview figure defaults."""
+    plt_module.rcParams.update(
+        {
+            "text.usetex": False,
+            "font.family": "serif",
+            "font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+            "font.size": 7.8,
+            "figure.dpi": 300,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "axes.edgecolor": stroke_color,
+            "axes.linewidth": 0.55,
+            "axes.labelcolor": stroke_color,
+            "xtick.color": stroke_color,
+            "ytick.color": stroke_color,
+            "xtick.major.width": 0.45,
+            "ytick.major.width": 0.45,
+            "xtick.major.size": 2.0,
+            "ytick.major.size": 2.0,
+            "legend.frameon": False,
+            "savefig.bbox": "tight",
+            "savefig.pad_inches": 0.02,
+        }
+    )
+
+
+def plot_tbme_r2_threshold_stacked_bars(
+    output_path: Path,
+    *,
+    group_name: str,
+    refs: Sequence[Any],
+    threshold_rows: list[dict[str, object]],
+    thresholds: Sequence[float],
+    field_prefix: str,
+    ylabel: str,
+    title_metric: str,
+    log_y: bool,
+    threshold_suffix: Callable[[float], str],
+    safe_float: Callable[[object], float | None],
+    threshold_segments: Callable[[dict[str, object], str], tuple[list[float], bool]],
+    threshold_value_penalty: Callable[[list[dict[str, object]], str], float],
+    policy_threshold_sort_key: Callable[[str, Sequence[Any], dict[tuple[str, str], dict[str, object]], str, float], Any],
+    short_policy_label: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    stroke_color: str,
+    neutral_color: str,
+    neutral_light: str,
+    neutral_fill: str,
+    segment_colors: Sequence[str],
+) -> Path | None:
+    """Plot stacked bars for first steps or CPU time to TBME R2 thresholds."""
+    if not threshold_rows:
+        return None
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        return None
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    row_by_key = {(str(row["suite_id"]), str(row["policy_id"])): row for row in threshold_rows}
+    missing_penalty = threshold_value_penalty(threshold_rows, field_prefix)
+    policy_ids = sorted(
+        {str(row["policy_id"]) for row in threshold_rows},
+        key=lambda policy_id: policy_threshold_sort_key(
+            policy_id, refs, row_by_key, field_prefix, missing_penalty
+        ),
+    )
+    if not policy_ids:
+        return None
+    positive_values = [
+        value
+        for row in threshold_rows
+        for threshold in thresholds
+        if (value := safe_float(row.get(f"{field_prefix}_{threshold_suffix(float(threshold))}")))
+        is not None
+        and value > 0.0
+    ]
+    log_floor = min(positive_values) * 0.72 if log_y and positive_values else 0.0
+    n_methods = len(policy_ids)
+    group_gap = 3.0
+    bar_width = 0.48
+    x_positions: list[float] = []
+    x_labels: list[str] = []
+    group_centers: list[float] = []
+    max_height = 1.0
+    fig_width = max(6.8, 0.42 * n_methods * len(refs) + 0.35 * len(refs) + 2.2)
+    fig, ax = plt_module.subplots(figsize=(fig_width, 3.45))
+
+    for env_idx, ref in enumerate(refs):
+        base = env_idx * (n_methods + group_gap)
+        group_centers.append(base + (n_methods - 1) / 2.0)
+        if env_idx > 0:
+            ax.axvline(base - group_gap / 2.0, color=neutral_light, linewidth=0.7, alpha=0.85)
+        if env_idx % 2 == 1:
+            ax.axvspan(base - 0.62, base + n_methods - 0.38, color=neutral_fill, alpha=0.52)
+        for method_idx, policy_id in enumerate(policy_ids):
+            x = base + method_idx
+            x_positions.append(x)
+            x_labels.append(short_policy_label(policy_id))
+            row = row_by_key.get((str(ref.suite_id), policy_id), {})
+            segments, reached_all = threshold_segments(row, field_prefix)
+            bottom = 0.0
+            for seg_idx, segment in enumerate(segments):
+                if segment <= 0.0:
+                    continue
+                ax.bar(
+                    x,
+                    segment,
+                    width=bar_width,
+                    bottom=bottom,
+                    color=segment_colors[seg_idx],
+                    edgecolor=stroke_color,
+                    linewidth=0.35,
+                    zorder=3,
+                )
+                bottom += segment
+            max_height = max(max_height, bottom)
+            if bottom == 0.0:
+                ax.plot(
+                    [x - bar_width / 2.0, x + bar_width / 2.0],
+                    [log_floor, log_floor],
+                    color=neutral_color,
+                    linewidth=0.7,
+                    zorder=4,
+                )
+            if not reached_all:
+                ax.scatter(
+                    [x],
+                    [bottom if bottom > 0.0 else log_floor],
+                    marker="x",
+                    s=12,
+                    color=stroke_color,
+                    linewidths=0.6,
+                    zorder=5,
+                )
+
+    for center, ref in zip(group_centers, refs, strict=True):
+        ax.text(
+            center,
+            -0.31,
+            str(ref.label),
+            ha="center",
+            va="top",
+            color=stroke_color,
+            transform=ax.get_xaxis_transform(),
+            fontsize=7.5,
+        )
+    ax.set_xticks(x_positions)
+    ax.set_xticklabels(x_labels, rotation=90, ha="center", fontsize=5.8)
+    ax.tick_params(axis="x", pad=1.0)
+    ax.set_ylabel(ylabel)
+    ax.set_title(f"{group_name}: {title_metric} to trajectory R2 thresholds", pad=6.0)
+    ax.set_xlim(min(x_positions) - 0.8, max(x_positions) + 0.8)
+    if log_y and positive_values:
+        ax.set_yscale("log")
+        ax.set_ylim(log_floor, max_height * 1.45)
+    else:
+        ax.set_ylim(0.0, max_height * 1.16)
+    ax.grid(axis="y", color=neutral_light, linewidth=0.35, alpha=0.38, zorder=1)
+    for spine in ax.spines.values():
+        spine.set_color(stroke_color)
+        spine.set_linewidth(0.55)
+    legend_handles = [
+        Patch(facecolor=segment_colors[0], edgecolor=stroke_color, linewidth=0.35, label="0 -> 0.90"),
+        Patch(facecolor=segment_colors[1], edgecolor=stroke_color, linewidth=0.35, label="0.90 -> 0.95"),
+        Patch(facecolor=segment_colors[2], edgecolor=stroke_color, linewidth=0.35, label="0.95 -> 0.99"),
+        Line2D(
+            [0],
+            [0],
+            color=stroke_color,
+            marker="x",
+            linestyle="None",
+            markersize=4.5,
+            markeredgewidth=0.7,
+            label="threshold not reached",
+        ),
+    ]
+    ax.legend(
+        handles=legend_handles,
+        loc="upper left",
+        bbox_to_anchor=(1.005, 1.0),
+        ncol=1,
+        fontsize=6.5,
+        handlelength=1.4,
+    )
+    fig.subplots_adjust(left=0.075, right=0.83, top=0.88, bottom=0.37)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def plot_tbme_schedule_threshold_pareto(
+    output_path: Path,
+    *,
+    rows: list[dict[str, object]],
+    env_labels: Sequence[str],
+    policy_ids: Sequence[str],
+    thresholds: Sequence[float],
+    threshold_suffix: Callable[[float], str],
+    safe_float: Callable[[object], float | None],
+    short_policy_label: Callable[[str], str],
+    threshold_point_colors: Mapping[float, str],
+    apply_style: Callable[[Any], None] | None,
+    stroke_color: str,
+    neutral_light: str,
+    white_color: str = "#FFFFFF",
+) -> Path | None:
+    """Plot CPU-time versus sample-efficiency points for schedule thresholds."""
+    if not rows:
+        return None
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        return None
+    from matplotlib.lines import Line2D
+
+    policy_offsets = {
+        policy_id: ((idx % 4) - 1.5, (idx // 4) - 0.5) for idx, policy_id in enumerate(policy_ids)
+    }
+    fig, axes = plt_module.subplots(1, len(env_labels), figsize=(8.2, 2.95), sharey=True)
+    if len(env_labels) == 1:
+        axes = [axes]
+
+    max_step_seen = 1.0
+    for ax, env_label in zip(axes, env_labels, strict=True):
+        env_rows = [row for row in rows if str(row["suite_label"]) == env_label]
+        plotted_for_policy: dict[str, tuple[float, float, float]] = {}
+        max_cpu_seen = 1.0
+        for row in env_rows:
+            policy_id = str(row["policy_id"])
+            marker = "D" if policy_id == "active_myopic" else "o"
+            for threshold in thresholds:
+                suffix = threshold_suffix(float(threshold))
+                step = safe_float(row.get(f"step_to_r2_{suffix}"))
+                cpu_time = safe_float(row.get(f"cpu_time_sec_to_r2_{suffix}"))
+                if step is None or cpu_time is None:
+                    continue
+                ax.scatter(
+                    cpu_time,
+                    step,
+                    s=24 if policy_id != "active_myopic" else 30,
+                    marker=marker,
+                    facecolor=threshold_point_colors[float(threshold)],
+                    edgecolor=stroke_color,
+                    linewidth=0.45,
+                    alpha=0.92,
+                    zorder=4,
+                )
+                max_step_seen = max(max_step_seen, step)
+                max_cpu_seen = max(max_cpu_seen, cpu_time)
+                if (
+                    policy_id not in plotted_for_policy
+                    or threshold > plotted_for_policy[policy_id][2]
+                ):
+                    plotted_for_policy[policy_id] = (cpu_time, step, float(threshold))
+        for policy_id, (cpu_time, step, _threshold) in plotted_for_policy.items():
+            dx, dy = policy_offsets.get(policy_id, (0.0, 0.0))
+            ax.annotate(
+                short_policy_label(policy_id),
+                (cpu_time, step),
+                xytext=(4.0 + 3.0 * dx, 3.0 + 3.0 * dy),
+                textcoords="offset points",
+                fontsize=5.8,
+                color=stroke_color,
+                ha="left",
+                va="bottom",
+                bbox={"facecolor": white_color, "edgecolor": "none", "alpha": 0.72, "pad": 0.25},
+            )
+        ax.set_title(env_label, fontsize=8.0, pad=3.0)
+        ax.set_xlabel("CPU time (sec)")
+        ax.set_xlim(left=0.0, right=max_cpu_seen * 1.13)
+        ax.grid(color=neutral_light, linewidth=0.32, alpha=0.36)
+        for spine in ax.spines.values():
+            spine.set_color(stroke_color)
+            spine.set_linewidth(0.55)
+        ax.tick_params(width=0.45, length=2.0, colors=stroke_color)
+    axes[0].set_ylabel("Environment steps")
+    axes[0].set_ylim(bottom=0.0, top=max_step_seen * 1.16)
+    fig.suptitle("Exp03 schedule Pareto: time and steps to trajectory R2 thresholds", y=0.99)
+    threshold_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markerfacecolor=threshold_point_colors[float(threshold)],
+            markeredgecolor=stroke_color,
+            markeredgewidth=0.45,
+            markersize=5.0,
+            label=f"R2 {threshold:.2f}",
+        )
+        for threshold in thresholds
+    ]
+    method_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="None",
+            markerfacecolor=white_color,
+            markeredgecolor=stroke_color,
+            markersize=5.0,
+            label="Active schedule",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="D",
+            linestyle="None",
+            markerfacecolor=white_color,
+            markeredgecolor=stroke_color,
+            markersize=5.0,
+            label="Myopic",
+        ),
+    ]
+    fig.legend(
+        handles=[*threshold_handles, *method_handles],
+        loc="upper center",
+        ncol=5,
+        fontsize=6.4,
+        bbox_to_anchor=(0.5, 0.905),
+        columnspacing=0.9,
+        handlelength=1.0,
+    )
+    fig.subplots_adjust(left=0.07, right=0.995, top=0.73, bottom=0.18, wspace=0.22)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _tbme_trajectory_layout(n_panels: int) -> tuple[int, int, tuple[float, float]]:
+    if n_panels <= 1:
+        return 1, 1, (3.0, 2.8)
+    if n_panels <= 4:
+        n_cols = 2
+    elif n_panels <= 8:
+        n_cols = 4
+    else:
+        n_cols = 3
+    n_rows = int(math.ceil(n_panels / n_cols))
+    return n_rows, n_cols, (2.35 * n_cols, 2.25 * n_rows)
+
+
+def _tbme_trajectory_plot_limit(
+    grouped: dict[str, list[tuple[int, np.ndarray]]],
+    grid_lim: float,
+) -> float:
+    max_abs = float(grid_lim)
+    for traces in grouped.values():
+        for _seed, traj in traces:
+            if traj.size == 0:
+                continue
+            finite = traj[np.isfinite(traj).all(axis=1)]
+            if finite.size:
+                max_abs = max(max_abs, float(np.max(np.abs(finite[:, :2]))))
+    return max(max_abs * 1.08, float(grid_lim))
+
+
+def _tbme_trajectory_seed_color_map(
+    plt_module: Any, seeds: list[int]
+) -> dict[int, tuple[float, float, float, float]]:
+    if not seeds:
+        return {}
+    cmap = plt_module.get_cmap("turbo")
+    denom = max(len(seeds) - 1, 1)
+    return {seed: cmap(idx / denom) for idx, seed in enumerate(sorted(seeds))}
+
+
+def _tbme_format_trajectory_axis(
+    ax: Any,
+    plot_lim: float,
+    *,
+    title: str,
+    stroke_color: str,
+    neutral_light: str,
+) -> None:
+    ax.set_xlim(-plot_lim, plot_lim)
+    ax.set_ylim(-plot_lim, plot_lim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_title(title, fontsize=8.0, color=stroke_color, pad=2.0)
+    ax.set_xlabel("x", labelpad=1.5)
+    ax.set_ylabel("v", labelpad=1.5)
+    ax.grid(color=neutral_light, linewidth=0.28, alpha=0.28)
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.55)
+        spine.set_color(stroke_color)
+
+
+def _tbme_plot_vectorfield_background(
+    ax: Any,
+    dyn_true: Any,
+    plot_lim: float,
+    *,
+    neutral_light: str,
+) -> None:
+    x_grid, y_grid, u_grid, v_grid = compute_vector_field(
+        dyn_true,
+        x_range=plot_lim,
+        n_grid=36,
+        is_residual=True,
+        device="cpu",
+    )
+    ax.streamplot(
+        x_grid.cpu().numpy(),
+        y_grid.cpu().numpy(),
+        u_grid.cpu().numpy(),
+        v_grid.cpu().numpy(),
+        color=neutral_light,
+        linewidth=0.34,
+        density=1.35,
+        arrowsize=0.55,
+        zorder=1,
+    )
+
+
+def plot_tbme_trajectory_overlay(
+    output_path: Path,
+    *,
+    suite_name: str,
+    grouped: dict[str, list[tuple[int, np.ndarray]]],
+    dyn_true: Any,
+    grid_lim: float,
+    system_label: str,
+    max_seeds: int,
+    policy_sort_key: Callable[[str], Any],
+    policy_label: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    stroke_color: str,
+    write_color: str,
+    neutral_light: str,
+) -> Path | None:
+    """Plot trajectory overlays on the true vector field by policy."""
+    if not grouped:
+        return None
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        return None
+    policies = sorted(grouped, key=policy_sort_key)
+    plot_lim = _tbme_trajectory_plot_limit(grouped, grid_lim)
+    seeds = sorted({seed for traces in grouped.values() for seed, _traj in traces})
+    seed_colors = _tbme_trajectory_seed_color_map(plt_module, seeds)
+    n_rows, n_cols, figsize = _tbme_trajectory_layout(len(policies))
+    fig, axes = plt_module.subplots(
+        n_rows, n_cols, figsize=figsize, squeeze=False, sharex=True, sharey=True
+    )
+    for idx, policy_id in enumerate(policies):
+        ax = axes[idx // n_cols, idx % n_cols]
+        _tbme_plot_vectorfield_background(ax, dyn_true, plot_lim, neutral_light=neutral_light)
+        traces = grouped[policy_id]
+        for seed, traj in traces:
+            color = seed_colors.get(seed, write_color)
+            ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=0.55, alpha=0.72, zorder=3)
+            ax.scatter(
+                traj[0, 0],
+                traj[0, 1],
+                s=5.0,
+                color=color,
+                edgecolors="none",
+                alpha=0.95,
+                zorder=4,
+            )
+        _tbme_format_trajectory_axis(
+            ax,
+            plot_lim,
+            title=f"{policy_label(policy_id)}  n={len(traces)}",
+            stroke_color=stroke_color,
+            neutral_light=neutral_light,
+        )
+    for idx in range(len(policies), n_rows * n_cols):
+        axes[idx // n_cols, idx % n_cols].axis("off")
+    fig.suptitle(
+        f"{suite_name}: trajectory overlays on true {system_label} vector field "
+        f"(first {max_seeds} seeds)",
+        fontsize=9.0,
+        color=stroke_color,
+        y=0.995,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.975))
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _tbme_trajectory_histogram(
+    traces: list[tuple[int, np.ndarray]], grid_lim: float, bins: int
+) -> np.ndarray:
+    if not traces:
+        return np.zeros((bins, bins), dtype=np.float64)
+    pts = np.concatenate([traj[:, :2] for _seed, traj in traces if traj.size], axis=0)
+    if pts.size == 0:
+        return np.zeros((bins, bins), dtype=np.float64)
+    pts = pts[np.isfinite(pts).all(axis=1)]
+    hist, _x_edges, _y_edges = np.histogram2d(
+        pts[:, 0],
+        pts[:, 1],
+        bins=bins,
+        range=[[-grid_lim, grid_lim], [-grid_lim, grid_lim]],
+    )
+    return hist.T
+
+
+def _tbme_trajectory_density_cmap(plt_module: Any) -> Any:
+    try:
+        import seaborn as sns
+
+        return sns.color_palette("crest", as_cmap=True)
+    except Exception:
+        return plt_module.get_cmap("viridis")
+
+
+def plot_tbme_trajectory_density(
+    output_path: Path,
+    *,
+    suite_name: str,
+    grouped: dict[str, list[tuple[int, np.ndarray]]],
+    dyn_true: Any,
+    grid_lim: float,
+    system_label: str,
+    max_seeds: int,
+    bins: int,
+    policy_sort_key: Callable[[str], Any],
+    policy_label: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    stroke_color: str,
+    neutral_light: str,
+) -> Path | None:
+    """Plot trajectory sample density by policy on the true state space."""
+    if not grouped:
+        return None
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        return None
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    policies = sorted(grouped, key=policy_sort_key)
+    plot_lim = _tbme_trajectory_plot_limit(grouped, grid_lim)
+    hists = {
+        policy_id: _tbme_trajectory_histogram(grouped[policy_id], plot_lim, bins)
+        for policy_id in policies
+    }
+    max_count = max((float(np.nanmax(hist)) for hist in hists.values() if hist.size), default=1.0)
+    max_log_count = float(np.log10(max(max_count, 1.0) + 1.0))
+    norm = Normalize(vmin=0.0, vmax=max_log_count)
+    cmap = _tbme_trajectory_density_cmap(plt_module).copy()
+    cmap.set_bad((1.0, 1.0, 1.0, 0.0))
+
+    n_rows, n_cols, figsize = _tbme_trajectory_layout(len(policies))
+    fig, axes = plt_module.subplots(
+        n_rows, n_cols, figsize=figsize, squeeze=False, sharex=True, sharey=True
+    )
+    im = None
+    for idx, policy_id in enumerate(policies):
+        ax = axes[idx // n_cols, idx % n_cols]
+        _tbme_plot_vectorfield_background(ax, dyn_true, plot_lim, neutral_light=neutral_light)
+        counts = hists[policy_id]
+        hist = np.ma.masked_where(counts <= 0.0, np.log10(counts + 1.0))
+        im = ax.imshow(
+            hist,
+            origin="lower",
+            extent=(-plot_lim, plot_lim, -plot_lim, plot_lim),
+            cmap=cmap,
+            norm=norm,
+            alpha=0.7,
+            interpolation="nearest",
+            zorder=2,
+        )
+        _tbme_format_trajectory_axis(
+            ax,
+            plot_lim,
+            title=f"{policy_label(policy_id)}  n={len(grouped[policy_id])}",
+            stroke_color=stroke_color,
+            neutral_light=neutral_light,
+        )
+    for idx in range(len(policies), n_rows * n_cols):
+        axes[idx // n_cols, idx % n_cols].axis("off")
+    fig.suptitle(
+        f"{suite_name}: trajectory density on true {system_label} state space "
+        f"(first {max_seeds} seeds)",
+        fontsize=9.0,
+        color=stroke_color,
+        y=0.995,
+    )
+    fig.subplots_adjust(left=0.065, right=0.895, bottom=0.075, top=0.91, wspace=0.22, hspace=0.32)
+    if im is None:
+        im = ScalarMappable(norm=norm, cmap=cmap)
+    cax = fig.add_axes([0.915, 0.18, 0.015, 0.62])
+    cbar = fig.colorbar(im, cax=cax)
+    cbar.set_label("log10(1 + trajectory samples per bin)", color=stroke_color)
+    cbar.outline.set_linewidth(0.45)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def plot_tbme_bottleneck_sweep(
+    output_path: Path,
+    *,
+    sources: Sequence[Any],
+    rows: list[dict[str, Any]],
+    policy_ids: Sequence[str],
+    policy_label: Callable[[str], str],
+    policy_color: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    style_axis: Callable[..., None],
+) -> Path:
+    """Plot final prediction and threshold steps for bottleneck conditions."""
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt_module.subplots(1, 2, figsize=(7.1, 2.95), sharex=True)
+    x = np.arange(len(sources), dtype=np.float64)
+    offsets = np.linspace(-0.30, 0.30, len(policy_ids))
+    max_step = 1.0
+    finite_r2: list[float] = []
+    for idx, policy_id in enumerate(policy_ids):
+        color = policy_color(policy_id)
+        r2_y = []
+        r2_sem = []
+        step_y = []
+        missing_x = []
+        for source in sources:
+            match = [
+                row
+                for row in rows
+                if row["condition"] == source.label and row["policy_id"] == policy_id
+            ][0]
+            r2_y.append(np.nan if match["trajectory_r2_mean"] is None else match["trajectory_r2_mean"])
+            r2_sem.append(match["trajectory_r2_sem"])
+            step = match["step_to_r2_0p90"]
+            if step is None:
+                step_y.append(np.nan)
+                missing_x.append(x[len(step_y) - 1] + offsets[idx])
+            else:
+                step_y.append(float(step))
+                max_step = max(max_step, float(step))
+        xpos = x + offsets[idx]
+        axes[0].errorbar(
+            xpos,
+            r2_y,
+            yerr=r2_sem,
+            fmt="o-",
+            color=color,
+            linewidth=1.0,
+            markersize=3.4,
+            capsize=2.0,
+            label=policy_label(policy_id),
+        )
+        finite_r2.extend(float(v) for v in r2_y if np.isfinite(v))
+        axes[1].plot(
+            xpos,
+            step_y,
+            marker="o",
+            color=color,
+            linewidth=1.0,
+            markersize=3.4,
+            label=policy_label(policy_id),
+        )
+        if missing_x:
+            axes[1].scatter(
+                missing_x,
+                [max_step * 1.04 for _ in missing_x],
+                marker="x",
+                s=14,
+                color=color,
+                linewidths=0.75,
+            )
+    for ax in axes:
+        style_axis(ax)
+        ax.set_xticks(x)
+        ax.set_xticklabels([source.label for source in sources], rotation=18, ha="right")
+    axes[0].set_ylabel("Final prediction R2")
+    axes[0].set_ylim(min(-0.1, min(finite_r2) - 0.05) if finite_r2 else -0.1, 1.05)
+    axes[0].set_title("A. Prediction under bottlenecks")
+    axes[1].set_ylabel("Steps to prediction R2 >= 0.90")
+    axes[1].set_ylim(0.0, max_step * 1.15)
+    axes[1].set_title("B. Predictive sample efficiency")
+    axes[1].legend(loc="upper left", fontsize=6.6, ncol=1)
+    fig.tight_layout(w_pad=1.1)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def plot_tbme_objective_ablation(
+    output_path: Path,
+    *,
+    sources: Sequence[Any],
+    metric_rows: list[dict[str, Any]],
+    curves_by_source: dict[str, dict[str, list[dict[str, float]]]],
+    policy_ids: Sequence[str],
+    policy_label: Callable[[str], str],
+    policy_color: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    style_axis: Callable[..., None],
+    stroke_color: str,
+    neutral_light: str,
+) -> Path:
+    """Plot objective-ablation threshold bars and prediction-R2 recovery curves."""
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt_module.subplots(len(sources), 2, figsize=(7.15, 5.05), squeeze=False)
+    x = np.arange(len(policy_ids), dtype=np.float64)
+    x_labels = [policy_label(policy_id) for policy_id in policy_ids]
+    letters = ["A", "B", "C", "D"]
+    for source_idx, source in enumerate(sources):
+        row_metrics = [row for row in metric_rows if row["experiment"] == source.exp_id]
+        bars = [
+            np.nan if row["step_to_r2_0p95"] is None else row["step_to_r2_0p95"]
+            for row in row_metrics
+        ]
+        colors = [policy_color(str(row["policy_id"])) for row in row_metrics]
+        ax_bar = axes[source_idx, 0]
+        ax_curve = axes[source_idx, 1]
+        ax_bar.bar(x, bars, color=colors, edgecolor=stroke_color, linewidth=0.45)
+        finite_steps = [float(v) for v in bars if np.isfinite(v)]
+        max_step = max(finite_steps) if finite_steps else 1.0
+        missing_x = [float(x[idx]) for idx, value in enumerate(bars) if not np.isfinite(value)]
+        if missing_x:
+            ax_bar.scatter(
+                missing_x,
+                [max_step * 1.05 for _ in missing_x],
+                marker="x",
+                s=15,
+                color=stroke_color,
+                linewidths=0.8,
+            )
+        ax_bar.set_xticks(x)
+        ax_bar.set_xticklabels(x_labels, rotation=35, ha="right")
+        ax_bar.set_ylabel("Steps to prediction R2 >= 0.95")
+        ax_bar.set_ylim(0.0, max_step * 1.18)
+        ax_bar.set_title(f"{letters[2 * source_idx]}. {source.label}: threshold")
+        style_axis(ax_bar)
+
+        curves = curves_by_source[source.exp_id]
+        for policy_id in policy_ids:
+            curve_rows = curves.get(policy_id, [])
+            if not curve_rows:
+                continue
+            steps = np.asarray([row["step"] for row in curve_rows], dtype=np.float64)
+            values = np.asarray([row["value"] for row in curve_rows], dtype=np.float64)
+            sem = np.asarray([row["sem"] for row in curve_rows], dtype=np.float64)
+            color = policy_color(policy_id)
+            ax_curve.plot(steps, values, color=color, linewidth=1.0, label=policy_label(policy_id))
+            if np.any(sem > 0):
+                ax_curve.fill_between(
+                    steps, values - sem, values + sem, color=color, alpha=0.14, linewidth=0
+                )
+        ax_curve.axhline(0.95, color=neutral_light, linestyle="--", linewidth=0.7)
+        ax_curve.set_xlabel("Environment step")
+        ax_curve.set_ylabel("Prediction R2")
+        ax_curve.set_ylim(-0.1, 1.05)
+        ax_curve.set_title(f"{letters[2 * source_idx + 1]}. {source.label}: recovery")
+        style_axis(ax_curve)
+    handles, labels = axes[0, 1].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=4,
+        fontsize=6.2,
+        columnspacing=0.9,
+        handlelength=1.5,
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95), w_pad=1.0, h_pad=1.15)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def plot_tbme_mismatch_dose_response(
+    output_path: Path,
+    *,
+    rows: list[dict[str, Any]],
+    policy_ids: Sequence[str],
+    policy_label: Callable[[str], str],
+    policy_color: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    style_axis: Callable[..., None],
+) -> Path:
+    """Plot final prediction R2 as a function of model-mismatch dose."""
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    dose_order = ["none", "mild", "medium", "strong"]
+    dose_labels = ["None", "Mild", "Medium", "Strong"]
+    x = np.arange(len(dose_order), dtype=np.float64)
+    fig, axes = plt_module.subplots(1, 2, figsize=(7.1, 2.9), sharey=False)
+    for ax, family in zip(axes, ["Duffing", "Asymmetric basin"], strict=True):
+        family_rows = [row for row in rows if row["family"] == family]
+        for policy_id in policy_ids:
+            y = []
+            yerr = []
+            for dose in dose_order:
+                match = [
+                    row
+                    for row in family_rows
+                    if row["dose"] == dose and row["policy_id"] == policy_id
+                ]
+                if not match or match[0]["trajectory_r2_mean"] is None:
+                    y.append(np.nan)
+                    yerr.append(0.0)
+                else:
+                    y.append(float(match[0]["trajectory_r2_mean"]))
+                    yerr.append(float(match[0]["trajectory_r2_sem"]))
+            ax.errorbar(
+                x,
+                y,
+                yerr=yerr,
+                marker="o",
+                linewidth=1.0,
+                markersize=3.4,
+                capsize=2.0,
+                color=policy_color(policy_id),
+                label=policy_label(policy_id),
+            )
+        ax.set_xticks(x)
+        ax.set_xticklabels(dose_labels)
+        ax.set_ylabel("Final prediction R2")
+        finite_family_r2 = [
+            float(row["trajectory_r2_mean"])
+            for row in family_rows
+            if row.get("trajectory_r2_mean") is not None
+            and np.isfinite(float(row["trajectory_r2_mean"]))
+        ]
+        ax.set_ylim(min(-0.1, min(finite_family_r2) - 0.05) if finite_family_r2 else -0.1, 1.05)
+        ax.set_title(f"{family} mismatch dose-response")
+        style_axis(ax)
+    axes[1].legend(loc="upper left", fontsize=6.4)
+    fig.tight_layout(w_pad=1.0)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def plot_tbme_true_dynamics_all(
+    output_path: Path,
+    *,
+    fields: Sequence[tuple[str, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]],
+    grid_lim: float,
+    apply_style: Callable[[Any], None] | None,
+    stroke_color: str,
+) -> Path:
+    """Plot the true vector fields for the TBME synthetic systems."""
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    from actdyn.utils.plotting import decorate_phase_space_axis
+    from matplotlib.cm import ScalarMappable
+    from matplotlib.colors import Normalize
+
+    finite_speed = np.concatenate([arr[np.isfinite(arr)].reshape(-1) for *_rest, arr in fields])
+    vmax = float(np.percentile(finite_speed, 98.0)) if finite_speed.size else 1.0
+    norm = Normalize(vmin=0.0, vmax=max(vmax, 1e-6))
+
+    fig = plt_module.figure(figsize=(7.25, 4.05))
+    gs = fig.add_gridspec(2, 7, wspace=0.36, hspace=0.42, width_ratios=[1, 1, 1, 1, 1, 1, 0.08])
+    axes = [
+        fig.add_subplot(gs[0, 0:2]),
+        fig.add_subplot(gs[0, 2:4]),
+        fig.add_subplot(gs[0, 4:6]),
+        fig.add_subplot(gs[1, 1:3]),
+        fig.add_subplot(gs[1, 3:5]),
+    ]
+    cax = fig.add_subplot(gs[:, 6])
+    for panel_idx, (ax, (title, x_np, y_np, u_np, v_np, log_speed)) in enumerate(zip(axes, fields)):
+        ax.pcolormesh(
+            x_np,
+            y_np,
+            log_speed,
+            cmap="viridis",
+            norm=norm,
+            shading="auto",
+            alpha=0.82,
+            rasterized=True,
+            zorder=0,
+        )
+        ax.streamplot(
+            x_np,
+            y_np,
+            u_np,
+            v_np,
+            color=stroke_color,
+            linewidth=0.38,
+            density=1.25,
+            arrowsize=0.62,
+            zorder=2,
+        )
+        decorate_phase_space_axis(
+            ax,
+            xlim=(-grid_lim, grid_lim),
+            ylim=(-grid_lim, grid_lim),
+            title=f"{chr(ord('A') + panel_idx)}. {title}",
+            xlabel="x",
+            ylabel="v",
+            grid_alpha=0.20,
+        )
+        ax.set_xticks([-6, 0, 6])
+        ax.set_yticks([-6, 0, 6])
+
+    sm = ScalarMappable(norm=norm, cmap="viridis")
+    sm.set_array([])
+    cbar = fig.colorbar(sm, cax=cax)
+    cbar.set_label(r"$\log(1 + \|f(z)\|)$")
+    cbar.outline.set_linewidth(0.45)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def plot_tbme_neutral_vector_field(
+    ax: Any,
+    dynamics: Any,
+    *,
+    grid_lim: float,
+    n_grid: int,
+    arrowsize: float,
+    stroke_color: str,
+) -> None:
+    """Draw a neutral TBME vector field background on an existing axis."""
+    from matplotlib.colors import to_rgba
+
+    x_grid, y_grid, u_grid, v_grid = compute_vector_field(
+        dynamics,
+        x_range=grid_lim,
+        n_grid=n_grid,
+        is_residual=True,
+        device="cpu",
+    )
+    ax.streamplot(
+        x_grid.cpu().numpy(),
+        y_grid.cpu().numpy(),
+        u_grid.cpu().numpy(),
+        v_grid.cpu().numpy(),
+        color=to_rgba(stroke_color, 0.42),
+        linewidth=0.34,
+        density=1.55,
+        arrowsize=arrowsize,
+        zorder=1,
+    )
+
+
+def plot_tbme_asymmetric_basin_mechanism(
+    output_path: Path,
+    *,
+    x_axis: np.ndarray,
+    y_axis: np.ndarray,
+    logdet_grid: np.ndarray,
+    info_threshold: float,
+    info_vmin: float,
+    info_vmax: float,
+    panel_min: float,
+    panel_max: float,
+    true_dynamics: Any,
+    traces_by_policy: Mapping[str, Sequence[np.ndarray]],
+    policy_ids: Sequence[str],
+    informative_fraction: Mapping[str, Sequence[float]],
+    coverage_fraction: Mapping[str, Sequence[float]],
+    final_r2: Mapping[str, Sequence[float]],
+    sem: Callable[[Sequence[float]], float],
+    short_policy_label: Callable[[str], str],
+    policy_color: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    style_axis: Callable[..., None],
+    stroke_color: str,
+) -> Path:
+    """Plot asymmetric-basin mechanism diagnostics."""
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    from actdyn.utils.plotting import decorate_phase_space_axis
+    from matplotlib.lines import Line2D
+
+    fig, axes = plt_module.subplots(2, 2, figsize=(7.05, 5.75))
+    ax = axes[0, 0]
+    im = ax.imshow(
+        logdet_grid,
+        origin="lower",
+        extent=[x_axis[0], x_axis[-1], y_axis[0], y_axis[-1]],
+        cmap="magma",
+        vmin=info_vmin,
+        vmax=info_vmax,
+        interpolation="nearest",
+        aspect="equal",
+        alpha=0.72,
+    )
+    ax.contour(
+        x_axis,
+        y_axis,
+        logdet_grid,
+        levels=[info_threshold],
+        colors=[stroke_color],
+        linewidths=0.7,
+        linestyles="--",
+    )
+    plot_tbme_neutral_vector_field(
+        ax,
+        true_dynamics,
+        n_grid=28,
+        grid_lim=panel_max,
+        arrowsize=0.70,
+        stroke_color=stroke_color,
+    )
+    highlighted = ["active_planning_u20_r20_h40", "active_myopic", "flex", "prbs"]
+    for policy_id in highlighted:
+        for traj in traces_by_policy.get(policy_id, [])[:8]:
+            ax.plot(traj[:, 0], traj[:, 1], color=policy_color(policy_id), linewidth=0.55, alpha=0.68)
+    cbar = fig.colorbar(im, ax=ax, fraction=0.047, pad=0.02)
+    cbar.set_label("mean log det(I_z)")
+    cbar.outline.set_linewidth(0.45)
+    decorate_phase_space_axis(
+        ax,
+        xlim=(panel_min, panel_max),
+        ylim=(panel_min, panel_max),
+        title="A. Hard asymmetric-basin information and vector field",
+        grid_alpha=0.20,
+    )
+    style_axis(ax)
+    ax.legend(
+        handles=[
+            Line2D([0], [0], color=policy_color(policy_id), linewidth=0.9, label=short_policy_label(policy_id))
+            for policy_id in highlighted
+        ],
+        loc="lower right",
+        fontsize=5.8,
+        frameon=True,
+        framealpha=0.78,
+        borderpad=0.25,
+    )
+
+    panels = [
+        (axes[0, 1], informative_fraction, "B. Occupancy of high-information states", "Fraction of samples"),
+        (axes[1, 0], coverage_fraction, "C. State-space coverage", "Visited-bin fraction"),
+        (axes[1, 1], final_r2, "D. Endpoint prediction", "Final prediction R2"),
+    ]
+    labels = [short_policy_label(policy_id) for policy_id in policy_ids]
+    x = np.arange(len(policy_ids), dtype=np.float64)
+    for ax_i, data, title, ylabel in panels:
+        means = []
+        errors = []
+        for policy_id in policy_ids:
+            vals = [float(v) for v in data.get(policy_id, []) if math.isfinite(float(v))]
+            means.append(float(np.mean(vals)) if vals else np.nan)
+            errors.append(sem(vals))
+        ax_i.bar(
+            x,
+            means,
+            yerr=errors,
+            color=[policy_color(policy_id) for policy_id in policy_ids],
+            edgecolor=stroke_color,
+            linewidth=0.45,
+            capsize=2.3,
+            error_kw={"elinewidth": 0.55, "ecolor": stroke_color, "capthick": 0.55},
+        )
+        ax_i.set_xticks(x)
+        ax_i.set_xticklabels(labels, rotation=25, ha="right")
+        ax_i.set_ylabel(ylabel)
+        ax_i.set_title(title)
+        style_axis(ax_i, grid_axis="y")
+    axes[1, 1].set_ylim(-0.05, 1.05)
+    fig.suptitle(
+        "Hard asymmetric-basin mechanism: information geometry, coverage, and prediction",
+        y=0.995,
+    )
+    fig.tight_layout()
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def plot_tbme_learned_vectorfield_snapshots(
+    output_path: Path,
+    *,
+    seed: int,
+    row_ids: Sequence[str],
+    checkpoints: Sequence[int],
+    dynamics_by_cell: Mapping[tuple[str, int], Any],
+    traces_by_cell: Mapping[tuple[str, int], np.ndarray],
+    plot_abs: float,
+    short_policy_label: Callable[[str], str],
+    policy_color: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    stroke_color: str,
+    neutral_fill: str,
+    grid_color: str,
+) -> Path:
+    """Plot true and learned vector-field snapshots for a shared seed."""
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt_module.subplots(
+        len(row_ids), len(checkpoints), figsize=(7.25, 8.85), sharex=True, sharey=True
+    )
+    for row_idx, row_id in enumerate(row_ids):
+        color = stroke_color if row_id == "true" else policy_color(row_id)
+        for col_idx, checkpoint in enumerate(checkpoints):
+            ax = axes[row_idx, col_idx]
+            dynamics = dynamics_by_cell[(row_id, int(checkpoint))]
+            plot_tbme_neutral_vector_field(
+                ax,
+                dynamics,
+                grid_lim=plot_abs,
+                n_grid=22,
+                arrowsize=0.58,
+                stroke_color=stroke_color,
+            )
+            traj = traces_by_cell.get((row_id, int(checkpoint)), np.empty((0, 2), dtype=np.float32))
+            if traj.size:
+                ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=0.8, alpha=0.92, zorder=4)
+                ax.scatter(
+                    [traj[-1, 0]],
+                    [traj[-1, 1]],
+                    s=13,
+                    color=color,
+                    edgecolor=stroke_color,
+                    linewidth=0.35,
+                    zorder=5,
+                )
+                ax.scatter(
+                    [traj[0, 0]],
+                    [traj[0, 1]],
+                    s=9,
+                    color=neutral_fill,
+                    edgecolor=stroke_color,
+                    linewidth=0.3,
+                    zorder=5,
+                )
+            ax.set_xlim(-plot_abs, plot_abs)
+            ax.set_ylim(-plot_abs, plot_abs)
+            ax.set_aspect("equal", adjustable="box")
+            ax.grid(color=grid_color, linewidth=0.28, alpha=0.25)
+            for spine in ax.spines.values():
+                spine.set_color(stroke_color)
+                spine.set_linewidth(0.48)
+            ax.tick_params(width=0.4, length=1.6, labelsize=5.8)
+            if row_idx == 0:
+                ax.set_title(f"step {checkpoint}", fontsize=7.4, pad=2.0)
+            ylabel = "True" if row_id == "true" else short_policy_label(row_id)
+            ax.set_ylabel(ylabel if col_idx == 0 else "", fontsize=7.2)
+            ax.set_xlabel("x" if row_idx == len(row_ids) - 1 else "")
+    fig.suptitle(f"Hard asymmetric-basin true and learned vector fields, seed {seed}", y=0.995)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.975), w_pad=0.25, h_pad=0.45)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def plot_tbme_per_parameter_recovery(
+    output_path: Path,
+    *,
+    traces: Mapping[str, Mapping[int, Sequence[np.ndarray]]],
+    true_params: np.ndarray,
+    policy_ids: Sequence[str],
+    sem: Callable[[Sequence[float]], float],
+    short_policy_label: Callable[[str], str],
+    policy_color: Callable[[str], str],
+    apply_style: Callable[[Any], None] | None,
+    style_axis: Callable[..., None],
+    stroke_color: str,
+) -> Path:
+    """Plot per-parameter recovery traces for asymmetric-basin dynamics."""
+    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    names = ["a_L", "b_L", "a_R", "b_R"]
+    fig, axes = plt_module.subplots(2, 2, figsize=(7.35, 4.75), sharex=True)
+    for param_idx, ax in enumerate(axes.ravel()):
+        for policy_id in policy_ids:
+            by_step = traces.get(policy_id, {})
+            steps = sorted(by_step)
+            if not steps:
+                continue
+            means = []
+            sems = []
+            for step in steps:
+                vals = np.asarray([arr[param_idx] for arr in by_step[step]], dtype=np.float64)
+                vals = vals[np.isfinite(vals)]
+                means.append(float(np.mean(vals)) if vals.size else np.nan)
+                sems.append(sem(vals.tolist()))
+            means_arr = np.asarray(means, dtype=np.float64)
+            sems_arr = np.asarray(sems, dtype=np.float64)
+            color = policy_color(policy_id)
+            ax.plot(steps, means_arr, color=color, linewidth=1.0, label=short_policy_label(policy_id))
+            ax.fill_between(
+                steps,
+                means_arr - sems_arr,
+                means_arr + sems_arr,
+                color=color,
+                alpha=0.12,
+                linewidth=0.0,
+            )
+        ax.axhline(float(true_params[param_idx]), color=stroke_color, linewidth=0.8, linestyle="--")
+        ax.set_title(f"{chr(65 + param_idx)}. {names[param_idx]}")
+        ax.set_ylabel("Estimate")
+        style_axis(ax)
+    axes[1, 0].set_xlabel("Environment step")
+    axes[1, 1].set_xlabel("Environment step")
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=5, fontsize=6.4, bbox_to_anchor=(0.5, 1.015))
+    fig.suptitle("Asymmetric-basin per-parameter recovery", y=1.06)
+    fig.tight_layout()
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+
+# Summary output
 _summary_trace_C_WRITE = "#1F4FA8"
 _summary_trace_C_STROKE = "#3A3A3A"
 _summary_trace_C_NEUTRAL_LIGHT = "#C8C1B8"
 
-# summary_main helpers
+
 def _summary_curve_rows(path: Path, value_column: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for row in read_trace_csv(path):
@@ -750,7 +1933,7 @@ def summary_main(argv: list[str] | None = None) -> int:
     unknown = sorted(set(groups) - set(GROUPS))
     if unknown:
         raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
-    figure_formats = _parse_figure_formats(str(args.figure_formats))
+    figure_formats = parse_figure_formats(str(args.figure_formats))
 
     written: list[Path] = []
     for group_name in groups:
@@ -771,7 +1954,7 @@ def summary_main(argv: list[str] | None = None) -> int:
     return 0
 
 
-# group_overview_main variables
+# Group overview output
 _overview_R2_THRESHOLDS = (0.90, 0.95, 0.99)
 _overview_C_WRITE = "#1F4FA8"
 _overview_C_WRITE_SOFT = "#6F8EC8"
@@ -792,7 +1975,7 @@ _overview_R2_THRESHOLD_POINT_COLORS = {
 }
 
 
-# group_overview_main helpers
+
 def _overview_dir(group_name: str) -> Path:
     return _TBME_RESULTS_DIR / group_name / "overview"
 
@@ -852,27 +2035,6 @@ def _overview_aggregate_suite(ref: SuiteRef) -> list[dict[str, object]]:
         )
     out.sort(key=lambda row: _policy_sort_key(str(row["policy_id"])))
     return out
-
-
-def _overview_write_csv(path: Path, rows: list[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fields = [
-        "suite_id",
-        "suite_label",
-        "policy_id",
-        "policy_label",
-        "n",
-        "parameter_error_mean",
-        "parameter_error_std",
-        "trajectory_r2_mean",
-        "trajectory_r2_std",
-        "runtime_sec_mean",
-        "runtime_sec_std",
-    ]
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _overview_escape(text: str) -> str:
@@ -1187,7 +2349,23 @@ def _overview_export_group(
     overview_dir = _overview_dir(group_name)
     csv_path = overview_dir / "overview_table.csv"
     tex_path = overview_dir / "overview_table.tex"
-    _overview_write_csv(csv_path, rows)
+    _write_csv(
+        csv_path,
+        rows,
+        [
+            "suite_id",
+            "suite_label",
+            "policy_id",
+            "policy_label",
+            "n",
+            "parameter_error_mean",
+            "parameter_error_std",
+            "trajectory_r2_mean",
+            "trajectory_r2_std",
+            "runtime_sec_mean",
+            "runtime_sec_std",
+        ],
+    )
     _overview_write_tex(tex_path, rows)
     written = [csv_path, tex_path]
     threshold_plots = [
@@ -1255,7 +2433,7 @@ def group_overview_main(argv: list[str] | None = None) -> int:
     return 0
 
 
-# experiment_main variables
+# Experiment manuscript output
 _experiment_C_STROKE = "#3A3A3A"
 _experiment_C_NEUTRAL_LIGHT = "#C8C1B8"
 _experiment_C_NEUTRAL_FILL = "#F4F1EC"
@@ -1379,18 +2557,14 @@ _experiment_PLOTS = (
     "bottleneck_sweep",
     "objective_ablation",
     "mismatch_dose_response",
-    "downstream_control",
     "true_dynamics_all",
     "asymmetric_basin_mechanism",
     "learned_vectorfield_snapshots",
-    "sample_efficiency_thresholds",
-    "compute_accuracy_pareto",
     "per_parameter_recovery",
-    "information_learning_coupling",
 )
 EXPERIMENT_PLOTS = _experiment_PLOTS
 
-_experiment_OBJECTIVE_DEFINITION_PLOTS = {"objective_ablation", "downstream_control"}
+_experiment_OBJECTIVE_DEFINITION_PLOTS = {"objective_ablation"}
 _experiment_REQUIRED_SUITES_BY_PLOT = {
     "bottleneck_sweep": (
         ("exp01_base", "exp01_asymmetric_basin"),
@@ -1412,13 +2586,12 @@ _experiment_REQUIRED_SUITES_BY_PLOT = {
         ("exp07_mismatch_stress", "exp07_asymmetric_basin_parameter_mismatch_mild"),
         ("exp07_mismatch_stress", "exp07_asymmetric_basin_parameter_mismatch_strong"),
     ),
-    "downstream_control": (("exp05_ablation", "exp05_asymmetric_basin_objective_ablation"),),
 }
 
 
-# experiment_main helpers
 def _style_experiment_axis(ax: Any) -> None:
     _style_manuscript_axis(ax, grid_alpha=0.55)
+
 
 def _experiment_parse_plots(raw: str) -> list[str]:
     plot_ids = [item.strip() for item in str(raw).split(",") if item.strip()]
@@ -1444,14 +2617,6 @@ def _experiment_required_suite_dirs(plot_ids: Sequence[str]) -> list[Path]:
                 suite_keys.append(key)
                 seen.add(key)
     return [_suite_dir(group_name, suite_id) for group_name, suite_id in suite_keys]
-
-
-def _experiment_write_csv(path: Path, rows: list[dict[str, Any]], fields: Sequence[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(fields))
-        writer.writeheader()
-        writer.writerows(rows)
 
 
 def _experiment_policy_label(policy_id: str) -> str:
@@ -1602,7 +2767,7 @@ def _experiment_plot_bottleneck_sweep() -> tuple[Path, Path]:
             )
 
     csv_path = _DOCS_TABLE_DIR / "tbme_experiment_bottleneck_sweep.csv"
-    _experiment_write_csv(
+    _write_csv(
         csv_path,
         rows,
         [
@@ -1665,7 +2830,7 @@ def _experiment_write_objective_definition_tables() -> tuple[Path, Path]:
         for row in _experiment_OBJECTIVE_DEFINITIONS
     ]
     csv_path = _DOCS_TABLE_DIR / "tbme_experiment_objective_ablation_objectives.csv"
-    _experiment_write_csv(
+    _write_csv(
         csv_path,
         rows,
         [
@@ -1752,7 +2917,7 @@ def _experiment_plot_objective_ablation() -> tuple[Path, Path]:
             )
 
     csv_path = _DOCS_TABLE_DIR / "tbme_experiment_objective_ablation.csv"
-    _experiment_write_csv(
+    _write_csv(
         csv_path,
         metric_rows,
         [
@@ -1892,7 +3057,7 @@ def _experiment_plot_mismatch_dose_response() -> tuple[Path, Path]:
             )
 
     csv_path = _DOCS_TABLE_DIR / "tbme_experiment_mismatch_dose_response.csv"
-    _experiment_write_csv(
+    _write_csv(
         csv_path,
         rows,
         [
@@ -1959,238 +3124,6 @@ def _experiment_collect_records(
                     )
                 )
     return records
-
-
-def _experiment_pad_params(
-    estimate: Sequence[float], full_params: Sequence[float], min_dim: int
-) -> np.ndarray:
-    est = np.asarray(estimate, dtype=np.float64).reshape(-1)
-    full = np.asarray(full_params, dtype=np.float64).reshape(-1).copy()
-    n = min(max(int(min_dim), est.size), full.size)
-    full[:n] = est[:n]
-    return full
-
-
-def _experiment_step_batch(
-    *,
-    dynamics_type: str,
-    states: np.ndarray,
-    actions: np.ndarray,
-    params: np.ndarray,
-    dt: float,
-    dynamics_alpha: float,
-    clip_limit: float,
-) -> np.ndarray:
-    states_np = np.asarray(states, dtype=np.float64)
-    actions_np = np.asarray(actions, dtype=np.float64)
-    params_np = np.asarray(params, dtype=np.float64)
-    if params_np.ndim == 1:
-        params_np = np.broadcast_to(
-            params_np[None, :], (states_np.shape[0], params_np.shape[0])
-        ).copy()
-    drift = residual_np(
-        dynamics_type,
-        states_np,
-        params_np,
-        dynamics_alpha=float(dynamics_alpha),
-    )
-    next_states = states_np + float(dt) * (drift + actions_np)
-    return np.clip(next_states, -float(clip_limit), float(clip_limit))
-
-
-def _experiment_evaluate_regulation_cost(
-    *,
-    metadata: dict[str, Any],
-    model_params: np.ndarray,
-    true_params: np.ndarray,
-    starts: np.ndarray,
-    targets: np.ndarray,
-    seed: int,
-    n_control_steps: int = 240,
-) -> float:
-    del seed
-    dt = float(metadata.get("dt", 0.01))
-    action_max = float(metadata.get("action_max", 1.0))
-    dynamics_alpha = float(metadata.get("dynamics_alpha", 1.0))
-    clip_limit = float(
-        np.max(
-            np.abs(
-                np.asarray(
-                    metadata.get("state_high", [5.0, 5.0])
-                    + metadata.get("state_low", [-5.0, -5.0]),
-                    dtype=np.float64,
-                )
-            )
-        )
-    )
-    clip_limit = max(clip_limit, 5.0)
-    true_type = str(metadata.get("dynamics_type", "asymmetric_basin"))
-    estimator_type = str(metadata.get("estimator_dynamics_type", true_type))
-    total_cost = 0.0
-    feedback_gain = 0.18
-    for start, target in zip(starts, targets, strict=True):
-        state = np.asarray(start, dtype=np.float64).reshape(1, -1)
-        target_np = np.asarray(target, dtype=np.float64).reshape(1, -1)
-        task_cost = 0.0
-        for control_step in range(n_control_steps):
-            model_drift = residual_np(
-                estimator_type,
-                state,
-                model_params,
-                dynamics_alpha=dynamics_alpha,
-            )
-            action = np.clip(
-                -model_drift + feedback_gain * (target_np - state),
-                -action_max,
-                action_max,
-            )
-            state = _experiment_step_batch(
-                dynamics_type=true_type,
-                states=state,
-                actions=action,
-                params=true_params,
-                dt=dt,
-                dynamics_alpha=dynamics_alpha,
-                clip_limit=clip_limit,
-            )
-            err = state - target_np
-            task_cost += float(np.sum(err * err) + 0.02 * np.sum(action * action))
-            if control_step == n_control_steps - 1:
-                task_cost += 25.0 * float(np.sum(err * err))
-        total_cost += task_cost / float(n_control_steps)
-    return total_cost / float(max(1, len(starts)))
-
-
-def _experiment_control_tasks() -> tuple[np.ndarray, np.ndarray]:
-    targets = np.asarray(
-        [
-            [-1.70, 0.00],
-            [-1.05, 0.55],
-            [1.05, -0.55],
-            [1.70, 0.00],
-        ],
-        dtype=np.float64,
-    )
-    starts = targets + np.asarray(
-        [
-            [0.35, -0.25],
-            [-0.25, 0.20],
-            [0.25, -0.20],
-            [-0.35, 0.25],
-        ],
-        dtype=np.float64,
-    )
-    return starts, targets
-
-
-def _experiment_compute_downstream_rows() -> list[dict[str, Any]]:
-    suite_dir = _suite_dir(
-        "exp05_ablation",
-        "exp05_asymmetric_basin_objective_ablation",
-    )
-    records = _experiment_collect_records(
-        suite_dir,
-        _experiment_OBJECTIVE_POLICIES,
-        completed_only=True,
-    )
-    starts, targets = _experiment_control_tasks()
-    rows: list[dict[str, Any]] = []
-    oracle_costs: list[float] = []
-    for record in records:
-        metadata = record.metadata
-        true_params = np.asarray(metadata.get("true_params_full", []), dtype=np.float64)
-        if true_params.size == 0:
-            continue
-        learned_params = _experiment_pad_params(
-            metadata.get("embedding_estimate", true_params),
-            metadata.get("estimator_true_params_full", true_params),
-            int(metadata.get("min_embedding_dim", true_params.size)),
-        )
-        base_seed = 17_000 + int(record.seed) * 101 + len(rows)
-        learned_cost = _experiment_evaluate_regulation_cost(
-            metadata=metadata,
-            model_params=learned_params,
-            true_params=true_params,
-            starts=starts,
-            targets=targets,
-            seed=base_seed,
-        )
-        oracle_cost = _experiment_evaluate_regulation_cost(
-            metadata=metadata,
-            model_params=true_params,
-            true_params=true_params,
-            starts=starts,
-            targets=targets,
-            seed=base_seed,
-        )
-        oracle_costs.append(oracle_cost)
-        rows.append(
-            {
-                "policy_id": record.policy_id,
-                "policy_label": _experiment_policy_label(record.policy_id),
-                "seed": record.seed,
-                "parameter_error_final": _safe_float(
-                    metadata.get("embedding_error_final")
-                ),
-                "trajectory_r2_final": _safe_float(metadata.get("trajectory_r2_final")),
-                "downstream_control_cost": learned_cost,
-                "oracle_control_cost": oracle_cost,
-                "relative_control_cost": learned_cost / max(oracle_cost, 1e-8),
-            }
-        )
-    if oracle_costs:
-        oracle_mean = float(np.mean(oracle_costs))
-        rows.append(
-            {
-                "policy_id": "oracle_true_model",
-                "policy_label": "Oracle true model",
-                "seed": -1,
-                "parameter_error_final": 0.0,
-                "trajectory_r2_final": 1.0,
-                "downstream_control_cost": oracle_mean,
-                "oracle_control_cost": oracle_mean,
-                "relative_control_cost": 1.0,
-            }
-        )
-    return rows
-
-
-def _experiment_plot_downstream_control() -> tuple[Path, Path]:
-    rows = _experiment_compute_downstream_rows()
-    policy_ids = [*_experiment_OBJECTIVE_POLICIES, "oracle_true_model"]
-
-    csv_path = _DOCS_TABLE_DIR / "tbme_experiment_downstream_control_utility.csv"
-    _experiment_write_csv(
-        csv_path,
-        rows,
-        [
-            "policy_id",
-            "policy_label",
-            "seed",
-            "parameter_error_final",
-            "trajectory_r2_final",
-            "downstream_control_cost",
-            "oracle_control_cost",
-            "relative_control_cost",
-        ],
-    )
-    figure_path = plot_tbme_downstream_control(
-        _DOCS_FIGURE_DIR / "tbme_experiment_downstream_control_utility.pdf",
-        rows=rows,
-        policy_ids=policy_ids,
-        sem=_sem,
-        policy_label=_experiment_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        style_axis=_style_experiment_axis,
-        stroke_color=_experiment_C_STROKE,
-        neutral_light=_experiment_C_NEUTRAL_LIGHT,
-        neutral_fill=_experiment_C_NEUTRAL_FILL,
-    )
-    return (
-        figure_path,
-        csv_path,
-    )
 
 
 def _experiment_write_manifest(paths: Sequence[Path]) -> Path:
@@ -2683,148 +3616,6 @@ def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> Path:
     )
 
 
-def _experiment_threshold_value(row: dict[str, str], threshold: float) -> float | None:
-    suffix = _r2_threshold_suffix(threshold)
-    return _safe_float(row.get(f"step_to_r2_{suffix}"))
-
-
-def _experiment_plot_sample_efficiency_thresholds() -> Path:
-    selected = [
-        ("exp01_base", "exp01_duffing", "Duffing"),
-        ("exp01_base", "exp01_asymmetric_basin", "Asym. basin"),
-        ("exp02_hard", "exp02_hard_duffing", "Hard Duffing"),
-        ("exp02_hard", "exp02_hard_asymmetric_basin", "Hard asym."),
-        ("exp04_mismatch", "exp04_duffing_parameter_mismatch", "Duffing mismatch"),
-        ("exp04_mismatch", "exp04_asymmetric_basin_parameter_mismatch", "Asym. mismatch"),
-    ]
-    policy_ids = [
-        "active_planning_u20_r20_h40",
-        "active_myopic",
-        "ensemble",
-        "prbs",
-        "random",
-        "rhc",
-    ]
-    thresholds = {
-        "exp04_duffing_parameter_mismatch": 0.90,
-        "exp04_asymmetric_basin_parameter_mismatch": 0.90,
-    }
-    default_threshold = 0.95
-
-    values: list[tuple[str, str, float | None, float]] = []
-    for group_name, suite_id, suite_label in selected:
-        suite_dir = _suite_dir(group_name, suite_id)
-        threshold = thresholds.get(suite_id, default_threshold)
-        rows = read_trace_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv")
-        row_by_policy = {str(row.get("policy_id", "")): row for row in rows}
-        for policy_id in policy_ids:
-            step = _experiment_threshold_value(row_by_policy.get(policy_id, {}), threshold)
-            values.append((suite_label, policy_id, step, threshold))
-
-    suite_labels = [item[2] for item in selected]
-    return plot_tbme_sample_efficiency_thresholds(
-        _DOCS_FIGURE_DIR / "tbme_experiment_sample_efficiency_thresholds.pdf",
-        values=values,
-        suite_labels=suite_labels,
-        policy_ids=policy_ids,
-        short_policy_label=_experiment_short_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        style_axis=_style_manuscript_axis,
-        stroke_color=_experiment_C_STROKE,
-    )
-
-
-def _experiment_aggregate_metric_rows(group_name: str) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for ref in GROUPS[group_name]:
-        summary_path = ref.session_root / ref.suite_id / "summary" / "metrics.csv"
-        for row in read_trace_csv(summary_path):
-            if row.get("status") != "completed":
-                continue
-            value = _safe_float(row.get("value_final_mean"))
-            r2 = _safe_float(row.get("trajectory_r2_final_mean"))
-            runtime = _safe_float(row.get("runtime_sec_mean"))
-            if r2 is None or runtime is None:
-                continue
-            payload = dict(row)
-            payload["suite_id"] = ref.suite_id
-            payload["suite_label"] = ref.label
-            payload["parameter_error"] = value
-            payload["trajectory_r2"] = r2
-            payload["runtime_sec"] = runtime
-            rows.append(payload)
-    return rows
-
-
-def _experiment_mean_rows_by_policy(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
-    grouped: dict[tuple[str, str], dict[str, list[float] | str]] = {}
-    for row in rows:
-        key = (str(row["suite_label"]), str(row["policy_id"]))
-        bucket = grouped.setdefault(
-            key,
-            {
-                "suite_label": str(row["suite_label"]),
-                "policy_id": str(row["policy_id"]),
-                "error": [],
-                "r2": [],
-                "runtime": [],
-            },
-        )
-        assert isinstance(bucket["error"], list)
-        assert isinstance(bucket["r2"], list)
-        assert isinstance(bucket["runtime"], list)
-        if row.get("parameter_error") is not None:
-            bucket["error"].append(float(row["parameter_error"]))
-        bucket["r2"].append(float(row["trajectory_r2"]))
-        bucket["runtime"].append(float(row["runtime_sec"]))
-    out: list[dict[str, Any]] = []
-    for bucket in grouped.values():
-        errors = np.asarray(bucket["error"], dtype=np.float64)
-        r2s = np.asarray(bucket["r2"], dtype=np.float64)
-        runtimes = np.asarray(bucket["runtime"], dtype=np.float64)
-        out.append(
-            {
-                "suite_label": str(bucket["suite_label"]),
-                "policy_id": str(bucket["policy_id"]),
-                "parameter_error": float(np.mean(errors)) if errors.size else math.nan,
-                "trajectory_r2": float(np.mean(r2s)),
-                "runtime_sec": float(np.mean(runtimes)),
-            }
-        )
-    return out
-
-
-def _experiment_plot_compute_accuracy_pareto() -> Path:
-    schedule_rows = _experiment_mean_rows_by_policy(
-        _experiment_aggregate_metric_rows("exp03_schedule")
-    )
-    group_rows = []
-    for group_name in ("exp01_base", "exp02_hard", "exp04_mismatch"):
-        group_rows.extend(
-            _experiment_mean_rows_by_policy(_experiment_aggregate_metric_rows(group_name))
-        )
-    focus_policies = [
-        "active_planning_u20_r20_h40",
-        "active_myopic",
-        "ensemble",
-        "prbs",
-        "random",
-        "rhc",
-    ]
-    return plot_tbme_compute_accuracy_pareto(
-        _DOCS_FIGURE_DIR / "tbme_experiment_compute_accuracy_pareto.pdf",
-        schedule_rows=schedule_rows,
-        group_rows=group_rows,
-        focus_policies=focus_policies,
-        short_policy_label=_experiment_short_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        style_axis=_style_manuscript_axis,
-        stroke_color=_experiment_C_STROKE,
-    )
-
-
 def _experiment_aggregate_parameter_traces(
     suite_dir: Path,
     policy_ids: Sequence[str],
@@ -2885,58 +3676,6 @@ def _experiment_plot_per_parameter_recovery(max_seeds: int) -> Path:
     )
 
 
-def _experiment_plot_information_learning_coupling(max_seeds: int) -> Path:
-    suite_dir = _suite_dir("exp01_base", "exp01_asymmetric_basin")
-    policy_ids = [
-        "active_planning_u20_r20_h40",
-        "active_myopic",
-        "ensemble",
-        "prbs",
-        "random",
-        "rhc",
-    ]
-    records = _experiment_collect_records(suite_dir, policy_ids, max_seeds=max_seeds)
-    points: dict[str, list[tuple[float, float, float]]] = {
-        policy_id: [] for policy_id in policy_ids
-    }
-    for record in records:
-        info_rows = read_trace_csv(
-            _experiment_trace_path(record, "information_trace_path", "information_trace.csv")
-        )
-        r2_rows = read_trace_csv(
-            _experiment_trace_path(record, "trajectory_r2_trace_path", "trajectory_r2_trace.csv")
-        )
-        info_vals = [
-            value
-            for value in (_safe_float(row.get("I_theta_t")) for row in info_rows)
-            if value is not None and value >= 0.0
-        ]
-        r2_vals = [
-            value
-            for value in (_safe_float(row.get("trajectory_r2")) for row in r2_rows)
-            if value is not None
-        ]
-        if not info_vals or len(r2_vals) < 2:
-            continue
-        cumulative_info = float(np.sum(info_vals))
-        initial_r2 = float(r2_vals[0])
-        final_r2_value = float(r2_vals[-1])
-        points.setdefault(record.policy_id, []).append(
-            (cumulative_info, final_r2_value, final_r2_value - initial_r2)
-        )
-
-    return plot_tbme_information_learning_coupling(
-        _DOCS_FIGURE_DIR / "tbme_experiment_information_learning_coupling.pdf",
-        points=points,
-        policy_ids=policy_ids,
-        short_policy_label=_experiment_short_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        style_axis=_style_manuscript_axis,
-        stroke_color=_experiment_C_STROKE,
-    )
-
-
 def _experiment_write_latex_snippet(paths: Sequence[Path]) -> Path:
     _DOCS_TABLE_DIR.mkdir(parents=True, exist_ok=True)
     snippet = _DOCS_TABLE_DIR / "tbme_experiment_figures.tex"
@@ -2958,28 +3697,15 @@ def _experiment_write_latex_snippet(paths: Sequence[Path]) -> Path:
             "250, 500, and 1000 interaction steps. Learned-field panels overlay the trajectory "
             "prefix on the vector field induced by the current parameter estimate."
         ),
-        "tbme_experiment_sample_efficiency_thresholds.pdf": (
-            "Sample efficiency measured by the first environment step at which each method reaches "
-            "the indicated trajectory-$R^2$ threshold."
-        ),
-        "tbme_experiment_compute_accuracy_pareto.pdf": (
-            "Prediction-cost tradeoffs across planning schedules and policy families."
-        ),
         "tbme_experiment_asymmetric_basin_parameter_recovery.pdf": (
             "Per-parameter recovery in the asymmetric-basin benchmark, including the FLEX baseline."
-        ),
-        "tbme_experiment_information_learning_coupling.pdf": (
-            "Relationship between accumulated parameter information and predictive-$R^2$ improvement."
         ),
     }
     labels = {
         "tbme_experiment_true_dynamics_all.pdf": "fig:tbme_experiment_true_dynamics_all",
         "tbme_experiment_asymmetric_basin_mechanism.pdf": "fig:tbme_experiment_asymmetric_basin_mechanism",
         "tbme_experiment_asymmetric_basin_learned_vectorfields.pdf": "fig:tbme_experiment_learned_vectorfields",
-        "tbme_experiment_sample_efficiency_thresholds.pdf": "fig:tbme_experiment_sample_efficiency",
-        "tbme_experiment_compute_accuracy_pareto.pdf": "fig:tbme_experiment_compute_pareto",
         "tbme_experiment_asymmetric_basin_parameter_recovery.pdf": "fig:tbme_experiment_parameter_recovery",
-        "tbme_experiment_information_learning_coupling.pdf": "fig:tbme_experiment_information_learning",
     }
     lines: list[str] = ["% Auto-generated by experiments/tbme/generate_figures.py experiment"]
     for path in paths:
@@ -3028,7 +3754,6 @@ def experiment_main(argv: list[str] | None = None) -> int:
         "bottleneck_sweep": _experiment_plot_bottleneck_sweep,
         "objective_ablation": _experiment_plot_objective_ablation,
         "mismatch_dose_response": _experiment_plot_mismatch_dose_response,
-        "downstream_control": _experiment_plot_downstream_control,
     }
     figure_only_plotters = {
         "true_dynamics_all": lambda: _experiment_plot_true_dynamics_all(),
@@ -3038,12 +3763,7 @@ def experiment_main(argv: list[str] | None = None) -> int:
         "learned_vectorfield_snapshots": lambda: _experiment_plot_learned_vectorfield_snapshots(
             max_seeds=max_seeds
         ),
-        "sample_efficiency_thresholds": lambda: _experiment_plot_sample_efficiency_thresholds(),
-        "compute_accuracy_pareto": lambda: _experiment_plot_compute_accuracy_pareto(),
         "per_parameter_recovery": lambda: _experiment_plot_per_parameter_recovery(
-            max_seeds=max_seeds
-        ),
-        "information_learning_coupling": lambda: _experiment_plot_information_learning_coupling(
             max_seeds=max_seeds
         ),
     }
