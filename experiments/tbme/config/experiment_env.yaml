@@ -42,11 +42,51 @@ environments:
     information_boundary_margin: 1.0
     information_boundary_temperature: 0.15
 
-  tbme_duffing_easy:
+  tbme_duffing_hard:
     extends: tbme_duffing
-    system_label: duffing oscillator
-    observation_dim: 64
-    mean_firing_rate_target: 35.0
+    system_label: hard duffing oscillator with asymmetric loading
+    asymmetric_loading: true
+    state_noise: 0.1
+    state_init_uncertainty: 10.0
+    firing_rate_scale: 0.5
+    action_max: 1
+
+  tbme_duffing_parameter_mismatch:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mid fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -1.1
+    - -0.9
+    - 0.2
+
+  tbme_duffing_parameter_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.15
+
+  tbme_duffing_parameter_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.3
+
+  tbme_duffing_observation_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild observation-loading mismatch
+    observation_loading_mismatch_variance: 0.01
+
+  tbme_duffing_observation_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong observation-loading mismatch
+    observation_loading_mismatch_variance: 0.1
 
   tbme_damped_pendulum:
     extends: tbme_duffing
@@ -56,6 +96,12 @@ environments:
     true_params:
     - -0.5
     - 1.0
+
+  tbme_damped_pendulum_hard:
+    extends: tbme_duffing_hard
+    system_id: damped_pendulum
+    system_dynamics_type: damped_pendulum
+    system_label: damped pendulum with asymmetric loading
 
   tbme_asymmetric_basin:
     extends: tbme_duffing
@@ -67,7 +113,19 @@ environments:
     - -1.2
     - -0.8
     - 0.5
-    - 0.1
+    - 1.1
+
+  tbme_asymmetric_basin_hard:
+    extends: tbme_duffing_hard
+    system_id: asymmetric_basin
+    system_label: Asymmetric basin
+    dynamics_type: asymmetric_basin
+    embedding_dim: 4
+    true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - 1.1
 
   tbme_asymmetric_basin_weak_observation:
     extends: tbme_asymmetric_basin
@@ -93,94 +151,15 @@ environments:
     action_max: 0.55
     state_init_uncertainty: 4.0
 
-  tbme_multi_stable:
-    extends: tbme_duffing
-    system_id: multi_stable
-    system_label: Multi-stable system
-    dynamics_type: multi_stable
-    embedding_dim: 8
-    action_max: 5.0
-    true_params:
-    - 1.15
-    - -0.1
-    - -0.2
-    - 1.5
-    - 1.55
-    - -0.25
-    - -0.40
-    - -2.0
-
-  tbme_duffing_asymmetric:
-    extends: tbme_duffing
-    system_label: duffing oscillator with asymmetric loading
-    asymmetric_loading: true
-
-  tbme_duffing_hard:
-    extends: tbme_duffing_asymmetric
-    system_label: hard duffing oscillator with asymmetric loading
-    state_noise: 0.1
-    state_init_uncertainty: 10.0
-    firing_rate_scale: 0.5
-    action_max: 1
-
-  tbme_damped_pendulum_hard:
-    extends: tbme_duffing_hard
-    system_id: damped_pendulum
-    system_dynamics_type: damped_pendulum
-    system_label: damped pendulum with asymmetric loading
-
-  tbme_asymmetric_basin_hard:
-    extends: tbme_duffing_hard
-    system_id: asymmetric_basin
-    system_label: Asymmetric basin
-    dynamics_type: asymmetric_basin
-    embedding_dim: 4
-    true_params:
-    - -1.2
-    - -0.8
-    - 1.5
-    - 1.1
-
-  tbme_duffing_parameter_mismatch:
-    extends: tbme_duffing
-    system_label: Duffing oscillator / fixed cubic-coefficient mismatch
-    estimator_dynamics_type: duffing
-    estimator_true_params:
-    - -1.1
-    - -0.9
-    - 0.2
-
-  tbme_duffing_parameter_mismatch_mild:
-    extends: tbme_duffing
-    system_label: Duffing oscillator / mild fixed cubic-coefficient mismatch
-    estimator_dynamics_type: duffing
-    estimator_true_params:
-    - -0.5
-    - -0.75
-    - 0.15
-
-  tbme_duffing_parameter_mismatch_strong:
-    extends: tbme_duffing
-    system_label: Duffing oscillator / strong fixed cubic-coefficient mismatch
-    estimator_dynamics_type: duffing
-    estimator_true_params:
-    - -0.5
-    - -0.75
-    - 0.3
-
-  tbme_duffing_noise_mismatch:
-    extends: tbme_duffing
-    state_noise: 1
-
   tbme_asymmetric_basin_parameter_mismatch:
     extends: tbme_asymmetric_basin
-    system_label: Asymmetric basin / fixed-parameter mismatch
+    system_label: Asymmetric basin / mid fixed-parameter mismatch
     estimator_dynamics_type: asymmetric_basin
     estimator_true_params:
     - -1.2
     - -0.1
     - -0.55
-    - -0.5
+    - 0.25
     embedding_dim: 3
 
   tbme_asymmetric_basin_parameter_mismatch_mild:
@@ -191,7 +170,7 @@ environments:
     - -1.2
     - -0.8
     - 0.5
-    - -0.2
+    - 0.55
     embedding_dim: 3
 
   tbme_asymmetric_basin_parameter_mismatch_strong:
@@ -205,26 +184,12 @@ environments:
     - -1.0
     embedding_dim: 3
 
-  tbme_mcrtt_spikes:
-    extends: single_duffing
-    system_id: mcrtt_replay
-    system_label: MC_RTT neural replay
-    real_data: true
-    dataset_id: mc_rtt
-    dataset_path: data/mcrtt/mcrtt_replay.npz
-    state_key: behavior
-    observation_key: spikes
-    train_fraction: 0.7
-    time_bin_ms: 20.0
-    action_dim: 1
-    latent_dim: 2
-    embedding_dim: 4
-    observation_dim: 128
-    max_observation_dim: 128
-    action_max: 0.0
-    state_noise: 0.0
-    state_init_uncertainty: 1.0
-    x_range: 3.0
-    observation_noise_scale: 1.0
-    mean_firing_rate_target: 15.0
-    max_firing_rate_target: 120.0
+  tbme_asymmetric_basin_observation_mismatch_mild:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / mild observation-loading mismatch
+    observation_loading_mismatch_variance: 0.01
+
+  tbme_asymmetric_basin_observation_mismatch_strong:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / strong observation-loading mismatch
+    observation_loading_mismatch_variance: 0.1

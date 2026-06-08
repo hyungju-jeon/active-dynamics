@@ -28,7 +28,8 @@ EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
     "exp04_mismatch": ("mismatch_dose_response",),
     "exp05_ablation": ("objective_ablation",),
     "exp06_bottleneck": ("bottleneck_sweep",),
-    "exp07_mismatch_stress": ("mismatch_dose_response",),
+    "exp07_mismatch_stress": (),
+    "exp08_parameter_mismatch_stress": ("mismatch_dose_response",),
 }
 
 DEFAULT_GROUPS = ",".join(tbme_figures.GROUPS)

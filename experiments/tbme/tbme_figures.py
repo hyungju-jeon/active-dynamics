@@ -186,27 +186,53 @@ GROUPS: dict[str, list[SuiteRef]] = {
     ],
     "exp07_mismatch_stress": [
         SuiteRef(
-            "exp07_duffing_parameter_mismatch_mild",
-            "Duffing parameter mismatch mild",
+            "exp07_duffing_observation_mismatch_mild",
+            "Duffing observation mismatch mild",
             _latest_session(_TBME_RESULTS_DIR / "exp07_mismatch_stress"),
+            "duffing_observation_mismatch_mild",
+        ),
+        SuiteRef(
+            "exp07_duffing_observation_mismatch_strong",
+            "Duffing observation mismatch strong",
+            _latest_session(_TBME_RESULTS_DIR / "exp07_mismatch_stress"),
+            "duffing_observation_mismatch_strong",
+        ),
+        SuiteRef(
+            "exp07_asymmetric_basin_observation_mismatch_mild",
+            "Asymmetric basin observation mismatch mild",
+            _latest_session(_TBME_RESULTS_DIR / "exp07_mismatch_stress"),
+            "asymmetric_basin_observation_mismatch_mild",
+        ),
+        SuiteRef(
+            "exp07_asymmetric_basin_observation_mismatch_strong",
+            "Asymmetric basin observation mismatch strong",
+            _latest_session(_TBME_RESULTS_DIR / "exp07_mismatch_stress"),
+            "asymmetric_basin_observation_mismatch_strong",
+        ),
+    ],
+    "exp08_parameter_mismatch_stress": [
+        SuiteRef(
+            "exp08_duffing_parameter_mismatch_mild",
+            "Duffing parameter mismatch mild",
+            _latest_session(_TBME_RESULTS_DIR / "exp08_parameter_mismatch_stress"),
             "duffing_parameter_mismatch_mild",
         ),
         SuiteRef(
-            "exp07_duffing_parameter_mismatch_strong",
+            "exp08_duffing_parameter_mismatch_strong",
             "Duffing parameter mismatch strong",
-            _latest_session(_TBME_RESULTS_DIR / "exp07_mismatch_stress"),
+            _latest_session(_TBME_RESULTS_DIR / "exp08_parameter_mismatch_stress"),
             "duffing_parameter_mismatch_strong",
         ),
         SuiteRef(
-            "exp07_asymmetric_basin_parameter_mismatch_mild",
+            "exp08_asymmetric_basin_parameter_mismatch_mild",
             "Asymmetric basin parameter mismatch mild",
-            _latest_session(_TBME_RESULTS_DIR / "exp07_mismatch_stress"),
+            _latest_session(_TBME_RESULTS_DIR / "exp08_parameter_mismatch_stress"),
             "asymmetric_basin_parameter_mismatch_mild",
         ),
         SuiteRef(
-            "exp07_asymmetric_basin_parameter_mismatch_strong",
+            "exp08_asymmetric_basin_parameter_mismatch_strong",
             "Asymmetric basin parameter mismatch strong",
-            _latest_session(_TBME_RESULTS_DIR / "exp07_mismatch_stress"),
+            _latest_session(_TBME_RESULTS_DIR / "exp08_parameter_mismatch_stress"),
             "asymmetric_basin_parameter_mismatch_strong",
         ),
     ],
@@ -1972,10 +1998,16 @@ _experiment_REQUIRED_SUITES_BY_PLOT = {
         ("exp01_base", "exp01_asymmetric_basin"),
         ("exp04_mismatch", "exp04_duffing_parameter_mismatch"),
         ("exp04_mismatch", "exp04_asymmetric_basin_parameter_mismatch"),
-        ("exp07_mismatch_stress", "exp07_duffing_parameter_mismatch_mild"),
-        ("exp07_mismatch_stress", "exp07_duffing_parameter_mismatch_strong"),
-        ("exp07_mismatch_stress", "exp07_asymmetric_basin_parameter_mismatch_mild"),
-        ("exp07_mismatch_stress", "exp07_asymmetric_basin_parameter_mismatch_strong"),
+        ("exp08_parameter_mismatch_stress", "exp08_duffing_parameter_mismatch_mild"),
+        ("exp08_parameter_mismatch_stress", "exp08_duffing_parameter_mismatch_strong"),
+        (
+            "exp08_parameter_mismatch_stress",
+            "exp08_asymmetric_basin_parameter_mismatch_mild",
+        ),
+        (
+            "exp08_parameter_mismatch_stress",
+            "exp08_asymmetric_basin_parameter_mismatch_strong",
+        ),
     ),
 }
 
@@ -2997,11 +3029,11 @@ def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
             family="Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp07_duffing_parameter_mismatch_mild",
+            "exp08_duffing_parameter_mismatch_mild",
             "Mild",
             _suite_dir(
-                "exp07_mismatch_stress",
-                "exp07_duffing_parameter_mismatch_mild",
+                "exp08_parameter_mismatch_stress",
+                "exp08_duffing_parameter_mismatch_mild",
             ),
             dose="mild",
             family="Duffing",
@@ -3014,11 +3046,11 @@ def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
             family="Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp07_duffing_parameter_mismatch_strong",
+            "exp08_duffing_parameter_mismatch_strong",
             "Strong",
             _suite_dir(
-                "exp07_mismatch_stress",
-                "exp07_duffing_parameter_mismatch_strong",
+                "exp08_parameter_mismatch_stress",
+                "exp08_duffing_parameter_mismatch_strong",
             ),
             dose="strong",
             family="Duffing",
@@ -3031,11 +3063,11 @@ def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
             family="Asymmetric basin",
         ),
         _ExperimentSuiteSource(
-            "exp07_asymmetric_basin_parameter_mismatch_mild",
+            "exp08_asymmetric_basin_parameter_mismatch_mild",
             "Mild",
             _suite_dir(
-                "exp07_mismatch_stress",
-                "exp07_asymmetric_basin_parameter_mismatch_mild",
+                "exp08_parameter_mismatch_stress",
+                "exp08_asymmetric_basin_parameter_mismatch_mild",
             ),
             dose="mild",
             family="Asymmetric basin",
@@ -3048,11 +3080,11 @@ def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
             family="Asymmetric basin",
         ),
         _ExperimentSuiteSource(
-            "exp07_asymmetric_basin_parameter_mismatch_strong",
+            "exp08_asymmetric_basin_parameter_mismatch_strong",
             "Strong",
             _suite_dir(
-                "exp07_mismatch_stress",
-                "exp07_asymmetric_basin_parameter_mismatch_strong",
+                "exp08_parameter_mismatch_stress",
+                "exp08_asymmetric_basin_parameter_mismatch_strong",
             ),
             dose="strong",
             family="Asymmetric basin",

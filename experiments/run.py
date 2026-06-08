@@ -40,6 +40,7 @@ if __package__ in {None, ""}:
     from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
         apply_loglinear_loading_asymmetry,
+        apply_loglinear_loading_mismatch,
         as_bool,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
@@ -68,6 +69,7 @@ else:
     from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
         apply_loglinear_loading_asymmetry,
+        apply_loglinear_loading_mismatch,
         as_bool,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
@@ -784,6 +786,23 @@ def _run_single_parameter_identification(
     )
     noise = actdyn.models.decoder.PoissonNoise(obs_dim=dy, sigma=0.01, device=device)
     decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
+    decoder.set_params(obs_model)
+    loading_mismatch_variance = float(
+        getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
+    )
+    if loading_mismatch_variance < 0.0:
+        raise ValueError(
+            "observation_loading_mismatch_variance must be nonnegative, "
+            f"got {loading_mismatch_variance}."
+        )
+    if loading_mismatch_variance > 0.0:
+        decoder.mapping.set_weights(
+            apply_loglinear_loading_mismatch(
+                decoder.mapping.network[0].weight.data,
+                variance=loading_mismatch_variance,
+                seed=int(seed) + 11003,
+            )
+        )
 
     sim_vec_env = actdyn.VectorFieldEnv(
         env_preset.resolved_dynamics_type(estimator=True),
@@ -919,7 +938,6 @@ def _run_single_parameter_identification(
         predictive_only_window=bool(schedule_spec.predictive_only_window),
     )
     experiment = actdyn.core.experiment.Experiment(agent=agent, config=exp_config)
-    decoder.set_params(obs_model)
 
     param_rows: list[dict[str, Any]] = []
     emb_rows: list[dict[str, Any]] = []
@@ -1292,6 +1310,9 @@ def _run_single_parameter_identification(
             "boundary_barrier_temperature": float(
                 getattr(env_preset, "boundary_barrier_temperature", 0.1)
             ),
+            "observation_loading_mismatch_variance": float(
+                getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
+            ),
             "information_boundary_visibility_enabled": bool(
                 getattr(env_preset, "information_boundary_visibility_enabled", False)
             ),
@@ -1562,6 +1583,9 @@ def _build_session_experiment_entry(
             "mean_firing_rate_target": float(env_preset.mean_firing_rate_target),
             "max_firing_rate_target": float(env_preset.max_firing_rate_target),
             "asymmetric_loading": bool(env_preset.asymmetric_loading),
+            "observation_loading_mismatch_variance": float(
+                getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
+            ),
             "x_range": float(env_preset.resolved_plot_limit()),
             "real_data": bool(getattr(env_preset, "real_data", False)),
             "dataset_id": getattr(env_preset, "dataset_id", None),

@@ -18,7 +18,8 @@ There is no TBME suite YAML file in the current structure. Suite definitions liv
 - `exp04_mismatch.py`: nominal model-mismatch experiments.
 - `exp05_ablation.py`: objective ablations.
 - `exp06_bottleneck.py`: asymmetric-basin bottleneck experiments.
-- `exp07_mismatch_stress.py`: mild and strong mismatch stress tests.
+- `exp07_mismatch_stress.py`: mild and strong observation-loading mismatch stress tests.
+- `exp08_parameter_mismatch_stress.py`: mild and strong parameter-mismatch stress tests.
 - `run_tbme_experiments.py`: helper that connects each explicit TBME suite module to `experiments.run`.
 - `generate_figures.py`: single entrypoint for TBME figure and asset generation.
 - `tbme_figures.py`: TBME plotting and asset-export implementation used by `generate_figures.py`.
@@ -52,7 +53,8 @@ When the same model or policy id appears in both model catalog files, the later 
 | `exp04_mismatch.py` | `results/tbme/exp04_mismatch` | 1000 | `exp04_duffing_parameter_mismatch`, `exp04_asymmetric_basin_parameter_mismatch` |
 | `exp05_ablation.py` | `results/tbme/exp05_ablation` | 100 | `exp05_asymmetric_basin_objective_ablation`, `exp05_hard_asymmetric_basin_objective_ablation` |
 | `exp06_bottleneck.py` | `results/tbme/exp06_bottleneck` | 100 | `exp06_asymmetric_basin_bottleneck_weak_observation`, `exp06_asymmetric_basin_bottleneck_tight_action`, `exp06_asymmetric_basin_bottleneck_combined` |
-| `exp07_mismatch_stress.py` | `results/tbme/exp07_mismatch_stress` | 100 | `exp07_duffing_parameter_mismatch_mild`, `exp07_duffing_parameter_mismatch_strong`, `exp07_asymmetric_basin_parameter_mismatch_mild`, `exp07_asymmetric_basin_parameter_mismatch_strong` |
+| `exp07_mismatch_stress.py` | `results/tbme/exp07_mismatch_stress` | 100 | `exp07_duffing_observation_mismatch_mild`, `exp07_duffing_observation_mismatch_strong`, `exp07_asymmetric_basin_observation_mismatch_mild`, `exp07_asymmetric_basin_observation_mismatch_strong` |
+| `exp08_parameter_mismatch_stress.py` | `results/tbme/exp08_parameter_mismatch_stress` | 100 | `exp08_duffing_parameter_mismatch_mild`, `exp08_duffing_parameter_mismatch_strong`, `exp08_asymmetric_basin_parameter_mismatch_mild`, `exp08_asymmetric_basin_parameter_mismatch_strong` |
 
 The default seed counts are manuscript-scale defaults. For smoke tests or debugging, always pass an explicit small `--seeds` value.
 

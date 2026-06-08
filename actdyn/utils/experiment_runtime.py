@@ -113,6 +113,35 @@ def apply_loglinear_loading_asymmetry(weight: Any, env_preset: Any):
 
 
 
+def apply_loglinear_loading_mismatch(weight: Any, *, variance: float, seed: int):
+    """Add iid Gaussian mismatch to each log-linear loading entry.
+
+    Args:
+        weight: Loading matrix with shape (observation_dim, latent_dim).
+        variance: Nonnegative perturbation variance.
+        seed: PRNG seed for the perturbation.
+
+    Returns:
+        Perturbed loading matrix with the same shape and dtype as ``weight``.
+
+    The variance is the observation-model mismatch stress:
+    eps_ij ~ N(0, variance), C_model = C_true + eps.
+    """
+    import torch
+
+    mismatch_variance = float(variance)
+    if mismatch_variance < 0.0:
+        raise ValueError(f"Loading mismatch variance must be nonnegative, got {variance}.")
+    c = weight.detach().clone()
+    if mismatch_variance == 0.0:
+        return c
+    generator = torch.Generator(device=c.device)
+    generator.manual_seed(int(seed))
+    eps = torch.randn(c.shape, dtype=c.dtype, device=c.device, generator=generator)
+    return c + eps * float(np.sqrt(mismatch_variance))
+
+
+
 def predict_planned_xy_trajectory(
     *, model: Any, policy: Any, transition: dict[str, Any]
 ) -> np.ndarray | None:

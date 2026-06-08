@@ -33,6 +33,7 @@ class EnvironmentPreset:
     observation_primary_scale: float
     observation_secondary_scale: float
     observation_row_skew: float
+    observation_loading_mismatch_variance: float
     firing_rate_scale: float
     action_max: float
     system_label: str | None = None
@@ -520,6 +521,9 @@ def load_catalog_bundle(
             observation_primary_scale=float(spec.get("observation_primary_scale", 1.0)),
             observation_secondary_scale=float(spec.get("observation_secondary_scale", 2.0)),
             observation_row_skew=float(spec.get("observation_row_skew", 0.0)),
+            observation_loading_mismatch_variance=float(
+                spec.get("observation_loading_mismatch_variance", 0.0)
+            ),
             firing_rate_scale=float(spec.get("firing_rate_scale", 1.0)),
             action_max=float(spec.get("action_max", 1.0)),
             dynamics_alpha=float(spec.get("dynamics_alpha", 1.0)),
