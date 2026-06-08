@@ -49,41 +49,24 @@ EXPERIMENT_GROUPS: dict[str, dict[str, tuple[str, ...]]] = {
     },
 }
 
-REQUESTED_PLOTS = {
-    "bottleneck_sweep",
-    "objective_ablation",
-    "mismatch_dose_response",
-    "downstream_control",
-}
-ADDITIONAL_PLOTS = {
-    "true_dynamics_all",
-    "asymmetric_basin_mechanism",
-    "learned_vectorfield_snapshots",
-    "sample_efficiency_thresholds",
-    "compute_accuracy_pareto",
-    "per_parameter_recovery",
-    "information_learning_coupling",
-}
 DEFAULT_GROUPS = ",".join(EXPERIMENT_GROUPS)
 
 
 def _summary_args(args: argparse.Namespace) -> list[str]:
-    return ["--groups", str(args.groups), "--figure-formats", str(args.figure_formats)]
+    return [
+        "--groups",
+        str(args.groups),
+        "--figure-formats",
+        str(args.figure_formats),
+        "--trajectory-max-seeds",
+        str(args.trajectory_max_seeds),
+        "--density-bins",
+        str(args.density_bins),
+    ]
 
 
 def _overview_args(args: argparse.Namespace) -> list[str]:
     return ["--groups", str(args.groups)]
-
-
-def _trajectory_args(args: argparse.Namespace, *, max_seeds: int | None = None) -> list[str]:
-    return [
-        "--groups",
-        str(args.groups),
-        "--max-seeds",
-        str(args.max_seeds if max_seeds is None else max_seeds),
-        "--density-bins",
-        str(args.density_bins),
-    ]
 
 
 def _csv_items(raw: str) -> list[str]:
@@ -106,33 +89,12 @@ def _experiment_plot_ids(group_csv: str) -> list[str]:
     return plot_ids
 
 
-def _run_experiment_plots(args: argparse.Namespace) -> int:
+def _experiment_args(args: argparse.Namespace) -> list[str]:
     plot_ids = _experiment_plot_ids(str(args.groups))
-    unknown = sorted(set(plot_ids) - REQUESTED_PLOTS - ADDITIONAL_PLOTS)
+    unknown = sorted(set(plot_ids) - set(tbme_figures.EXPERIMENT_PLOTS))
     if unknown:
         raise ValueError(f"Unknown experiment plot(s): {', '.join(unknown)}")
-
-    requested_plot_ids = [plot_id for plot_id in plot_ids if plot_id in REQUESTED_PLOTS]
-    additional_plot_ids = [plot_id for plot_id in plot_ids if plot_id in ADDITIONAL_PLOTS]
-
-    if requested_plot_ids:
-        code = int(tbme_figures.requested_main(["--plots", ",".join(requested_plot_ids)]))
-        if code != 0:
-            return code
-    if additional_plot_ids:
-        code = int(
-            tbme_figures.additional_main(
-                [
-                    "--max-seeds",
-                    str(args.max_seeds),
-                    "--plots",
-                    ",".join(additional_plot_ids),
-                ]
-            )
-        )
-        if code != 0:
-            return code
-    return 0
+    return ["--max-seeds", str(args.max_seeds), "--plots", ",".join(plot_ids)]
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -145,7 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Summary : Write summary figures from existing summary CSV files.
     summary = subparsers.add_parser(
         "summary",
-        help="Write per-suite summary figures from existing summary CSV files.",
+        help="Write per-suite summary and trajectory figures.",
     )
     summary.add_argument(
         "--groups",
@@ -154,6 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated TBME group names.",
     )
     summary.add_argument("--figure-formats", type=str, default=".pdf")
+    summary.add_argument("--trajectory-max-seeds", type=int, default=50)
+    summary.add_argument("--density-bins", type=int, default=96)
 
     # Overview : Write group-level overview tables and figures.
     overview = subparsers.add_parser(
@@ -166,20 +130,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_GROUPS,
         help="Comma-separated TBME group names.",
     )
-
-    # Trajectory : Generate trajectory overlay and density summary figures.
-    trajectory = subparsers.add_parser(
-        "trajectory",
-        help="Generate trajectory overlay and density summary figures.",
-    )
-    trajectory.add_argument(
-        "--groups",
-        type=str,
-        default=DEFAULT_GROUPS,
-        help="Comma-separated TBME group names.",
-    )
-    trajectory.add_argument("--max-seeds", type=int, default=50)
-    trajectory.add_argument("--density-bins", type=int, default=96)
 
     experiment = subparsers.add_parser(
         "experiment",
@@ -217,12 +167,10 @@ def main(argv: list[str] | None = None) -> int:
         return int(tbme_figures.summary_main(_summary_args(args)))
     if args.output_set == "overview":
         return int(tbme_figures.group_overview_main(_overview_args(args)))
-    if args.output_set == "trajectory":
-        return int(tbme_figures.trajectory_main(_trajectory_args(args)))
     if args.output_set == "experiment":
-        return _run_experiment_plots(args)
+        return int(tbme_figures.experiment_main(_experiment_args(args)))
     if args.output_set == "all":
-        trajectory_max_seeds = (
+        args.trajectory_max_seeds = (
             args.trajectory_max_seeds if args.trajectory_max_seeds is not None else args.max_seeds
         )
         code = int(tbme_figures.summary_main(_summary_args(args)))
@@ -231,14 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         code = int(tbme_figures.group_overview_main(_overview_args(args)))
         if code != 0:
             return code
-        code = int(
-            tbme_figures.trajectory_main(
-                _trajectory_args(args, max_seeds=int(trajectory_max_seeds))
-            )
-        )
-        if code != 0:
-            return code
-        code = _run_experiment_plots(args)
+        code = int(tbme_figures.experiment_main(_experiment_args(args)))
         if code != 0:
             return code
         return 0
