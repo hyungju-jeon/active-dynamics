@@ -166,22 +166,28 @@ GROUPS: dict[str, list[SuiteRef]] = {
     ],
     "exp06_bottleneck": [
         SuiteRef(
-            "exp06_asymmetric_basin_bottleneck_weak_observation",
-            "Asymmetric basin weak observation",
+            "exp06_asymmetric_basin_observation_bottleneck_mild",
+            "Asymmetric basin observation bottleneck mild",
             _latest_session(_TBME_RESULTS_DIR / "exp06_bottleneck"),
-            "asymmetric_basin_bottleneck_weak_observation",
+            "asymmetric_basin_observation_bottleneck_mild",
         ),
         SuiteRef(
-            "exp06_asymmetric_basin_bottleneck_tight_action",
-            "Asymmetric basin tight action",
+            "exp06_asymmetric_basin_observation_bottleneck_strong",
+            "Asymmetric basin observation bottleneck strong",
             _latest_session(_TBME_RESULTS_DIR / "exp06_bottleneck"),
-            "asymmetric_basin_bottleneck_tight_action",
+            "asymmetric_basin_observation_bottleneck_strong",
         ),
         SuiteRef(
-            "exp06_asymmetric_basin_bottleneck_combined",
-            "Asymmetric basin bottleneck",
+            "exp06_asymmetric_basin_action_bottleneck_mild",
+            "Asymmetric basin action bottleneck mild",
             _latest_session(_TBME_RESULTS_DIR / "exp06_bottleneck"),
-            "asymmetric_basin_bottleneck_combined",
+            "asymmetric_basin_action_bottleneck_mild",
+        ),
+        SuiteRef(
+            "exp06_asymmetric_basin_action_bottleneck_strong",
+            "Asymmetric basin action bottleneck strong",
+            _latest_session(_TBME_RESULTS_DIR / "exp06_bottleneck"),
+            "asymmetric_basin_action_bottleneck_strong",
         ),
     ],
     "exp07_mismatch_stress": [
@@ -1985,9 +1991,10 @@ _experiment_OBJECTIVE_DEFINITION_PLOTS = {"objective_ablation"}
 _experiment_REQUIRED_SUITES_BY_PLOT = {
     "bottleneck_sweep": (
         ("exp01_base", "exp01_asymmetric_basin"),
-        ("exp06_bottleneck", "exp06_asymmetric_basin_bottleneck_weak_observation"),
-        ("exp06_bottleneck", "exp06_asymmetric_basin_bottleneck_tight_action"),
-        ("exp06_bottleneck", "exp06_asymmetric_basin_bottleneck_combined"),
+        ("exp06_bottleneck", "exp06_asymmetric_basin_observation_bottleneck_mild"),
+        ("exp06_bottleneck", "exp06_asymmetric_basin_observation_bottleneck_strong"),
+        ("exp06_bottleneck", "exp06_asymmetric_basin_action_bottleneck_mild"),
+        ("exp06_bottleneck", "exp06_asymmetric_basin_action_bottleneck_strong"),
     ),
     "objective_ablation": (
         ("exp05_ablation", "exp05_asymmetric_basin_objective_ablation"),
@@ -2077,7 +2084,7 @@ def plot_bottleneck_sweep(
     plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(1, 2, figsize=(7.1, 2.95), sharex=True)
+    fig, axes = plt_module.subplots(1, 2, figsize=(7.8, 2.95), sharex=True)
     x = np.arange(len(sources), dtype=np.float64)
     offsets = np.linspace(-0.30, 0.30, len(policy_ids))
     max_step = 1.0
@@ -2137,7 +2144,7 @@ def plot_bottleneck_sweep(
     for ax in axes:
         style_axis(ax)
         ax.set_xticks(x)
-        ax.set_xticklabels([source.label for source in sources], rotation=18, ha="right")
+        ax.set_xticklabels([source.label for source in sources], rotation=22, ha="right")
     axes[0].set_ylabel("Final prediction R2")
     axes[0].set_ylim(min(-0.1, min(finite_r2) - 0.05) if finite_r2 else -0.1, 1.05)
     axes[0].set_title("A. Prediction under bottlenecks")
@@ -2776,27 +2783,35 @@ def _experiment_plot_bottleneck_sweep() -> list[Path]:
             _suite_dir("exp01_base", "exp01_asymmetric_basin"),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_bottleneck_weak_observation",
-            "Weak obs.",
+            "exp06_asymmetric_basin_observation_bottleneck_mild",
+            "Obs. mild",
             _suite_dir(
                 "exp06_bottleneck",
-                "exp06_asymmetric_basin_bottleneck_weak_observation",
+                "exp06_asymmetric_basin_observation_bottleneck_mild",
             ),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_bottleneck_tight_action",
-            "Tight action",
+            "exp06_asymmetric_basin_observation_bottleneck_strong",
+            "Obs. strong",
             _suite_dir(
                 "exp06_bottleneck",
-                "exp06_asymmetric_basin_bottleneck_tight_action",
+                "exp06_asymmetric_basin_observation_bottleneck_strong",
             ),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_bottleneck_combined",
-            "Combined",
+            "exp06_asymmetric_basin_action_bottleneck_mild",
+            "Action mild",
             _suite_dir(
                 "exp06_bottleneck",
-                "exp06_asymmetric_basin_bottleneck_combined",
+                "exp06_asymmetric_basin_action_bottleneck_mild",
+            ),
+        ),
+        _ExperimentSuiteSource(
+            "exp06_asymmetric_basin_action_bottleneck_strong",
+            "Action strong",
+            _suite_dir(
+                "exp06_bottleneck",
+                "exp06_asymmetric_basin_action_bottleneck_strong",
             ),
         ),
     ]

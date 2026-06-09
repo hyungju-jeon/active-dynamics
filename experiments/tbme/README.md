@@ -52,7 +52,7 @@ When the same model or policy id appears in both model catalog files, the later 
 | `exp03_schedule.py` | `results/tbme/exp03_schedule` | 1000 | `exp03_schedule_duffing`, `exp03_schedule_damped_pendulum`, `exp03_schedule_asymmetric_basin` |
 | `exp04_mismatch.py` | `results/tbme/exp04_mismatch` | 1000 | `exp04_duffing_parameter_mismatch`, `exp04_asymmetric_basin_parameter_mismatch` |
 | `exp05_ablation.py` | `results/tbme/exp05_ablation` | 100 | `exp05_asymmetric_basin_objective_ablation`, `exp05_hard_asymmetric_basin_objective_ablation` |
-| `exp06_bottleneck.py` | `results/tbme/exp06_bottleneck` | 100 | `exp06_asymmetric_basin_bottleneck_weak_observation`, `exp06_asymmetric_basin_bottleneck_tight_action`, `exp06_asymmetric_basin_bottleneck_combined` |
+| `exp06_bottleneck.py` | `results/tbme/exp06_bottleneck` | 500 | `exp06_asymmetric_basin_observation_bottleneck_mild`, `exp06_asymmetric_basin_observation_bottleneck_strong`, `exp06_asymmetric_basin_action_bottleneck_mild`, `exp06_asymmetric_basin_action_bottleneck_strong` |
 | `exp07_mismatch_stress.py` | `results/tbme/exp07_mismatch_stress` | 100 | `exp07_duffing_observation_mismatch_mild`, `exp07_duffing_observation_mismatch_strong`, `exp07_asymmetric_basin_observation_mismatch_mild`, `exp07_asymmetric_basin_observation_mismatch_strong` |
 | `exp08_parameter_mismatch_stress.py` | `results/tbme/exp08_parameter_mismatch_stress` | 100 | `exp08_duffing_parameter_mismatch_mild`, `exp08_duffing_parameter_mismatch_strong`, `exp08_asymmetric_basin_parameter_mismatch_mild`, `exp08_asymmetric_basin_parameter_mismatch_strong` |
 

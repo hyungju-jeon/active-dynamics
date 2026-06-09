@@ -203,6 +203,7 @@ def calibrate_loglinear_loading(
             max_rate_per_bin=capped_rate * dt,
             tgt_snr=float(target_snr),
             priority="max",
+            min_gain=0.01,
         )
         c_t = torch.as_tensor(c_opt, dtype=c.dtype, device=c.device)
         b_t = torch.as_tensor(b_per_bin.reshape(-1), dtype=c.dtype, device=c.device)

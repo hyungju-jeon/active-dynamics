@@ -49,7 +49,6 @@ environments:
     asymmetric_loading: true
     state_noise: 0.1
     state_init_uncertainty: 10.0
-    firing_rate_scale: 0.5
     action_max: 1
     loading_target_snr_db: -10.0
 
@@ -129,29 +128,25 @@ environments:
     - 0.5
     - 1.1
 
-  tbme_asymmetric_basin_weak_observation:
+  tbme_asymmetric_basin_observation_bottleneck_mild:
     extends: tbme_asymmetric_basin
-    system_label: Asymmetric basin / weak observations
-    observation_dim: 12
-    mean_firing_rate_target: 5.0
-    max_firing_rate_target: 40.0
-    observation_noise_scale: 1.5
+    system_label: Asymmetric basin / mild observation SNR bottleneck
+    loading_target_snr_db: -10.0
 
-  tbme_asymmetric_basin_tight_action:
+  tbme_asymmetric_basin_observation_bottleneck_strong:
     extends: tbme_asymmetric_basin
-    system_label: Asymmetric basin / tight actuation
-    action_max: 0.55
-    state_init_uncertainty: 4.0
+    system_label: Asymmetric basin / strong observation SNR bottleneck
+    loading_target_snr_db: -15.0
 
-  tbme_asymmetric_basin_bottleneck:
+  tbme_asymmetric_basin_action_bottleneck_mild:
     extends: tbme_asymmetric_basin
-    system_label: Asymmetric basin / weak observation and tight actuation
-    observation_dim: 12
-    mean_firing_rate_target: 5.0
-    max_firing_rate_target: 40.0
-    observation_noise_scale: 1.5
+    system_label: Asymmetric basin / mild action bottleneck
     action_max: 0.55
-    state_init_uncertainty: 4.0
+
+  tbme_asymmetric_basin_action_bottleneck_strong:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / strong action bottleneck
+    action_max: 0.35
 
   tbme_asymmetric_basin_parameter_mismatch:
     extends: tbme_asymmetric_basin

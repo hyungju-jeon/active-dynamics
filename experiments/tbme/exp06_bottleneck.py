@@ -3,32 +3,41 @@ from __future__ import annotations
 BASE_DIR = "results/tbme/exp06_bottleneck"
 DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = (
-    "exp06_asymmetric_basin_bottleneck_weak_observation",
-    "exp06_asymmetric_basin_bottleneck_tight_action",
-    "exp06_asymmetric_basin_bottleneck_combined",
+    "exp06_asymmetric_basin_observation_bottleneck_mild",
+    "exp06_asymmetric_basin_observation_bottleneck_strong",
+    "exp06_asymmetric_basin_action_bottleneck_mild",
+    "exp06_asymmetric_basin_action_bottleneck_strong",
 )
 
 EXPERIMENT_SUITES = {
-    "exp06_asymmetric_basin_bottleneck_weak_observation": {
+    "exp06_asymmetric_basin_observation_bottleneck_mild": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_weak_observation",
+        "env_preset_id": "tbme_asymmetric_basin_observation_bottleneck_mild",
         "model_ids": ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "prbs", "random"],
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp06_asymmetric_basin_bottleneck_tight_action": {
+    "exp06_asymmetric_basin_observation_bottleneck_strong": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_tight_action",
+        "env_preset_id": "tbme_asymmetric_basin_observation_bottleneck_strong",
         "model_ids": ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "prbs", "random"],
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp06_asymmetric_basin_bottleneck_combined": {
+    "exp06_asymmetric_basin_action_bottleneck_mild": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_bottleneck",
+        "env_preset_id": "tbme_asymmetric_basin_action_bottleneck_mild",
+        "model_ids": ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "prbs", "random"],
+        "trajectory_eval_horizon": 200,
+        "trajectory_eval_samples": 100,
+    },
+    "exp06_asymmetric_basin_action_bottleneck_strong": {
+        "experiment_kind": "parameter",
+        "total_steps": 2000,
+        "env_preset_id": "tbme_asymmetric_basin_action_bottleneck_strong",
         "model_ids": ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "prbs", "random"],
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
