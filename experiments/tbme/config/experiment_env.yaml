@@ -1,4 +1,7 @@
 environments:
+  # loading_fisher_snr_db was measured with catniplab/neurofisherSNR
+  # SNR_bound_instantaneous on the seed-0 runtime loading matrix. The bias was
+  # shifted by log(dt) so lambda is the actual Poisson mean per bin.
   tbme_duffing:
     system_id: bistable_attractor
     system_label: duffing oscillator
@@ -20,6 +23,7 @@ environments:
     observation_noise_type: poisson
     mean_firing_rate_target: 10.0
     max_firing_rate_target: 100.0
+    loading_fisher_snr_db: -10.05
     true_params:
     - -0.5
     - -0.75
@@ -50,10 +54,12 @@ environments:
     state_init_uncertainty: 10.0
     firing_rate_scale: 0.5
     action_max: 1
+    loading_fisher_snr_db: -11.27
 
   tbme_duffing_parameter_mismatch:
     extends: tbme_duffing
     system_label: Duffing oscillator / mid fixed cubic-coefficient mismatch
+    loading_fisher_snr_db: -10.05
     estimator_dynamics_type: duffing
     estimator_true_params:
     - -1.1
@@ -63,6 +69,7 @@ environments:
   tbme_duffing_parameter_mismatch_mild:
     extends: tbme_duffing
     system_label: Duffing oscillator / mild fixed cubic-coefficient mismatch
+    loading_fisher_snr_db: -10.05
     estimator_dynamics_type: duffing
     estimator_true_params:
     - -0.5
@@ -72,6 +79,7 @@ environments:
   tbme_duffing_parameter_mismatch_strong:
     extends: tbme_duffing
     system_label: Duffing oscillator / strong fixed cubic-coefficient mismatch
+    loading_fisher_snr_db: -10.05
     estimator_dynamics_type: duffing
     estimator_true_params:
     - -0.5
@@ -81,11 +89,13 @@ environments:
   tbme_duffing_observation_mismatch_mild:
     extends: tbme_duffing
     system_label: Duffing oscillator / mild observation-loading mismatch
+    loading_fisher_snr_db: -10.05
     observation_loading_mismatch_variance: 0.01
 
   tbme_duffing_observation_mismatch_strong:
     extends: tbme_duffing
     system_label: Duffing oscillator / strong observation-loading mismatch
+    loading_fisher_snr_db: -10.05
     observation_loading_mismatch_variance: 0.1
 
   tbme_damped_pendulum:
@@ -93,6 +103,7 @@ environments:
     system_id: damped_pendulum
     system_label: damped pendulum
     dynamics_type: damped_pendulum
+    loading_fisher_snr_db: -10.05
     true_params:
     - -0.5
     - 1.0
@@ -102,6 +113,7 @@ environments:
     system_id: damped_pendulum
     system_dynamics_type: damped_pendulum
     system_label: damped pendulum with asymmetric loading
+    loading_fisher_snr_db: -11.27
 
   tbme_asymmetric_basin:
     extends: tbme_duffing
@@ -109,6 +121,7 @@ environments:
     system_label: Asymmetric basin
     dynamics_type: asymmetric_basin
     embedding_dim: 4
+    loading_fisher_snr_db: -10.05
     true_params:
     - -1.2
     - -0.8
@@ -121,6 +134,7 @@ environments:
     system_label: Asymmetric basin
     dynamics_type: asymmetric_basin
     embedding_dim: 4
+    loading_fisher_snr_db: -11.27
     true_params:
     - -1.2
     - -0.8
@@ -134,12 +148,14 @@ environments:
     mean_firing_rate_target: 5.0
     max_firing_rate_target: 40.0
     observation_noise_scale: 1.5
+    loading_fisher_snr_db: -16.16
 
   tbme_asymmetric_basin_tight_action:
     extends: tbme_asymmetric_basin
     system_label: Asymmetric basin / tight actuation
     action_max: 0.55
     state_init_uncertainty: 4.0
+    loading_fisher_snr_db: -10.05
 
   tbme_asymmetric_basin_bottleneck:
     extends: tbme_asymmetric_basin
@@ -150,10 +166,12 @@ environments:
     observation_noise_scale: 1.5
     action_max: 0.55
     state_init_uncertainty: 4.0
+    loading_fisher_snr_db: -16.16
 
   tbme_asymmetric_basin_parameter_mismatch:
     extends: tbme_asymmetric_basin
     system_label: Asymmetric basin / mid fixed-parameter mismatch
+    loading_fisher_snr_db: -10.05
     estimator_dynamics_type: asymmetric_basin
     estimator_true_params:
     - -1.2
@@ -165,6 +183,7 @@ environments:
   tbme_asymmetric_basin_parameter_mismatch_mild:
     extends: tbme_asymmetric_basin
     system_label: Asymmetric basin / mild fixed-parameter mismatch
+    loading_fisher_snr_db: -10.05
     estimator_dynamics_type: asymmetric_basin
     estimator_true_params:
     - -1.2
@@ -176,6 +195,7 @@ environments:
   tbme_asymmetric_basin_parameter_mismatch_strong:
     extends: tbme_asymmetric_basin
     system_label: Asymmetric basin / strong fixed-parameter mismatch
+    loading_fisher_snr_db: -10.05
     estimator_dynamics_type: asymmetric_basin
     estimator_true_params:
     - -1.2
@@ -187,9 +207,11 @@ environments:
   tbme_asymmetric_basin_observation_mismatch_mild:
     extends: tbme_asymmetric_basin
     system_label: Asymmetric basin / mild observation-loading mismatch
+    loading_fisher_snr_db: -10.05
     observation_loading_mismatch_variance: 0.01
 
   tbme_asymmetric_basin_observation_mismatch_strong:
     extends: tbme_asymmetric_basin
     system_label: Asymmetric basin / strong observation-loading mismatch
+    loading_fisher_snr_db: -10.05
     observation_loading_mismatch_variance: 0.1

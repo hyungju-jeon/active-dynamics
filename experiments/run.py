@@ -1310,6 +1310,7 @@ def _run_single_parameter_identification(
             "boundary_barrier_temperature": float(
                 getattr(env_preset, "boundary_barrier_temperature", 0.1)
             ),
+            "loading_fisher_snr_db": getattr(env_preset, "loading_fisher_snr_db", None),
             "observation_loading_mismatch_variance": float(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),
@@ -1583,6 +1584,7 @@ def _build_session_experiment_entry(
             "mean_firing_rate_target": float(env_preset.mean_firing_rate_target),
             "max_firing_rate_target": float(env_preset.max_firing_rate_target),
             "asymmetric_loading": bool(env_preset.asymmetric_loading),
+            "loading_fisher_snr_db": getattr(env_preset, "loading_fisher_snr_db", None),
             "observation_loading_mismatch_variance": float(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),

@@ -88,3 +88,29 @@ def test_cli_analyze_save_summary(tmp_path: Path):
     exit_code = cli.main(["analyze", str(results_root), "--save-summary"])
     assert exit_code == 0
     assert (results_root / "analysis_summary.json").exists()
+
+
+def test_tbme_loading_fisher_snr_is_available_in_session_metadata():
+    from experiments import run as experiment_run
+    from experiments.experiment_definitions import configure_catalogs
+    from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
+
+    try:
+        bundle = configure_tbme_catalogs()
+        assert bundle.environment_presets["tbme_duffing"].loading_fisher_snr_db == pytest.approx(
+            -10.05
+        )
+        assert bundle.environment_presets[
+            "tbme_asymmetric_basin_weak_observation"
+        ].loading_fisher_snr_db == pytest.approx(-16.16)
+
+        entry = experiment_run._build_session_experiment_entry(
+            exp_id="exp01_duffing",
+            seeds=[0],
+            repeats=1,
+            total_steps_override=None,
+        )
+
+        assert entry["environment"]["loading_fisher_snr_db"] == pytest.approx(-10.05)
+    finally:
+        configure_catalogs()
