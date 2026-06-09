@@ -1,4 +1,5 @@
 import json
+import math
 from pathlib import Path
 
 import pytest
@@ -90,20 +91,59 @@ def test_cli_analyze_save_summary(tmp_path: Path):
     assert (results_root / "analysis_summary.json").exists()
 
 
-def test_tbme_loading_fisher_snr_is_available_in_session_metadata():
+def test_tbme_loading_fisher_snr_is_available_in_session_metadata(monkeypatch):
+    from actdyn.environment.observation import LogLinearObservation
+    from actdyn.utils.experiment_runtime import (
+        calibrate_loglinear_loading,
+        compute_loglinear_loading_fisher_snr_db,
+    )
     from experiments import run as experiment_run
     from experiments.experiment_definitions import configure_catalogs
     from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
 
     try:
         bundle = configure_tbme_catalogs()
-        assert bundle.environment_presets["tbme_duffing"].loading_fisher_snr_db == pytest.approx(
-            -10.05
+        env_preset = bundle.environment_presets["tbme_duffing"]
+        hard_env_preset = bundle.environment_presets["tbme_duffing_hard"]
+        assert env_preset.loading_fisher_snr_db is None
+        assert env_preset.loading_target_snr_db == pytest.approx(-5.0)
+        assert hard_env_preset.loading_target_snr_db == pytest.approx(-10.0)
+        small_snr = compute_loglinear_loading_fisher_snr_db(
+            env_preset,
+            num_trajectories=2,
+            trajectory_length=4,
         )
-        assert bundle.environment_presets[
-            "tbme_asymmetric_basin_weak_observation"
-        ].loading_fisher_snr_db == pytest.approx(-16.16)
+        assert math.isfinite(small_snr)
+        assert small_snr == pytest.approx(env_preset.loading_target_snr_db, abs=1.0)
+        import torch
 
+        with torch.random.fork_rng(devices=[]):
+            torch.manual_seed(0)
+            obs_model = LogLinearObservation(
+                d_obs=env_preset.observation_dim,
+                d_latent=env_preset.latent_dim,
+                obs_dim=env_preset.observation_dim,
+                latent_dim=env_preset.latent_dim,
+                noise_scale=env_preset.observation_noise_scale,
+                noise_type=env_preset.observation_noise_type,
+                dt=env_preset.dt,
+                device="cpu",
+            )
+            c, b = calibrate_loglinear_loading(
+                obs_model.network[0].weight,
+                env_preset,
+                target_snr=-8.0,
+                snr_num_trajectories=2,
+                snr_trajectory_length=4,
+            )
+        assert c.shape == obs_model.network[0].weight.shape
+        assert b.shape == obs_model.network[0].bias.shape
+
+        monkeypatch.setattr(
+            experiment_run,
+            "_computed_loading_fisher_snr_db",
+            lambda _env_preset: small_snr,
+        )
         entry = experiment_run._build_session_experiment_entry(
             exp_id="exp01_duffing",
             seeds=[0],
@@ -111,6 +151,7 @@ def test_tbme_loading_fisher_snr_is_available_in_session_metadata():
             total_steps_override=None,
         )
 
-        assert entry["environment"]["loading_fisher_snr_db"] == pytest.approx(-10.05)
+        assert entry["environment"]["loading_target_snr_db"] == pytest.approx(-5.0)
+        assert entry["environment"]["loading_fisher_snr_db"] == pytest.approx(small_snr)
     finally:
         configure_catalogs()

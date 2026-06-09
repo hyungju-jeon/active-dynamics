@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 from datetime import datetime, timezone
+from functools import lru_cache
 import inspect
 import json
 import os
@@ -39,9 +40,10 @@ if __package__ in {None, ""}:
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
     from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
-        apply_loglinear_loading_asymmetry,
+        calibrate_loglinear_loading,
         apply_loglinear_loading_mismatch,
         as_bool,
+        compute_loglinear_loading_fisher_snr_db,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
         to_xy_pair,
@@ -68,9 +70,10 @@ else:
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
     from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
-        apply_loglinear_loading_asymmetry,
+        calibrate_loglinear_loading,
         apply_loglinear_loading_mismatch,
         as_bool,
+        compute_loglinear_loading_fisher_snr_db,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
         to_xy_pair,
@@ -156,6 +159,29 @@ def _build_env_jacobians(env_preset: Any, *, estimator: bool, dynamics_alpha: fl
         )
 
     return _fe, _fz
+
+
+@lru_cache(maxsize=128)
+def _computed_loading_fisher_snr_db(env_preset: Any) -> float | None:
+    if bool(getattr(env_preset, "real_data", False)):
+        return None
+    if str(getattr(env_preset, "observation_noise_type", "poisson")).lower() != "poisson":
+        return None
+    return compute_loglinear_loading_fisher_snr_db(env_preset)
+
+
+def _loading_target_snr_db(env_preset: Any) -> float | None:
+    configured = getattr(env_preset, "loading_target_snr_db", None)
+    if configured is None:
+        return None
+    return float(configured)
+
+
+def _loading_fisher_snr_db(env_preset: Any) -> float | None:
+    configured = getattr(env_preset, "loading_fisher_snr_db", None)
+    if configured is not None:
+        return float(configured)
+    return _computed_loading_fisher_snr_db(env_preset)
 
 
 def _environment_summary(env_preset: Any) -> dict[str, Any]:
@@ -742,21 +768,11 @@ def _run_single_parameter_identification(
         dt=dt,
         device=device,
     )
-    c = apply_loglinear_loading_asymmetry(obs_model.network[0].weight, env_preset)
-    state_range_for_cap = 5.0
-    mean_log_rate = torch.log(torch.full((dy,), mean_firing, device=device))
-    max_log_rate = torch.log(torch.full((dy,), max_firing_rate, device=device))
-    for _ in range(6):
-        c_row_l1 = torch.sum(torch.abs(c), dim=1)
-        c_row_l2_sq = torch.sum(c * c, dim=1)
-        bias_from_mean = mean_log_rate - 0.5 * c_row_l2_sq
-        capped_log_rate = state_range_for_cap * c_row_l1 + bias_from_mean
-        if torch.all(capped_log_rate <= max_log_rate):
-            break
-        safe_den = torch.clamp(state_range_for_cap * c_row_l1, min=1e-8)
-        row_scale = torch.clamp((max_log_rate - bias_from_mean) / safe_den, min=0.0, max=1.0)
-        c = c * row_scale.unsqueeze(1)
-    bias = mean_log_rate - 0.5 * torch.sum(c * c, dim=1)
+    c, bias = calibrate_loglinear_loading(
+        obs_model.network[0].weight,
+        env_preset,
+        target_snr=_loading_target_snr_db(env_preset),
+    )
     obs_model.network[0].bias = nn.Parameter(bias)
     obs_model.network[0].weight = nn.Parameter(c)
 
@@ -1310,7 +1326,8 @@ def _run_single_parameter_identification(
             "boundary_barrier_temperature": float(
                 getattr(env_preset, "boundary_barrier_temperature", 0.1)
             ),
-            "loading_fisher_snr_db": getattr(env_preset, "loading_fisher_snr_db", None),
+            "loading_fisher_snr_db": _loading_fisher_snr_db(env_preset),
+            "loading_target_snr_db": _loading_target_snr_db(env_preset),
             "observation_loading_mismatch_variance": float(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),
@@ -1584,7 +1601,8 @@ def _build_session_experiment_entry(
             "mean_firing_rate_target": float(env_preset.mean_firing_rate_target),
             "max_firing_rate_target": float(env_preset.max_firing_rate_target),
             "asymmetric_loading": bool(env_preset.asymmetric_loading),
-            "loading_fisher_snr_db": getattr(env_preset, "loading_fisher_snr_db", None),
+            "loading_fisher_snr_db": _loading_fisher_snr_db(env_preset),
+            "loading_target_snr_db": _loading_target_snr_db(env_preset),
             "observation_loading_mismatch_variance": float(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),

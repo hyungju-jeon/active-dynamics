@@ -37,6 +37,7 @@ class EnvironmentPreset:
     firing_rate_scale: float
     action_max: float
     loading_fisher_snr_db: float | None = None
+    loading_target_snr_db: float | None = None
     system_label: str | None = None
     estimator_system_id: str | None = None
     dynamics_type: str | None = None
@@ -529,6 +530,11 @@ def load_catalog_bundle(
                 None
                 if spec.get("loading_fisher_snr_db") is None
                 else float(spec.get("loading_fisher_snr_db"))
+            ),
+            loading_target_snr_db=(
+                None
+                if spec.get("loading_target_snr_db") is None
+                else float(spec.get("loading_target_snr_db"))
             ),
             firing_rate_scale=float(spec.get("firing_rate_scale", 1.0)),
             action_max=float(spec.get("action_max", 1.0)),

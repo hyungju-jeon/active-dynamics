@@ -162,9 +162,8 @@ def reconstruct_loglinear_rate_model(
     dt = float(metadata.get("dt", getattr(env_preset, "dt", dt_default)))
     torch.manual_seed(seed)
     layer = torch.nn.Linear(int(latent_dim), int(obs_dim))
-    from actdyn.utils.experiment_runtime import apply_loglinear_loading_asymmetry
+    from actdyn.utils.experiment_runtime import calibrate_loglinear_loading
 
-    c = apply_loglinear_loading_asymmetry(layer.weight, env_preset)
     mean_firing = float(
         metadata.get(
             "mean_firing_rate_target",
@@ -185,24 +184,14 @@ def reconstruct_loglinear_rate_model(
             ),
         )
     )
-    state_range_for_cap = 5.0
-    mean_log_rate = torch.log(torch.full((obs_dim,), mean_firing, dtype=torch.float32))
-    max_log_rate = torch.log(torch.full((obs_dim,), max_firing_rate, dtype=torch.float32))
-    for _ in range(6):
-        c_row_l1 = torch.sum(torch.abs(c), dim=1)
-        c_row_l2_sq = torch.sum(c * c, dim=1)
-        bias_from_mean = mean_log_rate - 0.5 * c_row_l2_sq
-        capped_log_rate = state_range_for_cap * c_row_l1 + bias_from_mean
-        if torch.all(capped_log_rate <= max_log_rate):
-            break
-        safe_den = torch.clamp(state_range_for_cap * c_row_l1, min=1e-8)
-        row_scale = torch.clamp(
-            (max_log_rate - bias_from_mean) / safe_den,
-            min=0.0,
-            max=1.0,
-        )
-        c = c * row_scale.unsqueeze(1)
-    bias = mean_log_rate - 0.5 * torch.sum(c * c, dim=1)
+    target_snr = safe_float(metadata.get("loading_target_snr_db"))
+    c, bias = calibrate_loglinear_loading(
+        layer.weight,
+        env_preset,
+        mean_firing_rate=mean_firing,
+        max_firing_rate=max_firing_rate,
+        target_snr=target_snr,
+    )
     return c.cpu().numpy(), bias.cpu().numpy(), dt
 
 
