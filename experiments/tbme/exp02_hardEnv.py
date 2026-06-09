@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 BASE_DIR = "results/tbme/exp02_hard"
-DEFAULT_SEED_COUNT = 1000
+DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = (
     "exp02_hard_duffing",
     "exp02_hard_asymmetric_basin",

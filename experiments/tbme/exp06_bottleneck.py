@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 BASE_DIR = "results/tbme/exp06_bottleneck"
-DEFAULT_SEED_COUNT = 100
+DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = (
     "exp06_asymmetric_basin_bottleneck_weak_observation",
     "exp06_asymmetric_basin_bottleneck_tight_action",

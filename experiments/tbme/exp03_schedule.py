@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 BASE_DIR = "results/tbme/exp03_schedule"
-DEFAULT_SEED_COUNT = 1000
+DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = (
     "exp03_schedule_duffing",
     "exp03_schedule_damped_pendulum",

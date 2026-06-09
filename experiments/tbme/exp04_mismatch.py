@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 BASE_DIR = "results/tbme/exp04_mismatch"
-DEFAULT_SEED_COUNT = 1000
+DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = ("exp04_duffing_parameter_mismatch", "exp04_asymmetric_basin_parameter_mismatch")
 
 EXPERIMENT_SUITES = {

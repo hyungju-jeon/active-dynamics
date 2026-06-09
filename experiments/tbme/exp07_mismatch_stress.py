@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 BASE_DIR = "results/tbme/exp07_mismatch_stress"
-DEFAULT_SEED_COUNT = 100
+DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = (
     "exp07_duffing_observation_mismatch_mild",
     "exp07_duffing_observation_mismatch_strong",
