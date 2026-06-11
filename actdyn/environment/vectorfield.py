@@ -264,44 +264,6 @@ def _pad_embedding_to_params(
     return torch.cat((embedding, tail), dim=-1)
 
 
-def build_system_jacobians(
-    *,
-    dynamics_type: str,
-    full_params: torch.Tensor | np.ndarray | Sequence[float],
-    min_embedding_dim: int = 1,
-    dynamics_alpha: float,
-):
-    def _fe(z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
-        z_t = torch.as_tensor(z, dtype=torch.float32, device=z.device).detach()
-        e_t = torch.as_tensor(e, dtype=torch.float32, device=z_t.device).detach().clone()
-        e_t.requires_grad_(True)
-        drift = residual_torch(
-            dynamics_type,
-            z_t,
-            _pad_embedding_to_params(
-                e_t,
-                full_params=full_params,
-                min_embedding_dim=int(min_embedding_dim),
-            ),
-            dynamics_alpha=float(dynamics_alpha),
-        )
-        return _batched_jacobian(drift, e_t)
-
-    def _fz(z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
-        return jacobian_state_torch(
-            dynamics_type,
-            z,
-            _pad_embedding_to_params(
-                torch.as_tensor(e, dtype=torch.float32, device=z.device),
-                full_params=full_params,
-                min_embedding_dim=int(min_embedding_dim),
-            ),
-            dynamics_alpha=float(dynamics_alpha),
-        )
-
-    return _fe, _fz
-
-
 def rollout_no_input(
     z0: torch.Tensor,
     e: torch.Tensor,
