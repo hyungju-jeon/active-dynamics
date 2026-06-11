@@ -264,6 +264,53 @@ def _pad_embedding_to_params(
     return torch.cat((embedding, tail), dim=-1)
 
 
+def jacobian_embedding_torch(
+    dynamics_type: str,
+    state: torch.Tensor,
+    embedding: torch.Tensor | list[float] | np.ndarray,
+    *,
+    full_params: torch.Tensor | np.ndarray | Sequence[float],
+    min_embedding_dim: int,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    """Differentiate residual dynamics with respect to learned embedding coordinates.
+
+    Args:
+        dynamics_type: Vector-field key used by :func:`residual_torch`.
+        state: State tensor with shape ``(..., d_state)``.
+        embedding: Learned parameter embedding with shape ``(..., d_embedding)``.
+        full_params: Full parameter vector used to fill fixed, unlearned tail
+            coordinates when ``d_embedding < len(full_params)``.
+        min_embedding_dim: Minimum number of learned coordinates required by
+            the dynamics.
+        dynamics_alpha: Dynamics scale passed to :func:`residual_torch`.
+
+    Returns:
+        Jacobian with shape ``(..., d_state, d_embedding)``.
+    """
+    with torch.enable_grad():
+        device = _state_device(state, embedding)
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=device)
+        embedding_t = torch.as_tensor(
+            embedding, dtype=torch.float32, device=device
+        ).detach().clone()
+        while embedding_t.ndim < state_t.ndim:
+            embedding_t = embedding_t.unsqueeze(-2)
+        embedding_t.requires_grad_(True)
+        dyn_params = _pad_embedding_to_params(
+            embedding_t,
+            full_params=full_params,
+            min_embedding_dim=int(min_embedding_dim),
+        )
+        drift = residual_torch(
+            dynamics_type,
+            state_t,
+            dyn_params,
+            dynamics_alpha=float(dynamics_alpha),
+        )
+        return _batched_jacobian(drift, embedding_t)
+
+
 def rollout_no_input(
     z0: torch.Tensor,
     e: torch.Tensor,

@@ -4,7 +4,6 @@ from __future__ import annotations
 import argparse
 import contextlib
 from datetime import datetime, timezone
-from functools import lru_cache
 import inspect
 import json
 import os
@@ -36,14 +35,13 @@ if __package__ in {None, ""}:
         get_schedule_spec,
         list_experiment_ids,
     )
-    from actdyn.environment import jacobian_state_torch, residual_np, residual_torch, step_np
+    from actdyn.environment import jacobian_embedding_torch, jacobian_state_torch, residual_np, step_np
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
     from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
         calibrate_loglinear_loading,
         apply_loglinear_loading_mismatch,
         as_bool,
-        compute_loglinear_loading_fisher_snr_db,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
         to_xy_pair,
@@ -66,14 +64,13 @@ else:
         get_schedule_spec,
         list_experiment_ids,
     )
-    from actdyn.environment import jacobian_state_torch, residual_np, residual_torch, step_np
+    from actdyn.environment import jacobian_embedding_torch, jacobian_state_torch, residual_np, step_np
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
     from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
         calibrate_loglinear_loading,
         apply_loglinear_loading_mismatch,
         as_bool,
-        compute_loglinear_loading_fisher_snr_db,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
         to_xy_pair,
@@ -103,49 +100,16 @@ def _resolved_estimator_system_id(env_preset: Any) -> str:
     return str(env_preset.system_id)
 
 
-def _batched_jacobian(output: Any, wrt: Any):
-    with torch.enable_grad():
-        flat_output = output.reshape(-1, output.shape[-1])
-        rows = []
-        for out_idx in range(flat_output.shape[-1]):
-            grads = torch.autograd.grad(
-                flat_output[:, out_idx].sum(),
-                wrt,
-                retain_graph=out_idx < flat_output.shape[-1] - 1,
-                create_graph=True,
-                allow_unused=False,
-            )[0]
-            rows.append(grads)
-        jac = torch.stack(rows, dim=-2)
-    return jac.reshape(*wrt.shape[:-1], output.shape[-1], wrt.shape[-1])
-
-
-def _embedding_jacobian(env_preset: Any, z: Any, e: Any, *, estimator: bool, dynamics_alpha: float):
-    with torch.enable_grad():
-        z_t = torch.as_tensor(z, dtype=torch.float32, device=z.device)
-        e_t = torch.as_tensor(e, dtype=torch.float32, device=z_t.device).detach().clone()
-        while e_t.ndim < z_t.ndim:
-            e_t = e_t.unsqueeze(-2)
-        e_t.requires_grad_(True)
-        dyn_params = env_preset.params_from_embedding(e_t, estimator=estimator)
-        drift = residual_torch(
-            str(env_preset.resolved_dynamics_type(estimator=estimator)),
-            z_t,
-            dyn_params,
-            dynamics_alpha=float(dynamics_alpha),
-        )
-        return _batched_jacobian(drift, e_t)
-
-
 def _build_env_jacobians(env_preset: Any, *, estimator: bool, dynamics_alpha: float):
     dynamics_type = str(env_preset.resolved_dynamics_type(estimator=estimator))
 
     def _fe(z: Any, e: Any):
-        return _embedding_jacobian(
-            env_preset,
+        return jacobian_embedding_torch(
+            dynamics_type,
             z,
             e,
-            estimator=estimator,
+            full_params=env_preset.resolved_true_params(estimator=estimator),
+            min_embedding_dim=int(env_preset.resolved_min_embedding_dim()),
             dynamics_alpha=float(dynamics_alpha),
         )
 
@@ -161,15 +125,6 @@ def _build_env_jacobians(env_preset: Any, *, estimator: bool, dynamics_alpha: fl
     return _fe, _fz
 
 
-@lru_cache(maxsize=128)
-def _computed_loading_fisher_snr_db(env_preset: Any) -> float | None:
-    if bool(getattr(env_preset, "real_data", False)):
-        return None
-    if str(getattr(env_preset, "observation_noise_type", "poisson")).lower() != "poisson":
-        return None
-    return compute_loglinear_loading_fisher_snr_db(env_preset)
-
-
 def _loading_target_snr_db(env_preset: Any) -> float | None:
     configured = getattr(env_preset, "loading_target_snr_db", None)
     if configured is None:
@@ -181,7 +136,7 @@ def _loading_fisher_snr_db(env_preset: Any) -> float | None:
     configured = getattr(env_preset, "loading_fisher_snr_db", None)
     if configured is not None:
         return float(configured)
-    return _computed_loading_fisher_snr_db(env_preset)
+    return None
 
 
 def _environment_summary(env_preset: Any) -> dict[str, Any]:

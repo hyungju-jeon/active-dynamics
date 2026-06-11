@@ -16,6 +16,7 @@ from .env_wrapper import EnvWrapper
 from .boundary import boundary_barrier_drift, boundary_visibility, project_to_boundary
 from .vectorfield import (
     ResidualDynamicsCallable,
+    jacobian_embedding_torch,
     jacobian_param_torch,
     jacobian_state_torch,
     residual_np,
@@ -32,6 +33,7 @@ __all__ = [
     "ResidualDynamicsCallable",
     "residual_torch",
     "residual_np",
+    "jacobian_embedding_torch",
     "jacobian_state_torch",
     "jacobian_param_torch",
     "rollout_no_input",

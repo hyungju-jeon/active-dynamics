@@ -91,7 +91,7 @@ def test_cli_analyze_save_summary(tmp_path: Path):
     assert (results_root / "analysis_summary.json").exists()
 
 
-def test_tbme_loading_fisher_snr_is_available_in_session_metadata(monkeypatch):
+def test_tbme_loading_target_snr_is_available_in_session_metadata():
     from actdyn.environment.observation import LogLinearObservation
     from actdyn.utils.experiment_runtime import (
         calibrate_loglinear_loading,
@@ -139,11 +139,6 @@ def test_tbme_loading_fisher_snr_is_available_in_session_metadata(monkeypatch):
         assert c.shape == obs_model.network[0].weight.shape
         assert b.shape == obs_model.network[0].bias.shape
 
-        monkeypatch.setattr(
-            experiment_run,
-            "_computed_loading_fisher_snr_db",
-            lambda _env_preset: small_snr,
-        )
         entry = experiment_run._build_session_experiment_entry(
             exp_id="exp01_duffing",
             seeds=[0],
@@ -152,6 +147,6 @@ def test_tbme_loading_fisher_snr_is_available_in_session_metadata(monkeypatch):
         )
 
         assert entry["environment"]["loading_target_snr_db"] == pytest.approx(-5.0)
-        assert entry["environment"]["loading_fisher_snr_db"] == pytest.approx(small_snr)
+        assert entry["environment"]["loading_fisher_snr_db"] is None
     finally:
         configure_catalogs()
