@@ -19,7 +19,7 @@ environments:
     firing_rate_scale: 1
     observation_noise_scale: 1
     observation_noise_type: poisson
-    mean_firing_rate_target: 10.0
+    mean_firing_rate_target: 20.0
     max_firing_rate_target: 100.0
     true_params:
     - -0.5
