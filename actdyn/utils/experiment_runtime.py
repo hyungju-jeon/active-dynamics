@@ -8,6 +8,10 @@ from typing import Any
 import numpy as np
 
 
+DEFAULT_LOG_LINEAR_LOADING_SEED = 0
+DEFAULT_LOG_LINEAR_SNR_SEED = 0
+
+
 def write_trace_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -111,6 +115,100 @@ def apply_loglinear_loading_asymmetry(weight: Any, env_preset: Any):
             c[:, 0] = c[:, 0] * primary_gain
             c[:, 1] = c[:, 1] * secondary_gain
     return c
+
+
+
+@lru_cache(maxsize=None)
+def _shared_loglinear_loading_np(
+    env_preset: Any,
+    *,
+    loading_seed: int,
+    snr_seed: int,
+    snr_num_trajectories: int,
+    snr_trajectory_length: int,
+    mean_firing_rate: float | None,
+    max_firing_rate: float | None,
+    target_snr: float | None,
+) -> tuple[np.ndarray, np.ndarray]:
+    import torch
+
+    latent_dim = int(getattr(env_preset, "latent_dim"))
+    observation_dim = int(getattr(env_preset, "observation_dim"))
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(int(loading_seed))
+        layer = torch.nn.Linear(latent_dim, observation_dim)
+        c, bias = calibrate_loglinear_loading(
+            layer.weight,
+            env_preset,
+            mean_firing_rate=mean_firing_rate,
+            max_firing_rate=max_firing_rate,
+            target_snr=target_snr,
+            snr_seed=int(snr_seed),
+            snr_num_trajectories=int(snr_num_trajectories),
+            snr_trajectory_length=int(snr_trajectory_length),
+        )
+    return (
+        c.detach().cpu().numpy().astype(np.float32, copy=True),
+        bias.detach().cpu().numpy().astype(np.float32, copy=True),
+    )
+
+
+def shared_loglinear_loading(
+    env_preset: Any,
+    *,
+    device: str = "cpu",
+    dtype: Any = None,
+    loading_seed: int = DEFAULT_LOG_LINEAR_LOADING_SEED,
+    snr_seed: int = DEFAULT_LOG_LINEAR_SNR_SEED,
+    snr_num_trajectories: int = 100,
+    snr_trajectory_length: int = 500,
+    mean_firing_rate: float | None = None,
+    max_firing_rate: float | None = None,
+    target_snr: float | None = None,
+):
+    """Return the shared log-linear loading used by runtime experiments.
+
+    Args:
+        env_preset: Environment preset defining observation dimension, latent
+            dimension, firing-rate targets, loading asymmetry, and target SNR.
+        device: Torch device for the returned tensors.
+        dtype: Torch dtype for the returned tensors. Defaults to ``float32``.
+        loading_seed: Seed for the initial ``Linear(latent_dim, observation_dim)``
+            loading matrix. The TBME runtime uses seed 0 so all experiment seeds
+            share one observation model per environment.
+        snr_seed: Seed for target-SNR calibration trajectories.
+        snr_num_trajectories: Number of calibration trajectories.
+        snr_trajectory_length: Number of latent states per calibration trajectory.
+        mean_firing_rate: Optional firing-rate target override in Hz.
+        max_firing_rate: Optional maximum firing-rate override in Hz.
+        target_snr: Optional Fisher SNR target in dB. Defaults to the preset value.
+
+    Returns:
+        ``(C, b)`` where ``C`` has shape ``(observation_dim, latent_dim)`` and
+        ``b`` has shape ``(observation_dim,)`` for ``lambda(z)=exp(C z + b)``.
+    """
+    import torch
+
+    resolved_target_snr = (
+        getattr(env_preset, "loading_target_snr_db", None)
+        if target_snr is None
+        else float(target_snr)
+    )
+    c_np, bias_np = _shared_loglinear_loading_np(
+        env_preset,
+        loading_seed=int(loading_seed),
+        snr_seed=int(snr_seed),
+        snr_num_trajectories=int(snr_num_trajectories),
+        snr_trajectory_length=int(snr_trajectory_length),
+        mean_firing_rate=None if mean_firing_rate is None else float(mean_firing_rate),
+        max_firing_rate=None if max_firing_rate is None else float(max_firing_rate),
+        target_snr=None if resolved_target_snr is None else float(resolved_target_snr),
+    )
+    out_dtype = torch.float32 if dtype is None else dtype
+    return (
+        torch.as_tensor(c_np, dtype=out_dtype, device=device).clone(),
+        torch.as_tensor(bias_np, dtype=out_dtype, device=device).clone(),
+    )
 
 
 
@@ -305,7 +403,8 @@ def _normalized_zero_action_trajectories(
 def compute_loglinear_loading_fisher_snr_db(
     env_preset: Any,
     *,
-    seed: int = 0,
+    seed: int = DEFAULT_LOG_LINEAR_LOADING_SEED,
+    snr_seed: int = DEFAULT_LOG_LINEAR_SNR_SEED,
     num_trajectories: int = 100,
     trajectory_length: int = 500,
 ) -> float:
@@ -314,7 +413,8 @@ def compute_loglinear_loading_fisher_snr_db(
     Args:
         env_preset: Environment preset defining ``latent_dim``, ``observation_dim``,
             ``dt``, firing-rate targets, and loading asymmetry.
-        seed: PRNG seed for the runtime loading initialization and initial states.
+        seed: PRNG seed for the shared runtime loading initialization.
+        snr_seed: PRNG seed for the SNR calibration and evaluation trajectories.
         num_trajectories: Number of random initial states used for the SNR trajectory.
         trajectory_length: Number of latent states per trajectory, including each
             initial state.
@@ -327,43 +427,24 @@ def compute_loglinear_loading_fisher_snr_db(
     observation model uses mean counts ``dt * exp(C z + b)``, so this passes
     ``b + log(dt)`` to measure per-bin observation SNR.
     """
-    import torch
-
     if str(getattr(env_preset, "observation_noise_type", "poisson")).lower() != "poisson":
         raise ValueError("Fisher SNR is defined here for Poisson log-linear observations.")
     dt = float(getattr(env_preset, "dt"))
     if dt <= 0.0:
         raise ValueError(f"dt must be positive, got {dt}.")
 
-    from actdyn.environment.observation import LogLinearObservation
-
-    latent_dim = int(getattr(env_preset, "latent_dim"))
-    observation_dim = int(getattr(env_preset, "observation_dim"))
-    with torch.random.fork_rng(devices=[]):
-        torch.manual_seed(int(seed))
-        obs_model = LogLinearObservation(
-            d_obs=observation_dim,
-            d_latent=latent_dim,
-            obs_dim=observation_dim,
-            latent_dim=latent_dim,
-            noise_scale=float(getattr(env_preset, "observation_noise_scale")),
-            noise_type=str(getattr(env_preset, "observation_noise_type")),
-            dt=dt,
-            device="cpu",
-        )
-        target_snr = getattr(env_preset, "loading_target_snr_db", None)
-        c, bias = calibrate_loglinear_loading(
-            obs_model.network[0].weight,
-            env_preset,
-            target_snr=None if target_snr is None else float(target_snr),
-            snr_seed=int(seed),
-            snr_num_trajectories=int(num_trajectories),
-            snr_trajectory_length=int(trajectory_length),
-        )
+    c, bias = shared_loglinear_loading(
+        env_preset,
+        device="cpu",
+        loading_seed=int(seed),
+        snr_seed=int(snr_seed),
+        snr_num_trajectories=int(num_trajectories),
+        snr_trajectory_length=int(trajectory_length),
+    )
 
     latents = _normalized_zero_action_trajectories(
         env_preset,
-        seed=int(seed),
+        seed=int(snr_seed),
         num_trajectories=int(num_trajectories),
         trajectory_length=int(trajectory_length),
     )

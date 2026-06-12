@@ -3326,14 +3326,19 @@ def _experiment_logdet_information(
 
 
 def _experiment_observation_model_key(metadata: dict[str, Any]) -> tuple[Any, ...]:
+    loading_seed = metadata.get("observation_loading_seed")
+    if loading_seed is None:
+        loading_seed = metadata.get("seed", 0)
     return (
-        int(metadata.get("seed", 0)),
+        int(loading_seed),
+        int(metadata.get("loading_snr_trajectory_seed", 0)),
         str(metadata.get("env_preset_id", "")),
         int(metadata.get("observation_dim", 20)),
         int(metadata.get("latent_dim", 2)),
         float(metadata.get("dt", 0.01)),
         float(metadata.get("mean_firing_rate_target", 10.0)),
         float(metadata.get("max_firing_rate_target", 100.0)),
+        _safe_float(metadata.get("loading_target_snr_db")),
     )
 
 

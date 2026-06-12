@@ -92,13 +92,17 @@ def test_cli_analyze_save_summary(tmp_path: Path):
 
 
 def test_tbme_loading_target_snr_is_available_in_session_metadata():
-    from actdyn.environment.observation import LogLinearObservation
+    import numpy as np
+
     from actdyn.utils.experiment_runtime import (
-        calibrate_loglinear_loading,
+        DEFAULT_LOG_LINEAR_LOADING_SEED,
+        DEFAULT_LOG_LINEAR_SNR_SEED,
         compute_loglinear_loading_fisher_snr_db,
+        shared_loglinear_loading,
     )
     from experiments import run as experiment_run
     from experiments.experiment_definitions import configure_catalogs
+    from experiments.experiment_io import reconstruct_loglinear_rate_model
     from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
 
     try:
@@ -115,29 +119,30 @@ def test_tbme_loading_target_snr_is_available_in_session_metadata():
         )
         assert math.isfinite(small_snr)
         assert small_snr == pytest.approx(env_preset.loading_target_snr_db, abs=1.0)
-        import torch
 
-        with torch.random.fork_rng(devices=[]):
-            torch.manual_seed(0)
-            obs_model = LogLinearObservation(
-                d_obs=env_preset.observation_dim,
-                d_latent=env_preset.latent_dim,
-                obs_dim=env_preset.observation_dim,
-                latent_dim=env_preset.latent_dim,
-                noise_scale=env_preset.observation_noise_scale,
-                noise_type=env_preset.observation_noise_type,
-                dt=env_preset.dt,
-                device="cpu",
-            )
-            c, b = calibrate_loglinear_loading(
-                obs_model.network[0].weight,
-                env_preset,
-                target_snr=-8.0,
-                snr_num_trajectories=2,
-                snr_trajectory_length=4,
-            )
-        assert c.shape == obs_model.network[0].weight.shape
-        assert b.shape == obs_model.network[0].bias.shape
+        c, b = shared_loglinear_loading(
+            env_preset,
+            target_snr=-8.0,
+            snr_num_trajectories=2,
+            snr_trajectory_length=4,
+        )
+        assert c.shape == (env_preset.observation_dim, env_preset.latent_dim)
+        assert b.shape == (env_preset.observation_dim,)
+
+        metadata = {
+            "env_preset_id": env_preset.preset_id,
+            "dt": env_preset.dt,
+            "observation_loading_matrix": c.tolist(),
+            "observation_loading_bias": b.tolist(),
+        }
+        weights, bias, dt = reconstruct_loglinear_rate_model(
+            metadata,
+            obs_dim=env_preset.observation_dim,
+            latent_dim=env_preset.latent_dim,
+        )
+        assert dt == pytest.approx(env_preset.dt)
+        assert np.allclose(weights, c.numpy())
+        assert np.allclose(bias, b.numpy())
 
         entry = experiment_run._build_session_experiment_entry(
             exp_id="exp01_duffing",
@@ -148,5 +153,8 @@ def test_tbme_loading_target_snr_is_available_in_session_metadata():
 
         assert entry["environment"]["loading_target_snr_db"] == pytest.approx(-5.0)
         assert entry["environment"]["loading_fisher_snr_db"] is None
+        assert entry["environment"]["observation_loading_seed"] == DEFAULT_LOG_LINEAR_LOADING_SEED
+        assert entry["environment"]["loading_snr_trajectory_seed"] == DEFAULT_LOG_LINEAR_SNR_SEED
+        assert entry["environment"]["observation_loading_shared_across_seeds"] is True
     finally:
         configure_catalogs()

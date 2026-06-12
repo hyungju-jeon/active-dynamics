@@ -39,11 +39,13 @@ if __package__ in {None, ""}:
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
     from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
-        calibrate_loglinear_loading,
+        DEFAULT_LOG_LINEAR_LOADING_SEED,
+        DEFAULT_LOG_LINEAR_SNR_SEED,
         apply_loglinear_loading_mismatch,
         as_bool,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
+        shared_loglinear_loading,
         to_xy_pair,
         write_trace_csv,
     )
@@ -68,11 +70,13 @@ else:
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
     from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
-        calibrate_loglinear_loading,
+        DEFAULT_LOG_LINEAR_LOADING_SEED,
+        DEFAULT_LOG_LINEAR_SNR_SEED,
         apply_loglinear_loading_mismatch,
         as_bool,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
+        shared_loglinear_loading,
         to_xy_pair,
         write_trace_csv,
     )
@@ -723,9 +727,14 @@ def _run_single_parameter_identification(
         dt=dt,
         device=device,
     )
-    c, bias = calibrate_loglinear_loading(
-        obs_model.network[0].weight,
+    loading_seed = DEFAULT_LOG_LINEAR_LOADING_SEED
+    loading_snr_seed = DEFAULT_LOG_LINEAR_SNR_SEED
+    c, bias = shared_loglinear_loading(
         env_preset,
+        device=device,
+        dtype=obs_model.network[0].weight.dtype,
+        loading_seed=loading_seed,
+        snr_seed=loading_snr_seed,
         target_snr=_loading_target_snr_db(env_preset),
     )
     obs_model.network[0].bias = nn.Parameter(bias)
@@ -1283,6 +1292,11 @@ def _run_single_parameter_identification(
             ),
             "loading_fisher_snr_db": _loading_fisher_snr_db(env_preset),
             "loading_target_snr_db": _loading_target_snr_db(env_preset),
+            "observation_loading_seed": int(loading_seed),
+            "loading_snr_trajectory_seed": int(loading_snr_seed),
+            "observation_loading_shared_across_seeds": True,
+            "observation_loading_matrix": c.detach().cpu().tolist(),
+            "observation_loading_bias": bias.detach().cpu().tolist(),
             "observation_loading_mismatch_variance": float(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),
@@ -1558,6 +1572,9 @@ def _build_session_experiment_entry(
             "asymmetric_loading": bool(env_preset.asymmetric_loading),
             "loading_fisher_snr_db": _loading_fisher_snr_db(env_preset),
             "loading_target_snr_db": _loading_target_snr_db(env_preset),
+            "observation_loading_seed": int(DEFAULT_LOG_LINEAR_LOADING_SEED),
+            "loading_snr_trajectory_seed": int(DEFAULT_LOG_LINEAR_SNR_SEED),
+            "observation_loading_shared_across_seeds": True,
             "observation_loading_mismatch_variance": float(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),

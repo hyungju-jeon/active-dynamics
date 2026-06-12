@@ -155,14 +155,33 @@ def reconstruct_loglinear_rate_model(
     latent_dim: int = 2,
     dt_default: float = 0.01,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    import torch
-
     env_preset = get_environment_preset_from_metadata(metadata)
-    seed = int(metadata.get("seed", 0))
     dt = float(metadata.get("dt", getattr(env_preset, "dt", dt_default)))
-    torch.manual_seed(seed)
-    layer = torch.nn.Linear(int(latent_dim), int(obs_dim))
-    from actdyn.utils.experiment_runtime import calibrate_loglinear_loading
+    saved_weights = metadata.get("observation_loading_matrix")
+    saved_bias = metadata.get("observation_loading_bias")
+    if saved_weights is not None and saved_bias is not None:
+        weights = np.asarray(saved_weights, dtype=np.float32)
+        bias = np.asarray(saved_bias, dtype=np.float32).reshape(-1)
+        expected_shape = (int(obs_dim), int(latent_dim))
+        if weights.shape != expected_shape:
+            raise ValueError(f"Saved observation loading has shape {weights.shape}, expected {expected_shape}.")
+        if bias.shape != (int(obs_dim),):
+            raise ValueError(f"Saved observation bias has shape {bias.shape}, expected {(int(obs_dim),)}.")
+        return weights, bias, dt
+
+    from actdyn.utils.experiment_runtime import (
+        DEFAULT_LOG_LINEAR_LOADING_SEED,
+        DEFAULT_LOG_LINEAR_SNR_SEED,
+        shared_loglinear_loading,
+    )
+
+    loading_seed = int(
+        metadata.get(
+            "observation_loading_seed",
+            metadata.get("seed", DEFAULT_LOG_LINEAR_LOADING_SEED),
+        )
+    )
+    snr_seed = int(metadata.get("loading_snr_trajectory_seed", DEFAULT_LOG_LINEAR_SNR_SEED))
 
     mean_firing = float(
         metadata.get(
@@ -185,9 +204,11 @@ def reconstruct_loglinear_rate_model(
         )
     )
     target_snr = safe_float(metadata.get("loading_target_snr_db"))
-    c, bias = calibrate_loglinear_loading(
-        layer.weight,
+    c, bias = shared_loglinear_loading(
         env_preset,
+        device="cpu",
+        loading_seed=loading_seed,
+        snr_seed=snr_seed,
         mean_firing_rate=mean_firing,
         max_firing_rate=max_firing_rate,
         target_snr=target_snr,
