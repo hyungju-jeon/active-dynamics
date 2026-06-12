@@ -97,6 +97,7 @@ def test_tbme_loading_target_snr_is_available_in_session_metadata():
     from actdyn.utils.experiment_runtime import (
         DEFAULT_LOG_LINEAR_LOADING_SEED,
         DEFAULT_LOG_LINEAR_SNR_SEED,
+        _normalized_zero_action_trajectories,
         compute_loglinear_loading_fisher_snr_db,
         shared_loglinear_loading,
     )
@@ -128,6 +129,28 @@ def test_tbme_loading_target_snr_is_available_in_session_metadata():
         )
         assert c.shape == (env_preset.observation_dim, env_preset.latent_dim)
         assert b.shape == (env_preset.observation_dim,)
+
+        latents = _normalized_zero_action_trajectories(
+            env_preset,
+            seed=DEFAULT_LOG_LINEAR_SNR_SEED,
+            num_trajectories=2,
+            trajectory_length=4,
+        )
+        log_rates = (
+            latents @ c.detach().cpu().numpy().T
+            + b.detach().cpu().numpy().reshape(1, -1)
+            + np.log(float(env_preset.dt))
+        )
+        rates = np.exp(log_rates)
+        np.testing.assert_allclose(
+            rates.mean(axis=0),
+            float(env_preset.mean_firing_rate_target) * float(env_preset.dt),
+            rtol=1e-5,
+            atol=1e-6,
+        )
+        assert float(rates.max()) <= (
+            float(env_preset.max_firing_rate_target) * float(env_preset.dt) + 1e-5
+        )
 
         metadata = {
             "env_preset_id": env_preset.preset_id,

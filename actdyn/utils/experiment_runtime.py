@@ -302,6 +302,7 @@ def calibrate_loglinear_loading(
             tgt_snr=float(target_snr),
             priority="max",
             min_gain=0.01,
+            tol=1e-4,
         )
         c_t = torch.as_tensor(c_opt, dtype=c.dtype, device=c.device)
         b_t = torch.as_tensor(b_per_bin.reshape(-1), dtype=c.dtype, device=c.device)
@@ -325,7 +326,6 @@ def calibrate_loglinear_loading(
         c = c * row_scale.unsqueeze(1)
     bias = mean_log_rate - 0.5 * torch.sum(c * c, dim=1)
     return c, bias
-
 
 
 @lru_cache(maxsize=1)
