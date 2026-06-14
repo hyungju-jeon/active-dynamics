@@ -11,6 +11,7 @@ import colorednoise
 
 
 from .base import BaseMPC
+from actdyn.utils.torch_utils import safe_cholesky, symmetrize
 from actdyn.utils.rollout import RolloutBuffer
 
 
@@ -63,6 +64,9 @@ class MpcICem(BaseMPC):
         coarse_action_mapping: str = "hold",
         coarse_mapping_opt_steps: int = 25,
         coarse_mapping_opt_lr: float = 0.05,
+        adaptive_replanning: bool = False,
+        adaptive_replan_min_interval: int = 1,
+        adaptive_replan_state_error_threshold: float | None = None,
         **kwargs,
     ):
 
@@ -95,8 +99,24 @@ class MpcICem(BaseMPC):
             raise ValueError(f"Unsupported coarse_action_mapping={self.coarse_action_mapping!r}")
         self.coarse_mapping_opt_steps = int(max(coarse_mapping_opt_steps, 0))
         self.coarse_mapping_opt_lr = float(max(coarse_mapping_opt_lr, 0.0))
+        self.adaptive_replanning = bool(adaptive_replanning)
+        self.force_replan_on_parameter_update = self.adaptive_replanning
+        self.adaptive_replan_min_interval = max(1, int(adaptive_replan_min_interval))
+        self.adaptive_replan_state_error_threshold = (
+            None
+            if adaptive_replan_state_error_threshold is None
+            else float(adaptive_replan_state_error_threshold)
+        )
 
         self.was_reset = False
+        self._current_replan_interval = int(self.chunk)
+        self._chunk_step = 0
+        self._planned_state_trace = None
+        self._last_action_index = None
+        self._last_state_tracking_error = None
+        self._force_replan_next = False
+        self._force_replan_reason = None
+        self.last_update_info: dict[str, Any] = {}
 
     def beginning_of_rollout(self, state: torch.Tensor):
         super().beginning_of_rollout(state=state)
@@ -105,6 +125,15 @@ class MpcICem(BaseMPC):
         self.elite_actions = None
         self.elite_costs_traj = None
         self.was_reset = True
+        self.action_list = []
+        self._current_replan_interval = int(self.chunk)
+        self._chunk_step = 0
+        self._planned_state_trace = None
+        self._last_action_index = None
+        self._last_state_tracking_error = None
+        self._force_replan_next = False
+        self._force_replan_reason = None
+        self.last_update_info = {}
 
         self.model_evals_per_timestep = (
             sum(
@@ -347,6 +376,84 @@ class MpcICem(BaseMPC):
             raise ValueError("endpoint_opt coarse action mapping requires coarse_targets")
         return self._map_coarse_actions_endpoint_opt(coarse_actions, coarse_targets)
 
+    def request_replan(self, reason: str) -> None:
+        """Force the next control query to run iCEM before returning an action."""
+        self._force_replan_next = True
+        self._force_replan_reason = str(reason)
+
+    def _normalize_action_sequence(self, actions: torch.Tensor, interval: int) -> torch.Tensor:
+        interval = max(1, int(interval))
+        action_seq = torch.as_tensor(actions, dtype=torch.float32, device=self.device)
+        if action_seq.ndim == 2:
+            action_seq = action_seq.unsqueeze(0)
+        if action_seq.shape[-2] == 1:
+            action_seq = action_seq.repeat(1, interval, 1)
+        elif action_seq.shape[-2] >= interval:
+            action_seq = action_seq[:, :interval, :]
+        else:
+            raise ValueError(
+                f"Action sequence length {action_seq.shape[-2]} is less than interval {interval}"
+            )
+        return action_seq.detach().clone()
+
+    def _set_action_chunk(self, actions: torch.Tensor, cost: torch.Tensor, interval: int) -> None:
+        self._current_replan_interval = max(1, int(interval))
+        sequence = self._normalize_action_sequence(actions, self._current_replan_interval)
+        self.action_list = [a.unsqueeze(0) for a in sequence[0]]
+        self.cost = torch.as_tensor(cost).squeeze().item()
+        self._chunk_step = 0
+        with torch.no_grad():
+            self._planned_state_trace = self._predict_action_trajectory(sequence).detach().clone()
+
+    def _state_tracking_error(self, filtered_state: torch.Tensor) -> float | None:
+        if self._planned_state_trace is None or self._last_action_index is None:
+            return None
+        if self._last_action_index >= self._planned_state_trace.shape[-2]:
+            return None
+        z_hat = torch.as_tensor(filtered_state, dtype=torch.float32, device=self.device)
+        if z_hat.ndim == 1:
+            z_hat = z_hat.reshape(1, 1, -1)
+        elif z_hat.ndim == 2:
+            z_hat = z_hat.unsqueeze(1) if z_hat.shape[0] == 1 else z_hat.unsqueeze(0)
+        z_plan = self._planned_state_trace[:, self._last_action_index : self._last_action_index + 1]
+        dz = z_hat.shape[-1]
+        delta = (z_hat - z_plan).reshape(z_hat.shape[0], dz, 1)
+
+        P = getattr(self.model, "z", {}).get("P")
+        if P is None:
+            P = torch.eye(dz, device=self.device).unsqueeze(0)
+        P = torch.as_tensor(P, dtype=torch.float32, device=self.device)
+        if P.ndim == 4:
+            P = P.squeeze(1)
+        elif P.ndim == 2:
+            P = P.unsqueeze(0)
+        if P.shape[0] == 1 and delta.shape[0] > 1:
+            P = P.expand(delta.shape[0], -1, -1)
+        eye = torch.eye(dz, device=self.device).unsqueeze(0).expand(P.shape[0], -1, -1)
+        cov = symmetrize(P + 1e-6 * eye)
+        chol = safe_cholesky(cov)
+        quad = delta.transpose(-1, -2) @ torch.cholesky_solve(delta, chol)
+        err = quad.reshape(-1) / float(dz)
+        return float(torch.nan_to_num(err.mean(), nan=0.0, posinf=1e6, neginf=0.0).item())
+
+    def _latest_next_model_state(self, batch) -> torch.Tensor | None:
+        if isinstance(batch, dict):
+            value = batch.get("next_model_state")
+        elif hasattr(batch, "get"):
+            value = batch.get("next_model_state")
+        else:
+            value = None
+        if value is None:
+            return None
+        tensor = torch.as_tensor(value, dtype=torch.float32, device=self.device)
+        if tensor.ndim >= 3:
+            return tensor[:, -1:]
+        if tensor.ndim == 2:
+            return tensor.unsqueeze(1)
+        if tensor.ndim == 1:
+            return tensor.reshape(1, 1, -1)
+        return None
+
     def _run_icem_search(self, state, *, shift_steps: int = 1, debug=False, **kwargs):
         if not self.was_reset:
             self.beginning_of_rollout(state)
@@ -476,6 +583,63 @@ class MpcICem(BaseMPC):
         coarse_actions = coarse_plan[:, :n_coarse_execute, :]
         fine_actions = self._map_coarse_actions(coarse_actions, coarse_targets=coarse_targets)
         return fine_actions, coarse_cost
+
+    def __call__(self, state, **kwargs) -> torch.Tensor:
+        if not self.was_reset:
+            self.beginning_of_rollout(state)
+
+        need_plan = (
+            not self.action_list
+            or self._chunk_step >= self._current_replan_interval
+            or bool(self._force_replan_next)
+        )
+        if need_plan:
+            actions, cost = self.get_action(state, **kwargs)
+            forced_reason = self._force_replan_reason if self._force_replan_next else None
+            self._set_action_chunk(actions, cost, int(self.chunk))
+            self._force_replan_next = False
+            self._force_replan_reason = None
+            self.last_update_info = {
+                **self.last_update_info,
+                "adaptive_replan_triggered": bool(forced_reason),
+                "adaptive_replan_reason": "cadence" if forced_reason is None else forced_reason,
+                "adaptive_replan_interval": int(self._current_replan_interval),
+                "adaptive_state_tracking_error": self._last_state_tracking_error,
+            }
+
+        action = self.action_list[self._chunk_step]
+        self._last_action_index = int(self._chunk_step)
+        self._chunk_step += 1
+        self.count += 1
+        return action
+
+    def update(self, batch) -> dict[str, Any]:
+        next_state = self._latest_next_model_state(batch)
+        if next_state is None:
+            return dict(self.last_update_info)
+
+        state_error = self._state_tracking_error(next_state)
+        self._last_state_tracking_error = state_error
+        replan_triggered = False
+        replan_reason = "none"
+        if (
+            self.adaptive_replanning
+            and self.adaptive_replan_state_error_threshold is not None
+            and state_error is not None
+            and self._chunk_step >= min(self.adaptive_replan_min_interval, self.chunk)
+            and state_error > self.adaptive_replan_state_error_threshold
+        ):
+            self.request_replan("state_tracking_error")
+            replan_triggered = True
+            replan_reason = "state_tracking_error"
+
+        self.last_update_info = {
+            "adaptive_replan_triggered": replan_triggered,
+            "adaptive_replan_reason": replan_reason,
+            "adaptive_replan_interval": int(self._current_replan_interval),
+            "adaptive_state_tracking_error": state_error,
+        }
+        return dict(self.last_update_info)
 
 
 class AsyncMpcICem(MpcICem):

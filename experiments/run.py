@@ -642,6 +642,13 @@ def _instantiate_synthetic_policy(
         coarse_action_mapping=getattr(policy_spec, "coarse_action_mapping", "hold"),
         coarse_mapping_opt_steps=getattr(policy_spec, "coarse_mapping_opt_steps", 25),
         coarse_mapping_opt_lr=getattr(policy_spec, "coarse_mapping_opt_lr", 0.05),
+        adaptive_replanning=bool(getattr(schedule_spec, "adaptive_cadence", False)),
+        adaptive_replan_min_interval=int(
+            getattr(schedule_spec, "adaptive_replan_min_interval", 1)
+        ),
+        adaptive_replan_state_error_threshold=getattr(
+            schedule_spec, "adaptive_replan_state_error_threshold", None
+        ),
         verbose=False,
         **kwargs,
     )
@@ -853,6 +860,16 @@ def _run_single_parameter_identification(
         model_kwargs["q_theta"] = q_theta
     if "k_theta" in fe_init.parameters:
         model_kwargs["k_theta"] = int(schedule_spec.update_interval)
+    if "adaptive_update" in fe_init.parameters:
+        model_kwargs["adaptive_update"] = bool(getattr(schedule_spec, "adaptive_cadence", False))
+    if "adaptive_update_min_interval" in fe_init.parameters:
+        model_kwargs["adaptive_update_min_interval"] = int(
+            getattr(schedule_spec, "adaptive_update_min_interval", 1)
+        )
+    if "adaptive_update_eig_threshold" in fe_init.parameters:
+        model_kwargs["adaptive_update_eig_threshold"] = getattr(
+            schedule_spec, "adaptive_update_eig_threshold", None
+        )
     if "q_theta_meas_coeff" in fe_init.parameters:
         model_kwargs["q_theta_meas_coeff"] = q_theta_meas_coeff
     if "q_theta_max_scale" in fe_init.parameters:
@@ -1005,6 +1022,11 @@ def _run_single_parameter_identification(
                 "cpu_time_sec": cpu_time_sec,
                 "I_z_t": float(info_diag.get("I_z_t", 0.0)),
                 "I_theta_t": float(info_diag.get("I_theta_t", 0.0)),
+                "theta_block_eig": float(info_diag.get("theta_block_eig", 0.0)),
+                "theta_block_steps": int(info_diag.get("theta_block_steps", 0)),
+                "parameter_update_reason": str(
+                    info_diag.get("parameter_update_reason", "none")
+                ),
                 "Pz00": float(info_diag.get("Pz00", 0.0)),
                 "Pz01": float(info_diag.get("Pz01", 0.0)),
                 "Pz11": float(info_diag.get("Pz11", 0.0)),
@@ -1021,6 +1043,18 @@ def _run_single_parameter_identification(
                 "state_posterior_updated": as_bool(transition.get("state_posterior_updated", True)),
                 "parameter_posterior_updated": as_bool(
                     transition.get("parameter_posterior_updated", True)
+                ),
+                "adaptive_replan_triggered": as_bool(
+                    transition.get("adaptive_replan_triggered", False)
+                ),
+                "adaptive_replan_reason": str(
+                    transition.get("adaptive_replan_reason", "none")
+                ),
+                "adaptive_replan_interval": int(
+                    transition.get("adaptive_replan_interval", schedule_spec.replan_interval)
+                ),
+                "adaptive_state_tracking_error": transition.get(
+                    "adaptive_state_tracking_error"
                 ),
                 "window_buffer_length": int(transition.get("window_buffer_length", 0)),
                 "boundary_visibility_mean": _boundary_visibility_mean(
@@ -1085,6 +1119,15 @@ def _run_single_parameter_identification(
                 "state_posterior_updated": as_bool(transition.get("state_posterior_updated", True)),
                 "parameter_posterior_updated": as_bool(
                     transition.get("parameter_posterior_updated", True)
+                ),
+                "adaptive_replan_triggered": as_bool(
+                    transition.get("adaptive_replan_triggered", False)
+                ),
+                "adaptive_replan_reason": str(
+                    transition.get("adaptive_replan_reason", "none")
+                ),
+                "adaptive_replan_interval": int(
+                    transition.get("adaptive_replan_interval", schedule_spec.replan_interval)
                 ),
                 "window_buffer_length": int(transition.get("window_buffer_length", 0)),
             }
@@ -1203,6 +1246,9 @@ def _run_single_parameter_identification(
             "cpu_time_sec",
             "I_z_t",
             "I_theta_t",
+            "theta_block_eig",
+            "theta_block_steps",
+            "parameter_update_reason",
             "Pz00",
             "Pz01",
             "Pz11",
@@ -1210,6 +1256,10 @@ def _run_single_parameter_identification(
             "parameter_shrinkage",
             "state_posterior_updated",
             "parameter_posterior_updated",
+            "adaptive_replan_triggered",
+            "adaptive_replan_reason",
+            "adaptive_replan_interval",
+            "adaptive_state_tracking_error",
             "window_buffer_length",
             "boundary_visibility_mean",
         ],
@@ -1246,6 +1296,9 @@ def _run_single_parameter_identification(
             "policy_cost",
             "state_posterior_updated",
             "parameter_posterior_updated",
+            "adaptive_replan_triggered",
+            "adaptive_replan_reason",
+            "adaptive_replan_interval",
             "window_buffer_length",
         ],
     )
@@ -1373,6 +1426,19 @@ def _run_single_parameter_identification(
             "predictive_only_window": bool(schedule_spec.predictive_only_window),
             "state_update_interval": int(schedule_spec.update_interval),
             "parameter_update_interval": int(schedule_spec.update_interval),
+            "adaptive_cadence": bool(getattr(schedule_spec, "adaptive_cadence", False)),
+            "adaptive_update_min_interval": int(
+                getattr(schedule_spec, "adaptive_update_min_interval", 1)
+            ),
+            "adaptive_update_eig_threshold": getattr(
+                schedule_spec, "adaptive_update_eig_threshold", None
+            ),
+            "adaptive_replan_min_interval": int(
+                getattr(schedule_spec, "adaptive_replan_min_interval", 1)
+            ),
+            "adaptive_replan_state_error_threshold": getattr(
+                schedule_spec, "adaptive_replan_state_error_threshold", None
+            ),
             "q_theta": float(q_theta),
             "parameter_prior_covariance": float(parameter_prior_covariance),
             "initial_parameter_mean": [
