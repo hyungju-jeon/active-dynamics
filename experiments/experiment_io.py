@@ -101,8 +101,6 @@ def resolve_artifact_path(
         path = Path(raw)
         if path.is_absolute():
             return path
-        # Metadata may store either repo-relative paths like results/cosyne/...
-        # or run-local filenames like parameter_error_trace.csv.
         if path.exists():
             return path.resolve()
         candidate = (base_dir / path).resolve()

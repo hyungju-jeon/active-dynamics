@@ -238,3 +238,27 @@ def test_timevarying_hotspots_prototype_smoke(tmp_path: Path):
         "hotspot_greedy",
         "hotspot_intercept",
     }
+
+def test_current_tbme_catalog_configures_initial_parameter_distribution():
+    from experiments.experiment_definitions import (
+        DEFAULT_MODEL_CATALOG_PATHS,
+        DEFAULT_SUITE_CATALOG_PATHS,
+        configure_catalogs,
+        get_environment_preset,
+    )
+
+    env_paths = [
+        REPO_ROOT / "experiments" / "experiment_env.yaml",
+        REPO_ROOT / "experiments" / "tbme" / "config" / "experiment_env.yaml",
+    ]
+    configure_catalogs(
+        env_catalog_paths=env_paths,
+        model_catalog_paths=DEFAULT_MODEL_CATALOG_PATHS,
+        suite_catalog_paths=DEFAULT_SUITE_CATALOG_PATHS,
+    )
+    try:
+        preset = get_environment_preset("tbme_asymmetric_basin")
+        assert np.allclose(preset.initial_parameter_mean_vector(), np.zeros(4))
+        assert preset.initial_parameter_variance == pytest.approx(0.25)
+    finally:
+        configure_catalogs()

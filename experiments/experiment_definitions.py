@@ -44,6 +44,8 @@ class EnvironmentPreset:
     estimator_dynamics_type: str | None = None
     true_params: tuple[float, ...] | None = None
     estimator_true_params: tuple[float, ...] | None = None
+    initial_parameter_mean: float | tuple[float, ...] = 1.0
+    initial_parameter_variance: float = 0.0
     state_low: tuple[float, float] | None = None
     state_high: tuple[float, float] | None = None
     min_embedding_dim: int | None = None
@@ -167,6 +169,19 @@ class EnvironmentPreset:
             (*e_np.shape[:-1], tail.shape[0]),
         )
         return np.concatenate((e_np, tail.astype(np.float32, copy=False)), axis=-1)
+
+    def initial_parameter_mean_vector(self, *, embedding_dim: int | None = None) -> np.ndarray:
+        """Return the configured initial parameter mean with shape ``(embedding_dim,)``."""
+        dim = int(self.embedding_dim) if embedding_dim is None else int(embedding_dim)
+        configured = self.initial_parameter_mean
+        if isinstance(configured, tuple):
+            if len(configured) != dim:
+                raise ValueError(
+                    f"initial_parameter_mean for {self.preset_id} has {len(configured)} values, "
+                    f"expected {dim}."
+                )
+            return np.asarray(configured, dtype=np.float32)
+        return np.full((dim,), float(configured), dtype=np.float32)
 
     def sample_initial_state(self, seed: int) -> np.ndarray:
         low, high = self.resolved_state_bounds()
@@ -394,6 +409,17 @@ def _as_float_tuple(values: Any, *, label: str) -> tuple[float, ...] | None:
     return tuple(float(value) for value in values)
 
 
+def _as_float_or_tuple(values: Any, *, label: str, default: float) -> float | tuple[float, ...]:
+    if values is None:
+        return float(default)
+    if isinstance(values, (list, tuple)):
+        return tuple(float(value) for value in values)
+    try:
+        return float(values)
+    except Exception as exc:
+        raise ValueError(f"Expected scalar or list/tuple for {label}") from exc
+
+
 def _as_pair(values: Any, *, label: str) -> tuple[float, float] | None:
     parsed = _as_float_tuple(values, label=label)
     if parsed is None:
@@ -510,6 +536,12 @@ def load_catalog_bundle(
                 spec.get("estimator_true_params"),
                 label=f"environments.{preset_id}.estimator_true_params",
             ),
+            initial_parameter_mean=_as_float_or_tuple(
+                spec.get("initial_parameter_mean"),
+                label=f"environments.{preset_id}.initial_parameter_mean",
+                default=1.0,
+            ),
+            initial_parameter_variance=float(spec.get("initial_parameter_variance", 0.0)),
             state_low=_as_pair(spec.get("state_low"), label=f"environments.{preset_id}.state_low"),
             state_high=_as_pair(
                 spec.get("state_high"), label=f"environments.{preset_id}.state_high"

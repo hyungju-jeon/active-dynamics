@@ -810,8 +810,32 @@ def _run_single_parameter_identification(
     dynamics.logvar = nn.Parameter(torch.log(torch.ones(1, dz, device=device) * noise_scale))
 
     sigma_0 = max(float(parameter_prior_covariance), 1e-12)
+    initial_parameter_mean = torch.as_tensor(
+        env_preset.initial_parameter_mean_vector(embedding_dim=de),
+        dtype=torch.float32,
+        device=device,
+    ).reshape(1, de)
+    initial_parameter_variance = float(env_preset.initial_parameter_variance)
+    if initial_parameter_variance < 0.0:
+        raise ValueError(
+            f"initial_parameter_variance for {env_preset.preset_id} must be nonnegative, "
+            f"got {initial_parameter_variance}."
+        )
+    if initial_parameter_variance > 0.0:
+        initial_parameter_generator = torch.Generator(device="cpu")
+        initial_parameter_generator.manual_seed(int(seed))
+        initial_parameter_std = float(initial_parameter_variance) ** 0.5
+        initial_parameter_noise = torch.randn(
+            1,
+            de,
+            generator=initial_parameter_generator,
+            dtype=torch.float32,
+        ).to(device)
+        initial_parameter = initial_parameter_mean + initial_parameter_std * initial_parameter_noise
+    else:
+        initial_parameter = initial_parameter_mean
     e_bel = {
-        "m": torch.ones(1, de, device=device),
+        "m": initial_parameter,
         "P": sigma_0 * torch.eye(de, device=device).unsqueeze(0),
         "L": (1.0 / sigma_0) * torch.eye(de, device=device).unsqueeze(0),
     }
@@ -1351,6 +1375,14 @@ def _run_single_parameter_identification(
             "parameter_update_interval": int(schedule_spec.update_interval),
             "q_theta": float(q_theta),
             "parameter_prior_covariance": float(parameter_prior_covariance),
+            "initial_parameter_mean": [
+                float(x) for x in initial_parameter_mean.reshape(-1).tolist()
+            ],
+            "initial_parameter_variance": float(initial_parameter_variance),
+            "initial_parameter": [float(x) for x in initial_parameter.reshape(-1).tolist()],
+            "initial_parameter_seed": (
+                int(seed) if initial_parameter_variance > 0.0 else None
+            ),
             "q_theta_meas_coeff": float(q_theta_meas_coeff),
             "q_theta_max_scale": float(q_theta_max_scale),
             "eig_gamma": float(eig_gamma),
@@ -1564,6 +1596,13 @@ def _build_session_experiment_entry(
             "dynamics_alpha": float(env_preset.dynamics_alpha),
             "state_noise": float(env_preset.state_noise),
             "state_init_uncertainty": float(env_preset.state_init_uncertainty),
+            "initial_parameter_mean": [
+                float(x)
+                for x in env_preset.initial_parameter_mean_vector(
+                    embedding_dim=int(env_preset.embedding_dim)
+                ).tolist()
+            ],
+            "initial_parameter_variance": float(env_preset.initial_parameter_variance),
             "firing_rate_scale": float(env_preset.firing_rate_scale),
             "observation_noise_scale": float(env_preset.observation_noise_scale),
             "observation_noise_type": str(env_preset.observation_noise_type),
