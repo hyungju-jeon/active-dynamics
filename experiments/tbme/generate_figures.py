@@ -125,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Overview : Write group-level overview tables and figures.
     overview = subparsers.add_parser(
         "overview",
-        help="Write group-level overview tables and figures into results/tbme.",
+        help="Write group-level overview tables and figures into each group session.",
     )
     overview.add_argument(
         "--groups",

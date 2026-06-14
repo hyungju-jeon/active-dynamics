@@ -1394,13 +1394,23 @@ _overview_R2_THRESHOLD_POINT_COLORS = {
 }
 
 
+def _group_session_root(group_name: str, refs: Sequence[SuiteRef] | None = None) -> Path:
+    group_refs = list(GROUPS[group_name] if refs is None else refs)
+    if not group_refs:
+        return _latest_session(_TBME_RESULTS_DIR / group_name)
+    session_roots = {ref.session_root for ref in group_refs}
+    if len(session_roots) != 1:
+        roots = ", ".join(str(path) for path in sorted(session_roots))
+        raise ValueError(f"Expected one session root for {group_name}; found {roots}")
+    return next(iter(session_roots))
 
-def _overview_dir(group_name: str) -> Path:
-    return _TBME_RESULTS_DIR / group_name / "overview"
+
+def _overview_dir(group_name: str, refs: Sequence[SuiteRef] | None = None) -> Path:
+    return _group_session_root(group_name, refs) / "overview"
 
 
-def _overview_figures_dir(group_name: str) -> Path:
-    return _overview_dir(group_name) / "figures"
+def _overview_figures_dir(group_name: str, refs: Sequence[SuiteRef] | None = None) -> Path:
+    return _overview_dir(group_name, refs) / "figures"
 
 
 def _overview_summary_dir(ref: SuiteRef) -> Path:
@@ -1682,7 +1692,7 @@ def _overview_plot_schedule_threshold_pareto() -> Path | None:
     env_labels = [ref.label for ref in GROUPS["exp03_schedule"]]
     policy_ids = sorted({str(row["policy_id"]) for row in rows}, key=_policy_sort_key)
     out_path = (
-        _overview_figures_dir("exp03_schedule")
+        _overview_figures_dir("exp03_schedule", GROUPS["exp03_schedule"])
         / "r2_threshold_pareto_step_cpu_by_environment.pdf"
     )
     return plot_schedule_threshold_pareto(
@@ -1716,7 +1726,8 @@ def _overview_export_group(
     threshold_rows.sort(
         key=lambda row: (str(row["suite_label"]), _policy_sort_key(str(row["policy_id"])))
     )
-    overview_dir = _overview_dir(group_name)
+    overview_dir = _overview_dir(group_name, refs)
+    figures_dir = overview_dir / "figures"
     csv_path = overview_dir / "overview_table.csv"
     tex_path = overview_dir / "overview_table.tex"
     _write_csv(
@@ -1740,8 +1751,7 @@ def _overview_export_group(
     written = [csv_path, tex_path]
     threshold_plots = [
         plot_r2_threshold_stacked_bars(
-            _overview_figures_dir(group_name)
-            / "r2_threshold_stacked_steps_by_environment.pdf",
+            figures_dir / "r2_threshold_stacked_steps_by_environment.pdf",
             group_name=group_name,
             refs=refs,
             threshold_rows=threshold_rows,
@@ -1776,8 +1786,7 @@ def _overview_export_group(
             segment_colors=_overview_R2_THRESHOLD_SEGMENT_COLORS,
         ),
         plot_r2_threshold_stacked_bars(
-            _overview_figures_dir(group_name)
-            / "r2_threshold_stacked_cpu_time_by_environment.pdf",
+            figures_dir / "r2_threshold_stacked_cpu_time_by_environment.pdf",
             group_name=group_name,
             refs=refs,
             threshold_rows=threshold_rows,
@@ -1818,7 +1827,7 @@ def _overview_export_group(
 
 def _group_overview_build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Write group-level TBME overview tables and figures into results/tbme."
+        description="Write group-level TBME overview tables and figures into each group session."
     )
     parser.add_argument(
         "--groups",
@@ -3739,6 +3748,8 @@ def _experiment_xy_trace_until(record: _ExperimentRunRecord, step: int) -> np.nd
             continue
         if row_step <= step:
             points.append((x_val, v_val))
+    if not points:
+        return np.empty((0, 2), dtype=np.float32)
     return np.asarray(points, dtype=np.float32)
 
 

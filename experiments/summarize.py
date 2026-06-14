@@ -308,20 +308,20 @@ def aggregate_trajectory_r2_trace(
         subgroup = [r for r in records if str(r["policy_id"]) == policy_id]
         by_step: dict[int, dict[str, list[float]]] = {}
         for record in subgroup:
-            env_preset = get_environment_preset_from_metadata(record["metadata"])
-            trace_rows = _recompute_trajectory_trace_rows(
+            trace_path = _trace_path(
                 record,
-                exp_spec=exp_spec,
-                env_preset=env_preset,
-                interval=10,
+                metadata_key="trajectory_r2_trace_path",
+                fallback_name="trajectory_r2_trace.csv",
             )
+            trace_rows = [] if trace_path is None else read_trace_csv(trace_path)
             if not trace_rows:
-                trace_path = _trace_path(
+                env_preset = get_environment_preset_from_metadata(record["metadata"])
+                trace_rows = _recompute_trajectory_trace_rows(
                     record,
-                    metadata_key="trajectory_r2_trace_path",
-                    fallback_name="trajectory_r2_trace.csv",
+                    exp_spec=exp_spec,
+                    env_preset=env_preset,
+                    interval=10,
                 )
-                trace_rows = [] if trace_path is None else read_trace_csv(trace_path)
             for row in trace_rows:
                 step = safe_float(row.get("step"))
                 value = safe_float(row.get("trajectory_r2"))

@@ -149,8 +149,8 @@ def get_environment_preset_from_metadata(metadata: Mapping[str, Any]) -> Any:
 def reconstruct_loglinear_rate_model(
     metadata: Mapping[str, Any],
     *,
-    obs_dim: int = 50,
-    latent_dim: int = 2,
+    obs_dim: int | None = None,
+    latent_dim: int | None = None,
     dt_default: float = 0.01,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     env_preset = get_environment_preset_from_metadata(metadata)
@@ -160,11 +160,13 @@ def reconstruct_loglinear_rate_model(
     if saved_weights is not None and saved_bias is not None:
         weights = np.asarray(saved_weights, dtype=np.float32)
         bias = np.asarray(saved_bias, dtype=np.float32).reshape(-1)
-        expected_shape = (int(obs_dim), int(latent_dim))
+        expected_obs_dim = weights.shape[0] if obs_dim is None else int(obs_dim)
+        expected_latent_dim = weights.shape[1] if latent_dim is None else int(latent_dim)
+        expected_shape = (expected_obs_dim, expected_latent_dim)
         if weights.shape != expected_shape:
             raise ValueError(f"Saved observation loading has shape {weights.shape}, expected {expected_shape}.")
-        if bias.shape != (int(obs_dim),):
-            raise ValueError(f"Saved observation bias has shape {bias.shape}, expected {(int(obs_dim),)}.")
+        if bias.shape != (expected_obs_dim,):
+            raise ValueError(f"Saved observation bias has shape {bias.shape}, expected {(expected_obs_dim,)}.")
         return weights, bias, dt
 
     from actdyn.utils.experiment_runtime import (

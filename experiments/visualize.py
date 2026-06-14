@@ -228,7 +228,7 @@ def plot_neuron_tuning_curve_colormap(
     records: list[dict[str, Any]],
     figure_formats: Sequence[str],
     get_environment_preset_from_metadata: Callable[[dict[str, Any]], Any],
-    reconstruct_loglinear_rate_model: Callable[[dict[str, Any]], tuple[Any, Any, Any]],
+    reconstruct_loglinear_rate_model: Callable[..., tuple[Any, Any, Any]],
     expected_loglinear_rate_hz: Callable[..., Any],
     apply_style: Callable[[Any], None] | None = None,
     style_axis: Callable[..., None] | None = None,
@@ -262,7 +262,11 @@ def plot_neuron_tuning_curve_colormap(
     maps: list[np.ndarray] = []
     for ref in seed_refs:
         metadata = dict(ref["metadata"])
-        weights, bias, _dt = reconstruct_loglinear_rate_model(metadata)
+        weights, bias, _dt = reconstruct_loglinear_rate_model(
+            metadata,
+            obs_dim=metadata.get("observation_dim"),
+            latent_dim=metadata.get("latent_dim"),
+        )
         rate_hz = expected_loglinear_rate_hz(latent, weights=weights, bias=bias)
         maps.append(np.sum(rate_hz, axis=1).reshape(n_grid, n_grid))
     heat = np.mean(np.stack(maps, axis=0), axis=0)
@@ -328,7 +332,7 @@ def plot_information_colormap(
     records: list[dict[str, Any]],
     figure_formats: Sequence[str],
     get_environment_preset_from_metadata: Callable[[dict[str, Any]], Any],
-    reconstruct_loglinear_rate_model: Callable[[dict[str, Any]], tuple[Any, Any, Any]],
+    reconstruct_loglinear_rate_model: Callable[..., tuple[Any, Any, Any]],
     expected_loglinear_rate_hz: Callable[..., Any],
     apply_style: Callable[[Any], None] | None = None,
     style_axis: Callable[..., None] | None = None,
@@ -357,7 +361,11 @@ def plot_information_colormap(
     maps: list[np.ndarray] = []
     for ref in seed_refs:
         metadata = dict(ref["metadata"])
-        weights, bias, dt = reconstruct_loglinear_rate_model(metadata)
+        weights, bias, dt = reconstruct_loglinear_rate_model(
+            metadata,
+            obs_dim=metadata.get("observation_dim"),
+            latent_dim=metadata.get("latent_dim"),
+        )
         rate_hz = expected_loglinear_rate_hz(latent, weights=weights, bias=bias)
         mean_counts = np.clip(rate_hz * float(dt), 1e-8, 1e8)
         info_mats = np.einsum("nd,di,dj->nij", mean_counts, weights, weights, optimize=True)
