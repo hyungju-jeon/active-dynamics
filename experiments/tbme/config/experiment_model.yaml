@@ -97,21 +97,6 @@ models:
     adaptive_replan_min_interval: 5
     adaptive_replan_state_error_threshold: 3.0
 
-  active_planning_adaptive_state_quality_u20_r20_h40:
-    extends: active_planning
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 40
-    adaptive_cadence: true
-    adaptive_update_min_interval: 5
-    adaptive_update_quality_threshold: 0.05
-    adaptive_replan_min_interval: 5
-    adaptive_replan_state_error_threshold: 3.0
-
-  active_planning_adaptive_state_twogate_u20_r20_h40:
-    extends: active_planning_adaptive_state_u20_r20_h40
-    adaptive_update_quality_threshold: 0.05
-
   active_fully_observable_u20_r20_h40:
     objective_kind: fully_observable_parameter_eig
     update_interval: 20

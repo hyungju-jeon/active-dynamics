@@ -35,7 +35,6 @@ def test_schedule_spec_uses_replan_interval_as_single_planning_knob():
         adaptive_cadence=True,
         adaptive_update_min_interval=2,
         adaptive_update_eig_threshold=0.03,
-        adaptive_update_quality_threshold=0.01,
         adaptive_replan_min_interval=2,
         adaptive_replan_state_error_threshold=3.0,
     )
@@ -44,7 +43,6 @@ def test_schedule_spec_uses_replan_interval_as_single_planning_knob():
     assert schedule.planning_chunk == 5
     assert schedule.adaptive_cadence is True
     assert schedule.adaptive_update_eig_threshold == pytest.approx(0.03)
-    assert schedule.adaptive_update_quality_threshold == pytest.approx(0.01)
     legacy = ScheduleSpec("legacy", 1, 5, 20, 5, True)
     assert legacy.replan_interval == 5
     assert legacy.predictive_only_window is True

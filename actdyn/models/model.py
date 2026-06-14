@@ -662,7 +662,6 @@ class FilteringEmbedding(BaseModel):
         adaptive_update: bool = False,
         adaptive_update_min_interval: int = 1,
         adaptive_update_eig_threshold: float | None = None,
-        adaptive_update_quality_threshold: float | None = None,
         shrinkage_map: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         shrinkage_min: float = 0.0,
         **kwargs,
@@ -692,12 +691,6 @@ class FilteringEmbedding(BaseModel):
             if adaptive_update_eig_threshold is None
             else float(adaptive_update_eig_threshold)
         )
-        self.adaptive_update_quality_threshold = (
-            None
-            if adaptive_update_quality_threshold is None
-            else float(adaptive_update_quality_threshold)
-        )
-        self._theta_quality_reference_P = self._project_spd(self.e["P"].detach().clone())
         self.shrinkage_map = shrinkage_map
         self.shrinkage_min = float(shrinkage_min)
         self.gn_iter = 10
@@ -709,7 +702,6 @@ class FilteringEmbedding(BaseModel):
             "I_z_t": 0.0,
             "I_theta_t": 0.0,
             "theta_block_eig": 0.0,
-            "theta_block_quality": 0.0,
             "theta_block_steps": 0,
             "parameter_update_reason": "none",
             "Pz00": 0.0,
@@ -875,17 +867,17 @@ class FilteringEmbedding(BaseModel):
         self.set_params(self.e["m"].detach())
         self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
 
-    def _theta_block_eig_for_covariance(self, P: torch.Tensor) -> torch.Tensor:
-        """Return block EIG normalized by dimension for a reference covariance."""
+    def _theta_block_eig(self) -> torch.Tensor:
+        """Return posterior-scaled EIG for the currently accumulated parameter block."""
         d_embed = self.e["m"].shape[-1]
         if d_embed <= 0 or self._theta_block_steps <= 0:
             return torch.tensor(0.0, device=self.device)
         info = torch.nan_to_num(
             self._theta_info_block, nan=0.0, posinf=1e6, neginf=-1e6
         )
-        P = self._project_spd(P)
-        if info.shape[0] != P.shape[0]:
+        if info.shape[0] != self.e["P"].shape[0]:
             info = info.mean(dim=0, keepdim=True)
+        P = self._project_spd(self.e["P"])
         chol_P = safe_cholesky(P)
         eye = torch.eye(d_embed, device=self.device).unsqueeze(0).expand(P.shape[0], -1, -1)
         scaled_info = self._project_spd(
@@ -899,14 +891,6 @@ class FilteringEmbedding(BaseModel):
         eig = 0.5 * logdet / float(d_embed)
         return torch.nan_to_num(eig.mean(), nan=0.0, posinf=1e6, neginf=0.0)
 
-    def _theta_block_eig(self) -> torch.Tensor:
-        """Return posterior-scaled EIG for the currently accumulated parameter block."""
-        return self._theta_block_eig_for_covariance(self.e["P"])
-
-    def _theta_block_quality(self) -> torch.Tensor:
-        """Return intrinsic block information measured against the initial prior scale."""
-        return self._theta_block_eig_for_covariance(self._theta_quality_reference_P)
-
     def _embedding_block_update_reason(self) -> str | None:
         """Return why the current parameter block should be applied, if at all."""
         steps = int(self._theta_block_steps)
@@ -917,21 +901,9 @@ class FilteringEmbedding(BaseModel):
         if steps < min(self.adaptive_update_min_interval, self.k_theta):
             return None
         if self.adaptive_update_eig_threshold is None:
-            if self.adaptive_update_quality_threshold is None:
-                return None
-            if float(self._theta_block_quality().item()) >= float(
-                self.adaptive_update_quality_threshold
-            ):
-                return "block_quality"
             return None
         if float(self._theta_block_eig().item()) >= float(self.adaptive_update_eig_threshold):
-            if self.adaptive_update_quality_threshold is None:
-                return "block_eig"
-            if (
-                float(self._theta_block_quality().item())
-                >= float(self.adaptive_update_quality_threshold)
-            ):
-                return "block_eig_quality"
+            return "block_eig"
         return None
 
     @staticmethod
@@ -982,7 +954,6 @@ class FilteringEmbedding(BaseModel):
         }
         self._ensure_state_belief_shapes(batch_size=batch)
         self.set_params(self.e["m"])
-        self._theta_quality_reference_P = self._project_spd(self.e["P"].detach().clone())
         self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
         self._last_theta_score_block_applied = torch.zeros_like(self._theta_score_block)
         self._last_theta_info_block_applied = torch.zeros_like(self._theta_info_block)
@@ -992,7 +963,6 @@ class FilteringEmbedding(BaseModel):
             "I_z_t": 0.0,
             "I_theta_t": 0.0,
             "theta_block_eig": 0.0,
-            "theta_block_quality": 0.0,
             "theta_block_steps": 0,
             "parameter_update_reason": "none",
             "Pz00": 0.0,
@@ -1318,9 +1288,6 @@ class FilteringEmbedding(BaseModel):
         Pz01 = Pz_eval[:, 0, 1].mean()
         Pz11 = Pz_eval[:, 1, 1].mean()
         theta_block_eig = self._theta_block_eig() if update_theta else torch.tensor(0.0, device=self.device)
-        theta_block_quality = (
-            self._theta_block_quality() if update_theta else torch.tensor(0.0, device=self.device)
-        )
         self.last_information = {
             "I_z_t": float(torch.nan_to_num(I_z_scalar, nan=0.0, posinf=1e6, neginf=0.0).item()),
             "I_theta_t": float(
@@ -1328,11 +1295,6 @@ class FilteringEmbedding(BaseModel):
             ),
             "theta_block_eig": float(
                 torch.nan_to_num(theta_block_eig, nan=0.0, posinf=1e6, neginf=0.0).item()
-            ),
-            "theta_block_quality": float(
-                torch.nan_to_num(
-                    theta_block_quality, nan=0.0, posinf=1e6, neginf=0.0
-                ).item()
             ),
             "theta_block_steps": int(self._theta_block_steps),
             "parameter_update_reason": "none",
@@ -1351,11 +1313,6 @@ class FilteringEmbedding(BaseModel):
             self.last_information["theta_block_eig"] = float(
                 torch.nan_to_num(
                     self._theta_block_eig(), nan=0.0, posinf=1e6, neginf=0.0
-                ).item()
-            )
-            self.last_information["theta_block_quality"] = float(
-                torch.nan_to_num(
-                    self._theta_block_quality(), nan=0.0, posinf=1e6, neginf=0.0
                 ).item()
             )
             self.last_information["theta_block_steps"] = int(self._theta_block_steps)

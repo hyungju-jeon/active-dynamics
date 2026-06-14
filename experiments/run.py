@@ -870,10 +870,6 @@ def _run_single_parameter_identification(
         model_kwargs["adaptive_update_eig_threshold"] = getattr(
             schedule_spec, "adaptive_update_eig_threshold", None
         )
-    if "adaptive_update_quality_threshold" in fe_init.parameters:
-        model_kwargs["adaptive_update_quality_threshold"] = getattr(
-            schedule_spec, "adaptive_update_quality_threshold", None
-        )
     if "q_theta_meas_coeff" in fe_init.parameters:
         model_kwargs["q_theta_meas_coeff"] = q_theta_meas_coeff
     if "q_theta_max_scale" in fe_init.parameters:
@@ -1027,7 +1023,6 @@ def _run_single_parameter_identification(
                 "I_z_t": float(info_diag.get("I_z_t", 0.0)),
                 "I_theta_t": float(info_diag.get("I_theta_t", 0.0)),
                 "theta_block_eig": float(info_diag.get("theta_block_eig", 0.0)),
-                "theta_block_quality": float(info_diag.get("theta_block_quality", 0.0)),
                 "theta_block_steps": int(info_diag.get("theta_block_steps", 0)),
                 "parameter_update_reason": str(
                     info_diag.get("parameter_update_reason", "none")
@@ -1252,7 +1247,6 @@ def _run_single_parameter_identification(
             "I_z_t",
             "I_theta_t",
             "theta_block_eig",
-            "theta_block_quality",
             "theta_block_steps",
             "parameter_update_reason",
             "Pz00",
@@ -1438,9 +1432,6 @@ def _run_single_parameter_identification(
             ),
             "adaptive_update_eig_threshold": getattr(
                 schedule_spec, "adaptive_update_eig_threshold", None
-            ),
-            "adaptive_update_quality_threshold": getattr(
-                schedule_spec, "adaptive_update_quality_threshold", None
             ),
             "adaptive_replan_min_interval": int(
                 getattr(schedule_spec, "adaptive_replan_min_interval", 1)

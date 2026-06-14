@@ -199,7 +199,6 @@ class ScheduleSpec:
     adaptive_cadence: bool = False
     adaptive_update_min_interval: int = 1
     adaptive_update_eig_threshold: float | None = None
-    adaptive_update_quality_threshold: float | None = None
     adaptive_replan_min_interval: int = 1
     adaptive_replan_state_error_threshold: float | None = None
 
@@ -217,7 +216,6 @@ class ScheduleSpec:
         adaptive_cadence: bool = False,
         adaptive_update_min_interval: int = 1,
         adaptive_update_eig_threshold: float | None = None,
-        adaptive_update_quality_threshold: float | None = None,
         adaptive_replan_min_interval: int = 1,
         adaptive_replan_state_error_threshold: float | None = None,
     ) -> None:
@@ -263,13 +261,6 @@ class ScheduleSpec:
             None
             if adaptive_update_eig_threshold is None
             else float(adaptive_update_eig_threshold),
-        )
-        object.__setattr__(
-            self,
-            "adaptive_update_quality_threshold",
-            None
-            if adaptive_update_quality_threshold is None
-            else float(adaptive_update_quality_threshold),
         )
         object.__setattr__(
             self, "adaptive_replan_min_interval", int(adaptive_replan_min_interval)
@@ -672,11 +663,6 @@ def load_catalog_bundle(
                 if spec.get("adaptive_update_eig_threshold") is None
                 else float(spec.get("adaptive_update_eig_threshold"))
             ),
-            adaptive_update_quality_threshold=(
-                None
-                if spec.get("adaptive_update_quality_threshold") is None
-                else float(spec.get("adaptive_update_quality_threshold"))
-            ),
             adaptive_replan_min_interval=int(spec.get("adaptive_replan_min_interval", 1)),
             adaptive_replan_state_error_threshold=(
                 None
@@ -697,7 +683,6 @@ def load_catalog_bundle(
         "adaptive_cadence",
         "adaptive_update_min_interval",
         "adaptive_update_eig_threshold",
-        "adaptive_update_quality_threshold",
         "adaptive_replan_min_interval",
         "adaptive_replan_state_error_threshold",
     }
@@ -717,11 +702,6 @@ def load_catalog_bundle(
                 None
                 if spec.get("adaptive_update_eig_threshold") is None
                 else float(spec.get("adaptive_update_eig_threshold"))
-            ),
-            adaptive_update_quality_threshold=(
-                None
-                if spec.get("adaptive_update_quality_threshold") is None
-                else float(spec.get("adaptive_update_quality_threshold"))
             ),
             adaptive_replan_min_interval=int(spec.get("adaptive_replan_min_interval", 1)),
             adaptive_replan_state_error_threshold=(
