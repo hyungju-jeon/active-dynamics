@@ -28,7 +28,15 @@ def _zero_dynamics(z: torch.Tensor) -> torch.Tensor:
     return torch.zeros_like(z)
 
 
-def _build_model(q_theta: float = 1e-4, k_theta: int = 2) -> FilteringEmbedding:
+def _build_model(
+    q_theta: float = 1e-4,
+    k_theta: int = 2,
+    *,
+    adaptive_update: bool = False,
+    adaptive_update_min_interval: int = 1,
+    adaptive_update_eig_threshold: float | None = None,
+    adaptive_update_quality_threshold: float | None = None,
+) -> FilteringEmbedding:
     dynamics = FunctionDynamics(state_dim=2, dynamics_fn=_zero_dynamics, dt=0.1, device="cpu")
     dynamics.logvar = torch.nn.Parameter(torch.log(torch.ones(1, 2) * 0.01))
 
@@ -52,6 +60,10 @@ def _build_model(q_theta: float = 1e-4, k_theta: int = 2) -> FilteringEmbedding:
         Fz=_fz_zero,
         q_theta=q_theta,
         k_theta=k_theta,
+        adaptive_update=adaptive_update,
+        adaptive_update_min_interval=adaptive_update_min_interval,
+        adaptive_update_eig_threshold=adaptive_update_eig_threshold,
+        adaptive_update_quality_threshold=adaptive_update_quality_threshold,
         device="cpu",
     )
     # Keep prediction deterministic so only filtering updates influence parameter belief.
@@ -75,6 +87,72 @@ def test_block_update_applies_only_every_k_theta_steps() -> None:
 
     model.update_posterior_embedding(y, u)
     assert not torch.allclose(model.e["m"], before)
+
+
+def test_adaptive_block_update_can_apply_before_k_theta() -> None:
+    model = _build_model(
+        q_theta=1e-4,
+        k_theta=5,
+        adaptive_update=True,
+        adaptive_update_min_interval=2,
+        adaptive_update_eig_threshold=0.0,
+    )
+    y = torch.tensor([[[1.0, -0.5]]], dtype=torch.float32)
+    u = torch.zeros(1, 1, 2)
+    before = model.e["m"].clone()
+
+    model.update_posterior_embedding(y, u)
+    assert torch.allclose(model.e["m"], before)
+
+    model.update_posterior_embedding(y, u)
+    assert not torch.allclose(model.e["m"], before)
+    assert model.last_information["parameter_update_reason"] == "block_eig"
+    assert model._last_theta_block_steps_applied == 2
+
+
+def test_adaptive_block_quality_can_apply_before_k_theta() -> None:
+    model = _build_model(
+        q_theta=1e-4,
+        k_theta=5,
+        adaptive_update=True,
+        adaptive_update_min_interval=2,
+        adaptive_update_quality_threshold=0.0,
+    )
+    y = torch.tensor([[[1.0, -0.5]]], dtype=torch.float32)
+    u = torch.zeros(1, 1, 2)
+    before = model.e["m"].clone()
+
+    model.update_posterior_embedding(y, u)
+    assert torch.allclose(model.e["m"], before)
+
+    model.update_posterior_embedding(y, u)
+    assert not torch.allclose(model.e["m"], before)
+    assert model.last_information["parameter_update_reason"] == "block_quality"
+    assert model._last_theta_block_steps_applied == 2
+
+
+def test_adaptive_block_quality_gate_can_delay_early_update() -> None:
+    model = _build_model(
+        q_theta=1e-4,
+        k_theta=5,
+        adaptive_update=True,
+        adaptive_update_min_interval=2,
+        adaptive_update_eig_threshold=0.0,
+        adaptive_update_quality_threshold=1e6,
+    )
+    y = torch.tensor([[[1.0, -0.5]]], dtype=torch.float32)
+    u = torch.zeros(1, 1, 2)
+    before = model.e["m"].clone()
+
+    for _ in range(4):
+        model.update_posterior_embedding(y, u)
+    assert torch.allclose(model.e["m"], before)
+    assert model.last_information["parameter_update_reason"] == "none"
+
+    model.update_posterior_embedding(y, u)
+    assert not torch.allclose(model.e["m"], before)
+    assert model.last_information["parameter_update_reason"] == "max_interval"
+    assert model._last_theta_block_steps_applied == 5
 
 
 def test_q_theta_drift_increases_predictive_parameter_covariance() -> None:

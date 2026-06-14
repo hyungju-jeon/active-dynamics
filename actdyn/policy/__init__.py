@@ -6,7 +6,6 @@ to resolve policies by short names.
 
 from .base import BasePolicy, BaseMPC
 from .baseline_ce_mpc import BaselineCEMPCPolicy
-from .baseline_flex import FLEXPolicy
 from .baseline_prbs import BaselinePRBSPolicy
 from .baseline_random import BaselineRandomPolicy
 from .baseline_thompson import BaselineThompsonPolicy
@@ -56,6 +55,9 @@ def policy_from_str(policy_str: str) -> type[BasePolicy]:
 def __getattr__(name: str):
     if name == "AsyncMpcICem":
         module = importlib.import_module(".mpc", __package__)
+        return getattr(module, name)
+    if name == "FLEXPolicy":
+        module = importlib.import_module(".baseline_flex", __package__)
         return getattr(module, name)
     if name == "RecedingHorizonCuriosityPolicy":
         module = importlib.import_module(".baseline_rhc", __package__)

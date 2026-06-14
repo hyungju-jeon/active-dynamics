@@ -196,6 +196,12 @@ class ScheduleSpec:
     replan_interval: int
     planning_horizon: int
     predictive_only_window: bool = False
+    adaptive_cadence: bool = False
+    adaptive_update_min_interval: int = 1
+    adaptive_update_eig_threshold: float | None = None
+    adaptive_update_quality_threshold: float | None = None
+    adaptive_replan_min_interval: int = 1
+    adaptive_replan_state_error_threshold: float | None = None
 
     def __init__(
         self,
@@ -208,6 +214,12 @@ class ScheduleSpec:
         *,
         planning_interval: int | None = None,
         planning_chunk: int | None = None,
+        adaptive_cadence: bool = False,
+        adaptive_update_min_interval: int = 1,
+        adaptive_update_eig_threshold: float | None = None,
+        adaptive_update_quality_threshold: float | None = None,
+        adaptive_replan_min_interval: int = 1,
+        adaptive_replan_state_error_threshold: float | None = None,
     ) -> None:
         if planning_chunk_or_predictive_only_window is not None:
             if isinstance(planning_chunk_or_predictive_only_window, bool):
@@ -241,6 +253,34 @@ class ScheduleSpec:
         object.__setattr__(self, "replan_interval", int(first_value))
         object.__setattr__(self, "planning_horizon", int(planning_horizon))
         object.__setattr__(self, "predictive_only_window", bool(predictive_only_window))
+        object.__setattr__(self, "adaptive_cadence", bool(adaptive_cadence))
+        object.__setattr__(
+            self, "adaptive_update_min_interval", int(adaptive_update_min_interval)
+        )
+        object.__setattr__(
+            self,
+            "adaptive_update_eig_threshold",
+            None
+            if adaptive_update_eig_threshold is None
+            else float(adaptive_update_eig_threshold),
+        )
+        object.__setattr__(
+            self,
+            "adaptive_update_quality_threshold",
+            None
+            if adaptive_update_quality_threshold is None
+            else float(adaptive_update_quality_threshold),
+        )
+        object.__setattr__(
+            self, "adaptive_replan_min_interval", int(adaptive_replan_min_interval)
+        )
+        object.__setattr__(
+            self,
+            "adaptive_replan_state_error_threshold",
+            None
+            if adaptive_replan_state_error_threshold is None
+            else float(adaptive_replan_state_error_threshold),
+        )
 
     @property
     def planning_interval(self) -> int:
@@ -625,6 +665,24 @@ def load_catalog_bundle(
             replan_interval=_resolve_schedule_replan_interval(schedule_id, spec),
             planning_horizon=int(spec["planning_horizon"]),
             predictive_only_window=bool(spec.get("predictive_only_window", False)),
+            adaptive_cadence=bool(spec.get("adaptive_cadence", False)),
+            adaptive_update_min_interval=int(spec.get("adaptive_update_min_interval", 1)),
+            adaptive_update_eig_threshold=(
+                None
+                if spec.get("adaptive_update_eig_threshold") is None
+                else float(spec.get("adaptive_update_eig_threshold"))
+            ),
+            adaptive_update_quality_threshold=(
+                None
+                if spec.get("adaptive_update_quality_threshold") is None
+                else float(spec.get("adaptive_update_quality_threshold"))
+            ),
+            adaptive_replan_min_interval=int(spec.get("adaptive_replan_min_interval", 1)),
+            adaptive_replan_state_error_threshold=(
+                None
+                if spec.get("adaptive_replan_state_error_threshold") is None
+                else float(spec.get("adaptive_replan_state_error_threshold"))
+            ),
         )
         for schedule_id, spec in schedule_raw.items()
     }
@@ -636,6 +694,12 @@ def load_catalog_bundle(
         "planning_chunk",
         "planning_horizon",
         "predictive_only_window",
+        "adaptive_cadence",
+        "adaptive_update_min_interval",
+        "adaptive_update_eig_threshold",
+        "adaptive_update_quality_threshold",
+        "adaptive_replan_min_interval",
+        "adaptive_replan_state_error_threshold",
     }
     for policy_id, spec in model_raw.items():
         if not any(key in spec for key in schedule_keys):
@@ -647,6 +711,24 @@ def load_catalog_bundle(
             replan_interval=_resolve_schedule_replan_interval(schedule_id, spec),
             planning_horizon=int(spec["planning_horizon"]),
             predictive_only_window=bool(spec.get("predictive_only_window", False)),
+            adaptive_cadence=bool(spec.get("adaptive_cadence", False)),
+            adaptive_update_min_interval=int(spec.get("adaptive_update_min_interval", 1)),
+            adaptive_update_eig_threshold=(
+                None
+                if spec.get("adaptive_update_eig_threshold") is None
+                else float(spec.get("adaptive_update_eig_threshold"))
+            ),
+            adaptive_update_quality_threshold=(
+                None
+                if spec.get("adaptive_update_quality_threshold") is None
+                else float(spec.get("adaptive_update_quality_threshold"))
+            ),
+            adaptive_replan_min_interval=int(spec.get("adaptive_replan_min_interval", 1)),
+            adaptive_replan_state_error_threshold=(
+                None
+                if spec.get("adaptive_replan_state_error_threshold") is None
+                else float(spec.get("adaptive_replan_state_error_threshold"))
+            ),
         )
         spec["schedule_id"] = schedule_id
 

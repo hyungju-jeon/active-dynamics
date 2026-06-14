@@ -244,9 +244,17 @@ class Agent:
                         update_theta=not policy_owns_theta,
                     )
                     if not policy_owns_theta:
+                        update_reason = str(
+                            getattr(self.model, '_last_parameter_update_reason', 'none')
+                        )
                         parameter_posterior_updated = parameter_posterior_updated or (
-                            prev_block_steps + 1 >= max(1, int(getattr(self.model, 'k_theta', 1)))
-                            and int(getattr(self.model, '_theta_block_steps', 0)) == 0
+                            update_reason != 'none'
+                            or (
+                                prev_block_steps
+                                + 1
+                                >= max(1, int(getattr(self.model, 'k_theta', 1)))
+                                and int(getattr(self.model, '_theta_block_steps', 0)) == 0
+                            )
                         )
                 model_info['latent_state'] = self.model.get_state()
                 state_posterior_updated = True
@@ -257,9 +265,13 @@ class Agent:
             model_info = self.model.update(self.recent, update_theta=not policy_owns_theta)
             state_posterior_updated = True
             if not policy_owns_theta:
+                update_reason = str(getattr(self.model, '_last_parameter_update_reason', 'none'))
                 parameter_posterior_updated = (
-                    prev_block_steps + 1 >= max(1, int(getattr(self.model, 'k_theta', 1)))
-                    and int(getattr(self.model, '_theta_block_steps', 0)) == 0
+                    update_reason != 'none'
+                    or (
+                        prev_block_steps + 1 >= max(1, int(getattr(self.model, 'k_theta', 1)))
+                        and int(getattr(self.model, '_theta_block_steps', 0)) == 0
+                    )
                 )
 
         model_transition = {
@@ -268,11 +280,29 @@ class Agent:
         }
         self.recent.add(**model_transition)
         self.update_policy(self.recent)
+        parameter_update_forces_replan = bool(
+            getattr(self.policy, 'force_replan_on_parameter_update', False)
+        )
+        if parameter_posterior_updated and parameter_update_forces_replan:
+            request_replan = getattr(self.policy, 'request_replan', None)
+            if callable(request_replan):
+                request_replan('parameter_update')
         if policy_owns_theta:
             policy_update_info = getattr(self.policy, 'last_update_info', {}) or {}
             parameter_posterior_updated = bool(
                 policy_update_info.get('parameter_posterior_updated', False)
             )
+        policy_update_info = getattr(self.policy, 'last_update_info', {}) or {}
+        if (
+            parameter_posterior_updated
+            and parameter_update_forces_replan
+            and hasattr(self.policy, 'request_replan')
+        ):
+            policy_update_info = {
+                **policy_update_info,
+                'adaptive_replan_triggered': True,
+                'adaptive_replan_reason': 'parameter_update',
+            }
 
         transition = {
             **env_transition,
@@ -282,6 +312,18 @@ class Agent:
             'parameter_posterior_updated': parameter_posterior_updated,
             'window_buffer_length': len(self._window_buffer),
             'state_update_interval': self.state_update_interval,
+            'adaptive_replan_triggered': bool(
+                policy_update_info.get('adaptive_replan_triggered', False)
+            ),
+            'adaptive_replan_reason': str(
+                policy_update_info.get('adaptive_replan_reason', 'none')
+            ),
+            'adaptive_replan_interval': int(
+                policy_update_info.get('adaptive_replan_interval', getattr(self.policy, 'chunk', 1))
+            ),
+            'adaptive_state_tracking_error': policy_update_info.get(
+                'adaptive_state_tracking_error'
+            ),
         }
 
         self._observation = obs

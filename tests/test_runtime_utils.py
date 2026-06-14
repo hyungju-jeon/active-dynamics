@@ -32,10 +32,19 @@ def test_schedule_spec_uses_replan_interval_as_single_planning_knob():
         replan_interval=5,
         planning_horizon=20,
         planning_chunk=5,
+        adaptive_cadence=True,
+        adaptive_update_min_interval=2,
+        adaptive_update_eig_threshold=0.03,
+        adaptive_update_quality_threshold=0.01,
+        adaptive_replan_min_interval=2,
+        adaptive_replan_state_error_threshold=3.0,
     )
 
     assert schedule.planning_interval == 5
     assert schedule.planning_chunk == 5
+    assert schedule.adaptive_cadence is True
+    assert schedule.adaptive_update_eig_threshold == pytest.approx(0.03)
+    assert schedule.adaptive_update_quality_threshold == pytest.approx(0.01)
     legacy = ScheduleSpec("legacy", 1, 5, 20, 5, True)
     assert legacy.replan_interval == 5
     assert legacy.predictive_only_window is True
@@ -106,6 +115,9 @@ class _DummyModel:
             return_traj=True,
         )
         return torch.cat(next_states, dim=-2)
+
+    def get_state(self) -> torch.Tensor:
+        return self._state
 
 
 class _UnusedMetric:
@@ -211,6 +223,31 @@ def test_coarse_dt_restores_model_dt_when_planning_raises() -> None:
 
     assert policy.model.dt == pytest.approx(0.1)
     assert policy.model.dynamics.dt == pytest.approx(0.1)
+
+
+def test_state_tracking_error_forces_next_replan() -> None:
+    policy = _make_coarse_policy(chunk=4, horizon=4, factor=1)
+    policy.adaptive_replanning = True
+    policy.adaptive_replan_min_interval = 1
+    policy.adaptive_replan_state_error_threshold = 0.1
+    plan_calls = 0
+
+    def fake_get_action(self, state, **kwargs):
+        del state, kwargs
+        nonlocal plan_calls
+        plan_calls += 1
+        return torch.zeros(1, 4, 2), torch.tensor([0.0])
+
+    policy.get_action = types.MethodType(fake_get_action, policy)
+
+    policy(torch.zeros(1, 1, 2))
+    update_info = policy.update({"next_model_state": torch.tensor([[[1.0, 0.0]]])})
+
+    assert update_info["adaptive_replan_triggered"] is True
+    assert update_info["adaptive_replan_reason"] == "state_tracking_error"
+
+    policy(torch.zeros(1, 1, 2))
+    assert plan_calls == 2
 
 
 def test_endpoint_opt_mapping_returns_bounded_fine_actions() -> None:
