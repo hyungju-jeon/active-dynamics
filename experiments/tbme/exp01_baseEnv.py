@@ -10,6 +10,7 @@ EXPERIMENT_SUITES = {
         "total_steps": 2000,
         "env_preset_id": "tbme_duffing",
         "model_ids": [
+            "active_planning_adaptive_u20_r20_h40",
             "active_planning_u20_r20_h40",
             "active_myopic",
             "prbs",
@@ -27,6 +28,7 @@ EXPERIMENT_SUITES = {
         "total_steps": 2000,
         "env_preset_id": "tbme_damped_pendulum",
         "model_ids": [
+            "active_planning_adaptive_u20_r20_h40",
             "active_planning_u20_r20_h40",
             "active_myopic",
             "prbs",
@@ -44,6 +46,7 @@ EXPERIMENT_SUITES = {
         "total_steps": 2000,
         "env_preset_id": "tbme_asymmetric_basin",
         "model_ids": [
+            "active_planning_adaptive_u20_r20_h40",
             "active_planning_u20_r20_h40",
             "active_myopic",
             "prbs",
