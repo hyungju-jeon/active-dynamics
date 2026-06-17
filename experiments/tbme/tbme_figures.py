@@ -32,7 +32,6 @@ from ..experiment_io import (
     get_environment_preset_from_metadata,
     load_json,
     reconstruct_loglinear_rate_model,
-    resolve_artifact_path,
 )
 from ..visualize import (
     plot_final_value_by_policy,
@@ -42,6 +41,15 @@ from ..visualize import (
     plot_neuron_tuning_curve_colormap,
 )
 from .run_tbme_experiments import configure_tbme_catalogs
+from .tbme_io import (
+    dynamics_from_metadata,
+    embedding_at_step,
+    read_embedding_trace,
+    read_xy_trace as _read_xy_trace,
+    safe_float as _safe_float,
+    trace_path as _tbme_trace_path,
+    true_dynamics_from_metadata,
+)
 
 configure_tbme_catalogs()
 
@@ -387,18 +395,6 @@ def _policy_color(policy_id: str, fallback_idx: int = 0) -> str:
     return POLICY_COLORS.get(policy_id, FALLBACK_COLORS[fallback_idx % len(FALLBACK_COLORS)])
 
 
-def _safe_float(raw: object) -> float | None:
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(value):
-        return None
-    return value
-
-
 def _sem(values: Sequence[float]) -> float:
     arr = np.asarray(values, dtype=np.float64)
     arr = arr[np.isfinite(arr)]
@@ -407,17 +403,6 @@ def _sem(values: Sequence[float]) -> float:
 
 def _r2_threshold_suffix(threshold: float) -> str:
     return f"{float(threshold):.2f}".replace(".", "p")
-
-
-def _read_xy_trace(path: Path) -> np.ndarray:
-    points: list[tuple[float, float]] = []
-    for row in read_trace_csv(path):
-        x_val = _safe_float(row.get("true_x"))
-        v_val = _safe_float(row.get("true_v"))
-        if x_val is None or v_val is None:
-            continue
-        points.append((x_val, v_val))
-    return np.asarray(points, dtype=np.float32)
 
 
 def _write_csv(path: Path, rows: Iterable[dict[str, Any]], fields: Sequence[str]) -> None:
@@ -3300,12 +3285,7 @@ def _experiment_state_bounds_from_metadata(metadata: dict[str, Any]) -> tuple[fl
 def _experiment_trace_path(
     record: _ExperimentRunRecord, metadata_key: str, fallback_name: str
 ) -> Path:
-    return resolve_artifact_path(
-        record.run_dir,
-        record.metadata,
-        key=metadata_key,
-        fallback_name=fallback_name,
-    )
+    return _tbme_trace_path(record.run_dir, record.metadata, metadata_key, fallback_name)
 
 
 def _experiment_load_xy_trace(record: _ExperimentRunRecord) -> np.ndarray:
@@ -3419,32 +3399,6 @@ def _experiment_make_mean_information_grid(
         )
         maps.append(grid.astype(np.float64))
     return x_axis, y_axis, np.nanmean(np.stack(maps, axis=0), axis=0)
-
-
-def _experiment_true_vectorfield_dynamics(metadata: dict[str, Any]) -> ResidualDynamicsCallable:
-    env_preset = get_environment_preset_from_metadata(metadata)
-    theta_true = np.asarray(metadata.get("embedding_true", []), dtype=np.float32)
-    if theta_true.size == 0:
-        theta_true = np.asarray(env_preset.true_embedding_vector(), dtype=np.float32)
-    return ResidualDynamicsCallable(
-        dynamics_type=env_preset.resolved_dynamics_type(),
-        dyn_params=env_preset.params_from_embedding(theta_true),
-        dynamics_alpha=float(metadata.get("dynamics_alpha", 1.0)),
-        device="cpu",
-    )
-
-
-def _experiment_learned_vectorfield_dynamics(
-    metadata: dict[str, Any],
-    theta: np.ndarray,
-) -> ResidualDynamicsCallable:
-    env_preset = get_environment_preset_from_metadata(metadata)
-    return ResidualDynamicsCallable(
-        dynamics_type=env_preset.resolved_dynamics_type(estimator=True),
-        dyn_params=env_preset.params_from_embedding(theta, estimator=True),
-        dynamics_alpha=float(metadata.get("dynamics_alpha", 1.0)),
-        device="cpu",
-    )
 
 
 def _experiment_plot_true_dynamics_all(suite_dirs: Sequence[Path]) -> list[Path]:
@@ -3656,7 +3610,7 @@ def _experiment_plot_asymmetric_basin_mechanism(max_seeds: int) -> list[Path]:
         info_vmax=info_vmax,
         panel_min=panel_min,
         panel_max=panel_max,
-        true_dynamics=_experiment_true_vectorfield_dynamics(ref_metadata),
+        true_dynamics=true_dynamics_from_metadata(ref_metadata),
         traces_by_policy=by_policy,
         policy_ids=policy_ids,
         informative_fraction=informative_fraction,
@@ -3692,33 +3646,13 @@ def _experiment_embedding_at_step(record: _ExperimentRunRecord, step: int) -> np
     path = _experiment_trace_path(
         record, "embedding_estimate_trace_path", "embedding_estimate_trace.csv"
     )
-    selected: dict[str, str] | None = None
-    selected_step = -math.inf
-    fallback: dict[str, str] | None = None
-    fallback_step = math.inf
-    for row in read_trace_csv(path):
-        row_step = _safe_float(row.get("step"))
-        if row_step is None:
-            continue
-        if row_step <= step and row_step >= selected_step:
-            selected = row
-            selected_step = row_step
-        if row_step >= step and row_step <= fallback_step:
-            fallback = row
-            fallback_step = row_step
-    row = selected if selected is not None else fallback
-    if row is None:
-        raise RuntimeError(f"No embedding estimates found for {record.run_dir}")
-    embedding_dim = int(
-        _safe_float(row.get("embedding_dim")) or record.metadata.get("embedding_dim", 0)
+    embedding_dim = int(record.metadata.get("embedding_dim", 0) or 0)
+    return embedding_at_step(
+        path,
+        step,
+        embedding_dim=embedding_dim if embedding_dim > 0 else None,
+        run_dir=record.run_dir,
     )
-    values = []
-    for idx in range(embedding_dim):
-        value = _safe_float(row.get(f"e{idx}"))
-        if value is None:
-            raise RuntimeError(f"Missing e{idx} in {path}")
-        values.append(value)
-    return np.asarray(values, dtype=np.float32)
 
 
 def _experiment_trajectory_r2_at_step(
@@ -3748,18 +3682,7 @@ def _experiment_trajectory_r2_at_step(
 
 def _experiment_xy_trace_until(record: _ExperimentRunRecord, step: int) -> np.ndarray:
     path = _experiment_trace_path(record, "state_action_trace_path", "state_action_trace.csv")
-    points: list[tuple[float, float]] = []
-    for row in read_trace_csv(path):
-        row_step = _safe_float(row.get("step"))
-        x_val = _safe_float(row.get("true_x"))
-        v_val = _safe_float(row.get("true_v"))
-        if row_step is None or x_val is None or v_val is None:
-            continue
-        if row_step <= step:
-            points.append((x_val, v_val))
-    if not points:
-        return np.empty((0, 2), dtype=np.float32)
-    return np.asarray(points, dtype=np.float32)
+    return _read_xy_trace(path, max_step=step)
 
 
 def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> list[Path]:
@@ -3805,7 +3728,7 @@ def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> list[Path]
         if finite.size:
             plot_abs = max(plot_abs, 1.04 * float(np.max(np.abs(finite[:, :2]))))
 
-    true_dynamics = _experiment_true_vectorfield_dynamics(ref_metadata)
+    true_dynamics = true_dynamics_from_metadata(ref_metadata)
     dynamics_by_cell: dict[tuple[str, int], Any] = {}
     traces_by_cell: dict[tuple[str, int], np.ndarray] = {}
     predictive_r2_by_cell: dict[tuple[str, int], float | None] = {}
@@ -3818,7 +3741,7 @@ def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> list[Path]
             else:
                 assert record is not None
                 theta = _experiment_embedding_at_step(record, checkpoint)
-                dynamics = _experiment_learned_vectorfield_dynamics(record.metadata, theta)
+                dynamics = dynamics_from_metadata(record.metadata, theta, estimator=True)
                 predictive_r2_by_cell[(row_id, checkpoint)] = _experiment_trajectory_r2_at_step(
                     record,
                     checkpoint,
@@ -3870,23 +3793,15 @@ def _experiment_aggregate_parameter_traces(
         path = _experiment_trace_path(
             record, "embedding_estimate_trace_path", "embedding_estimate_trace.csv"
         )
-        for row in read_trace_csv(path):
-            step_raw = _safe_float(row.get("step"))
-            if step_raw is None:
-                continue
-            step = int(step_raw)
+        steps, theta_trace = read_embedding_trace(path)
+        for step, theta in zip(steps, theta_trace, strict=False):
+            step = int(step)
             if step % stride != 0 and step != int(record.metadata.get("total_steps", 0)):
                 continue
-            params: list[float] = []
-            for idx in range(true_params.size):
-                value = _safe_float(row.get(f"e{idx}"))
-                if value is None:
-                    break
-                params.append(value)
-            if len(params) != true_params.size:
+            if theta.shape[0] < true_params.size:
                 continue
             traces.setdefault(record.policy_id, {}).setdefault(step, []).append(
-                np.asarray(params, dtype=np.float64)
+                np.asarray(theta[: true_params.size], dtype=np.float64)
             )
     return traces, true_params
 

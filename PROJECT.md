@@ -581,7 +581,6 @@ experiments/
 ├── experiment_io.py      # Metadata, artifact, and argument parsing helpers
 ├── run.py                 # Catalog-driven experiment runner
 ├── summarize.py           # Trace aggregation and summary figures
-├── render_videos.py       # Experiment video rendering
 ├── tbme/                  # TBME experiment suites and figures
 ├── _hydra_templates/      # Shared config templates
 ```

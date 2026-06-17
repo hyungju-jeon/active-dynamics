@@ -174,6 +174,39 @@ def plot_vector_field(dynamics, ax=None, title=None, **kwargs):
         plt.colorbar(label="Speed", aspect=20)
 
 
+@torch.no_grad()
+def evaluate_vector_field_grid(
+    dynamics,
+    grid_points: np.ndarray,
+    shape: tuple[int, int],
+    *,
+    device: str = "cpu",
+) -> tuple[np.ndarray, np.ndarray]:
+    """Evaluate a 2D vector field on flattened grid points.
+
+    grid_points has shape (H * W, 2). Returned components each have shape
+    (H, W), matching shape.
+    """
+    pts = torch.as_tensor(grid_points, dtype=torch.float32, device=device)
+    if hasattr(dynamics, "device"):
+        pts = pts.to(dynamics.device)
+    vel = dynamics(pts).detach().cpu().numpy().reshape(shape[0], shape[1], 2)
+    return vel[:, :, 0], vel[:, :, 1]
+
+
+def vector_field_l2_error(
+    true_u: np.ndarray,
+    true_v: np.ndarray,
+    inferred_u: np.ndarray,
+    inferred_v: np.ndarray,
+) -> np.ndarray:
+    """Return pointwise L2 vector-field error on a shared plotting grid."""
+    return np.sqrt(
+        (np.asarray(inferred_u) - np.asarray(true_u)) ** 2
+        + (np.asarray(inferred_v) - np.asarray(true_v)) ** 2
+    )
+
+
 class RbfVectorFieldDynamics:
     """Evaluate a sparse local RBF vector field on arbitrary query points."""
 

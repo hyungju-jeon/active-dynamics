@@ -4,7 +4,7 @@ This directory contains the TBME experiment definitions, TBME-specific catalogs,
 
 1. An `exp*.py` file declares one manuscript experiment family through `EXPERIMENT_SUITES`.
 2. `experiments.tbme.run_tbme_experiments` installs the TBME catalogs and injects those suite definitions.
-3. `experiments.run` performs the actual run, summary, and video work.
+3. `experiments.run` performs the actual run and summary work.
 
 There is no TBME suite YAML file in the current structure. Suite definitions live next to the experiment they describe.
 
@@ -22,6 +22,8 @@ There is no TBME suite YAML file in the current structure. Suite definitions liv
 - `exp08_parameter_mismatch_stress.py`: mild and strong parameter-mismatch stress tests.
 - `run_tbme_experiments.py`: helper that connects each explicit TBME suite module to `experiments.run`.
 - `generate_figures.py`: single entrypoint for TBME figure and asset generation.
+- `generate_behavior_video.py`: TBME behavior frame/video renderer.
+- `tbme_io.py`: shared TBME run trace and metadata-loading helpers.
 - `tbme_figures.py`: TBME plotting and asset-export implementation used by `generate_figures.py`.
 
 The shared experiment runtime remains outside this directory:

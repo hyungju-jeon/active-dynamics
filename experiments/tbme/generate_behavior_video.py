@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 from pathlib import Path
 import subprocess
 import sys
@@ -15,21 +14,30 @@ import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.colors import to_rgba
 import numpy as np
-import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from actdyn.environment.vectorfield import ResidualDynamicsCallable
 from actdyn.utils.video import figure_to_rgb_array, write_video_frames
-from actdyn.utils.plotting import trace_index
+from actdyn.utils.plotting import (
+    evaluate_vector_field_grid,
+    trace_index,
+    vector_field_l2_error,
+)
 from experiments.experiment_io import (
     expected_loglinear_rate_hz,
-    get_environment_preset_from_metadata,
     load_json,
     reconstruct_loglinear_rate_model,
-    resolve_artifact_path,
+)
+from experiments.tbme.tbme_io import (
+    dynamics_from_metadata,
+    load_planned_trace,
+    planned_xy_cycle_for_step,
+    read_embedding_trace,
+    read_state_action_trace,
+    trace_path,
+    true_dynamics_from_metadata,
 )
 from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
 
@@ -104,86 +112,6 @@ def _default_output(args: argparse.Namespace, run_dir: Path) -> Path:
     )
 
 
-def _read_csv_rows(path: Path) -> list[dict[str, str]]:
-    with path.open("r", newline="", encoding="utf-8") as f:
-        return list(csv.DictReader(f))
-
-
-def _read_state_action(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    rows = sorted(_read_csv_rows(path), key=lambda row: int(float(row["step"])))
-    steps = np.asarray([int(float(row["step"])) for row in rows], dtype=int)
-    true_state = np.asarray(
-        [[float(row["true_x"]), float(row["true_v"])] for row in rows], dtype=np.float32
-    )
-    model_state = np.asarray(
-        [[float(row["model_x"]), float(row["model_v"])] for row in rows], dtype=np.float32
-    )
-    action = np.asarray(
-        [[float(row["action_x"]), float(row["action_v"])] for row in rows], dtype=np.float32
-    )
-    return steps, true_state, model_state, action
-
-
-def _read_embedding_trace(path: Path) -> tuple[np.ndarray, np.ndarray]:
-    rows = sorted(_read_csv_rows(path), key=lambda row: int(float(row["step"])))
-    e_cols = sorted(
-        (key for key in rows[0] if key.startswith("e") and key[1:].isdigit()),
-        key=lambda key: int(key[1:]),
-    )
-    steps = np.asarray([int(float(row["step"])) for row in rows], dtype=int)
-    theta = np.asarray(
-        [[float(row[col]) for col in e_cols] for row in rows],
-        dtype=np.float32,
-    )
-    return steps, theta
-
-
-def _load_planned_trace(run_dir: Path, metadata: dict[str, Any]) -> tuple[np.ndarray, ...] | None:
-    planned_path = metadata.get("planned_trajectory_trace_path")
-    if planned_path is None and not (run_dir / "planned_trajectory_trace.npz").exists():
-        return None
-    path = resolve_artifact_path(
-        run_dir,
-        metadata,
-        key="planned_trajectory_trace_path",
-        fallback_name="planned_trajectory_trace.npz",
-    )
-    if not path.exists():
-        return None
-    with np.load(path, allow_pickle=True) as data:
-        return (
-            np.asarray(data["steps"], dtype=int),
-            np.asarray(data["paths"], dtype=np.float32),
-            np.asarray(data["lengths"], dtype=int),
-        )
-
-
-def _planned_xy_cycle_for_step(
-    trace: tuple[np.ndarray, ...] | None, step: int
-) -> np.ndarray | None:
-    """Return the full plan cycle active at step from the saved plan trace."""
-    if trace is None:
-        return None
-    steps, paths, lengths = trace
-    steps = np.asarray(steps, dtype=int)
-    if steps.size == 0:
-        return None
-    idx = int(np.searchsorted(steps, int(step), side="right") - 1)
-    idx = int(np.clip(idx, 0, steps.size - 1))
-    while (
-        idx > 0
-        and steps[idx - 1] == steps[idx] - 1
-        and int(lengths[idx - 1]) == int(lengths[idx]) + 1
-    ):
-        idx -= 1
-    n_points = int(lengths[idx])
-    if n_points < 2:
-        return None
-    path = np.asarray(paths[idx, :n_points, :2], dtype=float)
-    path = path[np.all(np.isfinite(path), axis=1)]
-    return path if path.shape[0] >= 2 else None
-
-
 def _simulate_spikes(metadata: dict[str, Any], true_state: np.ndarray) -> np.ndarray:
     """Generate reproducible Poisson observations y from the saved latent path.
 
@@ -239,33 +167,23 @@ def _sort_spikes_by_tuning(metadata: dict[str, Any], spikes: np.ndarray) -> np.n
     return spikes[:, order]
 
 
-def _dynamics_from_theta(metadata: dict[str, Any], theta: np.ndarray, *, estimator: bool):
-    env_preset = get_environment_preset_from_metadata(metadata)
-    return ResidualDynamicsCallable(
-        dynamics_type=env_preset.resolved_dynamics_type(estimator=estimator),
-        dyn_params=env_preset.params_from_embedding(theta, estimator=estimator),
-        dynamics_alpha=float(metadata.get("dynamics_alpha", 1.0)),
-        device="cpu",
-    )
-
-
 def _load_run_arrays(run_dir: Path):
     metadata = load_json(run_dir / "run_metadata.json")
-    state_action_path = resolve_artifact_path(
+    state_action_path = trace_path(
         run_dir,
         metadata,
         key="state_action_trace_path",
         fallback_name="state_action_trace.csv",
     )
-    embedding_path = resolve_artifact_path(
+    embedding_path = trace_path(
         run_dir,
         metadata,
         key="embedding_estimate_trace_path",
         fallback_name="embedding_estimate_trace.csv",
     )
-    steps, true_state, model_state, action = _read_state_action(state_action_path)
-    embedding_steps, embedding = _read_embedding_trace(embedding_path)
-    planned_trace = _load_planned_trace(run_dir, metadata)
+    steps, true_state, model_state, action = read_state_action_trace(state_action_path)
+    embedding_steps, embedding = read_embedding_trace(embedding_path)
+    planned_trace = load_planned_trace(run_dir, metadata)
     spikes = _load_saved_spikes(run_dir, seed=int(metadata.get("seed", 0)))
     if spikes is None:
         spikes = _simulate_spikes(metadata, true_state)
@@ -301,13 +219,6 @@ def _grid_limit(
     return limit
 
 
-def _vector_grid(dynamics: Any, grid_points: np.ndarray, shape: tuple[int, int]):
-    pts = torch.as_tensor(grid_points, dtype=torch.float32)
-    with torch.no_grad():
-        vel = dynamics(pts).detach().cpu().numpy().reshape(shape[0], shape[1], 2)
-    return vel[:, :, 0], vel[:, :, 1]
-
-
 def _draw_vector_field(
     ax: plt.Axes, xx: np.ndarray, yy: np.ndarray, u: np.ndarray, v: np.ndarray
 ) -> None:
@@ -321,19 +232,6 @@ def _draw_vector_field(
         linewidth=0.43,
         arrowsize=0.55,
         zorder=1,
-    )
-
-
-def _vector_field_error(
-    true_u: np.ndarray,
-    true_v: np.ndarray,
-    inferred_u: np.ndarray,
-    inferred_v: np.ndarray,
-) -> np.ndarray:
-    """Return pointwise L2 vector-field error on the plotting grid."""
-    return np.sqrt(
-        (np.asarray(inferred_u) - np.asarray(true_u)) ** 2
-        + (np.asarray(inferred_v) - np.asarray(true_v)) ** 2
     )
 
 
@@ -571,7 +469,7 @@ def _draw_frame(
     _draw_vector_field(ax_inferred, xx, yy, inferred_u, inferred_v)
     inferred_title = "inferred vector field"
     if inferred_panel == "error":
-        error = _vector_field_error(true_u, true_v, inferred_u, inferred_v)
+        error = vector_field_l2_error(true_u, true_v, inferred_u, inferred_v)
         vmax = float(error_vmax) if error_vmax is not None else float(np.nanmax(error))
         _draw_vector_error(ax_inferred, xx, yy, error, vmax=max(vmax, 1e-12))
         inferred_title = "vector field error"
@@ -585,7 +483,7 @@ def _draw_frame(
         label="inferred z",
     )
     if draw_planned:
-        planned_xy = _planned_xy_cycle_for_step(planned_trace, int(steps[current_idx]))
+        planned_xy = planned_xy_cycle_for_step(planned_trace, int(steps[current_idx]))
         if planned_xy is not None:
             ax_inferred.plot(
                 planned_xy[:, 0],
@@ -629,11 +527,8 @@ def _grid_for_run(
 
 
 def _true_vector_field(metadata: dict[str, Any], grid_points: np.ndarray, shape: tuple[int, int]):
-    theta_true = np.asarray(metadata.get("embedding_true", []), dtype=np.float32)
-    if theta_true.size == 0:
-        theta_true = np.asarray(metadata.get("true_params_full", []), dtype=np.float32)
-    true_dynamics = _dynamics_from_theta(metadata, theta_true, estimator=False)
-    return _vector_grid(true_dynamics, grid_points, shape)
+    true_dynamics = true_dynamics_from_metadata(metadata)
+    return evaluate_vector_field_grid(true_dynamics, grid_points, shape)
 
 
 def _frame_indices(n_steps: int, stride: int) -> list[int]:
@@ -695,7 +590,7 @@ def _error_vmax_for_indices(
     errors = []
     for idx in indices:
         inferred_u, inferred_v = inferred_grid(int(steps[idx]))
-        error = _vector_field_error(true_u, true_v, inferred_u, inferred_v)
+        error = vector_field_l2_error(true_u, true_v, inferred_u, inferred_v)
         if scale_mask is not None:
             error = error[scale_mask]
         values = error[np.isfinite(error)]
@@ -740,13 +635,13 @@ def render_frame(
 
     emb_idx = trace_index(embedding_steps, int(steps[current_idx]))
     theta_est = np.asarray(embedding[emb_idx], dtype=np.float32)
-    inferred_dynamics = _dynamics_from_theta(metadata, theta_est, estimator=True)
-    inferred_u, inferred_v = _vector_grid(inferred_dynamics, grid_points, xx.shape)
+    inferred_dynamics = dynamics_from_metadata(metadata, theta_est, estimator=True)
+    inferred_u, inferred_v = evaluate_vector_field_grid(inferred_dynamics, grid_points, xx.shape)
     panel_error_vmax = _validate_error_vmax(error_vmax)
     panel_error_vmax_percentile = _validate_error_vmax_percentile(error_vmax_percentile)
     error_scale = _error_scale_mask(xx, yy, error_scale_radius)
     if inferred_panel == "error" and panel_error_vmax is None:
-        error = _vector_field_error(true_u, true_v, inferred_u, inferred_v)
+        error = vector_field_l2_error(true_u, true_v, inferred_u, inferred_v)
         if error_scale is not None:
             error = error[error_scale]
         panel_error_vmax = _error_vmax_from_values(error, panel_error_vmax_percentile)
@@ -823,8 +718,8 @@ def render_video(
         theta_est = np.asarray(embedding[emb_idx], dtype=np.float32)
         key = tuple(np.round(np.asarray(theta_est, dtype=float), decimals=8))
         if key not in inferred_cache:
-            dynamics = _dynamics_from_theta(metadata, theta_est, estimator=True)
-            inferred_cache[key] = _vector_grid(dynamics, grid_points, xx.shape)
+            dynamics = dynamics_from_metadata(metadata, theta_est, estimator=True)
+            inferred_cache[key] = evaluate_vector_field_grid(dynamics, grid_points, xx.shape)
         return inferred_cache[key]
 
     fig, axes = _setup_figure(dpi)
