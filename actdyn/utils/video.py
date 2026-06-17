@@ -1,7 +1,10 @@
 import os
 import pathlib
+import shutil
+import subprocess
+from collections.abc import Iterable
+
 import numpy as np
-import imageio.v3 as iio
 import matplotlib.pyplot as plt
 from matplotlib.collections import LineCollection
 from matplotlib.animation import FFMpegWriter, FuncAnimation
@@ -14,61 +17,107 @@ def figure_to_rgb_array(fig) -> np.ndarray:
 
 
 def write_video_frames(
-    frames: list[np.ndarray],
+    frames: Iterable[np.ndarray],
     path: str | pathlib.Path,
     *,
-    fps: int = 60,
+    fps: float = 60,
     codec: str = "h264",
 ) -> None:
-    """Persist a list of RGB frames using the shared actdyn video settings."""
-    if not frames:
-        raise ValueError("No frames to write.")
+    """Persist RGB uint8 frames with shape (height, width, 3) to a video file."""
+    frame_iter = iter(frames)
+    try:
+        first_frame = _rgb24_frame(next(frame_iter))
+    except StopIteration as exc:
+        raise ValueError("No frames to write.") from exc
 
     out_path = pathlib.Path(path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        raise RuntimeError("ffmpeg is required to write video files.")
+
+    height, width, _ = first_frame.shape
+    cmd = [
+        ffmpeg,
+        "-y",
+        "-f",
+        "rawvideo",
+        "-vcodec",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "-s",
+        f"{width}x{height}",
+        "-r",
+        f"{float(fps):g}",
+        "-i",
+        "-",
+        "-an",
+    ]
     if codec == "prores":
-        iio.imwrite(
-            out_path,
-            np.stack(frames),
-            fps=fps,
-            codec="prores_ks",
-            output_params=["-profile:v", "3", "-pix_fmt", "yuv422p10le"],
-            plugin="ffmpeg",
-        )
-        return
+        cmd += ["-vcodec", "prores_ks", "-profile:v", "3", "-pix_fmt", "yuv422p10le"]
+    elif codec == "h264":
+        cmd += [
+            "-vcodec",
+            "libx264",
+            "-pix_fmt",
+            "yuv420p",
+            "-profile:v",
+            "high",
+            "-crf",
+            "12",
+            "-movflags",
+            "+faststart",
+        ]
+    elif codec == "lossless":
+        cmd += [
+            "-vcodec",
+            "libx264rgb",
+            "-crf",
+            "0",
+            "-preset",
+            "veryslow",
+            "-pix_fmt",
+            "rgb24",
+        ]
+    else:
+        raise ValueError(f"Unsupported video codec: {codec}")
+    cmd.append(str(out_path))
 
-    if codec == "h264":
-        iio.imwrite(
-            out_path,
-            np.stack(frames),
-            fps=fps,
-            codec="libx264",
-            output_params=[
-                "-pix_fmt",
-                "yuv420p",
-                "-profile:v",
-                "high",
-                "-crf",
-                "12",
-                "-movflags",
-                "+faststart",
-            ],
-        )
-        return
+    proc = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.stdin is not None
+    assert proc.stderr is not None
+    try:
+        proc.stdin.write(first_frame.tobytes())
+        for frame in frame_iter:
+            frame = _rgb24_frame(frame)
+            if frame.shape != first_frame.shape:
+                raise ValueError("All video frames must have the same shape.")
+            proc.stdin.write(frame.tobytes())
+        proc.stdin.close()
+        stderr = proc.stderr.read().decode("utf-8", errors="replace")
+        if proc.wait() != 0:
+            raise RuntimeError(f"ffmpeg failed while writing {out_path}:\n{stderr}")
+    except Exception:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+        raise
 
-    if codec == "lossless":
-        iio.imwrite(
-            out_path,
-            np.stack(frames),
-            fps=fps,
-            codec="libx264rgb",
-            output_params=["-crf", "0", "-preset", "veryslow", "-pix_fmt", "rgb24"],
-            plugin="ffmpeg",
-        )
-        return
 
-    iio.imwrite(out_path, np.stack(frames), fps=fps)
+def _rgb24_frame(frame: np.ndarray) -> np.ndarray:
+    arr = np.asarray(frame)
+    if arr.ndim != 3 or arr.shape[2] != 3:
+        raise ValueError("Video frames must have shape (height, width, 3).")
+    if arr.dtype != np.uint8:
+        arr = arr.astype(np.uint8)
+    return np.ascontiguousarray(arr)
 
 
 class VideoRecorder:
@@ -85,11 +134,8 @@ class VideoRecorder:
 
     # -------------------------------------------------------------
     def capture_frame(self, fig=None):
-        if fig:
-            fig.canvas.draw()
-            frame = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-            frame = frame.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-            self.frames.append(frame)
+        if fig is not None:
+            self.frames.append(figure_to_rgb_array(fig))
             plt.close(fig)
 
     # -------------------------------------------------------------

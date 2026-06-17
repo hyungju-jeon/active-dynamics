@@ -30,7 +30,6 @@ Shared experiment modules are named by role:
 
 - `experiments/run.py` -> catalog-driven experiment runner
 - `experiments/summarize.py` -> aggregate traces and summary figures
-- `experiments/render_videos.py` -> render experiment videos
 
 Generic training-log analysis lives in `actdyn/utils/training_log_analysis.py` and backs `actdyn analyze`.
 

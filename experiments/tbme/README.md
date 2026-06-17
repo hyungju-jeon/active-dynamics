@@ -28,7 +28,6 @@ The shared experiment runtime remains outside this directory:
 
 - `experiments/run.py`
 - `experiments/summarize.py`
-- `experiments/render_videos.py`
 - `experiments/experiment_definitions.py`
 - `actdyn/core/experiment.py`
 - `actdyn/utils/plotting.py`

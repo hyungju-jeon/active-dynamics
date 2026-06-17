@@ -1737,7 +1737,6 @@ def _build_session_metadata(
     requested_ops = {
         "run": args.mode in {"run", "all"},
         "summary": args.mode in {"summary", "all"},
-        "video": args.mode in {"video", "all"},
     }
     payload: dict[str, Any] = {
         "created_at": utc_now(),
@@ -1848,7 +1847,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--exp-id", choices=[*list_experiment_ids(), "all"], default="all")
     parser.add_argument("--exp-ids", type=str, default=None)
     parser.add_argument("--policy-ids", type=str, default=None)
-    parser.add_argument("--mode", choices=["run", "summary", "video", "all"], default="run")
+    parser.add_argument("--mode", choices=["run", "summary", "all"], default="run")
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--base-dir", type=str, default="results/experiments")
@@ -1860,9 +1859,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
     parser.add_argument("--eig-gamma", type=float, default=1.0)
     parser.add_argument("--sampling-variance-samples", type=int, default=8)
-    parser.add_argument("--stride", type=int, default=5)
-    parser.add_argument("--fps", type=int, default=15)
-    parser.add_argument("--grid-lim", type=float, default=10.0)
     return parser
 
 
@@ -1985,29 +1981,6 @@ def main(argv: list[str] | None = None, *, suite_entries: Mapping[str, Any] | No
                     if args.policy_ids:
                         summary_args.extend(["--policy-ids", str(args.policy_ids)])
                     summarize_main(summary_args)
-            if args.mode in {"video", "all"}:
-                if __package__ in {None, ""}:
-                    from render_videos import main as render_main
-                else:
-                    from .render_videos import main as render_main
-
-                for exp_id in exp_ids:
-                    render_main(
-                        [
-                            "--base-dir",
-                            str(base_dir),
-                            "--exp-id",
-                            exp_id,
-                            "--seeds",
-                            args.seeds,
-                            "--stride",
-                            str(args.stride),
-                            "--fps",
-                            str(args.fps),
-                            "--grid-lim",
-                            str(args.grid_lim),
-                        ]
-                    )
     return 0
 
 

@@ -727,7 +727,6 @@ uv run actdyn sweep \
 | `uv run actdyn` | Canonical CLI (`run`, `sweep`, `analyze`) |
 | `experiments/run.py` | Catalog-driven experiment runner |
 | `experiments/summarize.py` | Summary CSV and figure generation |
-| `experiments/render_videos.py` | Experiment video rendering |
 | `actdyn/utils/training_log_analysis.py` | Generic training-log analysis backend for `actdyn analyze` |
 
 ### Expected Inputs/Outputs
