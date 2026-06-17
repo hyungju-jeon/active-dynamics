@@ -316,7 +316,6 @@ class Experiment:
             action = self.agent.plan()
             transition, done = self.agent.step(action)
             self.rollout.add(**transition)
-            self.agent.update_policy(transition)
 
             if self.check_step("train"):
                 sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
