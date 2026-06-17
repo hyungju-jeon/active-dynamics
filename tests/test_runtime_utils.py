@@ -92,6 +92,59 @@ def test_schedule_spec_uses_replan_interval_as_single_planning_knob():
         )
 
 
+def test_experiment_loop_does_not_update_policy_outside_agent_step():
+    from actdyn.core.experiment import Experiment
+
+    class _Agent:
+        def __init__(self):
+            self.device = "cpu"
+            self.plan_calls = 0
+            self.step_calls = 0
+            self.update_policy_calls = 0
+
+        def plan(self):
+            self.plan_calls += 1
+            return torch.zeros(1, 1)
+
+        def step(self, action):
+            self.step_calls += 1
+            return {"action": action, "step": self.step_calls}, False
+
+        def update_policy(self, _transition):
+            self.update_policy_calls += 1
+
+    class _Rollout:
+        def __init__(self):
+            self.add_calls = 0
+
+        def add(self, **_transition):
+            self.add_calls += 1
+
+    agent = _Agent()
+    experiment = Experiment.__new__(Experiment)
+    experiment.agent = agent
+    experiment.env_step = 0
+    experiment.rollout = _Rollout()
+    experiment.training_info = {}
+    experiment.init_experiment = lambda reset=True: None
+    experiment._setup_video_recording = lambda: None
+    experiment.check_step = lambda _kind: False
+    experiment.update_writer = lambda _info: None
+    experiment.update_pbar = lambda _pbar: None
+    experiment._finalize_experiment = lambda: None
+
+    experiment._run_online_loop(
+        train_cfg=types.SimpleNamespace(total_steps=3),
+        pbar_desc="test",
+        plot_fcn=None,
+        reset=False,
+    )
+
+    assert agent.plan_calls == 3
+    assert agent.step_calls == 3
+    assert agent.update_policy_calls == 0
+    assert experiment.rollout.add_calls == 3
+
 
 class _IdentityActionEncoder:
     def __init__(self, action_space: gym.Space) -> None:
