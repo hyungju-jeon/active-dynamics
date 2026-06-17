@@ -200,12 +200,14 @@ def _simulate_spikes(metadata: dict[str, Any], true_state: np.ndarray) -> np.nda
 
 def _load_saved_spikes(run_dir: Path, *, seed: int) -> np.ndarray | None:
     """Return spike-count observations from saved rollout observations."""
-    rollouts_dirs = sorted(path for path in run_dir.glob("*/rollouts") if path.is_dir())
+    rollouts_dirs = [run_dir / "rollouts"]
+    rollouts_dirs += sorted(path for path in run_dir.glob("*/rollouts") if path.is_dir())
+    rollouts_dirs = [path for path in rollouts_dirs if path.is_dir()]
     if not rollouts_dirs:
         return None
     from actdyn.utils.persistence import load_and_concatenate_rollouts
 
-    rollout = load_and_concatenate_rollouts(str(rollouts_dirs[-1]), device="cpu")
+    rollout = load_and_concatenate_rollouts(str(rollouts_dirs[0]), device="cpu")
     obs = rollout._data.get("next_obs")
     if obs is None:
         return None
