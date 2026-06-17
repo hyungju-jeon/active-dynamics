@@ -379,6 +379,8 @@ def _build_metric(
     sampling_variance_seed: int | None,
     ambiguity_temperature: float | None = None,
     ensemble_kind: str | None = None,
+    eig_freeze_covariance: bool = False,
+    eig_diagonal_covariance: bool = False,
 ):
     from actdyn.metrics.objectives import (
         ambiguity_aware_parameter_eig,
@@ -394,7 +396,15 @@ def _build_metric(
     )
 
     if objective_kind == "parameter_eig":
-        return parameter_eig(model=model, Fe_net=Fe_net, Fz_net=Fz_net, gamma=gamma, device=device)
+        return parameter_eig(
+            model=model,
+            Fe_net=Fe_net,
+            Fz_net=Fz_net,
+            gamma=gamma,
+            device=device,
+            freeze_covariance=eig_freeze_covariance,
+            diagonal_covariance=eig_diagonal_covariance,
+        )
     if objective_kind == "shrinkage_parameter_eig":
         return shrinkage_parameter_eig(
             model=model,
@@ -903,6 +913,8 @@ def _run_single_parameter_identification(
             sampling_variance_seed=int(seed),
             ambiguity_temperature=getattr(policy_spec, "ambiguity_temperature", None),
             ensemble_kind=getattr(policy_spec, "ensemble_kind", None),
+            eig_freeze_covariance=bool(getattr(policy_spec, "eig_freeze_covariance", False)),
+            eig_diagonal_covariance=bool(getattr(policy_spec, "eig_diagonal_covariance", False)),
         )
         _apply_boundary_visibility_to_metric(base_metric, env_preset)
         action_cost_weight = float(getattr(policy_spec, "action_cost_weight", 0.01))
@@ -1410,6 +1422,12 @@ def _run_single_parameter_identification(
             "objective_variant": (
                 None if policy_spec.objective_kind is None else str(policy_spec.objective_kind)
             ),
+            "eig_freeze_covariance": bool(
+                getattr(policy_spec, "eig_freeze_covariance", False)
+            ),
+            "eig_diagonal_covariance": bool(
+                getattr(policy_spec, "eig_diagonal_covariance", False)
+            ),
             "schedule_id": str(schedule_spec.schedule_id),
             "update_interval": int(schedule_spec.update_interval),
             "replan_interval": int(schedule_spec.replan_interval),
@@ -1617,6 +1635,12 @@ def _build_session_experiment_entry(
                     str(policy_spec.objective_kind)
                     if policy_spec.objective_kind is not None
                     else None
+                ),
+                "eig_freeze_covariance": bool(
+                    getattr(policy_spec, "eig_freeze_covariance", False)
+                ),
+                "eig_diagonal_covariance": bool(
+                    getattr(policy_spec, "eig_diagonal_covariance", False)
                 ),
                 "schedule_id": str(schedule_spec.schedule_id),
                 "schedule": {

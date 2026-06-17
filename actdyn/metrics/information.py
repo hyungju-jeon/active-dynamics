@@ -5,7 +5,7 @@ from actdyn.models.base import BaseDynamicsEnsemble
 import torch
 from typing import Callable, Dict, List, Optional, Union
 from actdyn.models import BaseDynamics, Decoder
-from actdyn.models.decoder import LinearMapping, LogLinearMapping
+from actdyn.models.decoder import LinearMapping, LogLinearMapping, diagonal_observation_information
 from actdyn.models.dynamics import RBFDynamics
 from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.rollout import Rollout, RolloutBuffer
@@ -332,6 +332,7 @@ class EmbeddingFisherMetric(BaseMetric):
         freeze_covariance: bool = False,
         no_sensitivity_propagation: bool = False,
         fully_observed: bool = False,
+        diagonal_covariance: bool = False,
         **kwargs,
     ):
         super().__init__(compute_type, device)
@@ -347,6 +348,7 @@ class EmbeddingFisherMetric(BaseMetric):
         self.freeze_covariance = bool(freeze_covariance)
         self.no_sensitivity_propagation = bool(no_sensitivity_propagation)
         self.fully_observed = bool(fully_observed)
+        self.diagonal_covariance = bool(diagonal_covariance)
         self.boundary_visibility_enabled = bool(
             kwargs.get("boundary_visibility_enabled", False)
         )
@@ -359,6 +361,7 @@ class EmbeddingFisherMetric(BaseMetric):
                 self.freeze_covariance,
                 self.no_sensitivity_propagation,
                 self.fully_observed,
+                self.diagonal_covariance,
             ]
         )
         if approximation_count > 1:
@@ -368,6 +371,7 @@ class EmbeddingFisherMetric(BaseMetric):
             self.freeze_covariance = False
             self.no_sensitivity_propagation = False
             self.fully_observed = False
+            self.diagonal_covariance = False
 
     def _expand_embedding_mean(self, batch: int, horizon: int) -> torch.Tensor:
         """Expand the current embedding mean to match a rollout batch and horizon."""
@@ -428,28 +432,6 @@ class EmbeddingFisherMetric(BaseMetric):
                 P_in = P_in.expand(batch, -1, -1)
             return symmetrize(P_in)
 
-        def _to_batch_matrix(M_in: torch.Tensor) -> torch.Tensor:
-            if M_in.dim() == 4:  # (B,1,r,c)
-                M_in = M_in.squeeze(1)
-            elif M_in.dim() == 2:  # (r,c)
-                M_in = M_in.unsqueeze(0)
-            if M_in.shape[0] == 1 and batch > 1:
-                M_in = M_in.expand(batch, M_in.shape[-2], M_in.shape[-1])
-            return M_in
-
-        def _to_batch_cov_from_diag(R_diag: torch.Tensor) -> torch.Tensor:
-            if R_diag.dim() == 4:
-                R = R_diag.squeeze(1)
-            else:
-                if R_diag.dim() == 2:
-                    R_diag = R_diag.unsqueeze(0).unsqueeze(0)
-                elif R_diag.dim() == 3 and R_diag.shape[1] != 1:
-                    R_diag = R_diag.unsqueeze(1)
-                if R_diag.shape[0] == 1 and batch > 1:
-                    R_diag = R_diag.expand(batch, -1, -1)
-                R = R_diag.diag_embed().squeeze(1)
-            return symmetrize(R)
-
         def _spd_factor(
             M: torch.Tensor, min_eig: float = 1e-9
         ) -> tuple[torch.Tensor, torch.Tensor]:
@@ -463,6 +445,9 @@ class EmbeddingFisherMetric(BaseMetric):
             M_spd = symmetrize(M + max(float(min_eig), 1e-8) * eye)
             chol = safe_cholesky(M_spd)
             return M_spd, chol
+
+        def _cov_diag(P: torch.Tensor) -> torch.Tensor:
+            return torch.diagonal(P, dim1=-2, dim2=-1).clamp_min(0.0)
 
         # Predicted-state sensitivity recursion S_{k+1}=Fz_k S_k + Fe_k.
         e_m = e_bel["m"].to(self.device)
@@ -486,6 +471,12 @@ class EmbeddingFisherMetric(BaseMetric):
         if Q.shape[0] == 1 and batch > 1:
             Q = Q.expand(batch, -1, -1)
         Q = symmetrize(Q)
+        if self.diagonal_covariance:
+            P_diag = _cov_diag(P_pred)
+            Q_diag = _cov_diag(Q)
+
+        _, I_z_all, _, _ = diagonal_observation_information(decoder, z)
+        I_z_all = I_z_all.to(self.device)
 
         # Discounted accumulation of predicted parameter information.
         J = torch.zeros(batch, d_embedding, d_embedding, device=self.device, dtype=z.dtype)
@@ -497,26 +488,17 @@ class EmbeddingFisherMetric(BaseMetric):
             else:
                 S_sens = dfdz @ S_sens + dfde
 
-            z_i = z[:, i : i + 1]
-            H_i = decoder.jacobian(z_i).to(self.device)
-            H_i = _to_batch_matrix(H_i)
-
-            if isinstance(decoder.noise, actdyn.models.decoder.PoissonNoise):
-                R_diag = decoder(z_i).to(self.device)
-            else:
-                R_diag = decoder.var(z_i).to(self.device)
-            R_i = _to_batch_cov_from_diag(R_diag)
-            R_i, chol_R = _spd_factor(R_i)
-
             # I_z = H^T R^{-1} H (Fisher approximation in state space).
-            invR_H = torch.cholesky_solve(H_i, chol_R)
-            I_z = symmetrize(H_i.transpose(-1, -2) @ invR_H)
+            I_z = I_z_all[:, i]
 
             # DeltaLambda = S^T (I + P^- I_z)^{-1} I_z S.
             if self.fully_observed:
                 atten_Iz = I_z
             else:
-                P_for_gain = P_pred_initial if self.freeze_covariance else P_pred
+                if self.diagonal_covariance:
+                    P_for_gain = torch.diag_embed(P_diag)
+                else:
+                    P_for_gain = P_pred_initial if self.freeze_covariance else P_pred
                 atten_base, chol_atten = _spd_factor(eye_latent + P_for_gain @ I_z)
                 del atten_base
                 atten_Iz = torch.cholesky_solve(I_z, chol_atten)
@@ -532,7 +514,13 @@ class EmbeddingFisherMetric(BaseMetric):
                 info_step = visibility.square().view(batch, 1, 1) * info_step
             J += (self.gamma**i) * info_step
 
-            P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)
+            if self.diagonal_covariance:
+                P_diag = (dfdz.square() * P_diag.unsqueeze(1)).sum(dim=-1) + Q_diag
+                P_diag = torch.nan_to_num(
+                    P_diag, nan=0.0, posinf=1e6, neginf=0.0
+                ).clamp_min(0.0)
+            elif not (self.freeze_covariance or self.fully_observed):
+                P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)
 
         P_theta = e_bel["P"].to(self.device)
         if P_theta.dim() == 2:

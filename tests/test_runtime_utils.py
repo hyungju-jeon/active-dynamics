@@ -10,7 +10,7 @@ import torch
 
 from actdyn.policy.mpc import AsyncMpcICem, MpcICem
 from actdyn.utils.runtime import configure_runtime, ensure_dir
-from experiments.experiment_definitions import ScheduleSpec, get_policy_spec
+from experiments.experiment_definitions import ScheduleSpec, configure_catalogs, get_policy_spec
 
 
 def test_configure_runtime_returns_valid_device():
@@ -23,6 +23,41 @@ def test_ensure_dir_creates_directory(tmp_path: Path):
     result = ensure_dir(target)
     assert Path(result).exists()
     assert Path(result).is_dir()
+
+
+def test_eig_covariance_ablations_are_catalog_knobs(tmp_path: Path):
+    catalog = tmp_path / "models.yaml"
+    catalog.write_text(
+        """
+schedules:
+  s1:
+    update_interval: 1
+    replan_interval: 1
+    planning_horizon: 2
+models:
+  eig_default:
+    objective_kind: parameter_eig
+    schedule_id: s1
+  eig_freeze:
+    objective_kind: parameter_eig
+    schedule_id: s1
+    eig_freeze_covariance: true
+  eig_diagonal:
+    objective_kind: parameter_eig
+    schedule_id: s1
+    eig_diagonal_covariance: true
+""",
+        encoding="utf-8",
+    )
+
+    try:
+        configure_catalogs(env_catalog_paths=(), model_catalog_paths=(catalog,), suite_catalog_paths=())
+        assert get_policy_spec("eig_default").eig_freeze_covariance is False
+        assert get_policy_spec("eig_default").eig_diagonal_covariance is False
+        assert get_policy_spec("eig_freeze").eig_freeze_covariance is True
+        assert get_policy_spec("eig_diagonal").eig_diagonal_covariance is True
+    finally:
+        configure_catalogs()
 
 
 def test_schedule_spec_uses_replan_interval_as_single_planning_knob():
@@ -55,6 +90,7 @@ def test_schedule_spec_uses_replan_interval_as_single_planning_knob():
             planning_horizon=20,
             planning_chunk=4,
         )
+
 
 
 class _IdentityActionEncoder:

@@ -293,6 +293,8 @@ class PolicySpec:
     shrinkage_min: float | None = None
     ambiguity_temperature: float | None = None
     ensemble_kind: str | None = None
+    eig_freeze_covariance: bool = False
+    eig_diagonal_covariance: bool = False
     action_constraint: str | None = None
     action_radius: float | None = None
     action_cost_weight: float = 0.0
@@ -735,6 +737,8 @@ def load_catalog_bundle(
             ensemble_kind=(
                 None if spec.get("ensemble_kind") is None else str(spec.get("ensemble_kind"))
             ),
+            eig_freeze_covariance=bool(spec.get("eig_freeze_covariance", False)),
+            eig_diagonal_covariance=bool(spec.get("eig_diagonal_covariance", False)),
             action_constraint=(
                 None
                 if spec.get("action_constraint") is None
