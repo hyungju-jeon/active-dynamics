@@ -5,6 +5,7 @@ import torch
 from actdyn.models.decoder import Decoder, GaussianNoise, LinearMapping
 from actdyn.models.dynamics import FunctionDynamics
 from actdyn.models.model import FilteringEmbedding
+from actdyn.utils.torch_utils import safe_cholesky, symmetrize
 
 
 def _fe_identity(z: torch.Tensor, e: torch.Tensor) -> torch.Tensor:
@@ -71,6 +72,40 @@ def _build_model(
         "P": torch.eye(2).unsqueeze(0).unsqueeze(0),
     }
     return model
+
+
+def test_state_update_matches_dense_diagonal_observation_kalman_update() -> None:
+    model = _build_model(q_theta=1e-4, k_theta=4)
+    model.z = {
+        "m": torch.tensor([[[0.2, -0.1]]], dtype=torch.float32),
+        "P": torch.tensor([[[[0.7, 0.2], [0.2, 0.5]]]], dtype=torch.float32),
+    }
+    y = torch.tensor([[[0.5, -0.4]]], dtype=torch.float32)
+    u = torch.zeros(1, 1, 2)
+
+    eye_latent = torch.eye(2).view(1, 1, 2, 2)
+    z_pred_m = model.z["m"].clone()
+    q = torch.nn.functional.softplus(model.dynamics.logvar).diag_embed().unsqueeze(0) * model.dt
+    p_pred = model._project_spd(model.z["P"] + q + 1e-6 * eye_latent)
+    h = model.decoder.jacobian(z_pred_m).unsqueeze(1)
+    r_diag = model.decoder.var(z_pred_m).clamp_min(1e-6)
+    r_cov = r_diag.diag_embed()
+    eye_obs = torch.eye(2).view(1, 1, 2, 2)
+    s = symmetrize(h @ p_pred @ h.transpose(-1, -2) + r_cov + 1e-6 * eye_obs)
+    chol_s = safe_cholesky(s)
+    k_gain = torch.cholesky_solve(h @ p_pred, chol_s).transpose(-1, -2)
+    residual = y - model.decoder(z_pred_m)
+    expected_m = z_pred_m + (k_gain @ residual.unsqueeze(-1)).squeeze(-1)
+    kh = k_gain @ h
+    expected_p = symmetrize(
+        (eye_latent - kh) @ p_pred @ (eye_latent - kh).transpose(-1, -2)
+        + k_gain @ r_cov @ k_gain.transpose(-1, -2)
+    )
+
+    model.update_posterior_embedding(y, u, update_theta=False)
+
+    assert torch.allclose(model.z["m"], expected_m, atol=1e-5, rtol=1e-5)
+    assert torch.allclose(model.z["P"], expected_p, atol=1e-5, rtol=1e-5)
 
 
 def test_block_update_applies_only_every_k_theta_steps() -> None:

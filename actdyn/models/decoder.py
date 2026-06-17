@@ -7,7 +7,7 @@ from torch.distributions import Normal
 from actdyn.utils.torch_utils import activation_from_str
 from .base import BaseMapping, BaseNoise
 from torch.nn.functional import softplus
-from actdyn.utils.torch_utils import eps
+from actdyn.utils.torch_utils import eps, symmetrize
 
 
 # --- Observation Mappings ---
@@ -236,3 +236,81 @@ class Decoder(nn.Module):
             self.mapping.set_bias(obs_model.network.bias.data.clone())
             # self.mapping.network.weight.requires_grad = False
             # self.mapping.network.bias.requires_grad = False
+
+
+def diagonal_observation_information(
+    decoder,
+    z: torch.Tensor,
+    observation: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
+    """Return diagonal-noise observation mean, Fisher, and optional score.
+
+    Args:
+        decoder: Decoder-like object with mapping/noise, ``jacobian``, ``var``,
+            and ``__call__``. Fast paths cover log-linear Poisson and linear
+            Gaussian decoders; other diagonal-noise decoders use the generic
+            ``H.T @ diag(1 / R) @ H`` formula.
+        z: Latent states with shape ``(..., latent_dim)``.
+        observation: Optional observations with shape ``(..., obs_dim)``.
+
+    Returns:
+        ``(mean, I_z, score, r_Rinv_r)`` where ``I_z`` has shape
+        ``(..., latent_dim, latent_dim)``. ``score`` and ``r_Rinv_r`` are
+        ``None`` unless ``observation`` is provided.
+    """
+    mean = torch.nan_to_num(decoder(z), nan=0.0, posinf=1e6, neginf=-1e6)
+    residual = None if observation is None else observation - mean
+    mapping = getattr(decoder, "mapping", None)
+    noise = getattr(decoder, "noise", None)
+
+    if isinstance(mapping, LogLinearMapping) and isinstance(noise, PoissonNoise):
+        rate = torch.nan_to_num(mean, nan=1e-6, posinf=1e6, neginf=1e-6).clamp_min(1e-6)
+        weight = mapping.network[0].weight.to(device=z.device, dtype=z.dtype)
+        I_z = symmetrize(torch.einsum("...o,od,oe->...de", rate, weight, weight))
+        score = None if residual is None else torch.einsum("od,...o->...d", weight, residual)
+        r_Rinv_r = None
+        if residual is not None:
+            r_Rinv_r = (residual.square() * rate.reciprocal()).sum(dim=-1)
+        return mean, I_z, score, r_Rinv_r
+
+    if isinstance(mapping, LinearMapping) and isinstance(noise, GaussianNoise):
+        weight = mapping.network.weight.to(device=z.device, dtype=z.dtype)
+        R_diag = decoder.var(z).to(device=z.device, dtype=z.dtype)
+        R_inv = _expand_observation_prefix(R_diag, z).reciprocal()
+        I_z = symmetrize(torch.einsum("od,...o,oe->...de", weight, R_inv, weight))
+        score = None
+        r_Rinv_r = None
+        if residual is not None:
+            score = torch.einsum("od,...o,...o->...d", weight, R_inv, residual)
+            r_Rinv_r = (residual.square() * R_inv).sum(dim=-1)
+        return mean, I_z, score, r_Rinv_r
+
+    H = _expand_observation_prefix(decoder.jacobian(z).to(device=z.device, dtype=z.dtype), z, suffix_ndim=2)
+    if isinstance(noise, PoissonNoise):
+        R_diag = mean
+    else:
+        R_diag = decoder.var(z).to(device=z.device, dtype=z.dtype)
+    R_inv = _expand_observation_prefix(R_diag, z).reciprocal()
+    I_z = symmetrize(torch.einsum("...od,...o,...oe->...de", H, R_inv, H))
+    score = None
+    r_Rinv_r = None
+    if residual is not None:
+        score = torch.einsum("...od,...o,...o->...d", H, R_inv, residual)
+        r_Rinv_r = (residual.square() * R_inv).sum(dim=-1)
+    return mean, I_z, score, r_Rinv_r
+
+
+def _expand_observation_prefix(
+    value: torch.Tensor,
+    z: torch.Tensor,
+    *,
+    suffix_ndim: int = 1,
+) -> torch.Tensor:
+    prefix = tuple(z.shape[:-1])
+    value = torch.nan_to_num(value, nan=1e-6, posinf=1e6, neginf=1e-6)
+    if suffix_ndim == 1:
+        value = value.clamp_min(1e-6)
+    while value.dim() < len(prefix) + suffix_ndim:
+        value = value.unsqueeze(0)
+    suffix = tuple(value.shape[-suffix_ndim:])
+    return value.expand(*prefix, *suffix)
