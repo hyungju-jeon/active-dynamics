@@ -11,8 +11,10 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_duffing_parameter_mismatch",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u5_r5_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",
@@ -30,8 +32,10 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_asymmetric_basin_parameter_mismatch",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u5_r5_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",

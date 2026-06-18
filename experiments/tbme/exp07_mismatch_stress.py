@@ -16,8 +16,10 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_duffing_observation_mismatch_mild",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u5_r5_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",
@@ -32,8 +34,10 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_duffing_observation_mismatch_strong",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u5_r5_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",
@@ -48,8 +52,10 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_asymmetric_basin_observation_mismatch_mild",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u5_r5_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",
@@ -64,8 +70,10 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_asymmetric_basin_observation_mismatch_strong",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u5_r5_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",
