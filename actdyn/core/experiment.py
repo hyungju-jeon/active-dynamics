@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -191,6 +192,9 @@ class Experiment:
         if hasattr(self, "rollout") and self.rollout:
             self.rollout.finalize()
         if hasattr(self, "agent") and self.agent and hasattr(self, "results_path"):
+            close_agent = getattr(self.agent, "close", None)
+            if callable(close_agent):
+                close_agent()
             self.agent.model.save(self.results_path / "model" / "model_final.pth")
 
     def init_experiment(self, reset=True):
@@ -311,10 +315,36 @@ class Experiment:
         self._setup_video_recording()
         self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc=pbar_desc)
 
+        set_foreground_active = getattr(self.agent, "set_foreground_active", None)
+
         while self.env_step < train_cfg.total_steps:
             self.env_step += 1
-            action = self.agent.plan()
-            transition, done = self.agent.step(action)
+            plan_start = time.perf_counter()
+            if callable(set_foreground_active):
+                set_foreground_active(True)
+            try:
+                action = self.agent.plan()
+            finally:
+                if callable(set_foreground_active):
+                    set_foreground_active(False)
+            plan_sec = time.perf_counter() - plan_start
+            step_start = time.perf_counter()
+            if callable(set_foreground_active):
+                set_foreground_active(True)
+            try:
+                transition, done = self.agent.step(action)
+            finally:
+                if callable(set_foreground_active):
+                    set_foreground_active(False)
+            step_sec = time.perf_counter() - step_start
+            launch_start = time.perf_counter()
+            launch_background_plan = getattr(self.agent, "launch_background_plan", None)
+            if callable(launch_background_plan):
+                launch_background_plan()
+            launch_sec = time.perf_counter() - launch_start
+            transition["loop_plan_sec"] = float(plan_sec)
+            transition["loop_step_sec"] = float(step_sec)
+            transition["loop_async_launch_sec"] = float(launch_sec)
             self.rollout.add(**transition)
 
             if self.check_step("train"):
