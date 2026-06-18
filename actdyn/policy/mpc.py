@@ -1,5 +1,6 @@
 import copy
 import time
+import threading
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
@@ -25,6 +26,77 @@ def _clone_for_worker(value: Any) -> Any:
     return copy.deepcopy(value)
 
 
+def _move_tensors_to_device(value: Any, device: torch.device) -> Any:
+    if torch.is_tensor(value):
+        return value.to(device)
+    if isinstance(value, dict):
+        return {k: _move_tensors_to_device(v, device) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_move_tensors_to_device(v, device) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_move_tensors_to_device(v, device) for v in value)
+    return value
+
+
+def _move_snapshot_to_device(planner: Any, device: torch.device) -> None:
+    planner.device = device
+    if callable(getattr(planner.model, "to", None)):
+        planner.model.to(device)
+    planner.model.device = device
+    for attr in ("e", "z"):
+        if hasattr(planner.model, attr):
+            setattr(planner.model, attr, _move_tensors_to_device(getattr(planner.model, attr), device))
+    for attr in (
+        "_state",
+        "_theta_score_block",
+        "_theta_info_block",
+        "_theta_sensitivity",
+        "_last_theta_score_block_applied",
+        "_last_theta_info_block_applied",
+    ):
+        value = getattr(planner.model, attr, None)
+        if torch.is_tensor(value):
+            setattr(planner.model, attr, value.to(device))
+    if callable(getattr(planner.model, "set_params", None)) and hasattr(planner.model, "e"):
+        planner.model.set_params(planner.model.e["m"])
+
+    for attr in ("mean", "std", "elite_actions", "elite_costs_traj"):
+        value = getattr(planner, attr, None)
+        if torch.is_tensor(value):
+            setattr(planner, attr, value.to(device))
+
+    for metric in getattr(planner.metric, "metric_list", [planner.metric]):
+        metric.device = device
+        for attr in ("current_cost", "I", "member_weights", "weights"):
+            value = getattr(metric, attr, None)
+            if torch.is_tensor(value):
+                setattr(metric, attr, value.to(device))
+        if hasattr(metric, "ensemble_members"):
+            metric.ensemble_members = _move_tensors_to_device(metric.ensemble_members, device)
+    planner.metric.device = device
+    if torch.is_tensor(getattr(planner.metric, "weights", None)):
+        planner.metric.weights = planner.metric.weights.to(device)
+
+
+def _rollout_has_model_state(rollout: Any) -> bool:
+    return (
+        rollout is not None
+        and len(rollout) > 0
+        and callable(getattr(rollout, "get", None))
+        and rollout.get("model_state") is not None
+    )
+
+
+def _update_metric_from_rollout(metric: Any, rollout: Any) -> bool:
+    if not _rollout_has_model_state(rollout):
+        return False
+    for item in getattr(metric, "metric_list", [metric]):
+        update = getattr(item, "update", None)
+        if callable(update):
+            update(rollout)
+    return True
+
+
 @dataclass
 class _AsyncPlanResult:
     actions: torch.Tensor
@@ -32,6 +104,7 @@ class _AsyncPlanResult:
     predicted_boundary_state: torch.Tensor
     runtime_sec: float
     status: str
+    model_update_version: int = 0
     mean: torch.Tensor | None = None
     std: torch.Tensor | None = None
     elite_actions: torch.Tensor | None = None
@@ -117,6 +190,8 @@ class MpcICem(BaseMPC):
         self._force_replan_next = False
         self._force_replan_reason = None
         self.last_update_info: dict[str, Any] = {}
+        self._foreground_active = None
+        self._yield_to_foreground = False
 
     def beginning_of_rollout(self, state: torch.Tensor):
         super().beginning_of_rollout(state=state)
@@ -213,8 +288,8 @@ class MpcICem(BaseMPC):
     def simulate(self, initial_state: torch.Tensor, actions: torch.Tensor):
         # Simulated trajectories using mean prediction. Use no_grad to avoid
         # accumulating autograd history for planning.
-        with torch.no_grad():
-            if torch.cuda.is_available():
+        with torch.inference_mode():
+            if actions.device.type == "cuda":
                 with torch.amp.autocast("cuda"):
                     a_enc = self.model.action_encoder(actions)
                     simulated_paths = self.model.predict(a_enc)
@@ -262,7 +337,7 @@ class MpcICem(BaseMPC):
     def _rollout_from_state(self, state: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         if actions.shape[-2] == 0:
             return state.detach().clone()
-        with torch.no_grad():
+        with torch.inference_mode():
             encoded_actions = self._encode_actions_for_state(actions, state)
             _samples, next_states, _vars = self.model.dynamics.sample_forward(
                 init_z=state.detach().clone(),
@@ -310,9 +385,12 @@ class MpcICem(BaseMPC):
         )
         return torch.cat(next_states, dim=-2)
 
-    def _coarse_actions_to_hold(self, coarse_actions: torch.Tensor) -> torch.Tensor:
+    def _coarse_actions_to_hold(
+        self, coarse_actions: torch.Tensor, fine_steps: int | None = None
+    ) -> torch.Tensor:
         factor = self.coarse_dt_factor
-        return coarse_actions.repeat_interleave(factor, dim=-2)[..., : self.chunk, :]
+        steps = self.chunk if fine_steps is None else max(1, int(fine_steps))
+        return coarse_actions.repeat_interleave(factor, dim=-2)[..., :steps, :]
 
     def _map_coarse_actions_endpoint_opt(
         self, coarse_actions: torch.Tensor, coarse_targets: torch.Tensor
@@ -368,10 +446,13 @@ class MpcICem(BaseMPC):
         return self._project_actions(fine_actions.detach())
 
     def _map_coarse_actions(
-        self, coarse_actions: torch.Tensor, coarse_targets: torch.Tensor | None = None
+        self,
+        coarse_actions: torch.Tensor,
+        coarse_targets: torch.Tensor | None = None,
+        fine_steps: int | None = None,
     ) -> torch.Tensor:
         if self.coarse_action_mapping == "hold":
-            return self._coarse_actions_to_hold(coarse_actions)
+            return self._coarse_actions_to_hold(coarse_actions, fine_steps=fine_steps)
         if coarse_targets is None:
             raise ValueError("endpoint_opt coarse action mapping requires coarse_targets")
         return self._map_coarse_actions_endpoint_opt(coarse_actions, coarse_targets)
@@ -462,8 +543,17 @@ class MpcICem(BaseMPC):
         best_first_action = None
         costs = [float("inf")]
 
+        foreground_active = None
+        if bool(getattr(self, "_yield_to_foreground", False)):
+            foreground_active = getattr(self, "_foreground_active", None)
+            for metric in getattr(self.metric, "metric_list", [self.metric]):
+                setattr(metric, "_foreground_active", foreground_active)
+
         current_num_samples = self.num_samples
         for iter in range(self.num_iterations):
+            while foreground_active is not None and foreground_active.is_set():
+                time.sleep(0.0005)
+
             # Decay of sample size
             if iter > 0:
                 current_num_samples = max(
@@ -580,8 +670,14 @@ class MpcICem(BaseMPC):
             self._restore_planning_dt(targets)
 
         assert coarse_plan is not None and coarse_cost is not None
-        coarse_actions = coarse_plan[:, :n_coarse_execute, :]
-        fine_actions = self._map_coarse_actions(coarse_actions, coarse_targets=coarse_targets)
+        fine_steps = int(self.chunk)
+        if bool(getattr(self, "_return_planning_tail", False)):
+            fine_steps = min(int(self.chunk) * 2, int(self.horizon) * int(self.coarse_dt_factor))
+        n_coarse_return = int(np.ceil(float(fine_steps) / float(self.coarse_dt_factor)))
+        coarse_actions = coarse_plan[:, : max(n_coarse_execute, n_coarse_return), :]
+        fine_actions = self._map_coarse_actions(
+            coarse_actions, coarse_targets=coarse_targets, fine_steps=fine_steps
+        )
         return fine_actions, coarse_cost
 
     def __call__(self, state, **kwargs) -> torch.Tensor:
@@ -612,6 +708,7 @@ class MpcICem(BaseMPC):
         self._chunk_step += 1
         self.count += 1
         return action
+
 
     def update(self, batch) -> dict[str, Any]:
         next_state = self._latest_next_model_state(batch)
@@ -655,19 +752,37 @@ class AsyncMpcICem(MpcICem):
         *,
         async_stale_tolerance: float = 0.5,
         async_stale_refine_iterations: int = 2,
+        async_worker_iterations: int | None = None,
+        async_worker_full_interval: int | None = None,
         async_worker_backend: str = "thread",
+        async_worker_device: str | None = None,
         async_start_after_first_plan: bool = True,
+        async_refine_on_parameter_update: bool = True,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
         self.async_stale_tolerance = float(max(async_stale_tolerance, 0.0))
         self.async_stale_refine_iterations = int(max(async_stale_refine_iterations, 0))
+        self.async_worker_iterations = (
+            None if async_worker_iterations is None else max(1, int(async_worker_iterations))
+        )
+        self.async_worker_full_interval = (
+            None if async_worker_full_interval is None else max(1, int(async_worker_full_interval))
+        )
+        self._async_background_plan_count = 0
+        self._return_planning_tail = True
         self.async_worker_backend = str(async_worker_backend or "thread").strip().lower()
         if self.async_worker_backend != "thread":
-            raise ValueError("AsyncMpcICem v1 only supports async_worker_backend='thread'")
+            raise ValueError("AsyncMpcICem only supports async_worker_backend='thread'")
+        self.async_worker_device = (
+            None
+            if async_worker_device is None or str(async_worker_device).strip() == ""
+            else torch.device(str(async_worker_device))
+        )
         self.async_start_after_first_plan = bool(async_start_after_first_plan)
-
+        self.async_refine_on_parameter_update = bool(async_refine_on_parameter_update)
         self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(max_workers=1)
+        self._foreground_active = threading.Event()
         self._planning_future: Future | None = None
         self._current_buffer: torch.Tensor | None = None
         self._buffer_index = 0
@@ -675,9 +790,23 @@ class AsyncMpcICem(MpcICem):
         self.last_plan_status: dict[str, Any] = self._empty_plan_status()
         self.last_update_info: dict[str, Any] = dict(self.last_plan_status)
 
+    @property
+    def updates_metric_in_background(self) -> bool:
+        return False
+
+    def set_foreground_active(self, active: bool) -> None:
+        if self._foreground_active is None:
+            self._foreground_active = threading.Event()
+        if active:
+            self._foreground_active.set()
+        else:
+            self._foreground_active.clear()
+
     def __getstate__(self):
         state = dict(self.__dict__)
         state["_executor"] = None
+        state["_foreground_active"] = None
+        state["_yield_to_foreground"] = False
         state["_planning_future"] = None
         state["_current_buffer"] = None
         state["_predicted_boundary_state"] = None
@@ -689,23 +818,33 @@ class AsyncMpcICem(MpcICem):
             "async_plan_used": False,
             "async_plan_stale": False,
             "async_boundary_mismatch": 0.0,
+            "async_model_version_mismatch": False,
+            "async_plan_model_version": -1,
+            "async_live_model_version": -1,
             "async_refined": False,
             "async_blocking_fallback": False,
             "async_plan_runtime_sec": 0.0,
             "async_plan_status": "idle",
         }
 
+    def _cancel_planning_future(self) -> None:
+        if self._planning_future is not None:
+            cancel = getattr(self._planning_future, "cancel", None)
+            if callable(cancel):
+                cancel()
+        self._planning_future = None
+
     def _reset_executor(self) -> None:
+        self._cancel_planning_future()
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
         self._executor = ThreadPoolExecutor(max_workers=1)
-        self._planning_future = None
 
     def close(self) -> None:
+        self._cancel_planning_future()
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
             self._executor = None
-        self._planning_future = None
 
     def __del__(self):
         try:
@@ -719,6 +858,9 @@ class AsyncMpcICem(MpcICem):
         self._current_buffer = None
         self._buffer_index = 0
         self._predicted_boundary_state = None
+        self._async_background_plan_count = 0
+        self._foreground_active = threading.Event()
+        self._yield_to_foreground = False
         self.last_plan_status = self._empty_plan_status()
         self.last_update_info = dict(self.last_plan_status)
 
@@ -733,7 +875,7 @@ class AsyncMpcICem(MpcICem):
         if action_seq.shape[-2] == 1:
             action_seq = action_seq.repeat(1, self.chunk, 1)
         elif action_seq.shape[-2] >= self.chunk:
-            action_seq = action_seq[:, : self.chunk, :]
+            action_seq = action_seq
         else:
             raise ValueError(
                 f"AsyncMpcICem received action sequence length {action_seq.shape[-2]}, "
@@ -741,11 +883,41 @@ class AsyncMpcICem(MpcICem):
             )
         return action_seq.detach().clone()
 
-    def _set_current_buffer(self, actions: torch.Tensor, cost: torch.Tensor) -> None:
+    def _async_execution_interval(self) -> int:
+        if self.adaptive_replanning and not self.async_refine_on_parameter_update:
+            return 1
+        return int(self.chunk)
+
+    def _async_buffer_boundary(self) -> int:
+        if self._current_buffer is None:
+            return self._async_execution_interval()
+        return min(self._async_execution_interval(), int(self._current_buffer.shape[-2]))
+
+    def _set_current_buffer(
+        self,
+        actions: torch.Tensor,
+        cost: torch.Tensor,
+        state: torch.Tensor | None = None,
+    ) -> None:
+        if state is not None:
+            self._set_model_planning_state(self.model, state)
         self._current_buffer = self._normalize_action_buffer(actions)
         self.action_list = [a.unsqueeze(0) for a in self._current_buffer[0]]
         self._buffer_index = 0
+        self._chunk_step = 0
+        self._last_action_index = None
         self.cost = torch.as_tensor(cost).squeeze().item()
+        if (
+            self.adaptive_replanning
+            and self.adaptive_replan_state_error_threshold is not None
+            and self.async_refine_on_parameter_update
+        ):
+            with torch.no_grad():
+                self._planned_state_trace = self._predict_action_trajectory(
+                    self._current_buffer
+                ).detach().clone()
+        else:
+            self._planned_state_trace = None
 
     def _sync_plan(
         self,
@@ -754,6 +926,8 @@ class AsyncMpcICem(MpcICem):
         num_iterations: int | None = None,
         **kwargs,
     ) -> tuple[torch.Tensor, torch.Tensor]:
+        kwargs = dict(kwargs)
+        _update_metric_from_rollout(self.metric, kwargs.pop("recent_rollout", None))
         self._set_model_planning_state(self.model, state)
         original_iterations = self.num_iterations
         if num_iterations is not None:
@@ -788,19 +962,37 @@ class AsyncMpcICem(MpcICem):
 
     def _make_snapshot_planner(self, predicted_boundary_state: torch.Tensor):
         try:
-            planner = copy.deepcopy(self)
+            planner = copy.copy(self)
+            planner.model = copy.deepcopy(self.model)
+            planner.metric = copy.deepcopy(self.metric, {id(self.model): planner.model})
+            for attr in ("mean", "std", "elite_actions", "elite_costs_traj"):
+                value = getattr(self, attr, None)
+                if torch.is_tensor(value):
+                    value = value.detach().clone()
+                else:
+                    value = copy.deepcopy(value)
+                setattr(planner, attr, value)
         except Exception as exc:
             raise RuntimeError(
-                "AsyncMpcICem could not deepcopy the policy/model snapshot. "
-                "Use policy_type='mpc-icem' or make the model deepcopy-compatible."
+                "AsyncMpcICem could not copy the policy/model snapshot. "
+                "Use policy_type='mpc-icem' or make the model snapshot-compatible."
             ) from exc
-        planner.close()
         planner._executor = None
+        planner._foreground_active = self._foreground_active
+        planner._yield_to_foreground = True
         planner._planning_future = None
         planner._current_buffer = None
         planner._predicted_boundary_state = None
+        planner.last_plan_status = dict(self.last_plan_status)
+        planner.last_update_info = dict(self.last_update_info)
+        if self.async_worker_device is not None:
+            target_device = torch.device(self.async_worker_device)
+            if torch.device(planner.device) != target_device:
+                _move_snapshot_to_device(planner, target_device)
+            predicted_boundary_state = predicted_boundary_state.to(planner.device)
         planner._set_model_planning_state(planner.model, predicted_boundary_state)
         return planner
+
 
     @staticmethod
     def _background_plan_worker(
@@ -809,6 +1001,16 @@ class AsyncMpcICem(MpcICem):
         kwargs: dict[str, Any],
     ) -> _AsyncPlanResult:
         start = time.perf_counter()
+        kwargs = dict(kwargs)
+        worker_device = torch.device(getattr(planner, "device", "cpu"))
+        predicted_boundary_state = torch.as_tensor(
+            predicted_boundary_state, dtype=torch.float32, device=worker_device
+        )
+        kwargs = _move_tensors_to_device(kwargs, worker_device)
+        model_update_version = int(
+            kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
+        )
+        _update_metric_from_rollout(planner.metric, kwargs.pop("recent_rollout", None))
         actions, cost = MpcICem.get_action(planner, predicted_boundary_state, **kwargs)
         runtime = time.perf_counter() - start
         return _AsyncPlanResult(
@@ -817,18 +1019,29 @@ class AsyncMpcICem(MpcICem):
             predicted_boundary_state=predicted_boundary_state.detach().clone(),
             runtime_sec=float(runtime),
             status="completed",
+            model_update_version=model_update_version,
             mean=getattr(planner, "mean", None),
             std=getattr(planner, "std", None),
             elite_actions=getattr(planner, "elite_actions", None),
             elite_costs_traj=getattr(planner, "elite_costs_traj", None),
         )
 
+    def request_replan(self, reason: str) -> None:
+        reason = str(reason)
+        if reason == "parameter_update":
+            return
+        if reason == "state_tracking_error" and not self.async_refine_on_parameter_update:
+            return
+        super().request_replan(reason)
+
     def _launch_background_plan(self, state: torch.Tensor, kwargs: dict[str, Any]) -> None:
         if self._current_buffer is None or self._planning_future is not None:
             return
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1)
-        remaining = self._current_buffer[:, self._buffer_index :, :]
+        buffer_boundary = self._async_buffer_boundary()
+        remaining_end = buffer_boundary if self._buffer_index < buffer_boundary else self._buffer_index
+        remaining = self._current_buffer[:, self._buffer_index : remaining_end, :]
         if remaining.shape[-2] == 0:
             predicted_boundary = torch.as_tensor(state, dtype=torch.float32, device=self.device)
             if predicted_boundary.ndim == 1:
@@ -839,9 +1052,19 @@ class AsyncMpcICem(MpcICem):
                 remaining,
             )
         self._predicted_boundary_state = predicted_boundary.detach().clone()
-        worker_kwargs = _clone_for_worker(kwargs)
+        worker_kwargs = dict(kwargs)
+        worker_kwargs.pop("recent_rollout", None)
+        worker_kwargs = _clone_for_worker(worker_kwargs)
         worker_kwargs["observed_state"] = predicted_boundary.detach().clone()
         planner = self._make_snapshot_planner(predicted_boundary)
+        self._async_background_plan_count += 1
+        use_full_iterations = (
+            self.async_worker_full_interval is not None
+            and self._async_background_plan_count % self.async_worker_full_interval == 0
+        )
+        if self.async_worker_iterations is not None and not use_full_iterations:
+            planner.num_iterations = int(self.async_worker_iterations)
+        assert self._executor is not None
         self._planning_future = self._executor.submit(
             self._background_plan_worker,
             planner,
@@ -851,8 +1074,24 @@ class AsyncMpcICem(MpcICem):
 
     def _activate_new_chunk(self, state: torch.Tensor, kwargs: dict[str, Any]) -> None:
         status = self._empty_plan_status()
+        live_model_version = int(
+            kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
+        )
+        status["async_live_model_version"] = live_model_version
         result: _AsyncPlanResult | None = None
-        if self._current_buffer is None:
+        forced_reason = self._force_replan_reason if self._force_replan_next else None
+        if forced_reason is not None:
+            if self._planning_future is not None and not self._planning_future.done():
+                self._cancel_planning_future()
+            else:
+                self._planning_future = None
+            actions, cost = self._sync_plan(state, **kwargs)
+            status["async_blocking_fallback"] = True
+            status["async_plan_status"] = f"forced_{forced_reason}"
+            self._set_current_buffer(actions, cost, state=state)
+            self._force_replan_next = False
+            self._force_replan_reason = None
+        elif self._current_buffer is None:
             actions, cost = self._sync_plan(state, **kwargs)
             status["async_blocking_fallback"] = True
             status["async_plan_status"] = "initial_blocking"
@@ -864,37 +1103,62 @@ class AsyncMpcICem(MpcICem):
             except Exception as exc:
                 result = None
                 status["async_blocking_fallback"] = True
-                status["async_plan_status"] = f"worker_error:{type(exc).__name__}"
+                message = str(exc).replace("\n", " ")[:120]
+                status["async_plan_status"] = f"worker_error:{type(exc).__name__}:{message}"
             if result is not None:
                 mismatch = self._boundary_mismatch(state, result.predicted_boundary_state)
+                plan_model_version = int(getattr(result, "model_update_version", 0))
+                version_mismatch = plan_model_version != live_model_version
                 status["async_boundary_mismatch"] = mismatch
+                status["async_plan_model_version"] = plan_model_version
+                status["async_model_version_mismatch"] = version_mismatch
                 status["async_plan_runtime_sec"] = float(result.runtime_sec)
-                if mismatch <= self.async_stale_tolerance:
+                parameter_stale = version_mismatch and self.async_refine_on_parameter_update
+                if mismatch <= self.async_stale_tolerance and not parameter_stale:
                     self._apply_worker_warm_start(result)
-                    self._set_current_buffer(result.actions, result.cost)
+                    self._set_current_buffer(result.actions, result.cost, state=state)
                     status["async_plan_used"] = True
-                    status["async_plan_status"] = "used_ready"
+                    status["async_plan_status"] = (
+                        "used_ready_parameter_stale" if version_mismatch else "used_ready"
+                    )
                 else:
+                    self._apply_worker_warm_start(result)
                     actions, cost = self._sync_plan(
                         state,
                         num_iterations=self.async_stale_refine_iterations,
                         **kwargs,
                     )
-                    self._set_current_buffer(actions, cost)
+                    self._set_current_buffer(actions, cost, state=state)
+                    self._predicted_boundary_state = None
                     status["async_plan_stale"] = True
                     status["async_refined"] = True
                     status["async_plan_status"] = "refined_stale"
-        if self._current_buffer is not None and self._buffer_index >= self.chunk:
-            actions, cost = self._sync_plan(state, **kwargs)
-            self._set_current_buffer(actions, cost)
-            status["async_blocking_fallback"] = True
-            if status["async_plan_status"] == "idle":
-                status["async_plan_status"] = "blocking_fallback"
+        if self._current_buffer is not None:
+            exhausted = self._buffer_index >= self._current_buffer.shape[-2]
+            waiting = self._planning_future is not None and not self._planning_future.done()
+            if waiting and not exhausted and status["async_plan_status"] == "idle":
+                status["async_plan_status"] = "waiting_ready_tail"
+            elif exhausted:
+                if waiting:
+                    hold = self._current_buffer[:, -1:, :].detach().clone()
+                    self._current_buffer = hold
+                    self.action_list = [hold[0, 0].unsqueeze(0)]
+                    self._buffer_index = 0
+                    self._chunk_step = 0
+                    if status["async_plan_status"] == "idle":
+                        status["async_plan_status"] = "waiting_ready_hold"
+                else:
+                    actions, cost = self._sync_plan(state, **kwargs)
+                    self._set_current_buffer(actions, cost, state=state)
+                    status["async_blocking_fallback"] = True
+                    if status["async_plan_status"] == "idle":
+                        status["async_plan_status"] = "blocking_fallback"
 
         self.last_plan_status = status
         self.last_update_info = dict(status)
 
     def __call__(self, state, **kwargs) -> torch.Tensor:
+        defer_background_launch = bool(kwargs.pop("defer_background_launch", False))
         if not self.was_reset:
             self.beginning_of_rollout(state)
         state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
@@ -903,18 +1167,45 @@ class AsyncMpcICem(MpcICem):
         elif state_t.ndim == 2:
             state_t = state_t.unsqueeze(1) if state_t.shape[0] == 1 else state_t.unsqueeze(0)
 
-        at_boundary = self._current_buffer is None or self._buffer_index >= self.chunk
+        buffer_boundary = self._async_buffer_boundary()
+        at_boundary = (
+            self._current_buffer is None
+            or self._buffer_index >= buffer_boundary
+            or bool(self._force_replan_next)
+        )
         if at_boundary:
             self._activate_new_chunk(state_t, dict(kwargs))
 
-        if self.async_start_after_first_plan or self.count > 0:
+        if not defer_background_launch and (self.async_start_after_first_plan or self.count > 0):
             self._launch_background_plan(state_t, dict(kwargs))
 
         assert self._current_buffer is not None
+        self._last_action_index = int(self._buffer_index)
         action = self._current_buffer[:, self._buffer_index : self._buffer_index + 1, :]
         self._buffer_index += 1
+        self._chunk_step = int(self._buffer_index)
         self.count += 1
         return action
 
+    def launch_background_plan(self, state, **kwargs) -> None:
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+        if state_t.ndim == 1:
+            state_t = state_t.reshape(1, 1, -1)
+        elif state_t.ndim == 2:
+            state_t = state_t.unsqueeze(1) if state_t.shape[0] == 1 else state_t.unsqueeze(0)
+        if self.async_start_after_first_plan or self.count > 0:
+            self._launch_background_plan(state_t, dict(kwargs))
+
     def update(self, batch) -> dict[str, Any]:
-        return dict(self.last_plan_status)
+        if self.adaptive_replanning and not self.async_refine_on_parameter_update:
+            update_info = {
+                "adaptive_replan_triggered": False,
+                "adaptive_replan_reason": "none",
+                "adaptive_replan_interval": int(self._current_replan_interval),
+                "adaptive_state_tracking_error": None,
+            }
+        else:
+            update_info = MpcICem.update(self, batch)
+        merged = {**self.last_plan_status, **update_info}
+        self.last_update_info = merged
+        return dict(merged)
