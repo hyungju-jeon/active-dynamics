@@ -1,3 +1,5 @@
+import time
+
 import actdyn
 from actdyn.environment.boundary import boundary_visibility
 import actdyn.models
@@ -421,7 +423,16 @@ class EmbeddingFisherMetric(BaseMetric):
         batch, T, d_latent = z.shape
         d_embedding = e_bel["m"].shape[-1]
         dt = float(getattr(self.model, "dt", 1.0))
-        eye_latent = torch.eye(d_latent, device=self.device).unsqueeze(0).expand(batch, -1, -1)
+        eye_latent = (
+            torch.eye(d_latent, device=self.device, dtype=z.dtype)
+            .unsqueeze(0)
+            .expand(batch, -1, -1)
+        )
+        eye_embedding = (
+            torch.eye(d_embedding, device=self.device, dtype=z.dtype)
+            .unsqueeze(0)
+            .expand(batch, -1, -1)
+        )
 
         def _to_batch_latent_cov(P_in: torch.Tensor) -> torch.Tensor:
             if P_in.dim() == 4:  # (B,1,d,d)
@@ -432,19 +443,12 @@ class EmbeddingFisherMetric(BaseMetric):
                 P_in = P_in.expand(batch, -1, -1)
             return symmetrize(P_in)
 
-        def _spd_factor(
-            M: torch.Tensor, min_eig: float = 1e-9
-        ) -> tuple[torch.Tensor, torch.Tensor]:
+        def _spd_cholesky(
+            M: torch.Tensor, eye: torch.Tensor, min_eig: float = 1e-9
+        ) -> torch.Tensor:
             M = torch.nan_to_num(M.float(), nan=0.0, posinf=1e6, neginf=-1e6)
             M = symmetrize(M)
-            eye = (
-                torch.eye(M.shape[-1], device=M.device, dtype=M.dtype)
-                .unsqueeze(0)
-                .expand(M.shape[0], -1, -1)
-            )
-            M_spd = symmetrize(M + max(float(min_eig), 1e-8) * eye)
-            chol = safe_cholesky(M_spd)
-            return M_spd, chol
+            return safe_cholesky(M + max(float(min_eig), 1e-8) * eye)
 
         def _cov_diag(P: torch.Tensor) -> torch.Tensor:
             return torch.diagonal(P, dim1=-2, dim2=-1).clamp_min(0.0)
@@ -479,8 +483,12 @@ class EmbeddingFisherMetric(BaseMetric):
         I_z_all = I_z_all.to(self.device)
 
         # Discounted accumulation of predicted parameter information.
+        discounts = self.gamma ** torch.arange(T, device=self.device, dtype=z.dtype)
         J = torch.zeros(batch, d_embedding, d_embedding, device=self.device, dtype=z.dtype)
+        foreground_active = getattr(self, "_foreground_active", None)
         for i in range(T):
+            while foreground_active is not None and foreground_active.is_set():
+                time.sleep(0.0005)
             dfdz = eye_latent + Fz[:, i] * dt
             dfde = Fe[:, i] * dt
             if self.no_sensitivity_propagation:
@@ -499,8 +507,7 @@ class EmbeddingFisherMetric(BaseMetric):
                     P_for_gain = torch.diag_embed(P_diag)
                 else:
                     P_for_gain = P_pred_initial if self.freeze_covariance else P_pred
-                atten_base, chol_atten = _spd_factor(eye_latent + P_for_gain @ I_z)
-                del atten_base
+                chol_atten = _spd_cholesky(eye_latent + P_for_gain @ I_z, eye_latent)
                 atten_Iz = torch.cholesky_solve(I_z, chol_atten)
             info_step = symmetrize(S_sens.transpose(-1, -2) @ atten_Iz @ S_sens)
             if self.boundary_visibility_enabled:
@@ -512,7 +519,7 @@ class EmbeddingFisherMetric(BaseMetric):
                     temperature=self.boundary_temperature,
                 )
                 info_step = visibility.square().view(batch, 1, 1) * info_step
-            J += (self.gamma**i) * info_step
+            J += discounts[i] * info_step
 
             if self.diagonal_covariance:
                 P_diag = (dfdz.square() * P_diag.unsqueeze(1)).sum(dim=-1) + Q_diag
@@ -528,8 +535,7 @@ class EmbeddingFisherMetric(BaseMetric):
         if P_theta.shape[0] == 1 and batch > 1:
             P_theta = P_theta.expand(batch, -1, -1)
 
-        eye = torch.eye(d_embedding, device=self.device).unsqueeze(0).expand(batch, -1, -1)
-        mat, chol_mat = _spd_factor(eye + P_theta @ J)
+        chol_mat = _spd_cholesky(eye_embedding + P_theta @ J, eye_embedding)
         chol_diag = torch.diagonal(chol_mat, dim1=-2, dim2=-1).clamp_min(eps)
         logabsdet = 2.0 * torch.log(chol_diag).sum(dim=-1)
         return 0.5 * logabsdet
@@ -542,8 +548,9 @@ class EmbeddingFisherMetric(BaseMetric):
             decoder=self.model.decoder,
         )
 
-        # Explicitly delete large temporaries (helps long-running processes)
-        if torch.cuda.is_available():
+        # Explicitly delete large temporaries for foreground calls. Background iCEM
+        # yields cooperatively; forced cache flushes there add synchronization.
+        if torch.device(self.device).type == "cuda" and getattr(self, "_foreground_active", None) is None:
             torch.cuda.empty_cache()
 
         self.current_cost = (-EIG).unsqueeze(-1)

@@ -891,7 +891,9 @@ class FilteringEmbedding(BaseModel):
         eig = 0.5 * logdet / float(d_embed)
         return torch.nan_to_num(eig.mean(), nan=0.0, posinf=1e6, neginf=0.0)
 
-    def _embedding_block_update_reason(self) -> str | None:
+    def _embedding_block_update_reason(
+        self, block_eig: torch.Tensor | None = None
+    ) -> str | None:
         """Return why the current parameter block should be applied, if at all."""
         steps = int(self._theta_block_steps)
         if steps >= self.k_theta:
@@ -902,7 +904,8 @@ class FilteringEmbedding(BaseModel):
             return None
         if self.adaptive_update_eig_threshold is None:
             return None
-        if float(self._theta_block_eig().item()) >= float(self.adaptive_update_eig_threshold):
+        eig = self._theta_block_eig() if block_eig is None else block_eig
+        if float(eig.item()) >= float(self.adaptive_update_eig_threshold):
             return "block_eig"
         return None
 
@@ -1283,7 +1286,7 @@ class FilteringEmbedding(BaseModel):
         Pz00 = Pz_eval[:, 0, 0].mean()
         Pz01 = Pz_eval[:, 0, 1].mean()
         Pz11 = Pz_eval[:, 1, 1].mean()
-        theta_block_eig = self._theta_block_eig() if update_theta else torch.tensor(0.0, device=self.device)
+        theta_block_eig = torch.tensor(0.0, device=self.device)
         self.last_information = {
             "I_z_t": float(torch.nan_to_num(I_z_scalar, nan=0.0, posinf=1e6, neginf=0.0).item()),
             "I_theta_t": float(
@@ -1305,11 +1308,10 @@ class FilteringEmbedding(BaseModel):
             self._theta_info_block += info_t
             self._theta_sensitivity = S_t.detach()
             self._theta_block_steps += 1
-            reason = self._embedding_block_update_reason()
+            block_eig = self._theta_block_eig()
+            reason = self._embedding_block_update_reason(block_eig)
             self.last_information["theta_block_eig"] = float(
-                torch.nan_to_num(
-                    self._theta_block_eig(), nan=0.0, posinf=1e6, neginf=0.0
-                ).item()
+                torch.nan_to_num(block_eig, nan=0.0, posinf=1e6, neginf=0.0).item()
             )
             self.last_information["theta_block_steps"] = int(self._theta_block_steps)
             self.last_information["parameter_update_reason"] = "none" if reason is None else reason
