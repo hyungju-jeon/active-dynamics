@@ -66,6 +66,15 @@ models:
     replan_interval: 20
     planning_horizon: 40
 
+  active_planning_async_u20_r20_h40:
+    extends: active_planning_u20_r20_h40
+    policy_type: async-mpc-icem
+    async_planning: true
+    async_refine_on_parameter_update: false
+    async_worker_iterations: 3
+    async_worker_full_interval: 5
+    async_stale_tolerance: 1.0
+
   active_planning_adaptive_u20_r20_h40:
     extends: active_planning
     update_interval: 20
@@ -76,6 +85,15 @@ models:
     adaptive_update_eig_threshold: 0.05
     adaptive_replan_min_interval: 5
     adaptive_replan_state_error_threshold: 3.0
+
+  active_planning_adaptive_async_u20_r20_h40:
+    extends: active_planning_adaptive_u20_r20_h40
+    policy_type: async-mpc-icem
+    async_planning: true
+    async_refine_on_parameter_update: false
+    async_worker_iterations: 1
+    async_worker_device: cpu
+    async_stale_tolerance: 1.0
 
   active_planning_adaptive_state_fixed_update_u20_r20_h40:
     extends: active_planning

@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+
 BASE_DIR = "results/tbme/exp02_hard"
 DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = (
@@ -15,7 +20,9 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_duffing_hard",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",
@@ -33,7 +40,9 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_asymmetric_basin_hard",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",
@@ -51,7 +60,9 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_damped_pendulum_hard",
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
+            "active_planning_adaptive_async_u20_r20_h40",
             "active_planning_u20_r20_h40",
+            "active_planning_async_u20_r20_h40",
             "active_myopic",
             "prbs",
             "random",
