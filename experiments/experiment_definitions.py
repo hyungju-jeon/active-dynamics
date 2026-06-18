@@ -310,8 +310,12 @@ class PolicySpec:
     async_planning: bool = False
     async_stale_tolerance: float = 0.5
     async_stale_refine_iterations: int = 2
+    async_worker_iterations: int | None = None
+    async_worker_full_interval: int | None = None
     async_worker_backend: str = "thread"
+    async_worker_device: str | None = None
     async_start_after_first_plan: bool = True
+    async_refine_on_parameter_update: bool = True
 
 
 @dataclass(frozen=True)
@@ -781,8 +785,26 @@ def load_catalog_bundle(
             async_planning=bool(spec.get("async_planning", False)),
             async_stale_tolerance=float(spec.get("async_stale_tolerance", 0.5)),
             async_stale_refine_iterations=int(spec.get("async_stale_refine_iterations", 2)),
+            async_worker_iterations=(
+                None
+                if spec.get("async_worker_iterations") is None
+                else int(spec.get("async_worker_iterations"))
+            ),
+            async_worker_full_interval=(
+                None
+                if spec.get("async_worker_full_interval") is None
+                else int(spec.get("async_worker_full_interval"))
+            ),
             async_worker_backend=str(spec.get("async_worker_backend", "thread")),
+            async_worker_device=(
+                None
+                if spec.get("async_worker_device") is None
+                else str(spec.get("async_worker_device"))
+            ),
             async_start_after_first_plan=bool(spec.get("async_start_after_first_plan", True)),
+            async_refine_on_parameter_update=bool(
+                spec.get("async_refine_on_parameter_update", True)
+            ),
         )
         for policy_id, spec in model_raw.items()
     }

@@ -632,9 +632,15 @@ def _instantiate_synthetic_policy(
             async_stale_refine_iterations=getattr(
                 policy_spec, "async_stale_refine_iterations", 2
             ),
+            async_worker_iterations=getattr(policy_spec, "async_worker_iterations", None),
+            async_worker_full_interval=getattr(policy_spec, "async_worker_full_interval", None),
             async_worker_backend=getattr(policy_spec, "async_worker_backend", "thread"),
+            async_worker_device=getattr(policy_spec, "async_worker_device", None),
             async_start_after_first_plan=getattr(
                 policy_spec, "async_start_after_first_plan", True
+            ),
+            async_refine_on_parameter_update=getattr(
+                policy_spec, "async_refine_on_parameter_update", True
             ),
         )
     return mpc_cls(
@@ -680,6 +686,7 @@ def _run_single_parameter_identification(
     traj_eval_horizon: int,
     traj_eval_samples: int,
     sampling_variance_samples: int,
+    capture_planned_trajectory: bool = False,
 ) -> dict[str, Any]:
     import torch
     import torch.nn as nn
@@ -980,10 +987,10 @@ def _run_single_parameter_identification(
     planned_traj_steps: list[int] = []
     planned_traj_frames: list[np.ndarray] = []
     perf_start = time.perf_counter()
-    trace_rng = np.random.default_rng(seed + 137)
     e_true_flat = e_true.detach().reshape(-1)
 
     def _on_step_end(transition: dict[str, Any]) -> None:
+        callback_start = time.perf_counter()
         step = int(experiment.env_step)
         cpu_time_sec = float(time.perf_counter() - perf_start)
         e_est = _resolve_parameter_mean(model=model, policy=policy).reshape(-1)
@@ -1006,17 +1013,9 @@ def _run_single_parameter_identification(
         }
         e_vec = e_est.reshape(-1)
         embedding_dim_active = int(e_vec.numel())
-        full_dyn_params = env_preset.params_from_embedding(e_vec, estimator=True)
-        full_dyn_params = torch.as_tensor(
-            full_dyn_params, dtype=torch.float32, device=e_vec.device
-        ).reshape(-1)
         emb_row["embedding_dim"] = embedding_dim_active
-        emb_row["full_param_dim"] = int(full_dyn_params.numel())
         for idx, value in enumerate(e_vec.tolist()):
             emb_row[f"e{idx}"] = float(value)
-        for idx, value in enumerate(full_dyn_params.tolist()):
-            emb_row[f"dyn_param{idx}"] = float(value)
-            emb_row[f"dyn_param_learned{idx}"] = int(idx < embedding_dim_active)
         if e_cov is not None:
             diag_list = diag.tolist()
             for idx, value in enumerate(diag_list):
@@ -1028,6 +1027,14 @@ def _run_single_parameter_identification(
                 emb_row["cov_diag1"] = cov_diag1
         emb_rows.append(emb_row)
         info_diag = getattr(model, "last_information", {}) or {}
+        sample_diagnostics = traj_eval_interval > 0 and step % traj_eval_interval == 0
+        boundary_visibility = (
+            _boundary_visibility_mean(
+                transition.get("model_state", transition.get("env_state")), env_preset
+            )
+            if sample_diagnostics
+            else None
+        )
         info_rows.append(
             {
                 "step": step,
@@ -1069,9 +1076,37 @@ def _run_single_parameter_identification(
                     "adaptive_state_tracking_error"
                 ),
                 "window_buffer_length": int(transition.get("window_buffer_length", 0)),
-                "boundary_visibility_mean": _boundary_visibility_mean(
-                    transition.get("model_state", transition.get("env_state")), env_preset
+                "async_plan_used": as_bool(transition.get("async_plan_used", False)),
+                "async_plan_stale": as_bool(transition.get("async_plan_stale", False)),
+                "async_refined": as_bool(transition.get("async_refined", False)),
+                "async_blocking_fallback": as_bool(
+                    transition.get("async_blocking_fallback", False)
                 ),
+                "async_model_version_mismatch": as_bool(
+                    transition.get("async_model_version_mismatch", False)
+                ),
+                "async_boundary_mismatch": transition.get("async_boundary_mismatch"),
+                "async_plan_runtime_sec": float(
+                    transition.get("async_plan_runtime_sec", 0.0) or 0.0
+                ),
+                "async_plan_status": str(transition.get("async_plan_status", "idle")),
+                "async_plan_model_version": int(
+                    transition.get("async_plan_model_version", -1)
+                ),
+                "async_live_model_version": int(
+                    transition.get("async_live_model_version", -1)
+                ),
+                "model_update_version": int(transition.get("model_update_version", 0)),
+                "parameter_update_version": int(
+                    transition.get("parameter_update_version", 0)
+                ),
+                "boundary_visibility_mean": boundary_visibility,
+                "loop_plan_sec": float(transition.get("loop_plan_sec", 0.0) or 0.0),
+                "loop_step_sec": float(transition.get("loop_step_sec", 0.0) or 0.0),
+                "loop_async_launch_sec": float(
+                    transition.get("loop_async_launch_sec", 0.0) or 0.0
+                ),
+                "trace_callback_sec": 0.0,
             }
         )
         env_x, env_v = to_xy_pair(transition.get("env_state", torch.zeros(2, device=device)))
@@ -1142,43 +1177,36 @@ def _run_single_parameter_identification(
                     transition.get("adaptive_replan_interval", schedule_spec.replan_interval)
                 ),
                 "window_buffer_length": int(transition.get("window_buffer_length", 0)),
+                "async_plan_used": as_bool(transition.get("async_plan_used", False)),
+                "async_plan_stale": as_bool(transition.get("async_plan_stale", False)),
+                "async_blocking_fallback": as_bool(
+                    transition.get("async_blocking_fallback", False)
+                ),
+                "async_model_version_mismatch": as_bool(
+                    transition.get("async_model_version_mismatch", False)
+                ),
+                "async_boundary_mismatch": transition.get("async_boundary_mismatch"),
+                "async_plan_runtime_sec": float(
+                    transition.get("async_plan_runtime_sec", 0.0) or 0.0
+                ),
+                "async_plan_status": str(transition.get("async_plan_status", "idle")),
+                "model_update_version": int(transition.get("model_update_version", 0)),
+                "parameter_update_version": int(
+                    transition.get("parameter_update_version", 0)
+                ),
+                "loop_async_launch_sec": float(
+                    transition.get("loop_async_launch_sec", 0.0) or 0.0
+                ),
             }
         )
-        planned = predict_planned_xy_trajectory(model=model, policy=policy, transition=transition)
-        if planned is not None and planned.shape[0] >= 2:
-            planned_traj_steps.append(step)
-            planned_traj_frames.append(planned)
-        if traj_eval_interval > 0 and step % traj_eval_interval == 0:
-            traj_rows.append(
-                {
-                    "step": step,
-                    "cpu_time_sec": cpu_time_sec,
-                    "trajectory_r2": trajectory_r2_vectorfield(
-                        e_est=e_est,
-                        e_true=e_true_flat,
-                        true_dynamics_type=str(env_preset.resolved_dynamics_type()),
-                        true_full_params=np.asarray(
-                            env_preset.resolved_true_params(), dtype=np.float32
-                        ),
-                        estimator_dynamics_type=str(
-                            env_preset.resolved_dynamics_type(estimator=True)
-                        ),
-                        estimator_full_params=np.asarray(
-                            env_preset.resolved_true_params(estimator=True), dtype=np.float32
-                        ),
-                        true_min_embedding_dim=int(env_preset.resolved_min_embedding_dim()),
-                        estimator_min_embedding_dim=int(env_preset.resolved_min_embedding_dim()),
-                        dt=dt,
-                        dynamics_alpha=alpha,
-                        horizon=traj_eval_horizon,
-                        n_starts=traj_eval_samples,
-                        rng=trace_rng,
-                        device=device,
-                    ),
-                    "traj_eval_horizon": int(traj_eval_horizon),
-                    "traj_eval_samples": int(traj_eval_samples),
-                }
+        if capture_planned_trajectory and sample_diagnostics:
+            planned = predict_planned_xy_trajectory(
+                model=model, policy=policy, transition=transition
             )
+            if planned is not None and planned.shape[0] >= 2:
+                planned_traj_steps.append(step)
+                planned_traj_frames.append(planned)
+        info_rows[-1]["trace_callback_sec"] = float(time.perf_counter() - callback_start)
 
     experiment._run_online_loop(
         train_cfg=exp_config.training,
@@ -1187,6 +1215,61 @@ def _run_single_parameter_identification(
         reset=True,
         on_step_end=_on_step_end,
     )
+
+    for row in emb_rows:
+        embedding_dim_active = int(row["embedding_dim"])
+        e_values = [float(row[f"e{idx}"]) for idx in range(embedding_dim_active)]
+        e_trace = torch.as_tensor(e_values, dtype=torch.float32, device=device)
+        full_dyn_params = torch.as_tensor(
+            env_preset.params_from_embedding(e_trace, estimator=True),
+            dtype=torch.float32,
+            device=device,
+        ).reshape(-1)
+        row["full_param_dim"] = int(full_dyn_params.numel())
+        for idx, value in enumerate(full_dyn_params.tolist()):
+            row[f"dyn_param{idx}"] = float(value)
+            row[f"dyn_param_learned{idx}"] = int(idx < embedding_dim_active)
+
+    if traj_eval_interval > 0:
+        traj_rng = np.random.default_rng(seed + 137)
+        true_dynamics_type = str(env_preset.resolved_dynamics_type())
+        estimator_dynamics_type = str(env_preset.resolved_dynamics_type(estimator=True))
+        true_full_params = np.asarray(env_preset.resolved_true_params(), dtype=np.float32)
+        estimator_full_params = np.asarray(
+            env_preset.resolved_true_params(estimator=True), dtype=np.float32
+        )
+        min_embedding_dim = int(env_preset.resolved_min_embedding_dim())
+        for row in emb_rows:
+            step = int(row["step"])
+            if step % traj_eval_interval != 0:
+                continue
+            e_values = [float(row[f"e{idx}"]) for idx in range(int(row["embedding_dim"]))]
+            e_trace = torch.as_tensor(e_values, dtype=torch.float32, device=device)
+            traj_rows.append(
+                {
+                    "step": step,
+                    "cpu_time_sec": float(row["cpu_time_sec"]),
+                    "trajectory_r2": trajectory_r2_vectorfield(
+                        e_est=e_trace,
+                        e_true=e_true_flat,
+                        true_dynamics_type=true_dynamics_type,
+                        true_full_params=true_full_params,
+                        estimator_dynamics_type=estimator_dynamics_type,
+                        estimator_full_params=estimator_full_params,
+                        true_min_embedding_dim=min_embedding_dim,
+                        estimator_min_embedding_dim=min_embedding_dim,
+                        dt=dt,
+                        dynamics_alpha=alpha,
+                        horizon=traj_eval_horizon,
+                        n_starts=traj_eval_samples,
+                        rng=traj_rng,
+                        device=device,
+                    ),
+                    "traj_eval_horizon": int(traj_eval_horizon),
+                    "traj_eval_samples": int(traj_eval_samples),
+                }
+            )
+
     ended = datetime.now(timezone.utc)
     result_dir = Path(experiment.results_path)
     param_trace_path = run_dir / "parameter_error_trace.csv"
@@ -1273,7 +1356,23 @@ def _run_single_parameter_identification(
             "adaptive_replan_interval",
             "adaptive_state_tracking_error",
             "window_buffer_length",
+            "async_plan_used",
+            "async_plan_stale",
+            "async_refined",
+            "async_blocking_fallback",
+            "async_model_version_mismatch",
+            "async_boundary_mismatch",
+            "async_plan_runtime_sec",
+            "async_plan_status",
+            "async_plan_model_version",
+            "async_live_model_version",
+            "model_update_version",
+            "parameter_update_version",
             "boundary_visibility_mean",
+            "loop_plan_sec",
+            "loop_step_sec",
+            "loop_async_launch_sec",
+            "trace_callback_sec",
         ],
     )
     write_trace_csv(
@@ -1312,6 +1411,16 @@ def _run_single_parameter_identification(
             "adaptive_replan_reason",
             "adaptive_replan_interval",
             "window_buffer_length",
+            "async_plan_used",
+            "async_plan_stale",
+            "async_blocking_fallback",
+            "async_model_version_mismatch",
+            "async_boundary_mismatch",
+            "async_plan_runtime_sec",
+            "async_plan_status",
+            "model_update_version",
+            "parameter_update_version",
+            "loop_async_launch_sec",
         ],
     )
     if planned_traj_frames:
@@ -1441,6 +1550,14 @@ def _run_single_parameter_identification(
             "async_stale_refine_iterations": int(
                 getattr(policy_spec, "async_stale_refine_iterations", 2)
             ),
+            "async_worker_iterations": getattr(policy_spec, "async_worker_iterations", None),
+            "async_worker_full_interval": getattr(
+                policy_spec, "async_worker_full_interval", None
+            ),
+            "async_worker_device": getattr(policy_spec, "async_worker_device", None),
+            "async_refine_on_parameter_update": bool(
+                getattr(policy_spec, "async_refine_on_parameter_update", True)
+            ),
             "predictive_only_window": bool(schedule_spec.predictive_only_window),
             "state_update_interval": int(schedule_spec.update_interval),
             "parameter_update_interval": int(schedule_spec.update_interval),
@@ -1526,6 +1643,7 @@ def _run_one(
                 traj_eval_horizon=int(exp_spec.trajectory_eval_horizon),
                 traj_eval_samples=int(exp_spec.trajectory_eval_samples),
                 sampling_variance_samples=int(args.sampling_variance_samples),
+                capture_planned_trajectory=bool(args.capture_planned_trajectory),
             )
         else:
             if __package__ in {None, ""}:
@@ -1653,6 +1771,10 @@ def _build_session_experiment_entry(
                 "coarse_action_mapping": str(getattr(policy_spec, "coarse_action_mapping", "hold")),
                 "async_planning": bool(getattr(policy_spec, "async_planning", False)),
                 "async_stale_tolerance": float(getattr(policy_spec, "async_stale_tolerance", 0.5)),
+                "async_worker_device": getattr(policy_spec, "async_worker_device", None),
+                "async_refine_on_parameter_update": bool(
+                    getattr(policy_spec, "async_refine_on_parameter_update", True)
+                ),
                 "model": {
                     "runner": experiment_kind,
                     "filter_model": model_name,
@@ -1883,6 +2005,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
     parser.add_argument("--eig-gamma", type=float, default=1.0)
     parser.add_argument("--sampling-variance-samples", type=int, default=8)
+    parser.add_argument("--capture-planned-trajectory", action="store_true")
     return parser
 
 
