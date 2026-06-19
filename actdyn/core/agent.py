@@ -398,6 +398,10 @@ class Agent:
                 policy_update_info.get('async_plan_runtime_sec', 0.0) or 0.0
             ),
             'async_plan_status': str(policy_update_info.get('async_plan_status', 'idle')),
+            'async_reanchor_count': int(policy_update_info.get('async_reanchor_count', 0)),
+            'async_reanchor_mismatch': float(
+                policy_update_info.get('async_reanchor_mismatch', 0.0) or 0.0
+            ),
             'model_update_version': int(self._model_update_version),
             'parameter_update_version': int(self._parameter_update_version),
         }

@@ -642,6 +642,8 @@ def _instantiate_synthetic_policy(
             async_refine_on_parameter_update=getattr(
                 policy_spec, "async_refine_on_parameter_update", True
             ),
+            async_reanchor_live_state=getattr(policy_spec, "async_reanchor_live_state", False),
+            async_reanchor_tolerance=getattr(policy_spec, "async_reanchor_tolerance", 0.25),
         )
     return mpc_cls(
         metric=metric,
@@ -1090,6 +1092,10 @@ def _run_single_parameter_identification(
                     transition.get("async_plan_runtime_sec", 0.0) or 0.0
                 ),
                 "async_plan_status": str(transition.get("async_plan_status", "idle")),
+                "async_reanchor_count": int(transition.get("async_reanchor_count", 0)),
+                "async_reanchor_mismatch": float(
+                    transition.get("async_reanchor_mismatch", 0.0) or 0.0
+                ),
                 "async_plan_model_version": int(
                     transition.get("async_plan_model_version", -1)
                 ),
@@ -1190,6 +1196,10 @@ def _run_single_parameter_identification(
                     transition.get("async_plan_runtime_sec", 0.0) or 0.0
                 ),
                 "async_plan_status": str(transition.get("async_plan_status", "idle")),
+                "async_reanchor_count": int(transition.get("async_reanchor_count", 0)),
+                "async_reanchor_mismatch": float(
+                    transition.get("async_reanchor_mismatch", 0.0) or 0.0
+                ),
                 "model_update_version": int(transition.get("model_update_version", 0)),
                 "parameter_update_version": int(
                     transition.get("parameter_update_version", 0)
@@ -1364,6 +1374,8 @@ def _run_single_parameter_identification(
             "async_boundary_mismatch",
             "async_plan_runtime_sec",
             "async_plan_status",
+            "async_reanchor_count",
+            "async_reanchor_mismatch",
             "async_plan_model_version",
             "async_live_model_version",
             "model_update_version",
@@ -1418,6 +1430,8 @@ def _run_single_parameter_identification(
             "async_boundary_mismatch",
             "async_plan_runtime_sec",
             "async_plan_status",
+            "async_reanchor_count",
+            "async_reanchor_mismatch",
             "model_update_version",
             "parameter_update_version",
             "loop_async_launch_sec",
@@ -1557,6 +1571,12 @@ def _run_single_parameter_identification(
             "async_worker_device": getattr(policy_spec, "async_worker_device", None),
             "async_refine_on_parameter_update": bool(
                 getattr(policy_spec, "async_refine_on_parameter_update", True)
+            ),
+            "async_reanchor_live_state": bool(
+                getattr(policy_spec, "async_reanchor_live_state", False)
+            ),
+            "async_reanchor_tolerance": float(
+                getattr(policy_spec, "async_reanchor_tolerance", 0.25)
             ),
             "predictive_only_window": bool(schedule_spec.predictive_only_window),
             "state_update_interval": int(schedule_spec.update_interval),
@@ -1774,6 +1794,9 @@ def _build_session_experiment_entry(
                 "async_worker_device": getattr(policy_spec, "async_worker_device", None),
                 "async_refine_on_parameter_update": bool(
                     getattr(policy_spec, "async_refine_on_parameter_update", True)
+                ),
+                "async_reanchor_live_state": bool(
+                    getattr(policy_spec, "async_reanchor_live_state", False)
                 ),
                 "model": {
                     "runner": experiment_kind,
