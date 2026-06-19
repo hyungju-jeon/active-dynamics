@@ -2,6 +2,7 @@ from __future__ import annotations
 
 """actdyn.core.agent.py: Agent class for active learning in dynamical systems."""
 
+import copy
 from typing import Any, Dict, Tuple
 
 import torch
@@ -19,9 +20,14 @@ from actdyn.utils.rollout import RecentRollout
 def _clone_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _clone_value(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_clone_value(v) for v in value)
     if hasattr(value, 'detach'):
         return value.detach().clone()
-    return value
+    try:
+        return copy.deepcopy(value)
+    except Exception:
+        return value
 
 
 def _clone_filter_belief_state(model: Any) -> dict[str, Any]:
@@ -38,6 +44,15 @@ def _clone_filter_belief_state(model: Any) -> dict[str, Any]:
         ),
         '_theta_sensitivity': _clone_value(getattr(model, '_theta_sensitivity', None)),
         '_theta_block_steps': int(getattr(model, '_theta_block_steps', 0)),
+        '_last_innovation_statistic': _clone_value(
+            getattr(model, '_last_innovation_statistic', None)
+        ),
+        '_last_parameter_shrinkage': _clone_value(
+            getattr(model, '_last_parameter_shrinkage', None)
+        ),
+        '_last_parameter_update_reason': str(
+            getattr(model, '_last_parameter_update_reason', 'none')
+        ),
     }
 
 
@@ -59,6 +74,13 @@ def _restore_filter_belief_state(model: Any, snapshot: dict[str, Any]) -> None:
         model._theta_active_mask_block = snapshot['_theta_active_mask_block']
     if snapshot.get('_theta_sensitivity') is not None:
         model._theta_sensitivity = snapshot['_theta_sensitivity']
+    if snapshot.get('_last_innovation_statistic') is not None:
+        model._last_innovation_statistic = snapshot['_last_innovation_statistic']
+    if snapshot.get('_last_parameter_shrinkage') is not None:
+        model._last_parameter_shrinkage = snapshot['_last_parameter_shrinkage']
+    model._last_parameter_update_reason = str(
+        snapshot.get('_last_parameter_update_reason', 'none')
+    )
     model._theta_block_steps = int(snapshot.get('_theta_block_steps', 0))
     if hasattr(model, 'set_params') and getattr(model, 'e', None) is not None:
         model.set_params(model.e['m'])
@@ -133,6 +155,16 @@ def _sync_policy_parameter_state(*, model: Any, policy: Any) -> None:
     model.set_params(mean.to(model.device))
 
 
+def _parameter_update_happened(model: Any, prev_block_steps: int) -> bool:
+    update_reason = str(getattr(model, '_last_parameter_update_reason', 'none'))
+    if update_reason != 'none':
+        return True
+    return (
+        prev_block_steps + 1 >= max(1, int(getattr(model, 'k_theta', 1)))
+        and int(getattr(model, '_theta_block_steps', 0)) == 0
+    )
+
+
 class Agent:
     """Agent class for active learning in dynamical systems."""
 
@@ -168,6 +200,32 @@ class Agent:
         self._window_buffer: list[dict[str, Any]] = []
         self._window_start_snapshot: dict[str, Any] | None = None
 
+        self._model_update_version = 0
+        self._parameter_update_version = 0
+
+    def set_foreground_active(self, active: bool) -> None:
+        set_active = getattr(self.policy, 'set_foreground_active', None)
+        if callable(set_active):
+            set_active(bool(active))
+
+    def _request_replan_after_parameter_update(self) -> None:
+        if not bool(getattr(self.policy, 'force_replan_on_parameter_update', False)):
+            return
+        request_replan = getattr(self.policy, 'request_replan', None)
+        if callable(request_replan):
+            request_replan('parameter_update')
+
+    def close(self) -> None:
+        policy_close = getattr(self.policy, 'close', None)
+        if callable(policy_close):
+            policy_close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
     def reset(self, seed: int | None = None) -> torch.Tensor:
         """Reset the agent and environment."""
         with torch.no_grad():
@@ -192,6 +250,8 @@ class Agent:
         self._window_start_snapshot = (
             _clone_filter_belief_state(self.model) if self.predictive_only_window else None
         )
+        self._model_update_version = 0
+        self._parameter_update_version = 0
 
         beginning_of_rollout = getattr(self.policy, 'beginning_of_rollout', None)
         if callable(beginning_of_rollout):
@@ -244,35 +304,24 @@ class Agent:
                         update_theta=not policy_owns_theta,
                     )
                     if not policy_owns_theta:
-                        update_reason = str(
-                            getattr(self.model, '_last_parameter_update_reason', 'none')
-                        )
-                        parameter_posterior_updated = parameter_posterior_updated or (
-                            update_reason != 'none'
-                            or (
-                                prev_block_steps
-                                + 1
-                                >= max(1, int(getattr(self.model, 'k_theta', 1)))
-                                and int(getattr(self.model, '_theta_block_steps', 0)) == 0
-                            )
-                        )
+                        updated = _parameter_update_happened(self.model, prev_block_steps)
+                        parameter_posterior_updated = parameter_posterior_updated or updated
                 model_info['latent_state'] = self.model.get_state()
                 state_posterior_updated = True
+                self._model_update_version += 1
+                if parameter_posterior_updated:
+                    self._parameter_update_version += 1
                 self._window_buffer = []
                 self._window_start_snapshot = _clone_filter_belief_state(self.model)
         else:
             prev_block_steps = int(getattr(self.model, '_theta_block_steps', 0))
             model_info = self.model.update(self.recent, update_theta=not policy_owns_theta)
+            self._model_update_version += 1
             state_posterior_updated = True
             if not policy_owns_theta:
-                update_reason = str(getattr(self.model, '_last_parameter_update_reason', 'none'))
-                parameter_posterior_updated = (
-                    update_reason != 'none'
-                    or (
-                        prev_block_steps + 1 >= max(1, int(getattr(self.model, 'k_theta', 1)))
-                        and int(getattr(self.model, '_theta_block_steps', 0)) == 0
-                    )
-                )
+                parameter_posterior_updated = _parameter_update_happened(self.model, prev_block_steps)
+                if parameter_posterior_updated:
+                    self._parameter_update_version += 1
 
         model_transition = {
             'model_action': model_info['env_action'],
@@ -292,6 +341,8 @@ class Agent:
             parameter_posterior_updated = bool(
                 policy_update_info.get('parameter_posterior_updated', False)
             )
+            if parameter_posterior_updated:
+                self._parameter_update_version += 1
         policy_update_info = getattr(self.policy, 'last_update_info', {}) or {}
         if (
             parameter_posterior_updated
@@ -324,6 +375,35 @@ class Agent:
             'adaptive_state_tracking_error': policy_update_info.get(
                 'adaptive_state_tracking_error'
             ),
+            'async_plan_ready': bool(policy_update_info.get('async_plan_ready', False)),
+            'async_plan_used': bool(policy_update_info.get('async_plan_used', False)),
+            'async_plan_stale': bool(policy_update_info.get('async_plan_stale', False)),
+            'async_boundary_mismatch': float(
+                policy_update_info.get('async_boundary_mismatch', 0.0) or 0.0
+            ),
+            'async_model_version_mismatch': bool(
+                policy_update_info.get('async_model_version_mismatch', False)
+            ),
+            'async_plan_model_version': int(
+                policy_update_info.get('async_plan_model_version', -1)
+            ),
+            'async_live_model_version': int(
+                policy_update_info.get('async_live_model_version', -1)
+            ),
+            'async_refined': bool(policy_update_info.get('async_refined', False)),
+            'async_blocking_fallback': bool(
+                policy_update_info.get('async_blocking_fallback', False)
+            ),
+            'async_plan_runtime_sec': float(
+                policy_update_info.get('async_plan_runtime_sec', 0.0) or 0.0
+            ),
+            'async_plan_status': str(policy_update_info.get('async_plan_status', 'idle')),
+            'async_reanchor_count': int(policy_update_info.get('async_reanchor_count', 0)),
+            'async_reanchor_mismatch': float(
+                policy_update_info.get('async_reanchor_mismatch', 0.0) or 0.0
+            ),
+            'model_update_version': int(self._model_update_version),
+            'parameter_update_version': int(self._parameter_update_version),
         }
 
         self._observation = obs
@@ -332,14 +412,38 @@ class Agent:
 
         return transition, done
 
+    def launch_background_plan(self) -> None:
+        launch_background_plan = getattr(self.policy, 'launch_background_plan', None)
+        if not callable(launch_background_plan):
+            return
+        plan_kwargs = {
+            'observed_state': self._env_state,
+            'model_update_version': self._parameter_update_version,
+            'parameter_update_version': self._parameter_update_version,
+        }
+        if bool(getattr(self.policy, 'updates_metric_in_background', False)):
+            plan_kwargs['recent_rollout'] = self.recent
+        launch_background_plan(self._model_state, **plan_kwargs)
+
     def plan(self) -> torch.Tensor:
         """Plan next action using the policy."""
-        action = self.policy(self._model_state, observed_state=self._env_state)
+        plan_kwargs = {
+            'observed_state': self._env_state,
+            'model_update_version': self._parameter_update_version,
+            'parameter_update_version': self._parameter_update_version,
+        }
+        if bool(getattr(self.policy, 'updates_metric_in_background', False)):
+            plan_kwargs['recent_rollout'] = self.recent
+        if callable(getattr(self.policy, 'launch_background_plan', None)):
+            plan_kwargs['defer_background_launch'] = True
+        action = self.policy(self._model_state, **plan_kwargs)
         return action
 
     def update_policy(self, rollout: RecentRollout) -> None:
         """Update the policy based on the latest transition."""
-        if isinstance(self.policy, BaseMPC):
+        if isinstance(self.policy, BaseMPC) and not bool(
+            getattr(self.policy, 'updates_metric_in_background', False)
+        ):
             for metric in self.policy.metric.metric_list:
                 metric.update(rollout)
         update_info = None

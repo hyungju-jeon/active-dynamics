@@ -25,12 +25,16 @@ def parameter_eig(
     Fz_net: Callable,
     gamma: float,
     device: str,
+    freeze_covariance: bool = False,
+    diagonal_covariance: bool = False,
 ) -> EmbeddingFisherMetric:
     return EmbeddingFisherMetric(
         model=model,
         Fe_net=Fe_net,
         Fz_net=Fz_net,
         gamma=gamma,
+        freeze_covariance=freeze_covariance,
+        diagonal_covariance=diagonal_covariance,
         device=device,
     )
 

@@ -11,8 +11,10 @@ DEFAULT_EXP_IDS = (
 
 MODEL_IDS = [
     "active_planning_adaptive_u20_r20_h40",
+    "active_planning_adaptive_async_u20_r20_h40",
     "active_planning_u5_r5_h40",
     "active_planning_u20_r20_h40",
+    "active_planning_async_u20_r20_h40",
     "active_myopic",
     "prbs",
     "random",

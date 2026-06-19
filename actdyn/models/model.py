@@ -12,7 +12,7 @@ from actdyn.utils.torch_utils import safe_cholesky, symmetrize, eps, Belief
 from actdyn.utils.rollout import RolloutBuffer
 
 from .base import BaseDynamicsEnsemble, BaseModel
-from .decoder import Decoder
+from .decoder import Decoder, diagonal_observation_information
 from .dynamics import BaseDynamics, FunctionDynamics
 from .encoder import BaseEncoder
 
@@ -891,7 +891,9 @@ class FilteringEmbedding(BaseModel):
         eig = 0.5 * logdet / float(d_embed)
         return torch.nan_to_num(eig.mean(), nan=0.0, posinf=1e6, neginf=0.0)
 
-    def _embedding_block_update_reason(self) -> str | None:
+    def _embedding_block_update_reason(
+        self, block_eig: torch.Tensor | None = None
+    ) -> str | None:
         """Return why the current parameter block should be applied, if at all."""
         steps = int(self._theta_block_steps)
         if steps >= self.k_theta:
@@ -902,7 +904,8 @@ class FilteringEmbedding(BaseModel):
             return None
         if self.adaptive_update_eig_threshold is None:
             return None
-        if float(self._theta_block_eig().item()) >= float(self.adaptive_update_eig_threshold):
+        eig = self._theta_block_eig() if block_eig is None else block_eig
+        if float(eig.item()) >= float(self.adaptive_update_eig_threshold):
             return "block_eig"
         return None
 
@@ -1209,41 +1212,41 @@ class FilteringEmbedding(BaseModel):
             "P": self._project_spd(pred_cov),
         }
 
-        # Re-linearize observation and variance at new z_pred
+        # Re-linearize observation at new z_pred. Observation noise is diagonal
+        # for the Gaussian and Poisson decoders used here, so the EKF update can
+        # use the equivalent information form without materializing dense R/S.
         z_obs = torch.nan_to_num(z_pred["m"], nan=0.0, posinf=1e6, neginf=-1e6)
-        dhdz = torch.nan_to_num(self.decoder.jacobian(z_obs), nan=0.0, posinf=1e6, neginf=-1e6)
-        R_diag = torch.nan_to_num(
-            self.decoder.var(z_obs), nan=1e-6, posinf=1e6, neginf=1e-6
-        ).clamp_min(1e-6)
-        R = self._project_spd(R_diag.diag_embed())
-        eye_obs = torch.eye(R.shape[-1], device=self.device).view(1, 1, R.shape[-1], R.shape[-1])
-        S = self._project_spd(dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2) + R + 1e-6 * eye_obs)
+        y_pred, I_z, obs_score, r_Rinv_r = diagonal_observation_information(
+            self.decoder, z_obs, observation=y
+        )
+        assert obs_score is not None and r_Rinv_r is not None
+
+        chol_P_pred = safe_cholesky(z_pred["P"])
+        P_pred_inv = torch.cholesky_inverse(chol_P_pred)
+        L_post = symmetrize(P_pred_inv + I_z)
         try:
-            chol_S = safe_cholesky(S)
+            chol_L_post = safe_cholesky(L_post)
         except Exception:
-            S = self._project_spd(S + 1e-4 * eye_obs, min_eig=1e-4)
-            chol_S = safe_cholesky(S)
-
-        # Compute Kalman Gain and update posterior with observation y_t
-        HPt = dhdz @ z_pred["P"]
-        K = torch.cholesky_solve(HPt, chol_S).transpose(-1, -2)
-        KH = K @ dhdz
-        P_upd = (I - KH) @ z_pred["P"] @ (I - KH).transpose(-1, -2) + K @ R @ K.transpose(-1, -2)
-
-        # innovation uses current y_pred; recompute for consistency
-        y_pred = torch.nan_to_num(self.decoder(z_obs), nan=0.0, posinf=1e6, neginf=-1e6)
-        r = y - y_pred
-        z_post_m = z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1)
+            L_post = self._project_spd(L_post + 1e-4 * I, min_eig=1e-4)
+            chol_L_post = safe_cholesky(L_post)
+        P_upd = torch.cholesky_inverse(chol_L_post)
+        z_post_m = z_pred["m"] + (P_upd @ obs_score.unsqueeze(-1)).squeeze(-1)
         z_post_m = torch.nan_to_num(z_post_m, nan=0.0, posinf=1e6, neginf=-1e6)
 
-        delta_t = self._compute_innovation_statistic(r, chol_S)
+        correction = (obs_score.unsqueeze(-2) @ P_upd @ obs_score.unsqueeze(-1)).squeeze(-1).squeeze(-1)
+        delta_t = torch.nan_to_num(
+            (r_Rinv_r - correction).clamp_min(0.0) / float(y.shape[-1]),
+            nan=0.0,
+            posinf=1e6,
+            neginf=0.0,
+        ).squeeze(-1)
         tau_t = self._compute_parameter_shrinkage(delta_t)
         self._last_innovation_statistic = delta_t.detach()
         self._last_parameter_shrinkage = tau_t.detach()
 
         z_post = {
             "m": z_post_m,
-            "P": self._project_spd(
+            "P": symmetrize(
                 torch.nan_to_num(P_upd, nan=0.0, posinf=1e6, neginf=-1e6) + 1e-8 * I
             ),
         }
@@ -1253,9 +1256,6 @@ class FilteringEmbedding(BaseModel):
 
         # Information diagnostics are still useful in state-only update mode, but
         # parameter score / posterior updates are disabled when update_theta=False.
-        chol_R = safe_cholesky(self._project_spd(R))
-        invR_H = torch.cholesky_solve(dhdz, chol_R)
-        I_z = symmetrize(dhdz.transpose(-1, -2) @ invR_H)
         info_t = None
         if update_theta:
             # Parameter sensitivity recursion S_t = F_theta,t + F_z,t S_{t-1}.
@@ -1263,7 +1263,6 @@ class FilteringEmbedding(BaseModel):
             S_t = F_theta.squeeze(1) + dfdz.squeeze(1) @ S_prev  # (B, Dz, De)
 
             # Score: s_t = S_t^T (Pz_pred)^-1 (z_post - z_pred).
-            chol_P_pred = safe_cholesky(self._project_spd(z_pred["P"]))
             delta_z = z_post["m"] - z_pred["m"]  # (B, 1, Dz)
             invP_delta = (
                 torch.cholesky_solve(delta_z.unsqueeze(-1), chol_P_pred).squeeze(-1).squeeze(1)
@@ -1287,7 +1286,7 @@ class FilteringEmbedding(BaseModel):
         Pz00 = Pz_eval[:, 0, 0].mean()
         Pz01 = Pz_eval[:, 0, 1].mean()
         Pz11 = Pz_eval[:, 1, 1].mean()
-        theta_block_eig = self._theta_block_eig() if update_theta else torch.tensor(0.0, device=self.device)
+        theta_block_eig = torch.tensor(0.0, device=self.device)
         self.last_information = {
             "I_z_t": float(torch.nan_to_num(I_z_scalar, nan=0.0, posinf=1e6, neginf=0.0).item()),
             "I_theta_t": float(
@@ -1309,11 +1308,10 @@ class FilteringEmbedding(BaseModel):
             self._theta_info_block += info_t
             self._theta_sensitivity = S_t.detach()
             self._theta_block_steps += 1
-            reason = self._embedding_block_update_reason()
+            block_eig = self._theta_block_eig()
+            reason = self._embedding_block_update_reason(block_eig)
             self.last_information["theta_block_eig"] = float(
-                torch.nan_to_num(
-                    self._theta_block_eig(), nan=0.0, posinf=1e6, neginf=0.0
-                ).item()
+                torch.nan_to_num(block_eig, nan=0.0, posinf=1e6, neginf=0.0).item()
             )
             self.last_information["theta_block_steps"] = int(self._theta_block_steps)
             self.last_information["parameter_update_reason"] = "none" if reason is None else reason
