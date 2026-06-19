@@ -95,6 +95,13 @@ models:
     async_worker_device: cpu
     async_stale_tolerance: 1.0
 
+  active_planning_adaptive_async_reanchor_u20_r20_h40:
+    extends: active_planning_adaptive_async_u20_r20_h40
+    async_worker_iterations: 1
+    async_stale_tolerance: 0.1
+    async_reanchor_live_state: true
+    async_reanchor_tolerance: 0.0
+
   active_planning_adaptive_state_fixed_update_u20_r20_h40:
     extends: active_planning
     update_interval: 20

@@ -21,6 +21,7 @@ EXPERIMENT_SUITES = {
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
             "active_planning_adaptive_async_u20_r20_h40",
+            "active_planning_adaptive_async_reanchor_u20_r20_h40",
             "active_planning_u20_r20_h40",
             "active_planning_async_u20_r20_h40",
             "active_myopic",
@@ -41,6 +42,7 @@ EXPERIMENT_SUITES = {
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
             "active_planning_adaptive_async_u20_r20_h40",
+            "active_planning_adaptive_async_reanchor_u20_r20_h40",
             "active_planning_u20_r20_h40",
             "active_planning_async_u20_r20_h40",
             "active_myopic",
@@ -61,6 +63,7 @@ EXPERIMENT_SUITES = {
         "model_ids": [
             "active_planning_adaptive_u20_r20_h40",
             "active_planning_adaptive_async_u20_r20_h40",
+            "active_planning_adaptive_async_reanchor_u20_r20_h40",
             "active_planning_u20_r20_h40",
             "active_planning_async_u20_r20_h40",
             "active_myopic",
