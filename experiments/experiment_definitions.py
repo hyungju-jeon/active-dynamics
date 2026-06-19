@@ -316,6 +316,8 @@ class PolicySpec:
     async_worker_device: str | None = None
     async_start_after_first_plan: bool = True
     async_refine_on_parameter_update: bool = True
+    async_reanchor_live_state: bool = False
+    async_reanchor_tolerance: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -805,6 +807,8 @@ def load_catalog_bundle(
             async_refine_on_parameter_update=bool(
                 spec.get("async_refine_on_parameter_update", True)
             ),
+            async_reanchor_live_state=bool(spec.get("async_reanchor_live_state", False)),
+            async_reanchor_tolerance=float(spec.get("async_reanchor_tolerance", 0.25)),
         )
         for policy_id, spec in model_raw.items()
     }

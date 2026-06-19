@@ -54,6 +54,8 @@ models:
     async_worker_iterations: 3
     async_worker_full_interval: 5
     async_worker_device: cpu
+    async_reanchor_live_state: true
+    async_reanchor_tolerance: 0.1
 """,
         encoding="utf-8",
     )
@@ -68,6 +70,8 @@ models:
         assert get_policy_spec("async_planning").async_worker_iterations == 3
         assert get_policy_spec("async_planning").async_worker_full_interval == 5
         assert get_policy_spec("async_planning").async_worker_device == "cpu"
+        assert get_policy_spec("async_planning").async_reanchor_live_state is True
+        assert get_policy_spec("async_planning").async_reanchor_tolerance == pytest.approx(0.1)
     finally:
         configure_catalogs()
 
@@ -846,6 +850,24 @@ def test_async_background_snapshot_shares_foreground_event() -> None:
     policy.close()
 
 
+def test_async_background_worker_reanchors_to_live_boundary() -> None:
+    policy = _make_async_policy(chunk=3)
+    policy.async_reanchor_live_state = True
+    policy.async_reanchor_tolerance = 0.0
+    launch_boundary = torch.zeros(1, 1, 2)
+    live_boundary = torch.tensor([[[0.8, -0.4]]], dtype=torch.float32)
+    policy.beginning_of_rollout(launch_boundary)
+    planner = policy._make_snapshot_planner(launch_boundary)
+
+    policy._publish_async_anchor(live_boundary, {})
+    result = AsyncMpcICem._background_plan_worker(planner, launch_boundary, {})
+
+    assert result.reanchor_count == 1
+    assert torch.allclose(result.predicted_boundary_state, live_boundary)
+    assert torch.allclose(planner.model._state, live_boundary)
+    policy.close()
+
+
 def test_async_background_planning_does_not_mutate_live_policy_state() -> None:
     policy = _make_async_policy(chunk=3)
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
@@ -914,4 +936,3 @@ def test_async_policy_catalog_entry_is_available() -> None:
     assert spec.async_worker_iterations is None
     assert spec.async_worker_full_interval is None
     assert spec.async_worker_device is None
-
