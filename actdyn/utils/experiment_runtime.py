@@ -486,6 +486,70 @@ def apply_loglinear_loading_mismatch(weight: Any, *, variance: float, seed: int)
     return c + eps * float(np.sqrt(mismatch_variance))
 
 
+def apply_loglinear_loading_tuning_mismatch(
+    weight: Any,
+    *,
+    max_angle_deg: float,
+    max_gain_factor: float,
+    seed: int,
+):
+    """Randomly rotate and rescale each log-linear loading row.
+
+    Args:
+        weight: Loading matrix with shape (observation_dim, latent_dim).
+        max_angle_deg: Maximum absolute per-neuron direction error in degrees.
+            Each row angle is sampled from U[-max_angle_deg, max_angle_deg].
+        max_gain_factor: Maximum multiplicative strength error. Each row gain
+            is sampled log-uniformly from [1 / max_gain_factor, max_gain_factor].
+        seed: PRNG seed for the row-wise perturbations.
+
+    Returns:
+        Perturbed loading matrix with the same shape and dtype as ``weight``.
+
+    The direction perturbation is implemented for the 2D latent tuning vectors
+    used by the TBME systems.
+    """
+    import torch
+
+    angle_deg = float(max_angle_deg)
+    gain_factor = float(max_gain_factor)
+    if angle_deg < 0.0:
+        raise ValueError(f"Loading direction mismatch must be nonnegative, got {max_angle_deg}.")
+    if gain_factor < 1.0:
+        raise ValueError(f"Loading gain mismatch factor must be at least 1, got {max_gain_factor}.")
+
+    c = weight.detach().clone()
+    if angle_deg == 0.0 and gain_factor == 1.0:
+        return c
+    if angle_deg > 0.0 and c.shape[1] != 2:
+        raise ValueError(
+            "Loading direction mismatch is implemented for 2D latent loadings, "
+            f"got shape {tuple(c.shape)}."
+        )
+
+    generator = torch.Generator(device=c.device)
+    generator.manual_seed(int(seed))
+    if angle_deg > 0.0:
+        angles = (
+            torch.rand(c.shape[0], dtype=c.dtype, device=c.device, generator=generator) * 2.0
+            - 1.0
+        ) * float(np.deg2rad(angle_deg))
+        x = c[:, 0].clone()
+        y = c[:, 1].clone()
+        cos_a = torch.cos(angles)
+        sin_a = torch.sin(angles)
+        c[:, 0] = cos_a * x - sin_a * y
+        c[:, 1] = sin_a * x + cos_a * y
+
+    if gain_factor > 1.0:
+        log_gains = (
+            torch.rand(c.shape[0], dtype=c.dtype, device=c.device, generator=generator) * 2.0
+            - 1.0
+        ) * float(np.log(gain_factor))
+        c = c * torch.exp(log_gains).unsqueeze(1)
+    return c
+
+
 
 def predict_planned_xy_trajectory(
     *, model: Any, policy: Any, transition: dict[str, Any]

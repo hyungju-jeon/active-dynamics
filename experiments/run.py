@@ -42,6 +42,7 @@ if __package__ in {None, ""}:
         DEFAULT_LOG_LINEAR_LOADING_SEED,
         DEFAULT_LOG_LINEAR_SNR_SEED,
         apply_loglinear_loading_mismatch,
+        apply_loglinear_loading_tuning_mismatch,
         as_bool,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
@@ -73,6 +74,7 @@ else:
         DEFAULT_LOG_LINEAR_LOADING_SEED,
         DEFAULT_LOG_LINEAR_SNR_SEED,
         apply_loglinear_loading_mismatch,
+        apply_loglinear_loading_tuning_mismatch,
         as_bool,
         extract_rollout_metrics,
         predict_planned_xy_trajectory,
@@ -796,16 +798,48 @@ def _run_single_parameter_identification(
     loading_mismatch_variance = float(
         getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
     )
+    loading_direction_mismatch_max_deg = float(
+        getattr(env_preset, "observation_loading_direction_mismatch_max_deg", 0.0)
+    )
+    loading_gain_mismatch_max_factor = float(
+        getattr(env_preset, "observation_loading_gain_mismatch_max_factor", 1.0)
+    )
     if loading_mismatch_variance < 0.0:
         raise ValueError(
             "observation_loading_mismatch_variance must be nonnegative, "
             f"got {loading_mismatch_variance}."
+        )
+    if loading_direction_mismatch_max_deg < 0.0:
+        raise ValueError(
+            "observation_loading_direction_mismatch_max_deg must be nonnegative, "
+            f"got {loading_direction_mismatch_max_deg}."
+        )
+    if loading_gain_mismatch_max_factor < 1.0:
+        raise ValueError(
+            "observation_loading_gain_mismatch_max_factor must be at least 1, "
+            f"got {loading_gain_mismatch_max_factor}."
+        )
+    has_tuning_mismatch = (
+        loading_direction_mismatch_max_deg > 0.0 or loading_gain_mismatch_max_factor > 1.0
+    )
+    if loading_mismatch_variance > 0.0 and has_tuning_mismatch:
+        raise ValueError(
+            "Use either observation_loading_mismatch_variance or row-wise tuning mismatch, not both."
         )
     if loading_mismatch_variance > 0.0:
         decoder.mapping.set_weights(
             apply_loglinear_loading_mismatch(
                 decoder.mapping.network[0].weight.data,
                 variance=loading_mismatch_variance,
+                seed=int(seed) + 11003,
+            )
+        )
+    elif has_tuning_mismatch:
+        decoder.mapping.set_weights(
+            apply_loglinear_loading_tuning_mismatch(
+                decoder.mapping.network[0].weight.data,
+                max_angle_deg=loading_direction_mismatch_max_deg,
+                max_gain_factor=loading_gain_mismatch_max_factor,
                 seed=int(seed) + 11003,
             )
         )
@@ -1512,6 +1546,12 @@ def _run_single_parameter_identification(
             "observation_loading_mismatch_variance": float(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),
+            "observation_loading_direction_mismatch_max_deg": float(
+                getattr(env_preset, "observation_loading_direction_mismatch_max_deg", 0.0)
+            ),
+            "observation_loading_gain_mismatch_max_factor": float(
+                getattr(env_preset, "observation_loading_gain_mismatch_max_factor", 1.0)
+            ),
             "information_boundary_visibility_enabled": bool(
                 getattr(env_preset, "information_boundary_visibility_enabled", False)
             ),
@@ -1851,6 +1891,12 @@ def _build_session_experiment_entry(
             "observation_loading_shared_across_seeds": True,
             "observation_loading_mismatch_variance": float(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
+            ),
+            "observation_loading_direction_mismatch_max_deg": float(
+                getattr(env_preset, "observation_loading_direction_mismatch_max_deg", 0.0)
+            ),
+            "observation_loading_gain_mismatch_max_factor": float(
+                getattr(env_preset, "observation_loading_gain_mismatch_max_factor", 1.0)
             ),
             "x_range": float(env_preset.resolved_plot_limit()),
             "real_data": bool(getattr(env_preset, "real_data", False)),

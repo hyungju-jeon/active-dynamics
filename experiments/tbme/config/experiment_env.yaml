@@ -91,6 +91,18 @@ environments:
     system_label: Duffing oscillator / strong observation-loading mismatch
     observation_loading_mismatch_variance: 0.1
 
+  tbme_duffing_observation_tuning_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild observation tuning mismatch
+    observation_loading_direction_mismatch_max_deg: 15.0
+    observation_loading_gain_mismatch_max_factor: 1.25
+
+  tbme_duffing_observation_tuning_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong observation tuning mismatch
+    observation_loading_direction_mismatch_max_deg: 30.0
+    observation_loading_gain_mismatch_max_factor: 1.5
+
   tbme_damped_pendulum:
     extends: tbme_duffing
     system_id: damped_pendulum
@@ -192,3 +204,15 @@ environments:
     extends: tbme_asymmetric_basin
     system_label: Asymmetric basin / strong observation-loading mismatch
     observation_loading_mismatch_variance: 0.1
+
+  tbme_asymmetric_basin_observation_tuning_mismatch_mild:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / mild observation tuning mismatch
+    observation_loading_direction_mismatch_max_deg: 15.0
+    observation_loading_gain_mismatch_max_factor: 1.25
+
+  tbme_asymmetric_basin_observation_tuning_mismatch_strong:
+    extends: tbme_asymmetric_basin
+    system_label: Asymmetric basin / strong observation tuning mismatch
+    observation_loading_direction_mismatch_max_deg: 30.0
+    observation_loading_gain_mismatch_max_factor: 1.5

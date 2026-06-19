@@ -9,6 +9,10 @@ import pytest
 import torch
 
 from actdyn.policy.mpc import AsyncMpcICem, MpcICem
+from actdyn.utils.experiment_runtime import (
+    apply_loglinear_loading_mismatch,
+    apply_loglinear_loading_tuning_mismatch,
+)
 from actdyn.utils.rollout import Rollout
 from actdyn.utils.runtime import configure_runtime, ensure_dir
 from experiments.experiment_definitions import ScheduleSpec, configure_catalogs, get_policy_spec
@@ -106,6 +110,51 @@ def test_schedule_spec_uses_replan_interval_as_single_planning_knob():
             planning_horizon=20,
             planning_chunk=4,
         )
+
+
+def test_loglinear_loading_mismatch_uses_seeded_gaussian_power() -> None:
+    weight = torch.zeros((3, 2), dtype=torch.float32)
+    no_mismatch = apply_loglinear_loading_mismatch(weight, variance=0.0, seed=7)
+    mild = apply_loglinear_loading_mismatch(weight, variance=0.01, seed=7)
+    strong = apply_loglinear_loading_mismatch(weight, variance=0.04, seed=7)
+    mild_repeat = apply_loglinear_loading_mismatch(weight, variance=0.01, seed=7)
+
+    assert torch.allclose(no_mismatch, weight)
+    assert torch.allclose(mild, mild_repeat)
+    assert torch.allclose(strong, 2.0 * mild)
+
+
+def test_loglinear_loading_tuning_mismatch_bounds_direction_and_gain() -> None:
+    weight = torch.tensor(
+        [
+            [1.0, 0.0],
+            [0.0, 2.0],
+            [-3.0, 0.0],
+        ],
+        dtype=torch.float32,
+    )
+
+    no_mismatch = apply_loglinear_loading_tuning_mismatch(
+        weight, max_angle_deg=0.0, max_gain_factor=1.0, seed=11
+    )
+    perturbed = apply_loglinear_loading_tuning_mismatch(
+        weight, max_angle_deg=30.0, max_gain_factor=1.5, seed=11
+    )
+    repeat = apply_loglinear_loading_tuning_mismatch(
+        weight, max_angle_deg=30.0, max_gain_factor=1.5, seed=11
+    )
+
+    assert torch.allclose(no_mismatch, weight)
+    assert torch.allclose(perturbed, repeat)
+
+    gain = torch.linalg.norm(perturbed, dim=1) / torch.linalg.norm(weight, dim=1)
+    dot = (weight * perturbed).sum(dim=1)
+    cross = weight[:, 0] * perturbed[:, 1] - weight[:, 1] * perturbed[:, 0]
+    angle_deg = torch.rad2deg(torch.atan2(torch.abs(cross), dot))
+
+    assert torch.all(angle_deg <= 30.0 + 1e-5)
+    assert torch.all(gain >= 1.0 / 1.5 - 1e-6)
+    assert torch.all(gain <= 1.5 + 1e-6)
 
 
 def test_experiment_loop_does_not_update_policy_outside_agent_step():

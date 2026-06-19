@@ -36,6 +36,8 @@ class EnvironmentPreset:
     observation_loading_mismatch_variance: float
     firing_rate_scale: float
     action_max: float
+    observation_loading_direction_mismatch_max_deg: float = 0.0
+    observation_loading_gain_mismatch_max_factor: float = 1.0
     loading_fisher_snr_db: float | None = None
     loading_target_snr_db: float | None = None
     system_label: str | None = None
@@ -596,6 +598,12 @@ def load_catalog_bundle(
             observation_row_skew=float(spec.get("observation_row_skew", 0.0)),
             observation_loading_mismatch_variance=float(
                 spec.get("observation_loading_mismatch_variance", 0.0)
+            ),
+            observation_loading_direction_mismatch_max_deg=float(
+                spec.get("observation_loading_direction_mismatch_max_deg", 0.0)
+            ),
+            observation_loading_gain_mismatch_max_factor=float(
+                spec.get("observation_loading_gain_mismatch_max_factor", 1.0)
             ),
             loading_fisher_snr_db=(
                 None
