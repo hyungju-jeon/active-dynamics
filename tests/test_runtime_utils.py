@@ -180,9 +180,6 @@ def test_experiment_loop_does_not_update_policy_outside_agent_step():
     assert experiment.rollout.add_calls == 3
 
 
-
-
-
 class _IdentityActionEncoder:
     def __init__(self, action_space: gym.Space) -> None:
         self.action_space = action_space
