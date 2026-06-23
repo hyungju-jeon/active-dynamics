@@ -15,21 +15,15 @@ from experiments.tbme import tbme_figures
 
 
 EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
-    "exp01_base": (
+    "simple_system_identification": (
         "true_dynamics_all",
         "mismatch_dose_response",
         "per_parameter_recovery",
     ),
-    "exp02_hard": (
-        "asymmetric_basin_mechanism",
-        "learned_vectorfield_snapshots",
-    ),
-    "exp03_schedule": (),
-    "exp04_mismatch": ("mismatch_dose_response",),
-    "exp05_ablation": ("objective_ablation",),
-    "exp06_bottleneck": ("bottleneck_sweep",),
-    "exp07_mismatch_stress": (),
-    "exp08_parameter_mismatch_stress": ("mismatch_dose_response",),
+    "observation_action_bottleneck": ("bottleneck_sweep",),
+    "model_mismatch": ("mismatch_dose_response",),
+    "objective_ablation": ("objective_ablation",),
+    "scheduling": (),
 }
 
 DEFAULT_GROUPS = ",".join(tbme_figures.GROUPS)
@@ -124,6 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
     summary.add_argument("--figure-formats", type=str, default=".pdf")
     summary.add_argument("--trajectory-max-seeds", type=int, default=50)
     summary.add_argument("--density-bins", type=int, default=96)
+    summary.add_argument("--results-dir", type=str, default=None)
 
     # Overview : Write group-level overview tables and figures.
     overview = subparsers.add_parser(
@@ -136,6 +131,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_GROUPS,
         help="Comma-separated TBME group names.",
     )
+    overview.add_argument("--results-dir", type=str, default=None)
 
     experiment = subparsers.add_parser(
         "experiment",
@@ -148,6 +144,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Comma-separated TBME experiment group names.",
     )
     experiment.add_argument("--max-seeds", type=int, default=100)
+    experiment.add_argument("--results-dir", type=str, default=None)
 
     assets = subparsers.add_parser(
         "assets",
@@ -183,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     all_parser.add_argument("--max-seeds", type=int, default=100)
     all_parser.add_argument("--trajectory-max-seeds", type=int, default=None)
     all_parser.add_argument("--density-bins", type=int, default=96)
+    all_parser.add_argument("--results-dir", type=str, default=None)
     all_parser.add_argument(
         "--assets-output-dir",
         type=str,
@@ -198,6 +196,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.output_set is None:
         parser.print_help()
         return 0
+    if getattr(args, "results_dir", None) is not None:
+        tbme_figures._set_tbme_results_dir(Path(args.results_dir))
     if args.output_set == "summary":
         return int(tbme_figures.summary_main(_summary_args(args)))
     if args.output_set == "overview":

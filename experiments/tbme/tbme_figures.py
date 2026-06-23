@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import math
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
@@ -30,6 +31,7 @@ from actdyn.utils.plotting import (
 
 from ..experiment_definitions import get_environment_preset, get_experiment_spec
 from ..experiment_io import (
+    experiment_env_slug,
     expected_loglinear_rate_hz,
     find_nested_metadata_paths,
     get_environment_preset_from_metadata,
@@ -43,10 +45,8 @@ from ..visualize import (
     plot_metric_over_steps,
     plot_neuron_tuning_curve_colormap,
 )
-from .run_tbme_experiments import configure_tbme_catalogs
+from .run_tbme_experiments import configure_tbme_catalogs, shared_tbme_group_suites
 from .tbme_io import (
-    dynamics_from_metadata,
-    embedding_at_step,
     load_planned_trace,
     planned_xy_cycle_for_step,
     read_embedding_trace,
@@ -64,7 +64,7 @@ _TBME_GRID_COLOR = "#DDD7CE"
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RESULTS_ROOT = _REPO_ROOT / "results"
-_TBME_RESULTS_DIR = _RESULTS_ROOT / "tbme"
+_TBME_RESULTS_DIR = _RESULTS_ROOT / "tbme" / "tracks"
 
 
 # GROUPS is evaluated at import time, so this constructor stays before GROUPS.
@@ -85,177 +85,33 @@ class SuiteRef:
     label: str
     session_root: Path
     slug: str
+    policy_ids: tuple[str, ...] = ()
+
+
+def _tbme_label(env_preset_id: str) -> str:
+    env_preset = get_environment_preset(env_preset_id)
+    label = str(getattr(env_preset, "system_label", None) or env_preset.system_id)
+    return label.replace("Asymmetric basin", "Gated Duffing")
 
 
 def _build_groups(results_dir: Path) -> dict[str, list[SuiteRef]]:
-    return {
-        "exp01_base": [
-            SuiteRef(
-                "exp01_duffing",
-                "Duffing",
-                _latest_session(results_dir / "exp01_base"),
-                "duffing",
-            ),
-            SuiteRef(
-                "exp01_damped_pendulum",
-                "Damped pendulum",
-                _latest_session(results_dir / "exp01_base"),
-                "damped_pendulum",
-            ),
-            SuiteRef(
-                "exp01_asymmetric_basin",
-                "Asymmetric basin",
-                _latest_session(results_dir / "exp01_base"),
-                "asymmetric_basin",
-            ),
-        ],
-        "exp02_hard": [
-            SuiteRef(
-                "exp02_hard_duffing",
-                "Duffing hard",
-                _latest_session(results_dir / "exp02_hard"),
-                "duffing_hard",
-            ),
-            SuiteRef(
-                "exp02_hard_asymmetric_basin",
-                "Asymmetric basin hard",
-                _latest_session(results_dir / "exp02_hard"),
-                "asymmetric_basin_hard",
-            ),
-            SuiteRef(
-                "exp02_hard_damped_pendulum",
-                "Damped pendulum hard",
-                _latest_session(results_dir / "exp02_hard"),
-                "damped_pendulum_hard",
-            ),
-        ],
-        "exp03_schedule": [
-            SuiteRef(
-                "exp03_schedule_duffing",
-                "Duffing",
-                _latest_session(results_dir / "exp03_schedule"),
-                "duffing",
-            ),
-            SuiteRef(
-                "exp03_schedule_damped_pendulum",
-                "Damped pendulum",
-                _latest_session(results_dir / "exp03_schedule"),
-                "damped_pendulum",
-            ),
-            SuiteRef(
-                "exp03_schedule_asymmetric_basin",
-                "Asymmetric basin",
-                _latest_session(results_dir / "exp03_schedule"),
-                "asymmetric_basin",
-            ),
-        ],
-        "exp04_mismatch": [
-            SuiteRef(
-                "exp04_duffing_parameter_mismatch",
-                "Duffing parameter mismatch",
-                _latest_session(results_dir / "exp04_mismatch"),
-                "duffing_parameter_mismatch",
-            ),
-            SuiteRef(
-                "exp04_asymmetric_basin_parameter_mismatch",
-                "Asymmetric basin parameter mismatch",
-                _latest_session(results_dir / "exp04_mismatch"),
-                "asymmetric_basin_parameter_mismatch",
-            ),
-        ],
-        "exp05_ablation": [
-            SuiteRef(
-                "exp05_asymmetric_basin_objective_ablation",
-                "Asymmetric basin objective ablation",
-                _latest_session(results_dir / "exp05_ablation"),
-                "asymmetric_basin_objective_ablation",
-            ),
-            SuiteRef(
-                "exp05_hard_asymmetric_basin_objective_ablation",
-                "Hard asymmetric basin objective ablation",
-                _latest_session(results_dir / "exp05_ablation"),
-                "hard_asymmetric_basin_objective_ablation",
-            ),
-        ],
-        "exp06_bottleneck": [
-            SuiteRef(
-                "exp06_asymmetric_basin_observation_bottleneck_mild",
-                "Asymmetric basin observation bottleneck mild",
-                _latest_session(results_dir / "exp06_bottleneck"),
-                "asymmetric_basin_observation_bottleneck_mild",
-            ),
-            SuiteRef(
-                "exp06_asymmetric_basin_observation_bottleneck_strong",
-                "Asymmetric basin observation bottleneck strong",
-                _latest_session(results_dir / "exp06_bottleneck"),
-                "asymmetric_basin_observation_bottleneck_strong",
-            ),
-            SuiteRef(
-                "exp06_asymmetric_basin_action_bottleneck_mild",
-                "Asymmetric basin action bottleneck mild",
-                _latest_session(results_dir / "exp06_bottleneck"),
-                "asymmetric_basin_action_bottleneck_mild",
-            ),
-            SuiteRef(
-                "exp06_asymmetric_basin_action_bottleneck_strong",
-                "Asymmetric basin action bottleneck strong",
-                _latest_session(results_dir / "exp06_bottleneck"),
-                "asymmetric_basin_action_bottleneck_strong",
-            ),
-        ],
-        "exp07_mismatch_stress": [
-            SuiteRef(
-                "exp07_duffing_observation_mismatch_mild",
-                "Duffing observation mismatch mild",
-                _latest_session(results_dir / "exp07_mismatch_stress"),
-                "duffing_observation_mismatch_mild",
-            ),
-            SuiteRef(
-                "exp07_duffing_observation_mismatch_strong",
-                "Duffing observation mismatch strong",
-                _latest_session(results_dir / "exp07_mismatch_stress"),
-                "duffing_observation_mismatch_strong",
-            ),
-            SuiteRef(
-                "exp07_asymmetric_basin_observation_mismatch_mild",
-                "Asymmetric basin observation mismatch mild",
-                _latest_session(results_dir / "exp07_mismatch_stress"),
-                "asymmetric_basin_observation_mismatch_mild",
-            ),
-            SuiteRef(
-                "exp07_asymmetric_basin_observation_mismatch_strong",
-                "Asymmetric basin observation mismatch strong",
-                _latest_session(results_dir / "exp07_mismatch_stress"),
-                "asymmetric_basin_observation_mismatch_strong",
-            ),
-        ],
-        "exp08_parameter_mismatch_stress": [
-            SuiteRef(
-                "exp08_duffing_parameter_mismatch_mild",
-                "Duffing parameter mismatch mild",
-                _latest_session(results_dir / "exp08_parameter_mismatch_stress"),
-                "duffing_parameter_mismatch_mild",
-            ),
-            SuiteRef(
-                "exp08_duffing_parameter_mismatch_strong",
-                "Duffing parameter mismatch strong",
-                _latest_session(results_dir / "exp08_parameter_mismatch_stress"),
-                "duffing_parameter_mismatch_strong",
-            ),
-            SuiteRef(
-                "exp08_asymmetric_basin_parameter_mismatch_mild",
-                "Asymmetric basin parameter mismatch mild",
-                _latest_session(results_dir / "exp08_parameter_mismatch_stress"),
-                "asymmetric_basin_parameter_mismatch_mild",
-            ),
-            SuiteRef(
-                "exp08_asymmetric_basin_parameter_mismatch_strong",
-                "Asymmetric basin parameter mismatch strong",
-                _latest_session(results_dir / "exp08_parameter_mismatch_stress"),
-                "asymmetric_basin_parameter_mismatch_strong",
-            ),
-        ],
-    }
+    session_root = _latest_session(results_dir)
+    groups: dict[str, list[SuiteRef]] = {}
+    for group_name, entries in shared_tbme_group_suites().items():
+        refs: list[SuiteRef] = []
+        for entry in entries:
+            env_preset_id = str(entry["env_preset_id"])
+            refs.append(
+                SuiteRef(
+                    str(entry["suite_id"]),
+                    _tbme_label(env_preset_id),
+                    session_root,
+                    experiment_env_slug(env_preset_id),
+                    tuple(str(policy_id) for policy_id in entry["policy_ids"]),
+                )
+            )
+        groups[group_name] = refs
+    return groups
 
 
 GROUPS: dict[str, list[SuiteRef]] = _build_groups(_TBME_RESULTS_DIR)
@@ -1026,7 +882,7 @@ def _summary_style_colorbar(cbar: Any) -> None:
 
 def _summary_existing_records(suite_dir: Path, policy_ids: Sequence[str]) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
-    track_root = suite_dir / "track"
+    track_root = suite_dir
     if not track_root.exists():
         return records
     for policy_id in policy_ids:
@@ -1151,36 +1007,43 @@ def _summary_write_figures(suite_dir: Path, figure_formats: Sequence[str]) -> li
         style_axis=_style_manuscript_axis,
     )
     records = _summary_existing_records(suite_dir, exp_spec.policy_ids)
-    plot_neuron_tuning_curve_colormap(
-        figures_dir,
-        records=records,
-        figure_formats=figure_formats,
-        get_environment_preset_from_metadata=get_environment_preset_from_metadata,
-        reconstruct_loglinear_rate_model=reconstruct_loglinear_rate_model,
-        expected_loglinear_rate_hz=expected_loglinear_rate_hz,
-        apply_style=_apply_style,
-        style_axis=_style_manuscript_axis,
-        style_colorbar=_summary_style_colorbar,
-        output_stem="neuron_tuning_curve_colormap",
-        axis_labels=("x", "v"),
-        colorbar_label="Total firing rate (Hz)",
-        title_template="Total firing rate (mean over {n_seeds} seeds)",
-    )
-    plot_information_colormap(
-        figures_dir,
-        records=records,
-        figure_formats=figure_formats,
-        get_environment_preset_from_metadata=get_environment_preset_from_metadata,
-        reconstruct_loglinear_rate_model=reconstruct_loglinear_rate_model,
-        expected_loglinear_rate_hz=expected_loglinear_rate_hz,
-        apply_style=_apply_style,
-        style_axis=_style_manuscript_axis,
-        style_colorbar=_summary_style_colorbar,
-        output_stem="I_z_t_colormap",
-        axis_labels=("x", "v"),
-        colorbar_label="log det(I_z)",
-        title_template="log det(I_z) (mean over {n_seeds} seeds)",
-    )
+    colormap_stems: list[str] = []
+    try:
+        plot_neuron_tuning_curve_colormap(
+            figures_dir,
+            records=records,
+            figure_formats=figure_formats,
+            get_environment_preset_from_metadata=get_environment_preset_from_metadata,
+            reconstruct_loglinear_rate_model=reconstruct_loglinear_rate_model,
+            expected_loglinear_rate_hz=expected_loglinear_rate_hz,
+            apply_style=_apply_style,
+            style_axis=_style_manuscript_axis,
+            style_colorbar=_summary_style_colorbar,
+            output_stem="neuron_tuning_curve_colormap",
+            axis_labels=("x", "v"),
+            colorbar_label="Total firing rate (Hz)",
+            title_template="Total firing rate (mean over {n_seeds} seeds)",
+        )
+        plot_information_colormap(
+            figures_dir,
+            records=records,
+            figure_formats=figure_formats,
+            get_environment_preset_from_metadata=get_environment_preset_from_metadata,
+            reconstruct_loglinear_rate_model=reconstruct_loglinear_rate_model,
+            expected_loglinear_rate_hz=expected_loglinear_rate_hz,
+            apply_style=_apply_style,
+            style_axis=_style_manuscript_axis,
+            style_colorbar=_summary_style_colorbar,
+            output_stem="I_z_t_colormap",
+            axis_labels=("x", "v"),
+            colorbar_label="log det(I_z)",
+            title_template="log det(I_z) (mean over {n_seeds} seeds)",
+        )
+        colormap_stems = ["neuron_tuning_curve_colormap", "I_z_t_colormap"]
+    except ImportError as exc:
+        if "neurofisherSNR" not in str(exc):
+            raise
+        print(f"Skipping log-linear colormaps for {suite_dir}: {exc}", file=sys.stderr)
     stems = [
         f"final_{value_prefix}_by_policy",
         f"{value_prefix}_over_steps",
@@ -1188,8 +1051,7 @@ def _summary_write_figures(suite_dir: Path, figure_formats: Sequence[str]) -> li
         "trajectory_r2_over_steps",
         "trajectory_r2_over_cpu_time",
         "parameter_covariance_trace_over_steps",
-        "neuron_tuning_curve_colormap",
-        "I_z_t_colormap",
+        *colormap_stems,
     ]
     return [
         figures_dir / f"{stem}{fmt}"
@@ -1294,7 +1156,7 @@ def _summary_trace_collect_policy_traces(
     *,
     max_seeds: int,
 ) -> dict[str, list[tuple[int, np.ndarray]]]:
-    track_dir = suite_dir / "track"
+    track_dir = suite_dir
     grouped: dict[str, list[tuple[int, np.ndarray]]] = {}
     if not track_dir.exists():
         return grouped
@@ -1326,7 +1188,7 @@ def _summary_trace_collect_policy_traces(
 
 
 def _summary_trace_reference_metadata(suite_dir: Path) -> dict[str, Any] | None:
-    candidates = sorted(suite_dir.glob("track/*/seed_*/repeat_*/run_metadata.json"))
+    candidates = sorted(suite_dir.glob("*/seed_*/repeat_*/run_metadata.json"))
     if not candidates:
         return None
     return load_json(candidates[0])
@@ -1410,7 +1272,7 @@ def _group_session_root(group_name: str, refs: Sequence[SuiteRef] | None = None)
 
 
 def _overview_dir(group_name: str, refs: Sequence[SuiteRef] | None = None) -> Path:
-    return _group_session_root(group_name, refs) / "overview"
+    return _group_session_root(group_name, refs) / "overview" / group_name
 
 
 def _overview_figures_dir(group_name: str, refs: Sequence[SuiteRef] | None = None) -> Path:
@@ -1434,11 +1296,14 @@ def _overview_aggregate_suite(ref: SuiteRef) -> list[dict[str, object]]:
     if not metrics_path.exists():
         raise FileNotFoundError(metrics_path)
     rows = read_trace_csv(metrics_path)
+    policy_filter = set(ref.policy_ids) if ref.policy_ids else None
     grouped: dict[str, dict[str, list[float]]] = {}
     for row in rows:
         if row.get("status") != "completed":
             continue
         pid = str(row["policy_id"])
+        if policy_filter is not None and pid not in policy_filter:
+            continue
         bucket = grouped.setdefault(pid, {"value": [], "r2": [], "runtime": []})
         if row.get("value_final_mean"):
             bucket["value"].append(float(row["value_final_mean"]))
@@ -1511,10 +1376,13 @@ def _overview_write_tex(path: Path, rows: list[dict[str, object]]) -> None:
 
 def _overview_threshold_rows_for_suite(ref: SuiteRef) -> list[dict[str, object]]:
     threshold_path = _overview_summary_dir(ref) / "trajectory_r2_thresholds.csv"
+    policy_filter = set(ref.policy_ids) if ref.policy_ids else None
     if threshold_path.exists():
         rows = read_trace_csv(threshold_path)
         out: list[dict[str, object]] = []
         for row in rows:
+            if policy_filter is not None and str(row["policy_id"]) not in policy_filter:
+                continue
             payload: dict[str, object] = {
                 "suite_id": ref.suite_id,
                 "suite_label": ref.label,
@@ -1540,6 +1408,8 @@ def _overview_threshold_rows_for_suite(ref: SuiteRef) -> list[dict[str, object]]
 
     out = []
     for policy_id, series in by_policy.items():
+        if policy_filter is not None and policy_id not in policy_filter:
+            continue
         series.sort(key=lambda row: int(float(row["step"])))
         payload = {
             "suite_id": ref.suite_id,
@@ -1676,14 +1546,14 @@ def _overview_apply_plot_style(plt: object) -> None:
 
 def _overview_plot_schedule_threshold_pareto() -> Path | None:
     schedule_rows: list[dict[str, object]] = []
-    for ref in GROUPS["exp03_schedule"]:
+    for ref in GROUPS["scheduling"]:
         schedule_rows.extend(
             row
             for row in _overview_threshold_rows_for_suite(ref)
             if str(row["policy_id"]).startswith("active_planning")
         )
     myopic_rows: list[dict[str, object]] = []
-    for ref in GROUPS["exp01_base"]:
+    for ref in GROUPS["simple_system_identification"]:
         myopic_rows.extend(
             row
             for row in _overview_threshold_rows_for_suite(ref)
@@ -1693,10 +1563,10 @@ def _overview_plot_schedule_threshold_pareto() -> Path | None:
     if not rows:
         return None
 
-    env_labels = [ref.label for ref in GROUPS["exp03_schedule"]]
+    env_labels = [ref.label for ref in GROUPS["scheduling"]]
     policy_ids = sorted({str(row["policy_id"]) for row in rows}, key=_policy_sort_key)
     out_path = (
-        _overview_figures_dir("exp03_schedule", GROUPS["exp03_schedule"])
+        _overview_figures_dir("scheduling", GROUPS["scheduling"])
         / "r2_threshold_pareto_step_cpu_by_environment.pdf"
     )
     return plot_schedule_threshold_pareto(
@@ -1856,10 +1726,10 @@ def group_overview_main(argv: list[str] | None = None) -> int:
         row_counts[group_name] = len(rows)
         written_by_group[group_name] = written
 
-    if "exp03_schedule" in groups:
+    if "scheduling" in groups:
         pareto_path = _overview_plot_schedule_threshold_pareto()
         if pareto_path is not None:
-            written_by_group.setdefault("exp03_schedule", []).append(pareto_path)
+            written_by_group.setdefault("scheduling", []).append(pareto_path)
 
     for group_name in groups:
         written = written_by_group.get(group_name, [])
@@ -1994,8 +1864,6 @@ _experiment_PLOTS = (
     "objective_ablation",
     "mismatch_dose_response",
     "true_dynamics_all",
-    "asymmetric_basin_mechanism",
-    "learned_vectorfield_snapshots",
     "per_parameter_recovery",
 )
 EXPERIMENT_PLOTS = _experiment_PLOTS
@@ -2003,31 +1871,25 @@ EXPERIMENT_PLOTS = _experiment_PLOTS
 _experiment_OBJECTIVE_DEFINITION_PLOTS = {"objective_ablation"}
 _experiment_REQUIRED_SUITES_BY_PLOT = {
     "bottleneck_sweep": (
-        ("exp01_base", "exp01_asymmetric_basin"),
-        ("exp06_bottleneck", "exp06_asymmetric_basin_observation_bottleneck_mild"),
-        ("exp06_bottleneck", "exp06_asymmetric_basin_observation_bottleneck_strong"),
-        ("exp06_bottleneck", "exp06_asymmetric_basin_action_bottleneck_mild"),
-        ("exp06_bottleneck", "exp06_asymmetric_basin_action_bottleneck_strong"),
+        ("simple_system_identification", "gated_duffing"),
+        ("observation_action_bottleneck", "gated_duffing_observation_bottleneck_mild"),
+        ("observation_action_bottleneck", "gated_duffing_observation_bottleneck_strong"),
+        ("observation_action_bottleneck", "gated_duffing_action_bottleneck_mild"),
+        ("observation_action_bottleneck", "gated_duffing_action_bottleneck_strong"),
     ),
     "objective_ablation": (
-        ("exp05_ablation", "exp05_asymmetric_basin_objective_ablation"),
-        ("exp05_ablation", "exp05_hard_asymmetric_basin_objective_ablation"),
+        ("objective_ablation", "gated_duffing"),
+        ("objective_ablation", "gated_duffing_hard"),
     ),
     "mismatch_dose_response": (
-        ("exp01_base", "exp01_duffing"),
-        ("exp01_base", "exp01_asymmetric_basin"),
-        ("exp04_mismatch", "exp04_duffing_parameter_mismatch"),
-        ("exp04_mismatch", "exp04_asymmetric_basin_parameter_mismatch"),
-        ("exp08_parameter_mismatch_stress", "exp08_duffing_parameter_mismatch_mild"),
-        ("exp08_parameter_mismatch_stress", "exp08_duffing_parameter_mismatch_strong"),
-        (
-            "exp08_parameter_mismatch_stress",
-            "exp08_asymmetric_basin_parameter_mismatch_mild",
-        ),
-        (
-            "exp08_parameter_mismatch_stress",
-            "exp08_asymmetric_basin_parameter_mismatch_strong",
-        ),
+        ("simple_system_identification", "duffing"),
+        ("simple_system_identification", "gated_duffing"),
+        ("model_mismatch", "duffing_parameter_mismatch"),
+        ("model_mismatch", "gated_duffing_parameter_mismatch"),
+        ("model_mismatch", "duffing_parameter_mismatch_mild"),
+        ("model_mismatch", "duffing_parameter_mismatch_strong"),
+        ("model_mismatch", "gated_duffing_parameter_mismatch_mild"),
+        ("model_mismatch", "gated_duffing_parameter_mismatch_strong"),
     ),
 }
 
@@ -2273,7 +2135,7 @@ def plot_mismatch_dose_response(
     dose_labels = ["None", "Mild", "Medium", "Strong"]
     x = np.arange(len(dose_order), dtype=np.float64)
     fig, axes = plt_module.subplots(1, 2, figsize=(7.1, 2.9), sharey=False)
-    for ax, family in zip(axes, ["Duffing", "Asymmetric basin"], strict=True):
+    for ax, family in zip(axes, ["Duffing", "Gated Duffing"], strict=True):
         family_rows = [row for row in rows if row["family"] == family]
         for policy_id in policy_ids:
             y = []
@@ -2350,266 +2212,6 @@ def plot_neutral_vector_field(
     )
 
 
-def plot_asymmetric_basin_mechanism(
-    output_path: Path,
-    *,
-    x_axis: np.ndarray,
-    y_axis: np.ndarray,
-    logdet_grid: np.ndarray,
-    info_threshold: float,
-    info_vmin: float,
-    info_vmax: float,
-    panel_min: float,
-    panel_max: float,
-    true_dynamics: Any,
-    traces_by_policy: Mapping[str, Sequence[np.ndarray]],
-    policy_ids: Sequence[str],
-    informative_fraction: Mapping[str, Sequence[float]],
-    coverage_fraction: Mapping[str, Sequence[float]],
-    final_r2: Mapping[str, Sequence[float]],
-    sem: Callable[[Sequence[float]], float],
-    short_policy_label: Callable[[str], str],
-    policy_color: Callable[[str], str],
-    apply_style: Callable[[Any], None] | None,
-    style_axis: Callable[..., None],
-    stroke_color: str,
-) -> Path:
-    """Plot asymmetric-basin mechanism diagnostics."""
-    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    from actdyn.utils.plotting import decorate_phase_space_axis
-    from matplotlib.lines import Line2D
-
-    fig, axes = plt_module.subplots(2, 2, figsize=(7.05, 5.75))
-    ax = axes[0, 0]
-    im = ax.imshow(
-        logdet_grid,
-        origin="lower",
-        extent=[x_axis[0], x_axis[-1], y_axis[0], y_axis[-1]],
-        cmap="magma",
-        vmin=info_vmin,
-        vmax=info_vmax,
-        interpolation="nearest",
-        aspect="equal",
-        alpha=0.72,
-    )
-    ax.contour(
-        x_axis,
-        y_axis,
-        logdet_grid,
-        levels=[info_threshold],
-        colors=[stroke_color],
-        linewidths=0.7,
-        linestyles="--",
-    )
-    plot_neutral_vector_field(
-        ax,
-        true_dynamics,
-        n_grid=28,
-        grid_lim=panel_max,
-        arrowsize=0.70,
-        stroke_color=stroke_color,
-    )
-    highlighted = [
-        "active_planning_u20_r20_h40",
-        "active_myopic",
-        "ensemble",
-        "flex",
-        "prbs",
-    ]
-    for policy_id in highlighted:
-        for traj in traces_by_policy.get(policy_id, [])[:8]:
-            ax.plot(traj[:, 0], traj[:, 1], color=policy_color(policy_id), linewidth=0.55, alpha=0.68)
-    cbar = fig.colorbar(im, ax=ax, fraction=0.047, pad=0.02)
-    cbar.set_label("mean log det(I_z)")
-    cbar.outline.set_linewidth(0.45)
-    decorate_phase_space_axis(
-        ax,
-        xlim=(panel_min, panel_max),
-        ylim=(panel_min, panel_max),
-        title="A. Hard asymmetric-basin information and vector field",
-        grid_alpha=0.20,
-    )
-    style_axis(ax)
-    ax.legend(
-        handles=[
-            Line2D([0], [0], color=policy_color(policy_id), linewidth=0.9, label=short_policy_label(policy_id))
-            for policy_id in highlighted
-        ],
-        loc="lower right",
-        fontsize=5.8,
-        frameon=True,
-        framealpha=0.78,
-        borderpad=0.25,
-    )
-
-    panels = [
-        (axes[0, 1], informative_fraction, "B. Occupancy of high-information states", "Fraction of samples"),
-        (axes[1, 0], coverage_fraction, "C. State-space coverage", "Visited-bin fraction"),
-        (axes[1, 1], final_r2, "D. Endpoint prediction", "Final prediction R2"),
-    ]
-    labels = [short_policy_label(policy_id) for policy_id in policy_ids]
-    x = np.arange(len(policy_ids), dtype=np.float64)
-    for ax_i, data, title, ylabel in panels:
-        means = []
-        errors = []
-        for policy_id in policy_ids:
-            vals = [float(v) for v in data.get(policy_id, []) if math.isfinite(float(v))]
-            means.append(float(np.mean(vals)) if vals else np.nan)
-            errors.append(sem(vals))
-        ax_i.bar(
-            x,
-            means,
-            yerr=errors,
-            color=[policy_color(policy_id) for policy_id in policy_ids],
-            edgecolor=stroke_color,
-            linewidth=0.45,
-            capsize=2.3,
-            error_kw={"elinewidth": 0.55, "ecolor": stroke_color, "capthick": 0.55},
-        )
-        ax_i.set_xticks(x)
-        ax_i.set_xticklabels(labels, rotation=25, ha="right")
-        ax_i.set_ylabel(ylabel)
-        ax_i.set_title(title)
-        style_axis(ax_i, grid_axis="y")
-    axes[1, 1].set_ylim(-0.05, 1.05)
-    fig.suptitle(
-        "Hard asymmetric-basin mechanism: information geometry, coverage, and prediction",
-        y=0.995,
-    )
-    fig.tight_layout()
-    return save_figure(fig, output_path, plt_module=plt_module)
-
-
-def plot_learned_vectorfield_snapshots(
-    output_path: Path,
-    *,
-    seed: int,
-    row_ids: Sequence[str],
-    checkpoints: Sequence[int],
-    dynamics_by_cell: Mapping[tuple[str, int], Any],
-    traces_by_cell: Mapping[tuple[str, int], np.ndarray],
-    predictive_r2_by_cell: Mapping[tuple[str, int], float | None],
-    initial_state: np.ndarray,
-    plot_abs: float,
-    short_policy_label: Callable[[str], str],
-    policy_color: Callable[[str], str],
-    apply_style: Callable[[Any], None] | None,
-    stroke_color: str,
-    neutral_fill: str,
-    grid_color: str,
-) -> Path:
-    """Plot true and learned vector-field snapshots for a shared seed.
-
-    ``initial_state`` is the shared latent initial condition with shape ``(2,)``
-    or a longer embedding whose first two entries are the plotted phase-space
-    coordinates.
-    """
-    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    z0 = np.asarray(initial_state, dtype=np.float32).reshape(-1)
-    fig, axes = plt_module.subplots(
-        len(row_ids), len(checkpoints), figsize=(7.25, 8.85), sharex=True, sharey=True
-    )
-    for row_idx, row_id in enumerate(row_ids):
-        color = stroke_color if row_id == "true" else policy_color(row_id)
-        for col_idx, checkpoint in enumerate(checkpoints):
-            ax = axes[row_idx, col_idx]
-            dynamics = dynamics_by_cell[(row_id, int(checkpoint))]
-            plot_neutral_vector_field(
-                ax,
-                dynamics,
-                grid_lim=plot_abs,
-                n_grid=22,
-                arrowsize=0.58,
-                stroke_color=stroke_color,
-            )
-            traj = traces_by_cell.get((row_id, int(checkpoint)), np.empty((0, 2), dtype=np.float32))
-            if traj.size:
-                ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=0.8, alpha=0.92, zorder=4)
-                ax.scatter(
-                    [traj[-1, 0]],
-                    [traj[-1, 1]],
-                    s=13,
-                    color=color,
-                    edgecolor=stroke_color,
-                    linewidth=0.35,
-                    zorder=5,
-                )
-            if z0.size >= 2 and np.isfinite(z0[:2]).all():
-                ax.scatter(
-                    [z0[0]],
-                    [z0[1]],
-                    s=18,
-                    color=neutral_fill,
-                    edgecolor=stroke_color,
-                    linewidth=0.45,
-                    zorder=6,
-                )
-                if row_idx == 0 and col_idx == 0:
-                    ax.annotate(
-                        r"$z_0$",
-                        (z0[0], z0[1]),
-                        xytext=(3.0, 3.0),
-                        textcoords="offset points",
-                        fontsize=6.2,
-                        color=stroke_color,
-                    )
-            predictive_r2 = predictive_r2_by_cell.get((row_id, int(checkpoint)))
-            r2_label = (
-                r"($R^2$ = --)"
-                if predictive_r2 is None
-                else rf"($R^2$ = {float(predictive_r2):.2f})"
-            )
-            ax.text(
-                0.04,
-                0.94,
-                r2_label,
-                transform=ax.transAxes,
-                ha="left",
-                va="top",
-                fontsize=5.8,
-                color=stroke_color,
-                bbox={
-                    "boxstyle": "square,pad=0.16",
-                    "facecolor": "white",
-                    "edgecolor": stroke_color,
-                    "linewidth": 0.35,
-                    "alpha": 0.82,
-                },
-                zorder=8,
-            )
-            ax.set_xlim(-plot_abs, plot_abs)
-            ax.set_ylim(-plot_abs, plot_abs)
-            ax.set_aspect("equal", adjustable="box")
-            ax.grid(color=grid_color, linewidth=0.28, alpha=0.25)
-            for spine in ax.spines.values():
-                spine.set_color(stroke_color)
-                spine.set_linewidth(0.48)
-            ax.tick_params(width=0.4, length=1.6, labelsize=5.8)
-            if row_idx == 0:
-                ax.set_title(f"step {checkpoint}", fontsize=7.4, pad=2.0)
-            ylabel = "True" if row_id == "true" else short_policy_label(row_id)
-            ax.set_ylabel(ylabel if col_idx == 0 else "", fontsize=7.2)
-            ax.set_xlabel("x" if row_idx == len(row_ids) - 1 else "")
-            if col_idx > 0:
-                ax.tick_params(labelleft=False)
-            if row_idx < len(row_ids) - 1:
-                ax.tick_params(labelbottom=False)
-    fig.suptitle(f"Hard asymmetric-basin true and learned vector fields, seed {seed}", y=0.995)
-    fig.subplots_adjust(
-        left=0.06,
-        right=0.995,
-        bottom=0.045,
-        top=0.955,
-        wspace=0.02,
-        hspace=0.24,
-    )
-    return save_figure(fig, output_path, plt_module=plt_module)
-
-
 def plot_per_parameter_recovery(
     output_path: Path,
     *,
@@ -2623,7 +2225,7 @@ def plot_per_parameter_recovery(
     style_axis: Callable[..., None],
     stroke_color: str,
 ) -> Path:
-    """Plot per-parameter recovery traces for asymmetric-basin dynamics."""
+    """Plot per-parameter recovery traces for gated-Duffing dynamics."""
     plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
@@ -2662,7 +2264,7 @@ def plot_per_parameter_recovery(
     axes[1, 1].set_xlabel("Environment step")
     handles, labels = axes[0, 0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="upper center", ncol=5, fontsize=6.4, bbox_to_anchor=(0.5, 1.015))
-    fig.suptitle("Asymmetric-basin per-parameter recovery", y=1.06)
+    fig.suptitle("Gated-Duffing per-parameter recovery", y=1.06)
     fig.tight_layout()
     return save_figure(fig, output_path, plt_module=plt_module)
 
@@ -2791,40 +2393,40 @@ def _experiment_r2_threshold_times(
 def _experiment_plot_bottleneck_sweep() -> list[Path]:
     sources = [
         _ExperimentSuiteSource(
-            "exp01_asymmetric_basin",
+            "gated_duffing",
             "Nominal",
-            _suite_dir("exp01_base", "exp01_asymmetric_basin"),
+            _suite_dir("simple_system_identification", "gated_duffing"),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_observation_bottleneck_mild",
+            "gated_duffing_observation_bottleneck_mild",
             "Obs. mild",
             _suite_dir(
-                "exp06_bottleneck",
-                "exp06_asymmetric_basin_observation_bottleneck_mild",
+                "observation_action_bottleneck",
+                "gated_duffing_observation_bottleneck_mild",
             ),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_observation_bottleneck_strong",
+            "gated_duffing_observation_bottleneck_strong",
             "Obs. strong",
             _suite_dir(
-                "exp06_bottleneck",
-                "exp06_asymmetric_basin_observation_bottleneck_strong",
+                "observation_action_bottleneck",
+                "gated_duffing_observation_bottleneck_strong",
             ),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_action_bottleneck_mild",
+            "gated_duffing_action_bottleneck_mild",
             "Action mild",
             _suite_dir(
-                "exp06_bottleneck",
-                "exp06_asymmetric_basin_action_bottleneck_mild",
+                "observation_action_bottleneck",
+                "gated_duffing_action_bottleneck_mild",
             ),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_action_bottleneck_strong",
+            "gated_duffing_action_bottleneck_strong",
             "Action strong",
             _suite_dir(
-                "exp06_bottleneck",
-                "exp06_asymmetric_basin_action_bottleneck_strong",
+                "observation_action_bottleneck",
+                "gated_duffing_action_bottleneck_strong",
             ),
         ),
     ]
@@ -2885,20 +2487,14 @@ def _experiment_plot_bottleneck_sweep() -> list[Path]:
 def _experiment_objective_sources() -> list[_ExperimentSuiteSource]:
     return [
         _ExperimentSuiteSource(
-            "exp05_asymmetric_basin_objective_ablation",
-            "Nominal asymmetric basin",
-            _suite_dir(
-                "exp05_ablation",
-                "exp05_asymmetric_basin_objective_ablation",
-            ),
+            "gated_duffing",
+            "Nominal gated Duffing",
+            _suite_dir("objective_ablation", "gated_duffing"),
         ),
         _ExperimentSuiteSource(
-            "exp05_hard_asymmetric_basin_objective_ablation",
-            "Hard asymmetric basin",
-            _suite_dir(
-                "exp05_ablation",
-                "exp05_hard_asymmetric_basin_objective_ablation",
-            ),
+            "gated_duffing_hard",
+            "Hard gated Duffing",
+            _suite_dir("objective_ablation", "gated_duffing_hard"),
         ),
     ]
 
@@ -3029,7 +2625,7 @@ def _experiment_plot_objective_ablation() -> list[Path]:
     figure_paths = _experiment_artifact_paths(
         suite_dirs,
         subdir="figures",
-        filename="tbme_experiment_objective_ablation_asymmetric_basin.pdf",
+        filename="tbme_experiment_objective_ablation_gated_duffing.pdf",
     )
     figure_path = plot_objective_ablation(
         figure_paths[0],
@@ -3050,72 +2646,60 @@ def _experiment_plot_objective_ablation() -> list[Path]:
 def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
     return [
         _ExperimentSuiteSource(
-            "exp01_duffing",
+            "duffing",
             "None",
-            _suite_dir("exp01_base", "exp01_duffing"),
+            _suite_dir("simple_system_identification", "duffing"),
             dose="none",
             family="Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp08_duffing_parameter_mismatch_mild",
+            "duffing_parameter_mismatch_mild",
             "Mild",
-            _suite_dir(
-                "exp08_parameter_mismatch_stress",
-                "exp08_duffing_parameter_mismatch_mild",
-            ),
+            _suite_dir("model_mismatch", "duffing_parameter_mismatch_mild"),
             dose="mild",
             family="Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp04_duffing_parameter_mismatch",
+            "duffing_parameter_mismatch",
             "Medium",
-            _suite_dir("exp04_mismatch", "exp04_duffing_parameter_mismatch"),
+            _suite_dir("model_mismatch", "duffing_parameter_mismatch"),
             dose="medium",
             family="Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp08_duffing_parameter_mismatch_strong",
+            "duffing_parameter_mismatch_strong",
             "Strong",
-            _suite_dir(
-                "exp08_parameter_mismatch_stress",
-                "exp08_duffing_parameter_mismatch_strong",
-            ),
+            _suite_dir("model_mismatch", "duffing_parameter_mismatch_strong"),
             dose="strong",
             family="Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp01_asymmetric_basin",
+            "gated_duffing",
             "None",
-            _suite_dir("exp01_base", "exp01_asymmetric_basin"),
+            _suite_dir("simple_system_identification", "gated_duffing"),
             dose="none",
-            family="Asymmetric basin",
+            family="Gated Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp08_asymmetric_basin_parameter_mismatch_mild",
+            "gated_duffing_parameter_mismatch_mild",
             "Mild",
-            _suite_dir(
-                "exp08_parameter_mismatch_stress",
-                "exp08_asymmetric_basin_parameter_mismatch_mild",
-            ),
+            _suite_dir("model_mismatch", "gated_duffing_parameter_mismatch_mild"),
             dose="mild",
-            family="Asymmetric basin",
+            family="Gated Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp04_asymmetric_basin_parameter_mismatch",
+            "gated_duffing_parameter_mismatch",
             "Medium",
-            _suite_dir("exp04_mismatch", "exp04_asymmetric_basin_parameter_mismatch"),
+            _suite_dir("model_mismatch", "gated_duffing_parameter_mismatch"),
             dose="medium",
-            family="Asymmetric basin",
+            family="Gated Duffing",
         ),
         _ExperimentSuiteSource(
-            "exp08_asymmetric_basin_parameter_mismatch_strong",
+            "gated_duffing_parameter_mismatch_strong",
             "Strong",
-            _suite_dir(
-                "exp08_parameter_mismatch_stress",
-                "exp08_asymmetric_basin_parameter_mismatch_strong",
-            ),
+            _suite_dir("model_mismatch", "gated_duffing_parameter_mismatch_strong"),
             dose="strong",
-            family="Asymmetric basin",
+            family="Gated Duffing",
         ),
     ]
 
@@ -3194,7 +2778,7 @@ def _experiment_collect_records(
 ) -> list[_ExperimentRunRecord]:
     records: list[_ExperimentRunRecord] = []
     for policy_id in sorted(policy_ids, key=_policy_sort_key):
-        policy_dir = suite_dir / "track" / policy_id
+        policy_dir = suite_dir / policy_id
         if not policy_dir.exists():
             continue
         seed_dirs: list[tuple[int, Path]] = []
@@ -3429,7 +3013,7 @@ def _experiment_plot_true_dynamics_all(suite_dirs: Sequence[Path]) -> list[Path]
     panel_specs = [
         ("tbme_duffing", "Duffing"),
         ("tbme_damped_pendulum", "Damped pendulum"),
-        ("tbme_asymmetric_basin", "Asymmetric basin"),
+        ("tbme_asymmetric_basin", "Gated Duffing"),
     ]
     grid_lim = 6.0
     fields = []
@@ -3536,269 +3120,6 @@ def _experiment_plot_true_dynamics_all(suite_dirs: Sequence[Path]) -> list[Path]
     return _experiment_copy_artifact(figure_path, figure_paths)
 
 
-def _experiment_plot_asymmetric_basin_mechanism(max_seeds: int) -> list[Path]:
-    suite_dir = _suite_dir("exp02_hard", "exp02_hard_asymmetric_basin")
-    policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
-    records = _experiment_collect_records(suite_dir, policy_ids, max_seeds=max_seeds)
-    if not records:
-        raise RuntimeError(f"No records found under {suite_dir}")
-    ref_metadata = records[0].metadata
-    by_policy: dict[str, list[np.ndarray]] = {policy_id: [] for policy_id in policy_ids}
-    record_traces: list[tuple[_ExperimentRunRecord, np.ndarray]] = []
-    env_preset = get_environment_preset_from_metadata(ref_metadata)
-    panel_abs = max(float(env_preset.resolved_plot_limit()), 6.0)
-    boundary_radius = _safe_float(ref_metadata.get("boundary_radius"))
-    if boundary_radius is None:
-        boundary_radius = _safe_float(getattr(env_preset, "boundary_radius", None))
-    if boundary_radius is not None:
-        panel_abs = max(panel_abs, boundary_radius)
-    for record in records:
-        traj = _experiment_load_xy_trace(record)
-        if traj.size == 0:
-            continue
-        by_policy.setdefault(record.policy_id, []).append(traj)
-        record_traces.append((record, traj))
-        finite = traj[np.isfinite(traj).all(axis=1)]
-        if finite.size:
-            panel_abs = max(panel_abs, 1.04 * float(np.max(np.abs(finite[:, :2]))))
-    panel_min, panel_max = -panel_abs, panel_abs
-    information_refs = _experiment_information_reference_records(records)
-    x_axis, y_axis, logdet_grid = _experiment_make_mean_information_grid(
-        information_refs,
-        axis_min=panel_min,
-        axis_max=panel_max,
-    )
-    finite_grid = logdet_grid[np.isfinite(logdet_grid)]
-    info_threshold = float(np.percentile(finite_grid, 75.0))
-    info_vmin = float(np.percentile(finite_grid, 1.0))
-    info_vmax = float(np.percentile(finite_grid, 99.0))
-    if info_vmax <= info_vmin:
-        info_vmax = info_vmin + 1e-6
-
-    informative_fraction: dict[str, list[float]] = {policy_id: [] for policy_id in policy_ids}
-    coverage_fraction: dict[str, list[float]] = {policy_id: [] for policy_id in policy_ids}
-    threshold_by_model: dict[tuple[Any, ...], float] = {}
-    bins = 48
-    for record, traj in record_traces:
-        values = _experiment_logdet_information(traj[:, :2], metadata=record.metadata)
-        finite = values[np.isfinite(values)]
-        if finite.size:
-            model_key = _experiment_observation_model_key(record.metadata)
-            if model_key not in threshold_by_model:
-                _x, _y, record_grid = _experiment_make_information_grid(
-                    record.metadata,
-                    axis_min=panel_min,
-                    axis_max=panel_max,
-                )
-                record_finite = record_grid[np.isfinite(record_grid)]
-                threshold_by_model[model_key] = (
-                    float(np.percentile(record_finite, 75.0))
-                    if record_finite.size
-                    else info_threshold
-                )
-            informative_fraction[record.policy_id].append(
-                float(np.mean(finite >= threshold_by_model[model_key]))
-            )
-        hist, _x_edges, _y_edges = np.histogram2d(
-            traj[:, 0],
-            traj[:, 1],
-            bins=bins,
-            range=[[panel_min, panel_max], [panel_min, panel_max]],
-        )
-        coverage_fraction[record.policy_id].append(float(np.count_nonzero(hist) / hist.size))
-
-    metrics = read_trace_csv(suite_dir / "summary" / "metrics.csv")
-    final_r2: dict[str, list[float]] = {policy_id: [] for policy_id in policy_ids}
-    for row in metrics:
-        policy_id = str(row.get("policy_id", ""))
-        if policy_id not in final_r2 or row.get("status") != "completed":
-            continue
-        value = _safe_float(row.get("trajectory_r2_final_mean"))
-        if value is not None:
-            final_r2[policy_id].append(value)
-
-    figure_paths = _experiment_artifact_paths(
-        [suite_dir],
-        subdir="figures",
-        filename="tbme_experiment_asymmetric_basin_mechanism.pdf",
-    )
-    figure_path = plot_asymmetric_basin_mechanism(
-        figure_paths[0],
-        x_axis=x_axis,
-        y_axis=y_axis,
-        logdet_grid=logdet_grid,
-        info_threshold=info_threshold,
-        info_vmin=info_vmin,
-        info_vmax=info_vmax,
-        panel_min=panel_min,
-        panel_max=panel_max,
-        true_dynamics=true_dynamics_from_metadata(ref_metadata),
-        traces_by_policy=by_policy,
-        policy_ids=policy_ids,
-        informative_fraction=informative_fraction,
-        coverage_fraction=coverage_fraction,
-        final_r2=final_r2,
-        sem=_sem,
-        short_policy_label=_experiment_short_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        style_axis=_style_manuscript_axis,
-        stroke_color=_experiment_C_STROKE,
-    )
-    return _experiment_copy_artifact(figure_path, figure_paths)
-
-
-def _experiment_common_seed(
-    records: Sequence[_ExperimentRunRecord],
-    policy_ids: Sequence[str],
-) -> int:
-    seeds_by_policy: dict[str, set[int]] = {policy_id: set() for policy_id in policy_ids}
-    for record in records:
-        if record.metadata.get("status") != "completed":
-            continue
-        if record.policy_id in seeds_by_policy:
-            seeds_by_policy[record.policy_id].add(int(record.seed))
-    common = set.intersection(*(seeds for seeds in seeds_by_policy.values() if seeds))
-    if not common:
-        raise RuntimeError("No completed seed is shared by all requested policies")
-    return min(common)
-
-
-def _experiment_embedding_at_step(record: _ExperimentRunRecord, step: int) -> np.ndarray:
-    path = _experiment_trace_path(
-        record, "embedding_estimate_trace_path", "embedding_estimate_trace.csv"
-    )
-    embedding_dim = int(record.metadata.get("embedding_dim", 0) or 0)
-    return embedding_at_step(
-        path,
-        step,
-        embedding_dim=embedding_dim if embedding_dim > 0 else None,
-        run_dir=record.run_dir,
-    )
-
-
-def _experiment_trajectory_r2_at_step(
-    record: _ExperimentRunRecord,
-    step: int,
-) -> float | None:
-    path = _experiment_trace_path(record, "trajectory_r2_trace_path", "trajectory_r2_trace.csv")
-    if not path.exists():
-        return None
-    selected_value: float | None = None
-    selected_step = -math.inf
-    fallback_value: float | None = None
-    fallback_step = math.inf
-    for row in read_trace_csv(path):
-        row_step = _safe_float(row.get("step"))
-        value = _safe_float(row.get("trajectory_r2"))
-        if row_step is None or value is None:
-            continue
-        if row_step <= step and row_step >= selected_step:
-            selected_value = value
-            selected_step = row_step
-        if row_step >= step and row_step <= fallback_step:
-            fallback_value = value
-            fallback_step = row_step
-    return selected_value if selected_value is not None else fallback_value
-
-
-def _experiment_xy_trace_until(record: _ExperimentRunRecord, step: int) -> np.ndarray:
-    path = _experiment_trace_path(record, "state_action_trace_path", "state_action_trace.csv")
-    return _read_xy_trace(path, max_step=step)
-
-
-def _experiment_plot_learned_vectorfield_snapshots(max_seeds: int) -> list[Path]:
-    suite_dir = _suite_dir("exp02_hard", "exp02_hard_asymmetric_basin")
-    policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
-    checkpoints = [0, 250, 500, 1000, 2000]
-    row_ids = ["true", *policy_ids]
-    records = _experiment_collect_records(suite_dir, policy_ids, max_seeds=max_seeds)
-    if not records:
-        raise RuntimeError(f"No records found under {suite_dir}")
-    seed = _experiment_common_seed(records, policy_ids)
-    record_by_policy: dict[str, _ExperimentRunRecord] = {}
-    for policy_id in policy_ids:
-        matches = [
-            record
-            for record in records
-            if record.policy_id == policy_id
-            and int(record.seed) == seed
-            and record.metadata.get("status") == "completed"
-        ]
-        if not matches:
-            raise RuntimeError(f"Missing completed seed {seed} for {policy_id}")
-        record_by_policy[policy_id] = matches[0]
-
-    ref_metadata = record_by_policy[policy_ids[0]].metadata
-    env_preset = get_environment_preset_from_metadata(ref_metadata)
-    initial_state = _experiment_xy_trace_until(record_by_policy[policy_ids[0]], 0)
-    if initial_state.size == 0:
-        initial_state = np.asarray(ref_metadata.get("initial_state_true", []), dtype=np.float32)
-        if initial_state.size == 0:
-            initial_state = np.asarray(env_preset.sample_initial_state(seed), dtype=np.float32)
-    else:
-        initial_state = initial_state[0]
-    plot_abs = max(float(env_preset.resolved_plot_limit()), 6.0)
-    boundary_radius = _safe_float(ref_metadata.get("boundary_radius"))
-    if boundary_radius is None:
-        boundary_radius = _safe_float(getattr(env_preset, "boundary_radius", None))
-    if boundary_radius is not None:
-        plot_abs = max(plot_abs, boundary_radius)
-    for record in record_by_policy.values():
-        traj = _experiment_xy_trace_until(record, max(checkpoints))
-        finite = traj[np.isfinite(traj).all(axis=1)]
-        if finite.size:
-            plot_abs = max(plot_abs, 1.04 * float(np.max(np.abs(finite[:, :2]))))
-
-    true_dynamics = true_dynamics_from_metadata(ref_metadata)
-    dynamics_by_cell: dict[tuple[str, int], Any] = {}
-    traces_by_cell: dict[tuple[str, int], np.ndarray] = {}
-    predictive_r2_by_cell: dict[tuple[str, int], float | None] = {}
-    for row_id in row_ids:
-        record = None if row_id == "true" else record_by_policy[row_id]
-        for checkpoint in checkpoints:
-            if row_id == "true":
-                dynamics = true_dynamics
-                predictive_r2_by_cell[(row_id, checkpoint)] = 1.0
-            else:
-                assert record is not None
-                theta = _experiment_embedding_at_step(record, checkpoint)
-                dynamics = dynamics_from_metadata(record.metadata, theta, estimator=True)
-                predictive_r2_by_cell[(row_id, checkpoint)] = _experiment_trajectory_r2_at_step(
-                    record,
-                    checkpoint,
-                )
-            dynamics_by_cell[(row_id, checkpoint)] = dynamics
-            traces_by_cell[(row_id, checkpoint)] = (
-                np.empty((0, 2), dtype=np.float32)
-                if record is None
-                else _experiment_xy_trace_until(record, checkpoint)
-            )
-    figure_paths = _experiment_artifact_paths(
-        [suite_dir],
-        subdir="figures",
-        filename="tbme_experiment_asymmetric_basin_learned_vectorfields.pdf",
-    )
-    figure_path = plot_learned_vectorfield_snapshots(
-        figure_paths[0],
-        seed=seed,
-        row_ids=row_ids,
-        checkpoints=checkpoints,
-        dynamics_by_cell=dynamics_by_cell,
-        traces_by_cell=traces_by_cell,
-        predictive_r2_by_cell=predictive_r2_by_cell,
-        initial_state=initial_state,
-        plot_abs=plot_abs,
-        short_policy_label=_experiment_short_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        stroke_color=_experiment_C_STROKE,
-        neutral_fill=_experiment_C_NEUTRAL_FILL,
-        grid_color=_experiment_C_GRID,
-    )
-    return _experiment_copy_artifact(figure_path, figure_paths)
-
-
 def _experiment_aggregate_parameter_traces(
     suite_dir: Path,
     policy_ids: Sequence[str],
@@ -3809,8 +3130,17 @@ def _experiment_aggregate_parameter_traces(
     records = _experiment_collect_records(suite_dir, policy_ids, max_seeds=max_seeds)
     if not records:
         raise RuntimeError(f"No records found under {suite_dir}")
-    true_params = np.asarray(records[0].metadata.get("embedding_true", []), dtype=np.float64)
+    metadata = records[0].metadata
+    true_params = np.asarray(
+        metadata.get("embedding_true")
+        or metadata.get("true_embedding")
+        or metadata.get("true_params_full")
+        or [],
+        dtype=np.float64,
+    )
     traces: dict[str, dict[int, list[np.ndarray]]] = {policy_id: {} for policy_id in policy_ids}
+    if true_params.size == 0:
+        return traces, true_params
     for record in records:
         path = _experiment_trace_path(
             record, "embedding_estimate_trace_path", "embedding_estimate_trace.csv"
@@ -3829,7 +3159,7 @@ def _experiment_aggregate_parameter_traces(
 
 
 def _experiment_plot_per_parameter_recovery(max_seeds: int) -> list[Path]:
-    suite_dir = _suite_dir("exp01_base", "exp01_asymmetric_basin")
+    suite_dir = _suite_dir("simple_system_identification", "gated_duffing")
     policy_ids = ["active_planning_u20_r20_h40", "active_myopic", "ensemble", "flex", "prbs"]
     traces, true_params = _experiment_aggregate_parameter_traces(
         suite_dir,
@@ -3837,10 +3167,12 @@ def _experiment_plot_per_parameter_recovery(max_seeds: int) -> list[Path]:
         max_seeds=max_seeds,
         stride=20,
     )
+    if true_params.size < 4:
+        return []
     figure_paths = _experiment_artifact_paths(
         [suite_dir],
         subdir="figures",
-        filename="tbme_experiment_asymmetric_basin_parameter_recovery.pdf",
+        filename="tbme_experiment_gated_duffing_parameter_recovery.pdf",
     )
     figure_path = plot_per_parameter_recovery(
         figure_paths[0],
@@ -3889,12 +3221,6 @@ def experiment_main(argv: list[str] | None = None) -> int:
     }
     figure_only_plotters = {
         "true_dynamics_all": lambda: _experiment_plot_true_dynamics_all(output_suite_dirs),
-        "asymmetric_basin_mechanism": lambda: _experiment_plot_asymmetric_basin_mechanism(
-            max_seeds=max_seeds
-        ),
-        "learned_vectorfield_snapshots": lambda: _experiment_plot_learned_vectorfield_snapshots(
-            max_seeds=max_seeds
-        ),
         "per_parameter_recovery": lambda: _experiment_plot_per_parameter_recovery(
             max_seeds=max_seeds
         ),

@@ -13,6 +13,8 @@ from actdyn.utils.figure_io import sample_sem
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from experiment_io import (
+        experiment_policy_seed_dir,
+        experiment_summary_dir,
         find_nested_metadata_paths,
         get_environment_preset_from_metadata,
         load_json,
@@ -25,6 +27,8 @@ if __package__ in {None, ""}:
     from experiment_definitions import get_experiment_spec, list_experiment_ids
 else:
     from .experiment_io import (
+        experiment_policy_seed_dir,
+        experiment_summary_dir,
         find_nested_metadata_paths,
         get_environment_preset_from_metadata,
         load_json,
@@ -53,11 +57,12 @@ def collect_track_records(
     exp_id: str,
     seeds: list[int],
     policy_filter: set[str] | None = None,
+    *,
+    layout: str = "legacy",
 ) -> tuple[list[dict[str, Any]], list[tuple[str, int]]]:
     exp_spec = get_experiment_spec(exp_id)
     records: list[dict[str, Any]] = []
     missing: list[tuple[str, int]] = []
-    track_root = base_dir / exp_id / "track"
     selected_policy_ids = [
         policy_id
         for policy_id in exp_spec.policy_ids
@@ -65,7 +70,13 @@ def collect_track_records(
     ]
     for policy_id in selected_policy_ids:
         for seed in seeds:
-            seed_dir = track_root / policy_id / f"seed_{seed}"
+            seed_dir = experiment_policy_seed_dir(
+                base_dir,
+                exp_spec,
+                policy_id,
+                seed,
+                layout=layout,
+            )
             if not seed_dir.exists():
                 missing.append((policy_id, seed))
                 continue
@@ -580,6 +591,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary-dir", type=str, default=None)
     parser.add_argument("--policy-ids", type=str, default=None)
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
+    parser.add_argument("--path-layout", choices=["legacy", "tbme_tracks"], default="legacy")
     parser.add_argument("--fail-on-missing", action="store_true")
     parser.add_argument(
         "--recompute-trajectory-r2",
@@ -595,7 +607,9 @@ def main(argv: list[str] | None = None) -> int:
     exp_spec = get_experiment_spec(str(args.exp_id))
     base_dir = resolve_session_root(Path(args.base_dir), create=False, exp_ids=[exp_spec.exp_id])
     summary_dir = (
-        Path(args.summary_dir) if args.summary_dir else base_dir / exp_spec.exp_id / "summary"
+        Path(args.summary_dir)
+        if args.summary_dir
+        else experiment_summary_dir(base_dir, exp_spec, layout=str(args.path_layout))
     )
     seeds = parse_csv_ints(args.seeds) or [0, 10, 20, 30]
     policy_filter = set(parse_csv_list(args.policy_ids)) or None
@@ -606,7 +620,11 @@ def main(argv: list[str] | None = None) -> int:
                 f"Unknown policy ids for {exp_spec.exp_id}: {', '.join(unknown_policy_ids)}"
             )
     records, missing = collect_track_records(
-        base_dir, exp_spec.exp_id, seeds, policy_filter=policy_filter
+        base_dir,
+        exp_spec.exp_id,
+        seeds,
+        policy_filter=policy_filter,
+        layout=str(args.path_layout),
     )
     if args.recompute_trajectory_r2:
         refreshed = recompute_trajectory_r2_traces(records, exp_spec=exp_spec)

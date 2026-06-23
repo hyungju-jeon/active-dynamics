@@ -24,6 +24,25 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from actdyn.utils.experiment_runtime import seed_range_csv
+from experiments.experiment_io import experiment_env_slug
+
+
+TBME_TRACKS_BASE_DIR = "results/tbme/tracks"
+DEFAULT_SHARED_SEED_COUNT = 500
+SHARED_TBME_GROUP_MODULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("simple_system_identification", ("experiments.tbme.exp01_baseEnv",)),
+    ("observation_action_bottleneck", ("experiments.tbme.exp06_bottleneck",)),
+    (
+        "model_mismatch",
+        (
+            "experiments.tbme.exp04_mismatch",
+            "experiments.tbme.exp08_parameter_mismatch_stress",
+            "experiments.tbme.exp09_observation_tuning_mismatch",
+        ),
+    ),
+    ("objective_ablation", ("experiments.tbme.exp05_ablation",)),
+    ("scheduling", ("experiments.tbme.exp03_schedule",)),
+)
 
 
 def tbme_catalog_paths() -> dict[str, list[Path]]:
@@ -93,7 +112,7 @@ def _family_from_suite_data(
         seeds = seed_range_csv(int(default_seed_count)) if default_seed_count is not None else "0"
     return TbmeExperimentFamily(
         exp_ids=exp_ids,
-        base_dir=default_base_dir or "results/tbme",
+        base_dir=default_base_dir or TBME_TRACKS_BASE_DIR,
         default_seeds=str(seeds),
         experiment_suites=suites,
     )
@@ -110,17 +129,19 @@ def _family_from_module(
     return _family_from_suite_data(
         getattr(module, "EXPERIMENT_SUITES"),
         family_name,
-        default_exp_ids=default_exp_ids if default_exp_ids is not None else getattr(module, "DEFAULT_EXP_IDS", None),
-        default_base_dir=(
-            default_base_dir if default_base_dir is not None else getattr(module, "BASE_DIR", None)
+        default_exp_ids=(
+            default_exp_ids
+            if default_exp_ids is not None
+            else getattr(module, "DEFAULT_EXP_IDS", None)
         ),
+        default_base_dir=default_base_dir,
         default_seeds=default_seeds,
         default_seed_count=getattr(module, "DEFAULT_SEED_COUNT", None),
     )
 
 
-def all_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
-    """Return all TBME suite definitions declared by local suite modules."""
+def raw_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
+    """Return the suite definitions declared by local `exp*.py` modules."""
     suites: dict[str, dict[str, Any]] = {}
     for module in _iter_tbme_suite_modules():
         family = _family_from_module(module)
@@ -129,6 +150,94 @@ def all_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
                 raise ValueError(f"Duplicate TBME suite id: {exp_id}")
             suites[exp_id] = dict(spec)
     return suites
+
+
+def _shared_tbme_data() -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[str, Any]]]]:
+    suites: dict[str, dict[str, Any]] = {}
+    groups: dict[str, list[dict[str, Any]]] = {}
+    seen: set[tuple[str, str]] = set()
+    for group_id, module_refs in SHARED_TBME_GROUP_MODULES:
+        group_entries: list[dict[str, Any]] = []
+        for module_ref in module_refs:
+            module = _load_suite_module(module_ref)
+            family = _family_from_module(module)
+            for source_exp_id in family.exp_ids:
+                source_spec = dict(family.experiment_suites[source_exp_id])
+                env_preset_id = str(source_spec["env_preset_id"])
+                suite_id = experiment_env_slug(env_preset_id)
+                kept_policy_ids: list[str] = []
+                for policy_id in _csv_tuple(
+                    source_spec.get("model_ids", source_spec.get("policy_ids"))
+                ):
+                    key = (env_preset_id, policy_id)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    kept_policy_ids.append(policy_id)
+                if not kept_policy_ids:
+                    continue
+                suite_spec = suites.setdefault(
+                    suite_id,
+                    {
+                        **source_spec,
+                        "exp_id": suite_id,
+                        "model_ids": [],
+                        "source_exp_ids": [],
+                    },
+                )
+                existing = set(_csv_tuple(suite_spec["model_ids"]))
+                suite_spec["model_ids"].extend(
+                    policy_id for policy_id in kept_policy_ids if policy_id not in existing
+                )
+                suite_spec["source_exp_ids"].append(str(source_exp_id))
+                group_entries.append(
+                    {
+                        "suite_id": suite_id,
+                        "source_exp_id": str(source_exp_id),
+                        "env_preset_id": env_preset_id,
+                        "policy_ids": tuple(kept_policy_ids),
+                    }
+                )
+        groups[group_id] = group_entries
+    return suites, groups
+
+
+def shared_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
+    """Return deduplicated TBME suites for the shared tracks layout."""
+    suites, _groups = _shared_tbme_data()
+    return {suite_id: dict(spec) for suite_id, spec in suites.items()}
+
+
+def shared_tbme_group_suites() -> dict[str, list[dict[str, Any]]]:
+    """Return grouped shared-track suites with per-group policy ids."""
+    _suites, groups = _shared_tbme_data()
+    return {
+        group_id: [dict(entry) for entry in entries]
+        for group_id, entries in groups.items()
+    }
+
+
+def all_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
+    """Return the default TBME suite definitions."""
+    return shared_tbme_experiment_suites()
+
+
+def shared_tbme_family(
+    *,
+    default_exp_ids: Any = None,
+    default_base_dir: str | None = None,
+    default_seeds: str | None = None,
+) -> TbmeExperimentFamily:
+    """Return the deduplicated shared-tracks TBME experiment family."""
+    suites = shared_tbme_experiment_suites()
+    return _family_from_suite_data(
+        suites,
+        "all",
+        default_exp_ids=default_exp_ids,
+        default_base_dir=default_base_dir or TBME_TRACKS_BASE_DIR,
+        default_seeds=default_seeds,
+        default_seed_count=DEFAULT_SHARED_SEED_COUNT,
+    )
 
 
 def configure_tbme_catalogs(suite_entries: dict[str, dict[str, Any]] | None = None):
@@ -210,6 +319,8 @@ def _run_family(family: TbmeExperimentFamily, passthrough: Sequence[str]) -> int
             family.base_dir,
             "--seeds",
             family.default_seeds,
+            "--path-layout",
+            "tbme_tracks",
             *passthrough,
         ]
     )
@@ -242,13 +353,20 @@ def run_experiment_entrypoint(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args, passthrough = parser.parse_known_args(argv)
-    module = _load_suite_module(str(args.suite_module))
-    family = _family_from_module(
-        module,
-        default_exp_ids=args.exp_ids,
-        default_base_dir=args.base_dir,
-        default_seeds=args.seeds,
-    )
+    if str(args.suite_module) == "all":
+        family = shared_tbme_family(
+            default_exp_ids=args.exp_ids,
+            default_base_dir=args.base_dir,
+            default_seeds=args.seeds,
+        )
+    else:
+        module = _load_suite_module(str(args.suite_module))
+        family = _family_from_module(
+            module,
+            default_exp_ids=args.exp_ids,
+            default_base_dir=args.base_dir,
+            default_seeds=args.seeds,
+        )
     return _run_family(family, passthrough)
 
 

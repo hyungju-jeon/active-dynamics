@@ -10,11 +10,9 @@ import numpy as np
 
 from actdyn.utils.experiment_runtime import read_trace_csv, safe_float as _safe_float
 from actdyn.utils.figure_io import load_plotting, save_figure
-from experiments.experiment_io import get_environment_preset_from_metadata
 
 from . import tbme_figures as _figures
 from .tbme_figures import (
-    _ExperimentRunRecord,
     _ExperimentSuiteSource,
     _REPO_ROOT,
     _RESULTS_ROOT,
@@ -23,16 +21,12 @@ from .tbme_figures import (
     _experiment_C_NEUTRAL_LIGHT,
     _experiment_C_STROKE,
     _experiment_OBJECTIVE_POLICIES,
-    _experiment_collect_records,
     _experiment_curve_rows,
-    _experiment_load_xy_trace,
-    _experiment_make_information_grid,
     _experiment_metric_mean_sem,
     _experiment_objective_sources,
     _experiment_r2_threshold_step,
     _experiment_r2_threshold_times,
     _experiment_short_policy_label,
-    _experiment_trace_path,
     _latest_session,
     _overview_figures_dir,
     _policy_color,
@@ -96,27 +90,11 @@ def _asset_require_suite_dirs(paths: Sequence[Path]) -> None:
         )
 
 
-def _asset_first_record(group_name: str, suite_id: str, policy_id: str) -> _ExperimentRunRecord:
-    suite_dir = _suite_dir(group_name, suite_id)
-    _asset_require_suite_dirs([suite_dir])
-    records = _experiment_collect_records(
-        suite_dir,
-        [policy_id],
-        completed_only=True,
-    )
-    if not records:
-        raise RuntimeError(f"No completed records for {suite_id}/{policy_id}")
-    for record in records:
-        if int(record.seed) == 0:
-            return record
-    return records[0]
-
-
-def _asset_read_information(record: _ExperimentRunRecord) -> list[dict[str, str]]:
-    path = _experiment_trace_path(record, "information_trace_path", "information_trace.csv")
-    if not path.exists():
-        raise FileNotFoundError(path)
-    return read_trace_csv(path)
+def _asset_display_path(path: Path) -> str:
+    try:
+        return str(path.relative_to(_REPO_ROOT))
+    except ValueError:
+        return str(path)
 
 
 def _asset_row_series(
@@ -305,7 +283,7 @@ def _asset_plot_r2_strips(
 def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
     sources = [
         _ExperimentSuiteSource(ref.suite_id, ref.label, ref.session_root / ref.suite_id)
-        for ref in _figures.GROUPS["exp01_base"]
+        for ref in _figures.GROUPS["simple_system_identification"]
     ]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
     plt_module = load_plotting(output_path, apply_style=_apply_style, path_is_file=True)
@@ -313,7 +291,7 @@ def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
         raise RuntimeError("Matplotlib is unavailable")
     fig, axes = plt_module.subplots(2, len(sources), figsize=(7.25, 4.65), squeeze=False)
     im = None
-    short_labels = {"Damped pendulum": "Pendulum", "Asymmetric basin": "Basin"}
+    short_labels = {"Damped pendulum": "Pendulum", "Gated Duffing": "Gated"}
     leftmost_strip_rows = [
         (sources[0].suite_dir, policy_id, _asset_policy_label(policy_id))
         for policy_id in _ASSET_MATCHED_POLICIES
@@ -373,32 +351,35 @@ def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
 def _asset_bottleneck_sources() -> list[_ExperimentSuiteSource]:
     return [
         _ExperimentSuiteSource(
-            "exp01_asymmetric_basin",
+            "gated_duffing",
             "Nominal",
-            _suite_dir("exp01_base", "exp01_asymmetric_basin"),
+            _suite_dir("simple_system_identification", "gated_duffing"),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_observation_bottleneck_mild",
+            "gated_duffing_observation_bottleneck_mild",
             "SNR -10",
-            _suite_dir("exp06_bottleneck", "exp06_asymmetric_basin_observation_bottleneck_mild"),
-        ),
-        _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_observation_bottleneck_strong",
-            "SNR -15",
             _suite_dir(
-                "exp06_bottleneck",
-                "exp06_asymmetric_basin_observation_bottleneck_strong",
+                "observation_action_bottleneck",
+                "gated_duffing_observation_bottleneck_mild",
             ),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_action_bottleneck_mild",
-            "Act. 0.55",
-            _suite_dir("exp06_bottleneck", "exp06_asymmetric_basin_action_bottleneck_mild"),
+            "gated_duffing_observation_bottleneck_strong",
+            "SNR -15",
+            _suite_dir(
+                "observation_action_bottleneck",
+                "gated_duffing_observation_bottleneck_strong",
+            ),
         ),
         _ExperimentSuiteSource(
-            "exp06_asymmetric_basin_action_bottleneck_strong",
+            "gated_duffing_action_bottleneck_mild",
+            "Act. 0.55",
+            _suite_dir("observation_action_bottleneck", "gated_duffing_action_bottleneck_mild"),
+        ),
+        _ExperimentSuiteSource(
+            "gated_duffing_action_bottleneck_strong",
             "Act. 0.35",
-            _suite_dir("exp06_bottleneck", "exp06_asymmetric_basin_action_bottleneck_strong"),
+            _suite_dir("observation_action_bottleneck", "gated_duffing_action_bottleneck_strong"),
         ),
     ]
 
@@ -953,48 +934,6 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
-def _asset_existing_dir(candidates: Sequence[Path]) -> Path:
-    for path in candidates:
-        if path.exists():
-            return path
-    raise FileNotFoundError(
-        "Missing TBME result directory: " + " or ".join(str(path) for path in candidates)
-    )
-
-
-def _asset_plot_model_mismatch(output_path: Path) -> Path:
-    from experiments.tbme import plot_exp08_exp09_mismatch_final as mismatch_final
-
-    default_tbme_dir = _RESULTS_ROOT / "tbme"
-    exp09_dir = _latest_session(
-        _asset_existing_dir(
-            [
-                _figures._TBME_RESULTS_DIR / "exp09_observation_tuning_mismatch",
-                default_tbme_dir / "exp09_observation_tuning_mismatch",
-            ]
-        )
-    )
-    exp08_dir = _latest_session(
-        _asset_existing_dir(
-            [
-                _figures._TBME_RESULTS_DIR / "exp08_parameter_mismatch_stress",
-                default_tbme_dir / "exp08_parameter_mismatch_stress",
-            ]
-        )
-    )
-    runs = mismatch_final._collect(exp09_dir) + mismatch_final._collect(exp08_dir)
-    if not runs:
-        raise RuntimeError("No exp08/exp09 mismatch runs found")
-    events = mismatch_final._matched_events(runs, "observation") + mismatch_final._matched_events(
-        runs,
-        "parameter",
-    )
-    output_base = output_path.with_suffix("")
-    mismatch_final._write_events(output_path.with_suffix(".events.csv"), events)
-    mismatch_final._plot(runs, events, output_base)
-    return output_path
-
-
 def _assets_build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Prepare TBME manuscript asset assembly outputs.",
@@ -1015,7 +954,7 @@ def _assets_build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=_figures._TBME_RESULTS_DIR / "assets",
+        default=None,
         help="Directory for assembled manuscript assets.",
     )
     return parser
@@ -1033,67 +972,64 @@ def assets_main(argv: list[str] | None = None) -> int:
     if not group_ids:
         raise ValueError("At least one TBME group is required")
 
-    output_dir = Path(args.output_dir).resolve()
+    output_dir = (
+        Path(args.output_dir)
+        if args.output_dir is not None
+        else _latest_session(_figures._TBME_RESULTS_DIR) / "assets"
+    ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_groups = set(group_ids)
     asset_specs = [
         (
             "tbme_fig03_active_vs_baselines.pdf",
-            {"exp01_base"},
+            {"simple_system_identification"},
             _asset_plot_active_vs_baselines,
         ),
         (
             "tbme_fig04_bottlenecks.pdf",
-            {"exp01_base", "exp06_bottleneck"},
+            {"simple_system_identification", "observation_action_bottleneck"},
             _asset_plot_constraints,
         ),
         (
-            "tbme_fig05_mechanism_cadence_mismatch.pdf",
-            {"exp02_hard", "exp07_mismatch_stress", "exp08_parameter_mismatch_stress"},
-            _asset_plot_mechanism,
-        ),
-        (
             "tbme_fig06_objective_ablation.pdf",
-            {"exp05_ablation"},
+            {"objective_ablation"},
             _asset_plot_objective_ablation,
-        ),
-        (
-            "tbme_fig07_mismatch_adaptive_planning.pdf",
-            {"exp08_parameter_mismatch_stress"},
-            _asset_plot_model_mismatch,
         ),
     ]
     written: list[Path] = []
-    skipped: list[tuple[str, set[str]]] = []
+    skipped: list[tuple[str, str]] = []
     for filename, required_groups, plotter in asset_specs:
         if not required_groups.issubset(selected_groups):
-            skipped.append((filename, required_groups - selected_groups))
+            missing = required_groups - selected_groups
+            skipped.append((filename, "missing groups " + ", ".join(sorted(missing))))
             continue
-        written.append(plotter(output_dir / filename))
+        try:
+            written.append(plotter(output_dir / filename))
+        except RuntimeError as exc:
+            if "No trajectory R2 curves available" not in str(exc):
+                raise
+            skipped.append((filename, str(exc)))
 
     lines = [
         "TBME manuscript asset assembly",
         "",
         "Generated assets:",
-        *[str(path.relative_to(_REPO_ROOT)) for path in written],
+        *[_asset_display_path(path) for path in written],
         "",
     ]
     if skipped:
         lines += [
             "Skipped assets:",
-            *[
-                f"{filename}: missing groups {', '.join(sorted(missing))}"
-                for filename, missing in skipped
-            ],
+            *[f"{filename}: {reason}" for filename, reason in skipped],
             "",
         ]
     lines.append("Component roots:")
     for group_id in group_ids:
-        lines.append(str(_overview_figures_dir(group_id).relative_to(_REPO_ROOT)))
+        lines.append(_asset_display_path(_overview_figures_dir(group_id)))
         for ref in _figures.GROUPS[group_id]:
             suite_dir = ref.session_root / ref.suite_id
-            lines.append(str((suite_dir / "summary" / "figures").relative_to(_REPO_ROOT)))
-            lines.append(str((suite_dir / "experiment" / "figures").relative_to(_REPO_ROOT)))
+            lines.append(_asset_display_path(suite_dir / "summary" / "figures"))
+            lines.append(_asset_display_path(suite_dir / "experiment" / "figures"))
     manifest = output_dir / "tbme_assets_manifest.txt"
     _write_text(manifest, "\n".join(lines) + "\n")
     for path in written:

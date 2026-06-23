@@ -20,6 +20,8 @@ import torch
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from experiment_io import (
+        experiment_env_slug,
+        experiment_run_dir,
         load_json,
         parse_csv_ints,
         parse_csv_list,
@@ -52,6 +54,8 @@ if __package__ in {None, ""}:
     )
 else:
     from .experiment_io import (
+        experiment_env_slug,
+        experiment_run_dir,
         load_json,
         parse_csv_ints,
         parse_csv_list,
@@ -1798,6 +1802,7 @@ def _run_single_parameter_identification(
                 else None
             ),
             "env_preset_id": str(env_preset.preset_id),
+            "env_slug": experiment_env_slug(str(env_preset.preset_id)),
             "system_id": str(env_preset.system_id),
             "system_label": str(getattr(env_preset, "system_label", None) or env_preset.system_id),
             "dynamics_type": str(env_preset.resolved_dynamics_type()),
@@ -1974,7 +1979,14 @@ def _run_one(
 ) -> dict[str, Any]:
     exp_spec = get_experiment_spec(exp_id)
     total_steps = int(args.total_steps or exp_spec.total_steps)
-    run_dir = base_dir / exp_id / "track" / policy_id / f"seed_{seed}" / f"repeat_{repeat:02d}"
+    run_dir = experiment_run_dir(
+        base_dir,
+        exp_spec,
+        policy_id,
+        seed,
+        repeat,
+        layout=str(getattr(args, "path_layout", "legacy")),
+    )
     metadata_path = run_dir / "run_metadata.json"
     if bool(getattr(args, "skip_existing", False)) and metadata_path.exists():
         existing_payload = load_json(metadata_path)
@@ -2368,6 +2380,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--base-dir", type=str, default="results/experiments")
+    parser.add_argument("--path-layout", choices=["legacy", "tbme_tracks"], default="legacy")
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--total-steps", type=int, default=None)
     parser.add_argument("--q-theta", type=float, default=1e-4)
@@ -2495,6 +2508,8 @@ def main(argv: list[str] | None = None, *, suite_entries: Mapping[str, Any] | No
                         exp_id,
                         "--seeds",
                         args.seeds,
+                        "--path-layout",
+                        str(args.path_layout),
                     ]
                     if args.policy_ids:
                         summary_args.extend(["--policy-ids", str(args.policy_ids)])

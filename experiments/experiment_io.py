@@ -35,6 +35,75 @@ def write_json(path: str | Path, payload: Mapping[str, Any]) -> None:
         json.dump(dict(payload), f, indent=2, sort_keys=True)
 
 
+def experiment_env_slug(env_preset_id: str) -> str:
+    """Return the TBME-facing environment slug used in result paths.
+
+    The runtime dynamics key stays `asymmetric_basin`; only result paths,
+    suite ids, and labels use `gated_duffing`.
+    """
+    slug = str(env_preset_id).removeprefix("tbme_")
+    prefix = "asymmetric_basin"
+    if slug == prefix or slug.startswith(f"{prefix}_"):
+        return f"gated_duffing{slug[len(prefix):]}"
+    return slug
+
+
+def experiment_policy_seed_dir(
+    base_dir: str | Path,
+    exp_spec: Any,
+    policy_id: str,
+    seed: int,
+    *,
+    layout: str = "legacy",
+) -> Path:
+    """Return the directory containing repeats for one policy/seed."""
+    root = Path(base_dir)
+    if layout == "legacy":
+        return root / str(exp_spec.exp_id) / "track" / str(policy_id) / f"seed_{int(seed)}"
+    if layout == "tbme_tracks":
+        return (
+            root
+            / experiment_env_slug(str(exp_spec.env_preset_id))
+            / str(policy_id)
+            / f"seed_{int(seed)}"
+        )
+    raise ValueError(f"Unknown experiment path layout: {layout}")
+
+
+def experiment_run_dir(
+    base_dir: str | Path,
+    exp_spec: Any,
+    policy_id: str,
+    seed: int,
+    repeat: int,
+    *,
+    layout: str = "legacy",
+) -> Path:
+    """Return the output directory for one experiment run."""
+    return experiment_policy_seed_dir(
+        base_dir,
+        exp_spec,
+        policy_id,
+        seed,
+        layout=layout,
+    ) / f"repeat_{int(repeat):02d}"
+
+
+def experiment_summary_dir(
+    base_dir: str | Path,
+    exp_spec: Any,
+    *,
+    layout: str = "legacy",
+) -> Path:
+    """Return the summary directory for one experiment suite."""
+    root = Path(base_dir)
+    if layout == "legacy":
+        return root / str(exp_spec.exp_id) / "summary"
+    if layout == "tbme_tracks":
+        return root / experiment_env_slug(str(exp_spec.env_preset_id)) / "summary"
+    raise ValueError(f"Unknown experiment path layout: {layout}")
+
+
 def resolve_session_root(
     base_dir: str | Path,
     *,
