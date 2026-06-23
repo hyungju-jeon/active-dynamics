@@ -7,6 +7,8 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from actdyn.utils.experiment_runtime import safe_float
+
 
 def parse_csv_list(raw: str | None) -> list[str]:
     if raw is None:
@@ -16,17 +18,6 @@ def parse_csv_list(raw: str | None) -> list[str]:
 
 def parse_csv_ints(raw: str | None) -> list[int]:
     return [int(item) for item in parse_csv_list(raw)]
-
-
-def safe_float(value: Any) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        return float(value)
-    except Exception:
-        return None
 
 
 def load_json(path: str | Path) -> dict[str, Any]:

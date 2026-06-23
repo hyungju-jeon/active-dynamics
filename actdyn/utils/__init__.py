@@ -26,17 +26,16 @@ __all__ = [
     "predict_planned_xy_trajectory",
     "extract_rollout_metrics",
     "trajectory_r2_vectorfield",
+    "safe_float",
 ]
 
 
-def setup_experiment(*args, **kwargs):
-    """Lazy import wrapper for setup_experiment."""
-    from .experiment_setup import setup_experiment as _setup
-
-    return _setup(*args, **kwargs)
-
-
 def __getattr__(name: str):
+    if name == "setup_experiment":
+        from .experiment_setup import setup_experiment
+
+        return setup_experiment
+
     if name in {"Belief", "Transition", "format_list", "to_np", "eps"}:
         from .torch_utils import Belief, Transition, eps, format_list, to_np
 
@@ -65,6 +64,7 @@ def __getattr__(name: str):
     if name in {
         "write_trace_csv",
         "read_trace_csv",
+        "safe_float",
         "seed_range_csv",
         "to_xy_pair",
         "as_bool",
@@ -80,6 +80,7 @@ def __getattr__(name: str):
             extract_rollout_metrics,
             predict_planned_xy_trajectory,
             read_trace_csv,
+            safe_float,
             to_xy_pair,
             seed_range_csv,
             write_trace_csv,
@@ -88,6 +89,7 @@ def __getattr__(name: str):
         return {
             "read_trace_csv": read_trace_csv,
             "write_trace_csv": write_trace_csv,
+            "safe_float": safe_float,
             "seed_range_csv": seed_range_csv,
             "to_xy_pair": to_xy_pair,
             "as_bool": as_bool,

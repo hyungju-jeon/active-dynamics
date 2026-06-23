@@ -7,21 +7,8 @@ from typing import Any
 import numpy as np
 
 from actdyn.environment.vectorfield import ResidualDynamicsCallable
-from actdyn.utils.experiment_runtime import read_trace_csv
+from actdyn.utils.experiment_runtime import read_trace_csv, safe_float
 from experiments.experiment_io import get_environment_preset_from_metadata, resolve_artifact_path
-
-
-def safe_float(raw: object) -> float | None:
-    """Return a finite float or None for missing/nonfinite CSV and metadata values."""
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(value):
-        return None
-    return value
 
 
 def trace_path(run_dir: Path, metadata: dict[str, Any], key: str, fallback_name: str) -> Path:

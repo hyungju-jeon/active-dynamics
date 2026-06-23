@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,17 @@ def read_trace_csv(path: Path) -> list[dict[str, str]]:
         return []
     with path.open("r", newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
+
+
+def safe_float(value: Any, *, default: float | None = None) -> float | None:
+    """Return a finite float or ``default`` for missing/nonfinite trace values."""
+    if value is None:
+        return default
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if math.isfinite(parsed) else default
 
 
 def seed_range_csv(count: int) -> str:
