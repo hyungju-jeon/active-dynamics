@@ -86,6 +86,113 @@ else:
 WRITING_REFERENCE = "docs/active-dynamics-writing/methods.tex"
 
 
+def _params_from_embedding(
+    embedding: Any, *, full_params: tuple[float, ...], min_embedding_dim: int
+) -> Any:
+    """Expand embedded dynamics parameters to the full environment parameter vector."""
+    full = np.asarray(full_params, dtype=np.float32)
+    if torch.is_tensor(embedding):
+        e = embedding.to(dtype=torch.float32)
+        if e.shape[-1] < min_embedding_dim:
+            raise ValueError(
+                f"Embedding must have at least {min_embedding_dim} coordinates, got shape {tuple(e.shape)}."
+            )
+        if e.shape[-1] >= full.shape[0]:
+            return e[..., : full.shape[0]]
+        tail = torch.as_tensor(full[e.shape[-1] :], dtype=e.dtype, device=e.device)
+        if e.ndim == 1:
+            return torch.cat((e, tail), dim=0)
+        tail = tail.reshape(*([1] * (e.ndim - 1)), -1).expand(*e.shape[:-1], -1)
+        return torch.cat((e, tail), dim=-1)
+
+    e_np = np.asarray(embedding, dtype=np.float32)
+    if e_np.shape[-1] < min_embedding_dim:
+        raise ValueError(
+            f"Embedding must have at least {min_embedding_dim} coordinates, got shape {e_np.shape}."
+        )
+    if e_np.shape[-1] >= full.shape[0]:
+        return e_np[..., : full.shape[0]]
+    tail = full[e_np.shape[-1] :]
+    if e_np.ndim == 1:
+        return np.concatenate((e_np, tail), axis=0).astype(np.float32, copy=False)
+    tail = np.broadcast_to(
+        tail.reshape(*([1] * (e_np.ndim - 1)), -1),
+        (*e_np.shape[:-1], tail.shape[0]),
+    )
+    return np.concatenate((e_np, tail.astype(np.float32, copy=False)), axis=-1)
+
+
+class _EnvJacobianEmbedding:
+    """Pickle-safe embedding Jacobian callable for planner workers."""
+
+    def __init__(
+        self,
+        *,
+        dynamics_type: str,
+        full_params: tuple[float, ...],
+        min_embedding_dim: int,
+        dynamics_alpha: float,
+    ) -> None:
+        self.dynamics_type = str(dynamics_type)
+        self.full_params = tuple(float(x) for x in full_params)
+        self.min_embedding_dim = int(min_embedding_dim)
+        self.dynamics_alpha = float(dynamics_alpha)
+
+    def __call__(self, z: Any, e: Any):
+        return jacobian_embedding_torch(
+            self.dynamics_type,
+            z,
+            e,
+            full_params=self.full_params,
+            min_embedding_dim=self.min_embedding_dim,
+            dynamics_alpha=self.dynamics_alpha,
+        )
+
+
+class _EnvJacobianState:
+    """Pickle-safe state Jacobian callable for planner workers."""
+
+    def __init__(
+        self,
+        *,
+        dynamics_type: str,
+        full_params: tuple[float, ...],
+        min_embedding_dim: int,
+        dynamics_alpha: float,
+    ) -> None:
+        self.dynamics_type = str(dynamics_type)
+        self.full_params = tuple(float(x) for x in full_params)
+        self.min_embedding_dim = int(min_embedding_dim)
+        self.dynamics_alpha = float(dynamics_alpha)
+
+    def __call__(self, z: Any, e: Any):
+        return jacobian_state_torch(
+            self.dynamics_type,
+            z,
+            _params_from_embedding(
+                e,
+                full_params=self.full_params,
+                min_embedding_dim=self.min_embedding_dim,
+            ),
+            dynamics_alpha=self.dynamics_alpha,
+        )
+
+
+class _EnvParameterFormatter:
+    """Pickle-safe embedding-to-dynamics-parameter formatter."""
+
+    def __init__(self, *, full_params: tuple[float, ...], min_embedding_dim: int) -> None:
+        self.full_params = tuple(float(x) for x in full_params)
+        self.min_embedding_dim = int(min_embedding_dim)
+
+    def __call__(self, params: Any) -> Any:
+        return _params_from_embedding(
+            params,
+            full_params=self.full_params,
+            min_embedding_dim=self.min_embedding_dim,
+        )
+
+
 def _resolved_policy_type(policy_id: str, policy_spec: Any | None) -> str:
     configured = None if policy_spec is None else getattr(policy_spec, "policy_type", None)
     if isinstance(configured, str) and configured.strip():
@@ -108,27 +215,22 @@ def _resolved_estimator_system_id(env_preset: Any) -> str:
 
 def _build_env_jacobians(env_preset: Any, *, estimator: bool, dynamics_alpha: float):
     dynamics_type = str(env_preset.resolved_dynamics_type(estimator=estimator))
-
-    def _fe(z: Any, e: Any):
-        return jacobian_embedding_torch(
-            dynamics_type,
-            z,
-            e,
-            full_params=env_preset.resolved_true_params(estimator=estimator),
-            min_embedding_dim=int(env_preset.resolved_min_embedding_dim()),
+    full_params = env_preset.resolved_true_params(estimator=estimator)
+    min_embedding_dim = int(env_preset.resolved_min_embedding_dim())
+    return (
+        _EnvJacobianEmbedding(
+            dynamics_type=dynamics_type,
+            full_params=full_params,
+            min_embedding_dim=min_embedding_dim,
             dynamics_alpha=float(dynamics_alpha),
-        )
-
-    def _fz(z: Any, e: Any):
-        dyn_params = env_preset.params_from_embedding(e, estimator=estimator)
-        return jacobian_state_torch(
-            dynamics_type,
-            z,
-            dyn_params,
+        ),
+        _EnvJacobianState(
+            dynamics_type=dynamics_type,
+            full_params=full_params,
+            min_embedding_dim=min_embedding_dim,
             dynamics_alpha=float(dynamics_alpha),
-        )
-
-    return _fe, _fz
+        ),
+    )
 
 
 def _loading_target_snr_db(env_preset: Any) -> float | None:
@@ -646,6 +748,18 @@ def _instantiate_synthetic_policy(
             ),
             async_reanchor_live_state=getattr(policy_spec, "async_reanchor_live_state", False),
             async_reanchor_tolerance=getattr(policy_spec, "async_reanchor_tolerance", 0.25),
+            async_realtime_fallback_horizon=getattr(
+                policy_spec, "async_realtime_fallback_horizon", 0
+            ),
+            async_realtime_fallback_coarse_dt_factor=getattr(
+                policy_spec, "async_realtime_fallback_coarse_dt_factor", None
+            ),
+            async_realtime_fallback_iterations=getattr(
+                policy_spec, "async_realtime_fallback_iterations", 1
+            ),
+            async_realtime_fallback_zero_prefix=getattr(
+                policy_spec, "async_realtime_fallback_zero_prefix", False
+            ),
         )
     return mpc_cls(
         metric=metric,
@@ -864,7 +978,10 @@ def _run_single_parameter_identification(
         state_dim=dz,
         dt=dt,
         dynamics_fn=sim_vec_env,
-        param_formatter=lambda params: env_preset.params_from_embedding(params, estimator=True),
+        param_formatter=_EnvParameterFormatter(
+            full_params=env_preset.resolved_true_params(estimator=True),
+            min_embedding_dim=int(env_preset.resolved_min_embedding_dim()),
+        ),
         device=device,
     )
     dynamics.logvar = nn.Parameter(torch.log(torch.ones(1, dz, device=device) * noise_scale))
@@ -1130,6 +1247,18 @@ def _run_single_parameter_identification(
                 "async_reanchor_mismatch": float(
                     transition.get("async_reanchor_mismatch", 0.0) or 0.0
                 ),
+                "async_realtime_fallback": as_bool(
+                    transition.get("async_realtime_fallback", False)
+                ),
+                "async_realtime_fallback_runtime_sec": float(
+                    transition.get("async_realtime_fallback_runtime_sec", 0.0) or 0.0
+                ),
+                "async_realtime_fallback_steps": int(
+                    transition.get("async_realtime_fallback_steps", 0)
+                ),
+                "async_realtime_zero_prefix": as_bool(
+                    transition.get("async_realtime_zero_prefix", False)
+                ),
                 "async_plan_model_version": int(
                     transition.get("async_plan_model_version", -1)
                 ),
@@ -1233,6 +1362,18 @@ def _run_single_parameter_identification(
                 "async_reanchor_count": int(transition.get("async_reanchor_count", 0)),
                 "async_reanchor_mismatch": float(
                     transition.get("async_reanchor_mismatch", 0.0) or 0.0
+                ),
+                "async_realtime_fallback": as_bool(
+                    transition.get("async_realtime_fallback", False)
+                ),
+                "async_realtime_fallback_runtime_sec": float(
+                    transition.get("async_realtime_fallback_runtime_sec", 0.0) or 0.0
+                ),
+                "async_realtime_fallback_steps": int(
+                    transition.get("async_realtime_fallback_steps", 0)
+                ),
+                "async_realtime_zero_prefix": as_bool(
+                    transition.get("async_realtime_zero_prefix", False)
                 ),
                 "model_update_version": int(transition.get("model_update_version", 0)),
                 "parameter_update_version": int(
@@ -1410,6 +1551,10 @@ def _run_single_parameter_identification(
             "async_plan_status",
             "async_reanchor_count",
             "async_reanchor_mismatch",
+            "async_realtime_fallback",
+            "async_realtime_fallback_runtime_sec",
+            "async_realtime_fallback_steps",
+            "async_realtime_zero_prefix",
             "async_plan_model_version",
             "async_live_model_version",
             "model_update_version",
@@ -1466,6 +1611,10 @@ def _run_single_parameter_identification(
             "async_plan_status",
             "async_reanchor_count",
             "async_reanchor_mismatch",
+            "async_realtime_fallback",
+            "async_realtime_fallback_runtime_sec",
+            "async_realtime_fallback_steps",
+            "async_realtime_zero_prefix",
             "model_update_version",
             "parameter_update_version",
             "loop_async_launch_sec",
@@ -1608,6 +1757,7 @@ def _run_single_parameter_identification(
             "async_worker_full_interval": getattr(
                 policy_spec, "async_worker_full_interval", None
             ),
+            "async_worker_backend": getattr(policy_spec, "async_worker_backend", "thread"),
             "async_worker_device": getattr(policy_spec, "async_worker_device", None),
             "async_refine_on_parameter_update": bool(
                 getattr(policy_spec, "async_refine_on_parameter_update", True)
@@ -1831,6 +1981,7 @@ def _build_session_experiment_entry(
                 "coarse_action_mapping": str(getattr(policy_spec, "coarse_action_mapping", "hold")),
                 "async_planning": bool(getattr(policy_spec, "async_planning", False)),
                 "async_stale_tolerance": float(getattr(policy_spec, "async_stale_tolerance", 0.5)),
+                "async_worker_backend": getattr(policy_spec, "async_worker_backend", "thread"),
                 "async_worker_device": getattr(policy_spec, "async_worker_device", None),
                 "async_refine_on_parameter_update": bool(
                     getattr(policy_spec, "async_refine_on_parameter_update", True)

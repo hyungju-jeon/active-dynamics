@@ -91,7 +91,7 @@ models:
     policy_type: async-mpc-icem
     async_planning: true
     async_refine_on_parameter_update: false
-    async_worker_iterations: 1
+    async_worker_iterations: 2
     async_worker_device: cpu
     async_stale_tolerance: 1.0
 
@@ -101,6 +101,21 @@ models:
     async_stale_tolerance: 0.1
     async_reanchor_live_state: true
     async_reanchor_tolerance: 0.0
+
+  active_planning_adaptive_async_realtime_short_u20_r20_h40:
+    extends: active_planning_adaptive_async_u20_r20_h40
+    async_worker_backend: process
+    async_realtime_fallback_horizon: 1
+    async_realtime_fallback_coarse_dt_factor: 10
+    async_realtime_fallback_iterations: 1
+    async_realtime_fallback_zero_prefix: true
+
+  active_planning_adaptive_async_realtime_u20_r20_h40:
+    extends: active_planning_adaptive_async_u20_r20_h40
+    async_worker_backend: process
+    async_realtime_fallback_horizon: 0
+    async_realtime_fallback_coarse_dt_factor: 10
+    async_realtime_fallback_zero_prefix: true
 
   active_planning_adaptive_state_fixed_update_u20_r20_h40:
     extends: active_planning

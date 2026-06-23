@@ -320,6 +320,10 @@ class PolicySpec:
     async_refine_on_parameter_update: bool = True
     async_reanchor_live_state: bool = False
     async_reanchor_tolerance: float = 0.25
+    async_realtime_fallback_horizon: int = 0
+    async_realtime_fallback_coarse_dt_factor: int | None = None
+    async_realtime_fallback_iterations: int = 1
+    async_realtime_fallback_zero_prefix: bool = False
 
 
 @dataclass(frozen=True)
@@ -817,6 +821,20 @@ def load_catalog_bundle(
             ),
             async_reanchor_live_state=bool(spec.get("async_reanchor_live_state", False)),
             async_reanchor_tolerance=float(spec.get("async_reanchor_tolerance", 0.25)),
+            async_realtime_fallback_horizon=int(
+                spec.get("async_realtime_fallback_horizon", 0)
+            ),
+            async_realtime_fallback_coarse_dt_factor=(
+                None
+                if spec.get("async_realtime_fallback_coarse_dt_factor") is None
+                else int(spec.get("async_realtime_fallback_coarse_dt_factor"))
+            ),
+            async_realtime_fallback_iterations=int(
+                spec.get("async_realtime_fallback_iterations", 1)
+            ),
+            async_realtime_fallback_zero_prefix=bool(
+                spec.get("async_realtime_fallback_zero_prefix", False)
+            ),
         )
         for policy_id, spec in model_raw.items()
     }
