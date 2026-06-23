@@ -1,0 +1,915 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Adaptive async iCEM behavior</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f7f8fa;
+      --ink: #18212f;
+      --muted: #5d6a7a;
+      --line: #d8dee8;
+      --panel: #ffffff;
+      --ready: #4d8f77;
+      --anytime: #8d5fbf;
+      --initial: #4f82c0;
+      --tail: #d39b3a;
+      --worker: #2f5f8f;
+      --fallback: #b85b5b;
+      --param: #c46f37;
+      --current: #111827;
+      font-family:
+        Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+        sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+    }
+
+    header {
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+
+    .wrap {
+      width: min(1240px, calc(100vw - 32px));
+      margin: 0 auto;
+    }
+
+    .top {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 14px;
+      padding: 20px 0 16px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .subhead {
+      max-width: 860px;
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+
+    label {
+      display: grid;
+      gap: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    select,
+    input[type="range"],
+    button {
+      min-height: 36px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+    }
+
+    select,
+    button {
+      padding: 0 10px;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    button.primary {
+      border-color: #2d5f96;
+      background: #2d5f96;
+      color: #fff;
+    }
+
+    main.wrap {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+      gap: 16px;
+      padding: 16px 0 28px;
+    }
+
+    section {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+
+    .timeline-panel {
+      min-width: 0;
+      overflow: hidden;
+    }
+
+    .timeline-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 14px 16px 10px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .caption {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .legend {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px 12px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .key {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      border: 1px solid rgba(0, 0, 0, 0.12);
+    }
+
+    .scroller {
+      overflow-x: auto;
+      padding: 12px 16px 16px;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 190px max-content;
+      align-items: center;
+      gap: 10px;
+      margin: 8px 0;
+    }
+
+    .row-name {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      text-align: right;
+    }
+
+    .group-row {
+      margin: 14px 0 4px;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .cells {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(var(--steps), 12px);
+      width: max-content;
+      min-height: 28px;
+      border-left: 1px solid var(--line);
+    }
+
+    .cell {
+      height: 28px;
+      border-right: 1px solid rgba(255, 255, 255, 0.55);
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+      background: #eef2f7;
+    }
+
+    .axis .cell {
+      height: 22px;
+      border-color: transparent;
+      background: transparent;
+      color: var(--muted);
+      font-size: 10px;
+      line-height: 22px;
+      text-align: left;
+    }
+
+    .block {
+      position: absolute;
+      top: 0;
+      height: 28px;
+      padding: 5px 4px 0;
+      overflow: hidden;
+      border-right: 1px solid rgba(255, 255, 255, 0.72);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .event {
+      height: 28px;
+      border-right: 1px solid #eef2f7;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+      background: #f7f8fb;
+    }
+
+    .event.boundary {
+      background: repeating-linear-gradient(
+        90deg,
+        #dbeafe,
+        #dbeafe 4px,
+        #fff 4px,
+        #fff 8px
+      );
+    }
+
+    .event.launch {
+      background: #d7e8fb;
+    }
+
+    .event.swap {
+      background: #d9f0e6;
+    }
+
+    .event.anytime {
+      background: #eadcf8;
+    }
+
+    .event.tail {
+      background: #faedcf;
+    }
+
+    .event.param {
+      background: #f4d5c4;
+    }
+
+    .event.anchor {
+      background: #e4edf8;
+    }
+
+    .current-line {
+      position: absolute;
+      top: -3px;
+      bottom: -3px;
+      width: 2px;
+      background: var(--current);
+      pointer-events: none;
+    }
+
+    .side {
+      padding: 14px;
+      display: grid;
+      align-content: start;
+      gap: 14px;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      background: #fbfcfe;
+    }
+
+    .stat b {
+      display: block;
+      margin-bottom: 3px;
+      font-size: 12px;
+    }
+
+    .stat span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    pre {
+      margin: 0;
+      padding: 10px;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #101827;
+      color: #e8eef8;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .events {
+      display: grid;
+      gap: 6px;
+      max-height: 220px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .event-line {
+      display: grid;
+      grid-template-columns: 44px 1fr;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .event-line strong {
+      color: var(--ink);
+    }
+
+    .note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .defs {
+      display: grid;
+      gap: 7px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .defs div {
+      display: grid;
+      grid-template-columns: 132px 1fr;
+      gap: 8px;
+    }
+
+    .defs dt {
+      color: var(--ink);
+      font-weight: 800;
+    }
+
+    .defs dd {
+      margin: 0;
+    }
+
+    @media (max-width: 960px) {
+      .controls,
+      main.wrap {
+        grid-template-columns: 1fr;
+      }
+
+      .timeline-head {
+        display: grid;
+      }
+
+      .legend {
+        justify-content: flex-start;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap top">
+      <div>
+        <h1>Adaptive async iCEM planning behavior</h1>
+        <p class="subhead">
+          A timeline view of how `adaptive_async_realtime` and
+          `adaptive_async_anytime` split the foreground agent loop from the
+          background planner process while executing fine actions from a coarse
+          iCEM plan.
+        </p>
+      </div>
+      <div class="controls">
+        <label>
+          Policy
+          <select id="policy">
+            <option value="realtime">adaptive_async_realtime</option>
+            <option value="anytime">adaptive_async_anytime</option>
+          </select>
+        </label>
+        <label>
+          Worker duration: <span id="workerValue"></span>
+          <input id="workerSteps" type="range" min="8" max="42" value="26">
+        </label>
+        <label>
+          Current fine step: <span id="stepValue"></span>
+          <input id="step" type="range" min="0" max="95" value="0">
+        </label>
+        <button id="play" class="primary" type="button">Play</button>
+        <button id="reset" type="button">Reset</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="timeline-panel" aria-label="Async planning timeline">
+      <div class="timeline-head">
+        <div>
+          <h2 id="timelineTitle">Timeline</h2>
+          <div class="caption" id="timelineCaption"></div>
+        </div>
+        <div class="legend">
+          <span class="key"><span class="swatch" style="background: var(--initial)"></span>primed/full plan</span>
+          <span class="key"><span class="swatch" style="background: var(--tail)"></span>tail while waiting</span>
+          <span class="key"><span class="swatch" style="background: var(--ready)"></span>ready swap</span>
+          <span class="key"><span class="swatch" style="background: var(--anytime)"></span>anytime prefix</span>
+          <span class="key"><span class="swatch" style="background: var(--worker)"></span>worker</span>
+          <span class="key"><span class="swatch" style="background: var(--param)"></span>parameter update</span>
+        </div>
+      </div>
+      <div class="scroller" id="timeline"></div>
+    </section>
+
+    <section class="side" aria-label="Selected step details">
+      <div>
+        <h2 id="modeTitle"></h2>
+        <p class="note" id="modeText"></p>
+      </div>
+
+      <div class="stat-grid" id="stats"></div>
+
+      <div>
+        <h2>Labels and variables</h2>
+        <dl class="defs">
+          <div><dt>Agent</dt><dd>Foreground loop: chooses one fine action, steps the environment, updates belief, and launches or refreshes planning.</dd></div>
+          <div><dt>Planner</dt><dd>Background process running iCEM on a copied model and metric snapshot.</dd></div>
+          <div><dt>t</dt><dd>Fine environment step. In TBME this is one 10 ms bin.</dd></div>
+          <div><dt>chunk</dt><dd>Fine-action interval before the agent may swap buffers. Default: 20.</dd></div>
+          <div><dt>coarse_dt_factor</dt><dd>Fine steps represented by one coarse iCEM action. Default: 20.</dd></div>
+          <div><dt>H</dt><dd>Coarse iCEM planning horizon. Default: 40 coarse actions.</dd></div>
+          <div><dt>buffer_index</dt><dd>Index of the next fine action in the execution buffer.</dd></div>
+          <div><dt>z_boundary</dt><dd>Predicted state after rolling `buffer[buffer_index:chunk]` forward.</dd></div>
+          <div><dt>theta version</dt><dd>`parameter_update_version`, incremented when the parameter posterior changes.</dd></div>
+        </dl>
+      </div>
+
+      <div>
+        <h2>Equations in the code path</h2>
+        <pre id="equations"></pre>
+      </div>
+
+      <div>
+        <h2>Events near current step</h2>
+        <div class="events" id="events"></div>
+      </div>
+
+      <p class="note">
+        This is a deterministic schematic of the control flow, not a replay of
+        a saved experiment trace. It uses the TBME defaults:
+        `chunk = 20`, `coarse_dt_factor = 20`, `planning_horizon = 40`,
+        `async_worker_iterations = 2`, and `async_stale_tolerance = 1.0`.
+      </p>
+    </section>
+  </main>
+
+  <script>
+    const CFG = {
+      steps: 96,
+      chunk: 20,
+      coarseFactor: 20,
+      horizon: 40,
+      fineDt: 0.01,
+      asyncRealtimePrefixSteps: 10,
+      updateInterval: 20,
+      parameterUpdateSteps: [40, 80],
+      staleTolerance: 1.0,
+      anytimeStdTolerance: 0.75,
+      anytimeMinIteration: 1
+    };
+
+    const COLORS = {
+      initial: getCss("--initial"),
+      tail: getCss("--tail"),
+      ready: getCss("--ready"),
+      anytime: getCss("--anytime"),
+      worker: getCss("--worker"),
+      fallback: getCss("--fallback"),
+      param: getCss("--param")
+    };
+
+    const policySelect = document.getElementById("policy");
+    const workerSteps = document.getElementById("workerSteps");
+    const workerValue = document.getElementById("workerValue");
+    const stepSlider = document.getElementById("step");
+    const stepValue = document.getElementById("stepValue");
+    const playButton = document.getElementById("play");
+    const resetButton = document.getElementById("reset");
+    const timeline = document.getElementById("timeline");
+    const stats = document.getElementById("stats");
+    const eventsBox = document.getElementById("events");
+    const modeTitle = document.getElementById("modeTitle");
+    const modeText = document.getElementById("modeText");
+    const timelineTitle = document.getElementById("timelineTitle");
+    const timelineCaption = document.getElementById("timelineCaption");
+    const equations = document.getElementById("equations");
+
+    let timer = null;
+
+    function getCss(name) {
+      return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    }
+
+    function actionValue(planId, coarseIndex) {
+      const values = [
+        [-0.6, 0.2], [-0.25, 0.75], [0.35, 0.65], [0.75, 0.15],
+        [0.48, -0.45], [-0.1, -0.72], [-0.68, -0.25], [-0.82, 0.3]
+      ];
+      return values[(planId * 3 + coarseIndex) % values.length];
+    }
+
+    function makePlan(planId, source, length, startOffset = 0) {
+      const cells = [];
+      for (let i = 0; i < length; i += 1) {
+        const coarse = Math.floor((i + startOffset) / CFG.coarseFactor);
+        const value = actionValue(planId, coarse);
+        cells.push({
+          planId,
+          source,
+          coarse,
+          label: `P${planId} c${coarse}`,
+          value
+        });
+      }
+      return cells;
+    }
+
+    function shortAction(cell) {
+      if (!cell) return "none";
+      const [u0, u1] = cell.value;
+      return `${cell.label}: u=(${u0.toFixed(2)}, ${u1.toFixed(2)})`;
+    }
+
+    function sourceColor(source) {
+      if (source === "initial") return COLORS.initial;
+      if (source === "ready") return COLORS.ready;
+      if (source === "anytime") return COLORS.anytime;
+      if (source === "tail") return COLORS.tail;
+      return COLORS.fallback;
+    }
+
+    function simulate(mode, workerDuration) {
+      const executed = [];
+      const bufferAtStep = [];
+      const eventAtStep = Array.from({ length: CFG.steps }, () => []);
+      const workers = [];
+      const events = [];
+
+      let buffer = makePlan(0, "initial", CFG.horizon * CFG.coarseFactor);
+      let bufferIndex = 0;
+      let future = null;
+      let nextPlanId = 1;
+      let thetaVersion = 0;
+
+      const addEvent = (step, kind, text) => {
+        const bounded = Math.max(0, Math.min(CFG.steps - 1, step));
+        eventAtStep[bounded].push(kind);
+        events.push({ step: bounded, kind, text });
+      };
+
+      const launchWorker = (step) => {
+        const planId = nextPlanId;
+        nextPlanId += 1;
+        const publishDelay = Math.max(3, Math.floor(workerDuration * 0.45));
+        future = {
+          planId,
+          launch: step,
+          ready: step + workerDuration,
+          publish: step + publishDelay,
+          prefixSteps: CFG.coarseFactor * 2,
+          usedAnytime: false
+        };
+        workers.push({ ...future });
+        addEvent(
+          step,
+          "launch",
+          `Planner starts P${planId} from z_boundary; mean[0] is the current buffered action`
+        );
+      };
+
+      for (let t = 0; t < CFG.steps; t += 1) {
+        const boundary = buffer ? Math.min(CFG.chunk, buffer.length) : CFG.chunk;
+        const atBoundary = !buffer || bufferIndex >= boundary;
+
+        if (atBoundary) {
+          addEvent(t, "boundary", `Chunk boundary at fine step ${t}`);
+          if (future && future.ready <= t) {
+            buffer = makePlan(future.planId, "ready", CFG.horizon * CFG.coarseFactor);
+            bufferIndex = 0;
+            addEvent(t, "swap", `Use completed worker P${future.planId}`);
+            future = null;
+          } else if (future && buffer && bufferIndex < buffer.length) {
+            addEvent(t, "tail", "Worker not ready; continue old plan tail");
+          } else if (!buffer || bufferIndex >= buffer.length) {
+            buffer = makePlan(nextPlanId, "fallback", CFG.asyncRealtimePrefixSteps);
+            bufferIndex = 0;
+            addEvent(t, "fallback", "Fallback prefix because buffer is empty");
+          }
+        } else if (mode === "anytime" && future) {
+          if (!future.usedAnytime && future.publish <= t && future.ready > t) {
+            const elapsed = Math.max(0, t - future.launch);
+            const sourcePlan = makePlan(
+              future.planId,
+              "anytime",
+              future.prefixSteps,
+              elapsed
+            );
+            buffer = sourcePlan;
+            bufferIndex = 0;
+            future.usedAnytime = true;
+            addEvent(
+              t,
+              "anytime",
+              `Use stable prefix from P${future.planId} before full plan is done`
+            );
+          } else if (future.ready <= t) {
+            const elapsed = Math.max(0, t - future.launch);
+            buffer = makePlan(
+              future.planId,
+              "ready",
+              CFG.horizon * CFG.coarseFactor - elapsed,
+              elapsed
+            );
+            bufferIndex = 0;
+            addEvent(t, "swap", `Refresh with completed worker P${future.planId}`);
+            future = null;
+          }
+        }
+
+        if (t % CFG.updateInterval === 0) {
+          addEvent(t, "update", `Filter/model update cadence tick at ${t}`);
+        }
+        if (CFG.parameterUpdateSteps.includes(t)) {
+          thetaVersion += 1;
+          addEvent(
+            t,
+            "param",
+            `Parameter posterior updated: theta version -> ${thetaVersion}`
+          );
+          addEvent(
+            t,
+            "param",
+            "Agent requests parameter_update replanning; AsyncMpcICem refreshes the worker anchor instead of forcing fallback"
+          );
+        }
+
+        let cell = buffer ? buffer[bufferIndex] : null;
+        if (cell && atBoundary && future && future.ready > t && cell.source !== "fallback") {
+          cell = { ...cell, source: "tail" };
+        }
+        executed[t] = cell;
+        bufferAtStep[t] = buffer ? buffer[bufferIndex] : null;
+        bufferIndex += 1;
+
+        const launchStep = t + 1;
+        if (launchStep < CFG.steps && !future) {
+          launchWorker(launchStep);
+        } else if (launchStep < CFG.steps && future) {
+          addEvent(
+            launchStep,
+            "anchor",
+            `Agent publishes latest z_boundary and theta version ${thetaVersion}`
+          );
+        }
+      }
+
+      return { executed, bufferAtStep, eventAtStep, workers, events };
+    }
+
+    function makeAxis() {
+      const cells = Array.from({ length: CFG.steps }, (_, i) => {
+        const label = i % CFG.chunk === 0 ? String(i) : "";
+        return `<div class="cell">${label}</div>`;
+      }).join("");
+      return row("fine step", `<div class="cells axis" style="--steps:${CFG.steps}">${cells}${currentLine()}</div>`);
+    }
+
+    function row(name, content) {
+      return `<div class="row"><div class="row-name">${name}</div>${content}</div>`;
+    }
+
+    function groupRow(name) {
+      return `<div class="row group-row"><div></div><div>${name}</div></div>`;
+    }
+
+    function currentLine() {
+      const step = Number(stepSlider.value);
+      return `<div class="current-line" style="left:${step * 12}px"></div>`;
+    }
+
+    function renderCells(items, mapper) {
+      const cells = items.map((item, i) => mapper(item, i)).join("");
+      return `<div class="cells" style="--steps:${CFG.steps}">${cells}${currentLine()}</div>`;
+    }
+
+    function renderCoarseBlocks(executed) {
+      const blocks = [];
+      let start = 0;
+      while (start < executed.length) {
+        const cell = executed[start];
+        const key = cell ? `${cell.source}-${cell.planId}-${cell.coarse}` : "none";
+        let end = start + 1;
+        while (end < executed.length) {
+          const next = executed[end];
+          const nextKey = next ? `${next.source}-${next.planId}-${next.coarse}` : "none";
+          if (nextKey !== key) break;
+          end += 1;
+        }
+        if (cell) {
+          blocks.push(
+            `<div class="block" title="${shortAction(cell)}" ` +
+            `style="left:${start * 12}px;width:${(end - start) * 12}px;background:${sourceColor(cell.source)}">` +
+            `${cell.label}</div>`
+          );
+        }
+        start = end;
+      }
+      return `<div class="cells" style="--steps:${CFG.steps}">${blocks.join("")}${currentLine()}</div>`;
+    }
+
+    function renderWorkers(workers) {
+      const blocks = workers.map((worker) => {
+        const left = worker.launch * 12;
+        const width = Math.max(12, (Math.min(worker.ready, CFG.steps) - worker.launch) * 12);
+        const label = `P${worker.planId}: iCEM worker`;
+        return `<div class="block" title="${label}; ready at step ${worker.ready}" ` +
+          `style="left:${left}px;width:${width}px;background:${COLORS.worker}">${label}</div>`;
+      });
+      return `<div class="cells" style="--steps:${CFG.steps}">${blocks.join("")}${currentLine()}</div>`;
+    }
+
+    function renderEvents(eventAtStep) {
+      const cells = eventAtStep.map((events) => {
+        let cls = "event";
+        if (events.includes("swap")) cls += " swap";
+        else if (events.includes("anytime")) cls += " anytime";
+        else if (events.includes("param")) cls += " param";
+        else if (events.includes("tail")) cls += " tail";
+        else if (events.includes("launch")) cls += " launch";
+        else if (events.includes("anchor")) cls += " anchor";
+        else if (events.includes("boundary")) cls += " boundary";
+        return `<div class="${cls}" title="${events.join(", ")}"></div>`;
+      }).join("");
+      return `<div class="cells" style="--steps:${CFG.steps}">${cells}${currentLine()}</div>`;
+    }
+
+    function renderTimeline(sim) {
+      const executedCells = sim.executed.map((cell) => {
+        const color = cell ? sourceColor(cell.source) : "#eef2f7";
+        const text = cell ? (cell.coarse % 2 === 0 ? "u" : "") : "";
+        return `<div class="cell" title="${shortAction(cell)}" style="background:${color}">${text}</div>`;
+      }).join("");
+
+      const bufferCells = sim.bufferAtStep.map((cell) => {
+        const color = cell ? sourceColor(cell.source) : "#eef2f7";
+        return `<div class="cell" title="${shortAction(cell)}" style="background:${color}"></div>`;
+      }).join("");
+
+      timeline.innerHTML = [
+        makeAxis(),
+        groupRow("Agent foreground loop"),
+        row("Agent: executed fine action", `<div class="cells" style="--steps:${CFG.steps}">${executedCells}${currentLine()}</div>`),
+        row("Agent: execution buffer", `<div class="cells" style="--steps:${CFG.steps}">${bufferCells}${currentLine()}</div>`),
+        row("Agent: cadence and updates", renderEvents(sim.eventAtStep)),
+        groupRow("Planner background process"),
+        row("Planner: coarse plan in use", renderCoarseBlocks(sim.executed)),
+        row("Planner: iCEM worker process", renderWorkers(sim.workers))
+      ].join("");
+    }
+
+    function renderSide(sim, mode) {
+      const step = Number(stepSlider.value);
+      const cell = sim.executed[step];
+      const future = sim.workers.find((w) => w.launch <= step && step < w.ready);
+      const near = sim.events
+        .filter((event) => Math.abs(event.step - step) <= 8)
+        .slice(-9);
+
+      modeTitle.textContent = mode === "anytime"
+        ? "adaptive_async_anytime"
+        : "adaptive_async_realtime";
+      modeText.textContent = mode === "anytime"
+        ? "The foreground may replace the buffer with a low-std prefix while the full worker plan is still running. When the full result arrives, it refreshes the buffer with the completed plan."
+        : "The foreground waits for the completed worker result. If the worker is not ready at the chunk boundary, it keeps executing the old plan tail instead of blocking.";
+
+      const facts = [
+        ["current action", shortAction(cell)],
+        ["buffer source", cell ? cell.source : "none"],
+        ["worker", future ? `P${future.planId}, ready at ${future.ready}` : "none active"],
+        ["theta update", CFG.parameterUpdateSteps.includes(step) ? "posterior updated" : "no"],
+        ["chunk boundary", step % CFG.chunk === 0 ? "yes" : `in ${CFG.chunk - (step % CFG.chunk)} steps`],
+        ["coarse hold", `${CFG.coarseFactor} fine steps/action`],
+        ["fine time", `${(step * CFG.fineDt).toFixed(2)} s`]
+      ];
+
+      stats.innerHTML = facts.map(([name, value]) => (
+        `<div class="stat"><b>${name}</b><span>${value}</span></div>`
+      )).join("");
+
+      equations.textContent = [
+        "coarse hold:",
+        "  u_fine[t + k] = u_coarse[floor(k / coarse_dt_factor)]",
+        "",
+        "async boundary:",
+        "  z_boundary = rollout(z_t, buffer[buffer_index : chunk])",
+        "",
+        "current-action warm start:",
+        "  mean[0] <- buffer[buffer_index]",
+        "",
+        "ready-plan accept:",
+        "  ||z_live - z_boundary|| / max(1, ||z_live||) <= stale_tolerance",
+        "",
+        "parameter update in async path:",
+        "  theta_version <- theta_version + 1",
+        "  Agent calls request_replan('parameter_update')",
+        "  AsyncMpcICem does not force foreground fallback",
+        "  running worker receives latest boundary/parameter belief",
+        "",
+        "anytime prefix:",
+        "  publish first m coarse actions when std_j / action_radius <= tol"
+      ].join("\n");
+
+      eventsBox.innerHTML = near.length
+        ? near.map((event) => (
+          `<div class="event-line"><strong>t=${event.step}</strong><span>${event.text}</span></div>`
+        )).join("")
+        : `<div class="note">No nearby event.</div>`;
+
+      timelineTitle.textContent = mode === "anytime"
+        ? "Anytime async: prefixes can interrupt the tail"
+        : "Realtime async: ready plans swap at chunk boundaries";
+      timelineCaption.textContent = mode === "anytime"
+        ? "Purple blocks show low-variance prefixes copied from the running worker before the full plan completes."
+        : "The agent continues the buffer tail while the planner process searches in parallel.";
+    }
+
+    function update() {
+      const mode = policySelect.value;
+      const duration = Number(workerSteps.value);
+      workerValue.textContent = `${duration} fine steps (${(duration * CFG.fineDt).toFixed(2)} s)`;
+      stepValue.textContent = `${stepSlider.value} (${(Number(stepSlider.value) * CFG.fineDt).toFixed(2)} s)`;
+      const sim = simulate(mode, duration);
+      renderTimeline(sim);
+      renderSide(sim, mode);
+    }
+
+    function play() {
+      if (timer) {
+        clearInterval(timer);
+        timer = null;
+        playButton.textContent = "Play";
+        return;
+      }
+      playButton.textContent = "Pause";
+      timer = setInterval(() => {
+        const next = (Number(stepSlider.value) + 1) % CFG.steps;
+        stepSlider.value = String(next);
+        update();
+      }, 220);
+    }
+
+    policySelect.addEventListener("change", update);
+    workerSteps.addEventListener("input", update);
+    stepSlider.addEventListener("input", update);
+    playButton.addEventListener("click", play);
+    resetButton.addEventListener("click", () => {
+      stepSlider.value = "0";
+      if (timer) play();
+      update();
+    });
+
+    update();
+  </script>
+</body>
+</html>
