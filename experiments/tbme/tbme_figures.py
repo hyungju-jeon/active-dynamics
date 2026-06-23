@@ -407,12 +407,6 @@ def _policy_color(policy_id: str, fallback_idx: int = 0) -> str:
     return POLICY_COLORS.get(policy_id, FALLBACK_COLORS[fallback_idx % len(FALLBACK_COLORS)])
 
 
-def _sem(values: Sequence[float]) -> float:
-    arr = np.asarray(values, dtype=np.float64)
-    arr = arr[np.isfinite(arr)]
-    return sample_sem(arr.tolist())
-
-
 def _r2_threshold_suffix(threshold: float) -> str:
     return f"{float(threshold):.2f}".replace(".", "p")
 
@@ -2740,7 +2734,7 @@ def _experiment_metric_mean_sem(
     values = _experiment_metric_values(suite_dir, policy_id, field)
     if not values:
         return None, 0.0, 0
-    return float(np.mean(values)), _sem(values), len(values)
+    return float(np.mean(values)), sample_sem(values), len(values)
 
 
 def _experiment_curve_rows(

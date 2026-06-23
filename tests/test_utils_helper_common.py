@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from actdyn.models.model import _kl_div_mc
 from actdyn.utils.torch_utils import jacobian_wrt_param, make_uniform_sampler
 
 
@@ -33,3 +34,16 @@ def test_jacobian_wrt_param_matches_expected_values():
         ]
     )
     assert torch.allclose(J, expected)
+
+
+def test_kl_div_mc_broadcasts_posterior_terms():
+    z_prior = torch.zeros(4, 2, 3, 1)
+    mu_q = torch.zeros(2, 3, 1)
+    var_q = torch.ones(2, 3, 1)
+    mu_p = torch.ones(2, 3, 1)
+    var_p = torch.ones(2, 3, 1)
+
+    kl = _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p)
+
+    assert kl.shape == (2,)
+    assert torch.allclose(kl, torch.full((2,), 1.5))

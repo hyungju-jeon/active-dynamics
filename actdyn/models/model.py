@@ -17,6 +17,36 @@ from .dynamics import BaseDynamics, FunctionDynamics
 from .encoder import BaseEncoder
 
 
+def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
+    """Monte Carlo KL estimate for diagonal Gaussian posterior/prior terms."""
+    if z_prior.dim() == 3:
+        z_prior = z_prior.unsqueeze(0)
+
+    target_ndim = z_prior.dim()
+
+    def _unsqueeze_to(tensor: torch.Tensor, ndim: int) -> torch.Tensor:
+        while tensor.dim() < ndim:
+            tensor = tensor.unsqueeze(0)
+        return tensor
+
+    mu_q = _unsqueeze_to(mu_q, target_ndim)
+    var_q = _unsqueeze_to(var_q, target_ndim)
+    mu_p = _unsqueeze_to(mu_p, target_ndim)
+    var_p = _unsqueeze_to(var_p, target_ndim)
+
+    var_q = var_q.clamp_min(eps)
+    var_p = var_p.clamp_min(eps)
+
+    log_q = -0.5 * (torch.log(2 * torch.pi * var_q) + (z_prior - mu_q) ** 2 / var_q).sum(
+        dim=(-2, -1)
+    )
+    log_p = -0.5 * (torch.log(2 * torch.pi * var_p) + (z_prior - mu_p) ** 2 / var_p).sum(
+        dim=(-2, -1)
+    )
+
+    return (log_q - log_p).mean(dim=0)
+
+
 class SeqVae(BaseModel):
     """Sequential Variational Autoencoder (SeqVAE) with dynamics."""
 
@@ -27,36 +57,6 @@ class SeqVae(BaseModel):
         super().__init__(**kwargs)
 
         self.beta = 0.0
-
-    @staticmethod
-    def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
-        """Monte Carlo KL"""
-        if z_prior.dim() == 3:
-            z_prior = z_prior.unsqueeze(0)
-
-        target_ndim = z_prior.dim()
-
-        def _unsqueeze_to(tensor: torch.Tensor, ndim: int) -> torch.Tensor:
-            while tensor.dim() < ndim:
-                tensor = tensor.unsqueeze(0)
-            return tensor
-
-        mu_q = _unsqueeze_to(mu_q, target_ndim)
-        var_q = _unsqueeze_to(var_q, target_ndim)
-        mu_p = _unsqueeze_to(mu_p, target_ndim)
-        var_p = _unsqueeze_to(var_p, target_ndim)
-
-        var_q = var_q.clamp_min(eps)
-        var_p = var_p.clamp_min(eps)
-
-        log_q = -0.5 * (torch.log(2 * torch.pi * var_q) + (z_prior - mu_q) ** 2 / var_q).sum(
-            dim=(-2, -1)
-        )
-        log_p = -0.5 * (torch.log(2 * torch.pi * var_p) + (z_prior - mu_p) ** 2 / var_p).sum(
-            dim=(-2, -1)
-        )
-
-        return (log_q - log_p).mean(dim=0)
 
     def _compute_multistep_kl(
         self,
@@ -118,7 +118,7 @@ class SeqVae(BaseModel):
                 z_prior = samples_list[k][:, :, :-k, :]  # shape (S,B,T,D)
                 mu_p = mus_list[k - 1][:, :, :-k, :]
                 var_p = vars_list[k - 1]
-                kl_mc = self._kl_div_mc(mu_q_target, var_q_target, z_prior, mu_p, var_p)  # (B,)
+                kl_mc = _kl_div_mc(mu_q_target, var_q_target, z_prior, mu_p, var_p)  # (B,)
                 kl_terms.append(kl_mc)
             else:
                 # Analytic KL
@@ -329,36 +329,6 @@ class SeqStateVae(BaseModel):
 
         self.beta = 0.0
 
-    @staticmethod
-    def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
-        """Monte Carlo KL"""
-        if z_prior.dim() == 3:
-            z_prior = z_prior.unsqueeze(0)
-
-        target_ndim = z_prior.dim()
-
-        def _unsqueeze_to(tensor: torch.Tensor, ndim: int) -> torch.Tensor:
-            while tensor.dim() < ndim:
-                tensor = tensor.unsqueeze(0)
-            return tensor
-
-        mu_q = _unsqueeze_to(mu_q, target_ndim)
-        var_q = _unsqueeze_to(var_q, target_ndim)
-        mu_p = _unsqueeze_to(mu_p, target_ndim)
-        var_p = _unsqueeze_to(var_p, target_ndim)
-
-        var_q = var_q.clamp_min(eps)
-        var_p = var_p.clamp_min(eps)
-
-        log_q = -0.5 * (torch.log(2 * torch.pi * var_q) + (z_prior - mu_q) ** 2 / var_q).sum(
-            dim=(-2, -1)
-        )
-        log_p = -0.5 * (torch.log(2 * torch.pi * var_p) + (z_prior - mu_p) ** 2 / var_p).sum(
-            dim=(-2, -1)
-        )
-
-        return (log_q - log_p).mean(dim=0)
-
     def _compute_multistep_kl(
         self,
         mu_q,  # (B,T,D) posterior mean
@@ -419,7 +389,7 @@ class SeqStateVae(BaseModel):
                 z_prior = samples_list[k][:, :, :-k, :]  # shape (S,B,T,D)
                 mu_p = mus_list[k - 1][:, :, :-k, :]
                 var_p = vars_list[k - 1]
-                kl_mc = self._kl_div_mc(mu_q_target, var_q_target, z_prior, mu_p, var_p)  # (B,)
+                kl_mc = _kl_div_mc(mu_q_target, var_q_target, z_prior, mu_p, var_p)  # (B,)
                 kl_terms.append(kl_mc)
             else:
                 # Analytic KL

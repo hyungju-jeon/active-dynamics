@@ -5,7 +5,6 @@ import argparse
 import csv
 import json
 import math
-import statistics
 from collections import defaultdict
 from pathlib import Path
 
@@ -15,6 +14,12 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from actdyn.utils.figure_io import (
+    centered_moving_average,
+    finite_mean,
+    finite_median,
+    finite_quantile,
+)
 from experiments.tbme.tbme_io import safe_float as _safe_float
 
 
@@ -24,27 +29,6 @@ SYSTEM = "asymmetric_basin"
 THRESHOLD = 3.0
 SHORT_HORIZON = 5
 FIXED_REPLAN_INTERVAL = 20
-
-
-def _mean(values: list[float]) -> float:
-    values = [value for value in values if value == value]
-    return sum(values) / len(values) if values else math.nan
-
-
-def _median(values: list[float]) -> float:
-    values = [value for value in values if value == value]
-    return statistics.median(values) if values else math.nan
-
-
-def _quantile(values: list[float], q: float) -> float:
-    values = np.asarray([value for value in values if value == value], dtype=float)
-    return float(np.quantile(values, q)) if values.size else math.nan
-
-
-def _smooth(values: np.ndarray, width: int = 25) -> np.ndarray:
-    if values.size < width:
-        return values
-    return np.convolve(values, np.ones(width, dtype=float) / width, mode="same")
 
 
 def _parse_exp_id(exp_id: str) -> tuple[str, str] | None:
@@ -245,8 +229,15 @@ def _plot_stale_burden(ax: plt.Axes, runs: list[dict[str, object]], colors: dict
         if not by_step:
             continue
         steps = np.asarray(sorted(by_step), dtype=float)
-        frac = np.asarray([_mean(by_step[int(step)]) for step in steps], dtype=float)
-        ax.plot(steps, _smooth(frac), color=color, linestyle=linestyle, linewidth=1.7, label=label)
+        frac = np.asarray([finite_mean(by_step[int(step)]) for step in steps], dtype=float)
+        ax.plot(
+            steps,
+            centered_moving_average(frac),
+            color=color,
+            linestyle=linestyle,
+            linewidth=1.7,
+            label=label,
+        )
     ax.set_title("A. mismatch creates stale plans")
     ax.set_xlabel("rollout step")
     ax.set_ylabel("fraction above\ntracking threshold")
@@ -285,7 +276,7 @@ def _plot_update_delay(ax: plt.Axes, events: list[dict[str, object]], colors: di
     labels = ["observation adaptive", "observation fixed", "parameter adaptive", "parameter fixed"]
     for idx, label in enumerate(labels):
         vals = [float(row["next_update_delay"]) for row in events if row["label"] == label]
-        q1, med, q3 = _quantile(vals, 0.25), _median(vals), _quantile(vals, 0.75)
+        q1, med, q3 = finite_quantile(vals, 0.25), finite_median(vals), finite_quantile(vals, 0.75)
         ax.bar(idx, med, color=colors[label], edgecolor="black", linewidth=0.4, width=0.6)
         ax.plot([idx, idx], [q1, q3], color="black", linewidth=1.2)
         if med == med:
@@ -298,7 +289,9 @@ def _plot_update_delay(ax: plt.Axes, events: list[dict[str, object]], colors: di
 def _plot_update_trigger(ax: plt.Axes, events: list[dict[str, object]], colors: dict[str, str]) -> None:
     labels = ["observation adaptive", "observation fixed", "parameter adaptive", "parameter fixed"]
     values = [
-        _mean([float(row["next_update_reason"] == "block_eig") for row in events if row["label"] == label])
+        finite_mean(
+            [float(row["next_update_reason"] == "block_eig") for row in events if row["label"] == label]
+        )
         for label in labels
     ]
     ax.bar(range(len(labels)), values, color=[colors[label] for label in labels], edgecolor="black", linewidth=0.4, width=0.65)
@@ -327,9 +320,9 @@ def _plot_early_r2(ax: plt.Axes, runs: list[dict[str, object]], colors: dict[str
         if not by_step:
             continue
         steps = np.asarray(sorted(by_step), dtype=float)
-        med = np.asarray([_median(by_step[int(step)]) for step in steps], dtype=float)
-        lo = np.asarray([_quantile(by_step[int(step)], 0.25) for step in steps], dtype=float)
-        hi = np.asarray([_quantile(by_step[int(step)], 0.75) for step in steps], dtype=float)
+        med = np.asarray([finite_median(by_step[int(step)]) for step in steps], dtype=float)
+        lo = np.asarray([finite_quantile(by_step[int(step)], 0.25) for step in steps], dtype=float)
+        hi = np.asarray([finite_quantile(by_step[int(step)], 0.75) for step in steps], dtype=float)
         ax.plot(steps, med, color=color, linestyle=linestyle, linewidth=1.7, label=label)
         ax.fill_between(steps, lo, hi, color=color, alpha=0.12, linewidth=0)
     ax.axhline(0.9, color="#888888", linewidth=0.8, linestyle=":")

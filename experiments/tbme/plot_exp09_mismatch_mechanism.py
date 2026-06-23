@@ -15,6 +15,12 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from actdyn.utils.figure_io import (
+    centered_moving_average,
+    finite_mean,
+    finite_median,
+    finite_quantile,
+)
 from experiments.tbme.tbme_io import safe_float as _safe_float
 
 
@@ -26,33 +32,11 @@ SHORT_HORIZON = 5
 FIXED_REPLAN_INTERVAL = 20
 
 
-def _mean(values: list[float]) -> float:
-    values = [value for value in values if value == value]
-    return sum(values) / len(values) if values else math.nan
-
-
 def _sem(values: list[float]) -> float:
     values = [value for value in values if value == value]
     if len(values) < 2:
         return math.nan
     return statistics.stdev(values) / math.sqrt(len(values))
-
-
-def _median(values: list[float]) -> float:
-    values = [value for value in values if value == value]
-    return statistics.median(values) if values else math.nan
-
-
-def _quantile(values: list[float], q: float) -> float:
-    values = np.asarray([value for value in values if value == value], dtype=float)
-    return float(np.quantile(values, q)) if values.size else math.nan
-
-
-def _smooth(values: np.ndarray, width: int = 25) -> np.ndarray:
-    if values.size < width:
-        return values
-    kernel = np.ones(width, dtype=float) / width
-    return np.convolve(values, kernel, mode="same")
 
 
 def _condition_from_exp_id(exp_id: str) -> tuple[str, str] | None:
@@ -255,8 +239,15 @@ def _plot_compact_figure(runs: list[dict[str, object]], output_base: Path) -> No
         if not by_step:
             continue
         steps = np.asarray(sorted(by_step), dtype=float)
-        frac = np.asarray([_mean(by_step[int(step)]) for step in steps], dtype=float)
-        ax_a.plot(steps, _smooth(frac), color=color, linestyle=linestyle, linewidth=1.6, label=label)
+        frac = np.asarray([finite_mean(by_step[int(step)]) for step in steps], dtype=float)
+        ax_a.plot(
+            steps,
+            centered_moving_average(frac),
+            color=color,
+            linestyle=linestyle,
+            linewidth=1.6,
+            label=label,
+        )
     ax_a.set_title("A. mismatch makes plans stale")
     ax_a.set_xlabel("rollout step")
     ax_a.set_ylabel("fraction above\ntracking threshold")
@@ -302,7 +293,7 @@ def _plot_compact_figure(runs: list[dict[str, object]], output_base: Path) -> No
                         )
                     )
                 )
-        means.append(_mean(counts))
+        means.append(finite_mean(counts))
         sems.append(_sem(counts))
     x = np.arange(len(conditions), dtype=float)
     ax_c.bar(
@@ -330,9 +321,9 @@ def _plot_compact_figure(runs: list[dict[str, object]], output_base: Path) -> No
                     if step <= 500:
                         by_step[int(step)].append(float(value))
         steps = np.asarray(sorted(by_step), dtype=float)
-        med = np.asarray([_median(by_step[int(step)]) for step in steps], dtype=float)
-        lo = np.asarray([_quantile(by_step[int(step)], 0.25) for step in steps], dtype=float)
-        hi = np.asarray([_quantile(by_step[int(step)], 0.75) for step in steps], dtype=float)
+        med = np.asarray([finite_median(by_step[int(step)]) for step in steps], dtype=float)
+        lo = np.asarray([finite_quantile(by_step[int(step)], 0.25) for step in steps], dtype=float)
+        hi = np.asarray([finite_quantile(by_step[int(step)], 0.75) for step in steps], dtype=float)
         ax_d.plot(steps, med, color=color, linewidth=1.7, label=label)
         ax_d.fill_between(steps, lo, hi, color=color, alpha=0.15, linewidth=0)
     ax_d.axhline(0.9, color="#888888", linewidth=0.8, linestyle=":")

@@ -35,6 +35,36 @@ def sample_sem(values: Sequence[float]) -> float:
     return float(np.std(arr, ddof=1) / math.sqrt(arr.size))
 
 
+def finite_mean(values: Sequence[float]) -> float:
+    """Return the mean over finite values, or NaN when no finite values exist."""
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    return float(arr.mean()) if arr.size else math.nan
+
+
+def finite_median(values: Sequence[float]) -> float:
+    """Return the median over finite values, or NaN when no finite values exist."""
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    return float(np.median(arr)) if arr.size else math.nan
+
+
+def finite_quantile(values: Sequence[float], q: float) -> float:
+    """Return a quantile over finite values, or NaN when no finite values exist."""
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    return float(np.quantile(arr, q)) if arr.size else math.nan
+
+
+def centered_moving_average(values: Sequence[float], width: int = 25) -> np.ndarray:
+    """Return a centered moving average, preserving short input unchanged."""
+    arr = np.asarray(values, dtype=np.float64)
+    width = max(1, int(width))
+    if arr.size < width:
+        return arr
+    return np.convolve(arr, np.ones(width, dtype=np.float64) / width, mode="same")
+
+
 def load_plotting(
     output_path: Path,
     *,

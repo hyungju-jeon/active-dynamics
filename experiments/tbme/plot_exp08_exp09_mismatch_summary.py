@@ -5,7 +5,6 @@ import argparse
 import csv
 import json
 import math
-import statistics
 from collections import defaultdict
 from pathlib import Path
 
@@ -14,6 +13,8 @@ import numpy as np
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+from actdyn.utils.figure_io import finite_mean, finite_median, finite_quantile
 
 
 ADAPTIVE = "active_planning_adaptive_u20_r20_h40"
@@ -28,22 +29,6 @@ GROUPS = [
     ("asymmetric_basin", "strong"),
 ]
 FAMILIES = ["parameter", "observation"]
-
-
-
-def _median(values: list[float]) -> float:
-    values = [value for value in values if value == value]
-    return statistics.median(values) if values else math.nan
-
-
-def _quantile(values: list[float], q: float) -> float:
-    values = np.asarray([value for value in values if value == value], dtype=float)
-    return float(np.quantile(values, q)) if values.size else math.nan
-
-
-def _mean(values: list[float]) -> float:
-    values = [value for value in values if value == value]
-    return sum(values) / len(values) if values else math.nan
 
 
 def _parse_exp_id(exp_id: str) -> tuple[str, str, str] | None:
@@ -72,8 +57,8 @@ def _read_run_metrics(run_dir: Path) -> tuple[float, float, float]:
             if float(row["step"]) <= EARLY_STEP_MAX:
                 early_r2.append(float(row["trajectory_r2"]))
 
-    good_r2_fraction = _mean([float(value >= GOOD_R2) for value in early_r2])
-    return _mean(early_r2), good_r2_fraction, float(replan_count)
+    good_r2_fraction = finite_mean([float(value >= GOOD_R2) for value in early_r2])
+    return finite_mean(early_r2), good_r2_fraction, float(replan_count)
 
 
 def _collect(root: Path, family: str) -> list[dict[str, object]]:
@@ -128,9 +113,9 @@ def _summaries(rows: list[dict[str, object]]) -> list[dict[str, object]]:
                             "policy": policy,
                             "metric": metric,
                             "n": len(values),
-                            "median": _median(values),
-                            "q25": _quantile(values, 0.25),
-                            "q75": _quantile(values, 0.75),
+                            "median": finite_median(values),
+                            "q25": finite_quantile(values, 0.25),
+                            "q75": finite_quantile(values, 0.75),
                         }
                     )
     return out
