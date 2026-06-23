@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 from collections import defaultdict
@@ -14,6 +13,7 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from actdyn.utils.experiment_runtime import read_trace_csv, write_trace_csv
 from actdyn.utils.figure_io import finite_mean, finite_median, finite_quantile
 
 
@@ -45,17 +45,15 @@ def _parse_exp_id(exp_id: str) -> tuple[str, str, str] | None:
 
 
 def _read_run_metrics(run_dir: Path) -> tuple[float, float, float]:
-    replan_count = 0
-    with (run_dir / "information_trace.csv").open() as handle:
-        for row in csv.DictReader(handle):
-            if row.get("adaptive_replan_reason") == "state_tracking_error":
-                replan_count += 1
+    replan_count = sum(
+        row.get("adaptive_replan_reason") == "state_tracking_error"
+        for row in read_trace_csv(run_dir / "information_trace.csv")
+    )
 
     early_r2: list[float] = []
-    with (run_dir / "trajectory_r2_trace.csv").open() as handle:
-        for row in csv.DictReader(handle):
-            if float(row["step"]) <= EARLY_STEP_MAX:
-                early_r2.append(float(row["trajectory_r2"]))
+    for row in read_trace_csv(run_dir / "trajectory_r2_trace.csv"):
+        if float(row["step"]) <= EARLY_STEP_MAX:
+            early_r2.append(float(row["trajectory_r2"]))
 
     good_r2_fraction = finite_mean([float(value >= GOOD_R2) for value in early_r2])
     return finite_mean(early_r2), good_r2_fraction, float(replan_count)
@@ -166,11 +164,7 @@ def _draw_bars(ax: plt.Axes, summary: list[dict[str, object]], family: str, metr
 
 
 def _write_csv(path: Path, summary: list[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(summary[0].keys()))
-        writer.writeheader()
-        writer.writerows(summary)
+    write_trace_csv(path, summary, list(summary[0].keys()))
 
 
 def _plot(summary: list[dict[str, object]], output_base: Path) -> None:

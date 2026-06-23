@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 from collections import defaultdict
@@ -14,13 +13,17 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from actdyn.utils.experiment_runtime import (
+    read_trace_csv,
+    safe_float as _safe_float,
+    write_trace_csv,
+)
 from actdyn.utils.figure_io import (
     centered_moving_average,
     finite_mean,
     finite_median,
     finite_quantile,
 )
-from experiments.tbme.tbme_io import safe_float as _safe_float
 
 
 ADAPTIVE = "active_planning_adaptive_u20_r20_h40"
@@ -47,33 +50,31 @@ def _parse_exp_id(exp_id: str) -> tuple[str, str] | None:
 def _read_info(path: Path) -> tuple[list[dict[str, object]], dict[int, dict[str, object]]]:
     rows: list[dict[str, object]] = []
     by_step: dict[int, dict[str, object]] = {}
-    with path.open() as handle:
-        for row in csv.DictReader(handle):
-            rec = {
-                "step": int(float(row["step"])),
-                "tracking_error": _safe_float(
-                    row.get("adaptive_state_tracking_error"), default=math.nan
-                ),
-                "replan_reason": str(row.get("adaptive_replan_reason", "none")),
-                "parameter_updated": str(row.get("parameter_posterior_updated", "")).lower() == "true",
-                "parameter_update_reason": str(row.get("parameter_update_reason", "none")),
-                "I_theta_t": _safe_float(row.get("I_theta_t"), default=math.nan),
-                "theta_block_eig": _safe_float(row.get("theta_block_eig"), default=math.nan),
-            }
-            rows.append(rec)
-            by_step[int(rec["step"])] = rec
+    for row in read_trace_csv(path):
+        rec = {
+            "step": int(float(row["step"])),
+            "tracking_error": _safe_float(
+                row.get("adaptive_state_tracking_error"), default=math.nan
+            ),
+            "replan_reason": str(row.get("adaptive_replan_reason", "none")),
+            "parameter_updated": str(row.get("parameter_posterior_updated", "")).lower() == "true",
+            "parameter_update_reason": str(row.get("parameter_update_reason", "none")),
+            "I_theta_t": _safe_float(row.get("I_theta_t"), default=math.nan),
+            "theta_block_eig": _safe_float(row.get("theta_block_eig"), default=math.nan),
+        }
+        rows.append(rec)
+        by_step[int(rec["step"])] = rec
     return rows, by_step
 
 
 def _read_r2(path: Path) -> tuple[list[int], list[float]]:
     steps: list[int] = []
     values: list[float] = []
-    with path.open() as handle:
-        for row in csv.DictReader(handle):
-            step = int(float(row["step"]))
-            if step <= 500:
-                steps.append(step)
-                values.append(float(row["trajectory_r2"]))
+    for row in read_trace_csv(path):
+        step = int(float(row["step"]))
+        if step <= 500:
+            steps.append(step)
+            values.append(float(row["trajectory_r2"]))
     return steps, values
 
 
@@ -335,12 +336,18 @@ def _plot_early_r2(ax: plt.Axes, runs: list[dict[str, object]], colors: dict[str
 
 
 def _write_events(path: Path, events: list[dict[str, object]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fields = ["family", "label", "seed", "event_step", "tracking_error_event", "short_window_clean", "tracking_error_plus5", "next_update_delay", "next_update_reason"]
-    with path.open("w", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields)
-        writer.writeheader()
-        writer.writerows(events)
+    fields = [
+        "family",
+        "label",
+        "seed",
+        "event_step",
+        "tracking_error_event",
+        "short_window_clean",
+        "tracking_error_plus5",
+        "next_update_delay",
+        "next_update_reason",
+    ]
+    write_trace_csv(path, events, fields)
 
 
 def _plot(runs: list[dict[str, object]], events: list[dict[str, object]], output_base: Path) -> None:

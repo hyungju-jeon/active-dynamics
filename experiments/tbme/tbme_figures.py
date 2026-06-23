@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import shutil
 from dataclasses import dataclass
@@ -12,7 +11,11 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 
 from actdyn.environment.vectorfield import ResidualDynamicsCallable
-from actdyn.utils.experiment_runtime import read_trace_csv
+from actdyn.utils.experiment_runtime import (
+    read_trace_csv,
+    safe_float as _safe_float,
+    write_trace_csv,
+)
 from actdyn.utils.figure_io import (
     load_plotting,
     parse_figure_formats,
@@ -48,7 +51,6 @@ from .tbme_io import (
     planned_xy_cycle_for_step,
     read_embedding_trace,
     read_xy_trace as _read_xy_trace,
-    safe_float as _safe_float,
     trace_path as _tbme_trace_path,
     true_dynamics_from_metadata,
 )
@@ -412,11 +414,7 @@ def _r2_threshold_suffix(threshold: float) -> str:
 
 
 def _write_csv(path: Path, rows: Iterable[dict[str, Any]], fields: Sequence[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(fields))
-        writer.writeheader()
-        writer.writerows(rows)
+    write_trace_csv(path, list(rows), list(fields))
 
 
 def _write_text(path: Path, text: str) -> None:

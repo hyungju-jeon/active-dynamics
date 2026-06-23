@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import math
 import statistics
@@ -15,13 +14,13 @@ import numpy as np
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from actdyn.utils.experiment_runtime import read_trace_csv, safe_float as _safe_float
 from actdyn.utils.figure_io import (
     centered_moving_average,
     finite_mean,
     finite_median,
     finite_quantile,
 )
-from experiments.tbme.tbme_io import safe_float as _safe_float
 
 
 ADAPTIVE = "active_planning_adaptive_u20_r20_h40"
@@ -51,29 +50,27 @@ def _condition_from_exp_id(exp_id: str) -> tuple[str, str] | None:
 def _read_info_trace(path: Path) -> tuple[list[dict[str, object]], dict[int, dict[str, object]]]:
     rows: list[dict[str, object]] = []
     by_step: dict[int, dict[str, object]] = {}
-    with path.open() as handle:
-        for row in csv.DictReader(handle):
-            rec = {
-                "step": int(float(row["step"])),
-                "tracking_error": _safe_float(
-                    row.get("adaptive_state_tracking_error"), default=math.nan
-                ),
-                "replan_reason": str(row.get("adaptive_replan_reason", "none")),
-                "parameter_updated": str(row.get("parameter_posterior_updated", "")).lower()
-                == "true",
-            }
-            rows.append(rec)
-            by_step[int(rec["step"])] = rec
+    for row in read_trace_csv(path):
+        rec = {
+            "step": int(float(row["step"])),
+            "tracking_error": _safe_float(
+                row.get("adaptive_state_tracking_error"), default=math.nan
+            ),
+            "replan_reason": str(row.get("adaptive_replan_reason", "none")),
+            "parameter_updated": str(row.get("parameter_posterior_updated", "")).lower()
+            == "true",
+        }
+        rows.append(rec)
+        by_step[int(rec["step"])] = rec
     return rows, by_step
 
 
 def _read_r2_trace(path: Path) -> tuple[list[float], list[float]]:
     steps: list[float] = []
     values: list[float] = []
-    with path.open() as handle:
-        for row in csv.DictReader(handle):
-            steps.append(float(row["step"]))
-            values.append(float(row["trajectory_r2"]))
+    for row in read_trace_csv(path):
+        steps.append(float(row["step"]))
+        values.append(float(row["trajectory_r2"]))
     return steps, values
 
 

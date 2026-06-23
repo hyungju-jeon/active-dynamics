@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from actdyn.utils.experiment_runtime import read_trace_csv
+from actdyn.utils.experiment_runtime import read_trace_csv, safe_float as _safe_float
 from actdyn.utils.figure_io import load_plotting, save_figure
 from experiments.experiment_io import get_environment_preset_from_metadata
 
@@ -46,7 +46,6 @@ from .tbme_figures import (
 from .tbme_io import (
     load_planned_trace,
     planned_xy_cycle_for_step,
-    safe_float as _safe_float,
     true_dynamics_from_metadata,
 )
 
