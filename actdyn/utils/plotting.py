@@ -269,45 +269,6 @@ def trace_index(trace_steps: np.ndarray, step: int) -> int:
     return int(np.clip(idx, 0, len(trace_steps) - 1))
 
 
-def planned_xy_for_step(trace: tuple[np.ndarray, ...] | None, step: int) -> np.ndarray | None:
-    if trace is None:
-        return None
-    steps, paths, lengths = trace
-    idx = trace_index(np.asarray(steps, dtype=int), int(step))
-    n_points = int(lengths[idx])
-    if n_points < 2:
-        return None
-    path = np.asarray(paths[idx, :n_points, :2], dtype=float)
-    valid = np.all(np.isfinite(path), axis=1)
-    path = path[valid]
-    return path if path.shape[0] >= 2 else None
-
-
-def overlay_planned_xy(
-    ax,
-    planned_xy: np.ndarray | None,
-    *,
-    color: str = "tab:orange",
-    linewidth: float = 2.2,
-    linestyle: str = "--",
-    alpha: float = 0.32,
-    label: str = "planned traj",
-    zorder: int = 4,
-) -> None:
-    if planned_xy is None or planned_xy.shape[0] < 2:
-        return
-    ax.plot(
-        planned_xy[:, 0],
-        planned_xy[:, 1],
-        color=color,
-        linewidth=linewidth,
-        linestyle=linestyle,
-        alpha=alpha,
-        label=label,
-        zorder=zorder,
-    )
-
-
 def make_lognorm(values: list[np.ndarray]) -> LogNorm:
     flat = np.concatenate([np.ravel(np.asarray(value, dtype=float)) for value in values], axis=0)
     positive = flat[np.isfinite(flat) & (flat > 0)]
