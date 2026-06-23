@@ -24,7 +24,8 @@ There is no TBME suite YAML file in the current structure. Suite definitions liv
 - `generate_figures.py`: single entrypoint for TBME figure and asset generation.
 - `generate_behavior_video.py`: TBME behavior frame/video renderer.
 - `tbme_io.py`: shared TBME run trace and metadata-loading helpers.
-- `tbme_figures.py`: TBME plotting and asset-export implementation used by `generate_figures.py`.
+- `tbme_figures.py`: TBME summary, overview, and experiment-figure implementation.
+- `tbme_assets.py`: manuscript asset assembly used by `generate_figures.py assets`.
 
 The shared experiment runtime remains outside this directory:
 
@@ -143,10 +144,12 @@ Use `generate_figures.py` as the single figure entrypoint:
 ./.venv/bin/python -m experiments.tbme.generate_figures summary
 ./.venv/bin/python -m experiments.tbme.generate_figures overview
 ./.venv/bin/python -m experiments.tbme.generate_figures experiment
+./.venv/bin/python -m experiments.tbme.generate_figures assets
 ./.venv/bin/python -m experiments.tbme.generate_figures all
+./.venv/bin/python -m experiments.tbme.tbme_assets --help
 ```
 
-The figure code keeps TBME result-group definitions in `tbme_figures.py`. If result roots are renamed, update the `GROUPS` table there before relying on the summary figure command.
+The figure code keeps TBME result-group definitions in `tbme_figures.py`. If result roots are renamed, update the `GROUPS` table there before relying on the figure commands.
 
 ## Reproducibility Checklist
 

@@ -1071,6 +1071,18 @@ def _run_single_parameter_identification(
             if sample_diagnostics
             else None
         )
+        loop_plan_sec = float(transition.get("loop_plan_sec", 0.0) or 0.0)
+        loop_step_sec = float(transition.get("loop_step_sec", 0.0) or 0.0)
+        loop_async_launch_sec = float(transition.get("loop_async_launch_sec", 0.0) or 0.0)
+        loop_compute_sec = float(
+            transition.get(
+                "loop_compute_sec",
+                loop_plan_sec + loop_step_sec + loop_async_launch_sec,
+            )
+            or 0.0
+        )
+        loop_plan_executed = as_bool(transition.get("loop_plan_executed", False))
+        loop_plan_reason = str(transition.get("loop_plan_reason", "none"))
         info_rows.append(
             {
                 "step": step,
@@ -1141,11 +1153,12 @@ def _run_single_parameter_identification(
                     transition.get("parameter_update_version", 0)
                 ),
                 "boundary_visibility_mean": boundary_visibility,
-                "loop_plan_sec": float(transition.get("loop_plan_sec", 0.0) or 0.0),
-                "loop_step_sec": float(transition.get("loop_step_sec", 0.0) or 0.0),
-                "loop_async_launch_sec": float(
-                    transition.get("loop_async_launch_sec", 0.0) or 0.0
-                ),
+                "loop_compute_sec": loop_compute_sec,
+                "loop_plan_sec": loop_plan_sec,
+                "loop_step_sec": loop_step_sec,
+                "loop_async_launch_sec": loop_async_launch_sec,
+                "loop_plan_executed": loop_plan_executed,
+                "loop_plan_reason": loop_plan_reason,
                 "trace_callback_sec": 0.0,
             }
         )
@@ -1238,9 +1251,12 @@ def _run_single_parameter_identification(
                 "parameter_update_version": int(
                     transition.get("parameter_update_version", 0)
                 ),
-                "loop_async_launch_sec": float(
-                    transition.get("loop_async_launch_sec", 0.0) or 0.0
-                ),
+                "loop_compute_sec": loop_compute_sec,
+                "loop_plan_sec": loop_plan_sec,
+                "loop_step_sec": loop_step_sec,
+                "loop_async_launch_sec": loop_async_launch_sec,
+                "loop_plan_executed": loop_plan_executed,
+                "loop_plan_reason": loop_plan_reason,
             }
         )
         if capture_planned_trajectory and sample_diagnostics:
@@ -1308,9 +1324,11 @@ def _run_single_parameter_identification(
                         n_starts=traj_eval_samples,
                         rng=traj_rng,
                         device=device,
+                        state_noise=noise_scale,
                     ),
                     "traj_eval_horizon": int(traj_eval_horizon),
                     "traj_eval_samples": int(traj_eval_samples),
+                    "traj_eval_state_noise": float(noise_scale),
                 }
             )
 
@@ -1375,7 +1393,14 @@ def _run_single_parameter_identification(
     write_trace_csv(
         traj_trace_path,
         traj_rows,
-        ["step", "cpu_time_sec", "trajectory_r2", "traj_eval_horizon", "traj_eval_samples"],
+        [
+            "step",
+            "cpu_time_sec",
+            "trajectory_r2",
+            "traj_eval_horizon",
+            "traj_eval_samples",
+            "traj_eval_state_noise",
+        ],
     )
     write_trace_csv(
         info_trace_path,
@@ -1415,9 +1440,12 @@ def _run_single_parameter_identification(
             "model_update_version",
             "parameter_update_version",
             "boundary_visibility_mean",
+            "loop_compute_sec",
             "loop_plan_sec",
             "loop_step_sec",
             "loop_async_launch_sec",
+            "loop_plan_executed",
+            "loop_plan_reason",
             "trace_callback_sec",
         ],
     )
@@ -1468,7 +1496,12 @@ def _run_single_parameter_identification(
             "async_reanchor_mismatch",
             "model_update_version",
             "parameter_update_version",
+            "loop_compute_sec",
+            "loop_plan_sec",
+            "loop_step_sec",
             "loop_async_launch_sec",
+            "loop_plan_executed",
+            "loop_plan_reason",
         ],
     )
     if planned_traj_frames:
@@ -1488,6 +1521,24 @@ def _run_single_parameter_identification(
             policy_id=np.asarray([policy_id], dtype=object),
         )
     rollout_metrics = extract_rollout_metrics(result_dir)
+    compute_sec_values = np.asarray(
+        [float(row.get("loop_compute_sec", 0.0) or 0.0) for row in info_rows],
+        dtype=np.float64,
+    )
+    plan_sec_values = np.asarray(
+        [float(row.get("loop_plan_sec", 0.0) or 0.0) for row in info_rows],
+        dtype=np.float64,
+    )
+    worst_compute_row = (
+        max(info_rows, key=lambda row: float(row.get("loop_compute_sec", 0.0) or 0.0))
+        if info_rows
+        else None
+    )
+    planning_rows = [row for row in info_rows if as_bool(row.get("loop_plan_executed", False))]
+    planning_compute_sec_values = np.asarray(
+        [float(row.get("loop_compute_sec", 0.0) or 0.0) for row in planning_rows],
+        dtype=np.float64,
+    )
     payload = _build_metadata(
         exp_id=exp_id,
         policy_id=policy_id,
@@ -1503,6 +1554,39 @@ def _run_single_parameter_identification(
         results_path=result_dir,
         extra={
             **rollout_metrics,
+            "compute_sec_per_step_mean": (
+                float(compute_sec_values.mean()) if compute_sec_values.size else None
+            ),
+            "compute_sec_per_step_max": (
+                float(compute_sec_values.max()) if compute_sec_values.size else None
+            ),
+            "plan_sec_per_step_max": (
+                float(plan_sec_values.max()) if plan_sec_values.size else None
+            ),
+            "compute_sec_worst_step": (
+                int(worst_compute_row["step"]) if worst_compute_row is not None else None
+            ),
+            "compute_sec_worst_plan_executed": (
+                as_bool(worst_compute_row.get("loop_plan_executed", False))
+                if worst_compute_row is not None
+                else None
+            ),
+            "compute_sec_worst_plan_reason": (
+                str(worst_compute_row.get("loop_plan_reason", "none"))
+                if worst_compute_row is not None
+                else None
+            ),
+            "compute_sec_worst_plan_sec": (
+                float(worst_compute_row.get("loop_plan_sec", 0.0) or 0.0)
+                if worst_compute_row is not None
+                else None
+            ),
+            "planning_step_count": int(len(planning_rows)),
+            "planning_compute_sec_max": (
+                float(planning_compute_sec_values.max())
+                if planning_compute_sec_values.size
+                else None
+            ),
             "env_preset_id": str(env_preset.preset_id),
             "system_id": str(env_preset.system_id),
             "system_label": str(getattr(env_preset, "system_label", None) or env_preset.system_id),

@@ -115,8 +115,8 @@ environments:
   tbme_damped_pendulum_hard:
     extends: tbme_duffing_hard
     system_id: damped_pendulum
-    system_dynamics_type: damped_pendulum
     system_label: damped pendulum with asymmetric loading
+    dynamics_type: damped_pendulum
 
   tbme_asymmetric_basin:
     extends: tbme_duffing

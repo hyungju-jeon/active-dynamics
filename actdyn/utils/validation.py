@@ -139,7 +139,15 @@ def trajectory_r2_vectorfield(
     n_starts: int,
     rng: np.random.Generator,
     device,
+    state_noise: float = 0.0,
 ) -> float:
+    """Compare true and estimated latent trajectory rollouts.
+
+    Starts have shape ``(n_starts, 2)`` and trajectories have shape
+    ``(n_starts, horizon + 1, 2)``.  When ``state_noise > 0``, both rollouts
+    use independent process-noise increments with the same ``sqrt(Q * dt)``
+    scaling used by ``VectorFieldEnv.step``.
+    """
     from actdyn.environment.vectorfield import residual_torch
 
     starts = torch.as_tensor(
@@ -149,6 +157,7 @@ def trajectory_r2_vectorfield(
     )
     e_true_batch = e_true.reshape(1, -1).repeat(n_starts, 1)
     e_est_batch = e_est.reshape(1, -1).repeat(n_starts, 1)
+    noise_scale = float(max(0.0, state_noise) * dt) ** 0.5
 
     def _rollout(
         z0: torch.Tensor,
@@ -163,7 +172,7 @@ def trajectory_r2_vectorfield(
             embedding, full_params=full_params, min_embedding_dim=min_embedding_dim
         )
         traj = [z]
-        for _ in range(int(horizon)):
+        for step in range(int(horizon)):
             drift = residual_torch(
                 dynamics_type,
                 z,
@@ -171,6 +180,12 @@ def trajectory_r2_vectorfield(
                 dynamics_alpha=float(dynamics_alpha),
             )
             z = z + float(dt) * drift
+            if noise_scale > 0.0:
+                z = z + torch.as_tensor(
+                    rng.normal(loc=0.0, scale=noise_scale, size=tuple(z.shape)),
+                    dtype=z.dtype,
+                    device=z.device,
+                )
             traj.append(z)
         return torch.stack(traj, dim=1)
 
@@ -195,3 +210,110 @@ def trajectory_r2_vectorfield(
         sst = torch.sum((y_true - torch.mean(y_true)) ** 2)
     return 0.0 if float(sst.item()) <= 1e-12 else float((1.0 - sse / sst).item())
 
+
+def trajectory_r2_vectorfield_many(
+    e_estimates: torch.Tensor,
+    e_true: torch.Tensor,
+    *,
+    true_dynamics_type: str,
+    true_full_params: np.ndarray,
+    estimator_dynamics_type: str,
+    estimator_full_params: np.ndarray,
+    true_min_embedding_dim: int,
+    estimator_min_embedding_dim: int,
+    dt: float,
+    dynamics_alpha: float,
+    horizon: int,
+    n_starts: int,
+    rng: np.random.Generator,
+    device,
+    state_noise: float = 0.0,
+) -> np.ndarray:
+    """Compute pooled trajectory R2 for many estimated embeddings.
+
+    ``e_estimates`` has shape ``(M, E)``.  Each output is the pooled R2 over
+    ``n_starts`` stochastic rollouts of shape ``(horizon + 1, 2)``.
+    """
+    from actdyn.environment.vectorfield import residual_torch
+
+    e_estimates = torch.as_tensor(e_estimates, dtype=torch.float32, device=device)
+    e_true = torch.as_tensor(e_true, dtype=torch.float32, device=device)
+    if e_estimates.ndim != 2:
+        raise ValueError(f"e_estimates must have shape (M, E), got {tuple(e_estimates.shape)}.")
+    n_eval = int(e_estimates.shape[0])
+    starts_np: list[np.ndarray] = []
+    true_noise_np: list[np.ndarray] = []
+    est_noise_np: list[np.ndarray] = []
+    noise_scale = float(max(0.0, state_noise) * dt) ** 0.5
+    for _ in range(n_eval):
+        starts_np.append(rng.uniform(low=-3.0, high=3.0, size=(n_starts, 2)))
+        if noise_scale > 0.0 and int(horizon) > 0:
+            true_noise_np.append(
+                rng.normal(loc=0.0, scale=noise_scale, size=(int(horizon), n_starts, 2))
+            )
+            est_noise_np.append(
+                rng.normal(loc=0.0, scale=noise_scale, size=(int(horizon), n_starts, 2))
+            )
+    starts = torch.as_tensor(np.stack(starts_np), dtype=torch.float32, device=device)
+    true_noise = (
+        torch.as_tensor(np.stack(true_noise_np), dtype=torch.float32, device=device)
+        if true_noise_np
+        else None
+    )
+    est_noise = (
+        torch.as_tensor(np.stack(est_noise_np), dtype=torch.float32, device=device)
+        if est_noise_np
+        else None
+    )
+    e_true_batch = e_true.reshape(1, 1, -1).repeat(n_eval, n_starts, 1)
+    e_est_batch = e_estimates.reshape(n_eval, 1, -1).repeat(1, n_starts, 1)
+
+    def _rollout(
+        z0: torch.Tensor,
+        embedding: torch.Tensor,
+        *,
+        dynamics_type: str,
+        full_params: np.ndarray,
+        min_embedding_dim: int,
+        noise: torch.Tensor | None,
+    ) -> torch.Tensor:
+        z = z0.clone()
+        dyn_params = _pad_embedding_to_params(
+            embedding, full_params=full_params, min_embedding_dim=min_embedding_dim
+        )
+        traj = [z]
+        for step in range(int(horizon)):
+            drift = residual_torch(
+                dynamics_type,
+                z,
+                dyn_params,
+                dynamics_alpha=float(dynamics_alpha),
+            )
+            z = z + float(dt) * drift
+            if noise is not None:
+                z = z + noise[:, step]
+            traj.append(z)
+        return torch.stack(traj, dim=1)
+
+    with torch.no_grad():
+        traj_true = _rollout(
+            starts,
+            e_true_batch,
+            dynamics_type=true_dynamics_type,
+            full_params=np.asarray(true_full_params, dtype=np.float32),
+            min_embedding_dim=int(true_min_embedding_dim),
+            noise=true_noise,
+        )
+        traj_est = _rollout(
+            starts,
+            e_est_batch,
+            dynamics_type=estimator_dynamics_type,
+            full_params=np.asarray(estimator_full_params, dtype=np.float32),
+            min_embedding_dim=int(estimator_min_embedding_dim),
+            noise=est_noise,
+        )
+        sse = torch.sum((traj_true - traj_est) ** 2, dim=(1, 2, 3))
+        true_mean = torch.mean(traj_true, dim=(1, 2, 3), keepdim=True)
+        sst = torch.sum((traj_true - true_mean) ** 2, dim=(1, 2, 3))
+        r2 = torch.where(sst <= 1e-12, torch.zeros_like(sst), 1.0 - sse / sst)
+    return r2.cpu().numpy()
