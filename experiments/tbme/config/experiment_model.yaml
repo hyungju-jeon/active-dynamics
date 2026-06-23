@@ -15,11 +15,6 @@ models:
     coarse_dt_factor: 20
     coarse_action_mapping: hold
 
-  active_planning_async:
-    extends: active_planning
-    policy_type: async-mpc-icem
-    async_planning: true
-
   tbme_active_nominal:
     extends: active_planning
 
@@ -66,16 +61,7 @@ models:
     replan_interval: 20
     planning_horizon: 40
 
-  active_planning_async_u20_r20_h40:
-    extends: active_planning_u20_r20_h40
-    policy_type: async-mpc-icem
-    async_planning: true
-    async_refine_on_parameter_update: false
-    async_worker_iterations: 3
-    async_worker_full_interval: 5
-    async_stale_tolerance: 1.0
-
-  active_planning_adaptive_u20_r20_h40:
+  adaptive:
     extends: active_planning
     update_interval: 20
     replan_interval: 20
@@ -86,23 +72,22 @@ models:
     adaptive_replan_min_interval: 5
     adaptive_replan_state_error_threshold: 3.0
 
-  active_planning_adaptive_async_u20_r20_h40:
-    extends: active_planning_adaptive_u20_r20_h40
+  adaptive_async_realtime:
+    extends: adaptive
     policy_type: async-mpc-icem
     async_planning: true
-    async_refine_on_parameter_update: false
-    async_worker_iterations: 1
+    async_worker_iterations: 2
     async_worker_device: cpu
     async_stale_tolerance: 1.0
+    async_realtime_prefix_steps: 10
 
-  active_planning_adaptive_async_reanchor_u20_r20_h40:
-    extends: active_planning_adaptive_async_u20_r20_h40
-    async_worker_iterations: 1
-    async_stale_tolerance: 0.1
-    async_reanchor_live_state: true
-    async_reanchor_tolerance: 0.0
+  adaptive_async_anytime:
+    extends: adaptive_async_realtime
+    async_anytime_prefix_steps: null
+    async_anytime_min_iteration: 1
+    async_anytime_std_tolerance: 0.75
 
-  active_planning_adaptive_state_fixed_update_u20_r20_h40:
+  adaptive_state_fixed_update:
     extends: active_planning
     update_interval: 20
     replan_interval: 20

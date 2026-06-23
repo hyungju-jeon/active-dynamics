@@ -3,26 +3,26 @@ from __future__ import annotations
 BASE_DIR = "results/tbme/exp04_mismatch"
 DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = ("exp04_duffing_parameter_mismatch", "exp04_asymmetric_basin_parameter_mismatch")
+MODEL_IDS = [
+    "adaptive",
+    "adaptive_async_realtime",
+    "active_planning_u5_r5_h40",
+    "active_planning_u20_r20_h40",
+    "active_myopic",
+    "prbs",
+    "random",
+    "flex",
+    "flex_true_state",
+    "ensemble",
+    "rhc",
+]
 
 EXPERIMENT_SUITES = {
     "exp04_duffing_parameter_mismatch": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_duffing_parameter_mismatch",
-        "model_ids": [
-            "active_planning_adaptive_u20_r20_h40",
-            "active_planning_adaptive_async_u20_r20_h40",
-            "active_planning_u5_r5_h40",
-            "active_planning_u20_r20_h40",
-            "active_planning_async_u20_r20_h40",
-            "active_myopic",
-            "prbs",
-            "random",
-            "flex",
-            "flex_true_state",
-            "ensemble",
-            "rhc",
-        ],
+        "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
@@ -30,20 +30,7 @@ EXPERIMENT_SUITES = {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_asymmetric_basin_parameter_mismatch",
-        "model_ids": [
-            "active_planning_adaptive_u20_r20_h40",
-            "active_planning_adaptive_async_u20_r20_h40",
-            "active_planning_u5_r5_h40",
-            "active_planning_u20_r20_h40",
-            "active_planning_async_u20_r20_h40",
-            "active_myopic",
-            "prbs",
-            "random",
-            "flex",
-            "flex_true_state",
-            "ensemble",
-            "rhc",
-        ],
+        "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },

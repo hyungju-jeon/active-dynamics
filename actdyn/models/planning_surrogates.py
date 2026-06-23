@@ -30,7 +30,67 @@ class PredictiveMoments:
 RHCObjective = Literal["us", "mvr", "rhc_us", "rhc_mvr"]
 
 
-class RFFBayesianLinearDynamics:
+class _BayesianLinearDynamicsBase:
+    """Shared posterior update and prediction for linear-in-feature dynamics."""
+
+    @property
+    def num_samples(self) -> int:
+        return int(self._X.shape[0])
+
+    @property
+    def num_points(self) -> int:
+        return self.num_samples
+
+    def update_param_dist(self, x: np.ndarray, y: np.ndarray) -> None:
+        x = _as_2d(x)
+        y = _as_2d(y)
+        phi_x = self.phi(x)
+        precision_new = self.precision + self.beta * np.dot(phi_x.T, phi_x)
+        mean_new = np.linalg.solve(
+            precision_new,
+            np.dot(self.precision, self.mean) + self.beta * np.dot(phi_x.T, y),
+        )
+        self.mean = mean_new
+        self.precision = 0.5 * (precision_new + precision_new.T)
+        self.covariance = np.linalg.inv(self.precision)
+
+    def predict(self, x: np.ndarray, ret_var: bool = False, return_variance: bool | None = None):
+        if return_variance is not None:
+            ret_var = bool(return_variance)
+        phi = self.phi(x)
+        mu = np.dot(self.mean.T, phi.T).T
+        if ret_var:
+            sigma = 1.0 / self.beta + np.sum(phi * (self.covariance @ phi.T).T, axis=-1)
+            return PredictiveMoments(mean=mu, variance=sigma.reshape(-1, 1))
+        return PredictiveMoments(mean=mu, variance=None)
+
+    def predict_casf(self, ret_var: bool = False):
+        x = cas.MX.sym("x", 1, self.input_dim)
+        phi = self.phi_cas(x)
+        mu = cas.mtimes(cas.DM(self.mean).T, phi.T).T
+        res = [mu]
+        if ret_var:
+            sigma = 1.0 / self.beta + cas.sum2(phi * cas.mtimes(cas.DM(self.covariance), phi.T).T)
+            res.append(sigma)
+        return cas.Function("f_mu", [x], res)
+
+    def pred_ent_cas(self, x: cas.MX | cas.SX):
+        phi_x = self.phi_cas(x)
+        precision_new = cas.DM(self.precision) + self.beta * cas.mtimes(phi_x.T, phi_x)
+        log_det_f = self.log_det_cas(int(precision_new.shape[0]))
+        logdet_cov = -log_det_f(precision_new)
+        k = self.num_features
+        return k / 2 + k / 2 * cas.log(2 * cas.pi) + logdet_cov / 2
+
+    def predicted_posterior_entropy_cas(self, inputs: cas.MX | cas.SX):
+        return self.pred_ent_cas(inputs)
+
+    def log_det_cas(self, size: int):
+        S = cas.SX.sym("s", size, size)
+        return cas.Function("log_det", [S], [cas.trace(cas.log(cas.qr(S)[1]))]).expand()
+
+
+class RFFBayesianLinearDynamics(_BayesianLinearDynamicsBase):
     """Bayesian linear regression with sinusoidal random Fourier features."""
 
     def __init__(
@@ -81,14 +141,6 @@ class RFFBayesianLinearDynamics:
         self.reset()
 
     @property
-    def num_samples(self) -> int:
-        return int(self._X.shape[0])
-
-    @property
-    def num_points(self) -> int:
-        return self.num_samples
-
-    @property
     def lengthscale(self) -> float:
         return float(np.mean(self.v))
 
@@ -127,19 +179,6 @@ class RFFBayesianLinearDynamics:
         if self.num_samples > 0:
             self.update_param_dist(self._X, self._Y)
 
-    def update_param_dist(self, x: np.ndarray, y: np.ndarray) -> None:
-        x = _as_2d(x)
-        y = _as_2d(y)
-        phi_x = self.phi(x)
-        precision_new = self.precision + self.beta * np.dot(phi_x.T, phi_x)
-        mean_new = np.linalg.solve(
-            precision_new,
-            np.dot(self.precision, self.mean) + self.beta * np.dot(phi_x.T, y),
-        )
-        self.mean = mean_new
-        self.precision = 0.5 * (precision_new + precision_new.T)
-        self.covariance = np.linalg.inv(self.precision)
-
     def phi(self, x: np.ndarray, v: np.ndarray | None = None) -> np.ndarray:
         if self.W is None or self.psi is None:
             raise RuntimeError("RFF model not initialized")
@@ -161,41 +200,6 @@ class RFFBayesianLinearDynamics:
             v_mat = cas.DM(v_arr)
         y = cas.sin(cas.mtimes(cas.DM(self.W) / cas.repmat(v_mat, self.W.shape[0], 1), x.T) + cas.DM(self.psi))
         return y.T
-
-    def predict(self, x: np.ndarray, ret_var: bool = False, return_variance: bool | None = None):
-        if return_variance is not None:
-            ret_var = bool(return_variance)
-        phi = self.phi(x)
-        mu = np.dot(self.mean.T, phi.T).T
-        if ret_var:
-            sigma = 1.0 / self.beta + np.sum(phi * (self.covariance @ phi.T).T, axis=-1)
-            return PredictiveMoments(mean=mu, variance=sigma.reshape(-1, 1))
-        return PredictiveMoments(mean=mu, variance=None)
-
-    def predict_casf(self, ret_var: bool = False):
-        x = cas.MX.sym("x", 1, self.input_dim)
-        phi = self.phi_cas(x)
-        mu = cas.mtimes(cas.DM(self.mean).T, phi.T).T
-        res = [mu]
-        if ret_var:
-            sigma = 1.0 / self.beta + cas.sum2(phi * cas.mtimes(cas.DM(self.covariance), phi.T).T)
-            res.append(sigma)
-        return cas.Function("f_mu", [x], res)
-
-    def pred_ent_cas(self, x: cas.MX | cas.SX):
-        phi_x = self.phi_cas(x)
-        precision_new = cas.DM(self.precision) + self.beta * cas.mtimes(phi_x.T, phi_x)
-        log_det_f = self.log_det_cas(int(precision_new.shape[0]))
-        logdet_cov = -log_det_f(precision_new)
-        k = self.num_features
-        return k / 2 + k / 2 * cas.log(2 * cas.pi) + logdet_cov / 2
-
-    def predicted_posterior_entropy_cas(self, inputs: cas.MX | cas.SX):
-        return self.pred_ent_cas(inputs)
-
-    def log_det_cas(self, size: int):
-        S = cas.SX.sym("s", size, size)
-        return cas.Function('log_det', [S], [cas.trace(cas.log(cas.qr(S)[1]))]).expand()
 
     def opt_hyperparams(self):
         if self.num_samples == 0:
@@ -243,7 +247,7 @@ class RFFBayesianLinearDynamics:
         return -float(np.sum(llht))
 
 
-class LocalRBFBayesianLinearDynamics:
+class LocalRBFBayesianLinearDynamics(_BayesianLinearDynamicsBase):
     """Bayesian linear regression with fixed localized RBF bases on a grid."""
 
     def __init__(
@@ -291,14 +295,6 @@ class LocalRBFBayesianLinearDynamics:
         self._Y = np.zeros((0, self.output_dim), dtype=np.float64)
 
     @property
-    def num_samples(self) -> int:
-        return int(self._X.shape[0])
-
-    @property
-    def num_points(self) -> int:
-        return self.num_samples
-
-    @property
     def lengthscale(self) -> float:
         return float(np.mean(self._lengthscale_vec))
 
@@ -332,19 +328,6 @@ class LocalRBFBayesianLinearDynamics:
         self._Y = np.vstack((self._Y, y))
         self.update_param_dist(x, y)
 
-    def update_param_dist(self, x: np.ndarray, y: np.ndarray) -> None:
-        x = _as_2d(x)
-        y = _as_2d(y)
-        phi_x = self.phi(x)
-        precision_new = self.precision + self.beta * np.dot(phi_x.T, phi_x)
-        mean_new = np.linalg.solve(
-            precision_new,
-            np.dot(self.precision, self.mean) + self.beta * np.dot(phi_x.T, y),
-        )
-        self.mean = mean_new
-        self.precision = 0.5 * (precision_new + precision_new.T)
-        self.covariance = np.linalg.inv(self.precision)
-
     def phi(self, x: np.ndarray) -> np.ndarray:
         x_arr = _as_2d(x)
         if x_arr.shape[1] != self.input_dim:
@@ -371,38 +354,3 @@ class LocalRBFBayesianLinearDynamics:
         if self.include_bias:
             features = cas.hcat((cas.DM.ones(num_rows, 1), features))
         return features
-
-    def predict(self, x: np.ndarray, ret_var: bool = False, return_variance: bool | None = None):
-        if return_variance is not None:
-            ret_var = bool(return_variance)
-        phi = self.phi(x)
-        mu = np.dot(self.mean.T, phi.T).T
-        if ret_var:
-            sigma = 1.0 / self.beta + np.sum(phi * (self.covariance @ phi.T).T, axis=-1)
-            return PredictiveMoments(mean=mu, variance=sigma.reshape(-1, 1))
-        return PredictiveMoments(mean=mu, variance=None)
-
-    def predict_casf(self, ret_var: bool = False):
-        x = cas.MX.sym("x", 1, self.input_dim)
-        phi = self.phi_cas(x)
-        mu = cas.mtimes(cas.DM(self.mean).T, phi.T).T
-        res = [mu]
-        if ret_var:
-            sigma = 1.0 / self.beta + cas.sum2(phi * cas.mtimes(cas.DM(self.covariance), phi.T).T)
-            res.append(sigma)
-        return cas.Function("f_mu", [x], res)
-
-    def pred_ent_cas(self, x: cas.MX | cas.SX):
-        phi_x = self.phi_cas(x)
-        precision_new = cas.DM(self.precision) + self.beta * cas.mtimes(phi_x.T, phi_x)
-        log_det_f = self.log_det_cas(int(precision_new.shape[0]))
-        logdet_cov = -log_det_f(precision_new)
-        k = self.num_features
-        return k / 2 + k / 2 * cas.log(2 * cas.pi) + logdet_cov / 2
-
-    def predicted_posterior_entropy_cas(self, inputs: cas.MX | cas.SX):
-        return self.pred_ent_cas(inputs)
-
-    def log_det_cas(self, size: int):
-        S = cas.SX.sym("s", size, size)
-        return cas.Function("log_det", [S], [cas.trace(cas.log(cas.qr(S)[1]))]).expand()

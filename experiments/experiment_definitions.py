@@ -311,15 +311,14 @@ class PolicySpec:
     coarse_mapping_opt_lr: float = 0.05
     async_planning: bool = False
     async_stale_tolerance: float = 0.5
-    async_stale_refine_iterations: int = 2
     async_worker_iterations: int | None = None
     async_worker_full_interval: int | None = None
-    async_worker_backend: str = "thread"
     async_worker_device: str | None = None
     async_start_after_first_plan: bool = True
-    async_refine_on_parameter_update: bool = True
-    async_reanchor_live_state: bool = False
-    async_reanchor_tolerance: float = 0.25
+    async_realtime_prefix_steps: int = 10
+    async_anytime_prefix_steps: int | None = 0
+    async_anytime_min_iteration: int = 1
+    async_anytime_std_tolerance: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -794,7 +793,6 @@ def load_catalog_bundle(
             coarse_mapping_opt_lr=float(spec.get("coarse_mapping_opt_lr", 0.05)),
             async_planning=bool(spec.get("async_planning", False)),
             async_stale_tolerance=float(spec.get("async_stale_tolerance", 0.5)),
-            async_stale_refine_iterations=int(spec.get("async_stale_refine_iterations", 2)),
             async_worker_iterations=(
                 None
                 if spec.get("async_worker_iterations") is None
@@ -805,18 +803,20 @@ def load_catalog_bundle(
                 if spec.get("async_worker_full_interval") is None
                 else int(spec.get("async_worker_full_interval"))
             ),
-            async_worker_backend=str(spec.get("async_worker_backend", "thread")),
             async_worker_device=(
                 None
                 if spec.get("async_worker_device") is None
                 else str(spec.get("async_worker_device"))
             ),
             async_start_after_first_plan=bool(spec.get("async_start_after_first_plan", True)),
-            async_refine_on_parameter_update=bool(
-                spec.get("async_refine_on_parameter_update", True)
+            async_realtime_prefix_steps=int(spec.get("async_realtime_prefix_steps", 10)),
+            async_anytime_prefix_steps=(
+                None
+                if spec.get("async_anytime_prefix_steps", 0) is None
+                else int(spec.get("async_anytime_prefix_steps", 0))
             ),
-            async_reanchor_live_state=bool(spec.get("async_reanchor_live_state", False)),
-            async_reanchor_tolerance=float(spec.get("async_reanchor_tolerance", 0.25)),
+            async_anytime_min_iteration=int(spec.get("async_anytime_min_iteration", 1)),
+            async_anytime_std_tolerance=float(spec.get("async_anytime_std_tolerance", 0.5)),
         )
         for policy_id, spec in model_raw.items()
     }

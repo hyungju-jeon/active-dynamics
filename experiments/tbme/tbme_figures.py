@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import math
 import shutil
 from dataclasses import dataclass
@@ -12,7 +11,11 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import numpy as np
 
 from actdyn.environment.vectorfield import ResidualDynamicsCallable
-from actdyn.utils.experiment_runtime import read_trace_csv
+from actdyn.utils.experiment_runtime import (
+    read_trace_csv,
+    safe_float as _safe_float,
+    write_trace_csv,
+)
 from actdyn.utils.figure_io import (
     load_plotting,
     parse_figure_formats,
@@ -48,7 +51,6 @@ from .tbme_io import (
     planned_xy_cycle_for_step,
     read_embedding_trace,
     read_xy_trace as _read_xy_trace,
-    safe_float as _safe_float,
     trace_path as _tbme_trace_path,
     true_dynamics_from_metadata,
 )
@@ -275,9 +277,11 @@ POLICY_LABELS = {
     "active_planning_u20_r20_h40": "Planning u20/r20/h40",
     "active_planning_u5_r20_h40": "Planning u5/r20/h40",
     "active_planning_u10_r20_h40": "Planning u10/r20/h40",
-    "active_planning_adaptive_u20_r20_h40": "Adaptive cadence",
-    "active_planning_adaptive_state_fixed_update_u20_r20_h40": "Adaptive state fixed update",
-    "active_planning_adaptive_state_u20_r20_h40": "Adaptive state error",
+    "adaptive": "Adaptive cadence",
+    "adaptive_async_realtime": "Adaptive async realtime",
+    "adaptive_async_anytime": "Adaptive async anytime",
+    "adaptive_state_fixed_update": "Adaptive state fixed update",
+    "adaptive_state": "Adaptive state error",
     "active_fully_observable_u20_r20_h40": "Full-observable EIG",
     "active_e_optimality_u20_r20_h40": "E-optimality",
     "active_state_information_u20_r20_h40": "State information",
@@ -302,9 +306,11 @@ POLICY_ORDER = [
     "active_planning_u20_r20_h40",
     "active_planning_u5_r20_h40",
     "active_planning_u10_r20_h40",
-    "active_planning_adaptive_u20_r20_h40",
-    "active_planning_adaptive_state_fixed_update_u20_r20_h40",
-    "active_planning_adaptive_state_u20_r20_h40",
+    "adaptive",
+    "adaptive_async_realtime",
+    "adaptive_async_anytime",
+    "adaptive_state_fixed_update",
+    "adaptive_state",
     "active_fully_observable_u20_r20_h40",
     "active_e_optimality_u20_r20_h40",
     "active_state_information_u20_r20_h40",
@@ -329,9 +335,11 @@ POLICY_COLORS = {
     "active_planning_u20_r20_h40": "#5DADE2",
     "active_planning_u5_r20_h40": "#AED6F1",
     "active_planning_u10_r20_h40": "#7FB3D5",
-    "active_planning_adaptive_u20_r20_h40": "#F1948A",
-    "active_planning_adaptive_state_fixed_update_u20_r20_h40": "#D7BDE2",
-    "active_planning_adaptive_state_u20_r20_h40": "#F8C471",
+    "adaptive": "#F1948A",
+    "adaptive_async_realtime": "#C85C5C",
+    "adaptive_async_anytime": "#8E4B7D",
+    "adaptive_state_fixed_update": "#D7BDE2",
+    "adaptive_state": "#F8C471",
     "active_fully_observable_u20_r20_h40": "#82E0AA",
     "active_e_optimality_u20_r20_h40": "#BB8FCE",
     "active_state_information_u20_r20_h40": "#F7DC6F",
@@ -407,22 +415,12 @@ def _policy_color(policy_id: str, fallback_idx: int = 0) -> str:
     return POLICY_COLORS.get(policy_id, FALLBACK_COLORS[fallback_idx % len(FALLBACK_COLORS)])
 
 
-def _sem(values: Sequence[float]) -> float:
-    arr = np.asarray(values, dtype=np.float64)
-    arr = arr[np.isfinite(arr)]
-    return sample_sem(arr.tolist())
-
-
 def _r2_threshold_suffix(threshold: float) -> str:
     return f"{float(threshold):.2f}".replace(".", "p")
 
 
 def _write_csv(path: Path, rows: Iterable[dict[str, Any]], fields: Sequence[str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(fields))
-        writer.writeheader()
-        writer.writerows(rows)
+    write_trace_csv(path, list(rows), list(fields))
 
 
 def _write_text(path: Path, text: str) -> None:
@@ -1878,7 +1876,7 @@ _experiment_C_NEUTRAL_FILL = "#F4F1EC"
 _experiment_C_GRID = "#DDD7CE"
 
 _experiment_BOTTLENECK_POLICIES = [
-    "active_planning_adaptive_u20_r20_h40",
+    "adaptive",
     "active_planning_u20_r20_h40",
     "active_myopic",
     "ensemble",
@@ -1966,7 +1964,7 @@ _experiment_OBJECTIVE_DEFINITIONS = [
     },
 ]
 _experiment_DOSE_POLICIES = [
-    "active_planning_adaptive_u20_r20_h40",
+    "adaptive",
     "active_planning_u20_r20_h40",
     "active_myopic",
     "ensemble",
@@ -2740,7 +2738,7 @@ def _experiment_metric_mean_sem(
     values = _experiment_metric_values(suite_dir, policy_id, field)
     if not values:
         return None, 0.0, 0
-    return float(np.mean(values)), _sem(values), len(values)
+    return float(np.mean(values)), sample_sem(values), len(values)
 
 
 def _experiment_curve_rows(

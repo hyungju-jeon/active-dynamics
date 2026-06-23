@@ -8,7 +8,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from actdyn.utils.experiment_runtime import read_trace_csv
+from actdyn.utils.experiment_runtime import read_trace_csv, safe_float as _safe_float
 from actdyn.utils.figure_io import load_plotting, save_figure
 from experiments.experiment_io import get_environment_preset_from_metadata
 
@@ -46,13 +46,12 @@ from .tbme_figures import (
 from .tbme_io import (
     load_planned_trace,
     planned_xy_cycle_for_step,
-    safe_float as _safe_float,
     true_dynamics_from_metadata,
 )
 
 # Manuscript asset assembly
 _ASSET_POLICY_LABELS = {
-    "active_planning_adaptive_u20_r20_h40": "PALDI",
+    "adaptive": "PALDI",
     "active_planning_u20_r20_h40": "Fixed PALDI",
     "active_myopic": "Myopic",
     "ensemble": "Ensemble",
@@ -67,7 +66,7 @@ _ASSET_POLICY_LABELS = {
     "rhc": "RHC-US",
 }
 _ASSET_BENCHMARK_POLICIES = [
-    "active_planning_adaptive_u20_r20_h40",
+    "adaptive",
     "active_planning_u20_r20_h40",
     "active_myopic",
     "ensemble",
@@ -75,7 +74,7 @@ _ASSET_BENCHMARK_POLICIES = [
     "random",
 ]
 _ASSET_MATCHED_POLICIES = [
-    "active_planning_adaptive_u20_r20_h40",
+    "adaptive",
     "active_myopic",
     "flex",
     "rhc",
@@ -546,7 +545,7 @@ def _asset_trace_abs(record: _ExperimentRunRecord, traj: np.ndarray) -> float:
 
 
 def _asset_plot_mechanism(output_path: Path) -> Path:
-    policy_id = "active_planning_adaptive_u20_r20_h40"
+    policy_id = "adaptive"
     nominal = _asset_first_record("exp02_hard", "exp02_hard_asymmetric_basin", policy_id)
     obs_mismatch = _asset_first_record(
         "exp07_mismatch_stress",
@@ -615,7 +614,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     planned_trace = load_planned_trace(nominal.run_dir, nominal.metadata)
     planned_paths: list[np.ndarray] = []
     for step, color, label in (
-        (40, _policy_color("active_planning_adaptive_u20_r20_h40"), "early plan"),
+        (40, _policy_color("adaptive"), "early plan"),
         (1000, _policy_color("active_myopic"), "late plan"),
     ):
         planned = planned_xy_cycle_for_step(planned_trace, step)
@@ -706,7 +705,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     _style_manuscript_axis(ax, grid_axis="x")
 
     mismatch_specs = [
-        ("Nominal", _policy_color("active_planning_adaptive_u20_r20_h40")),
+        ("Nominal", _policy_color("adaptive")),
         ("Obs. mismatch", _policy_color("active_myopic")),
         ("Param. mismatch", _policy_color("ensemble")),
     ]

@@ -244,7 +244,7 @@ def residual_np(
 
 
 
-def _pad_embedding_to_params(
+def pad_embedding_to_params(
     embedding: torch.Tensor,
     *,
     full_params: torch.Tensor | np.ndarray | Sequence[float],
@@ -297,7 +297,7 @@ def jacobian_embedding_torch(
         while embedding_t.ndim < state_t.ndim:
             embedding_t = embedding_t.unsqueeze(-2)
         embedding_t.requires_grad_(True)
-        dyn_params = _pad_embedding_to_params(
+        dyn_params = pad_embedding_to_params(
             embedding_t,
             full_params=full_params,
             min_embedding_dim=int(min_embedding_dim),
@@ -323,7 +323,7 @@ def rollout_no_input(
     dynamics_alpha: float,
 ) -> torch.Tensor:
     z = z0.clone()
-    dyn_params = _pad_embedding_to_params(
+    dyn_params = pad_embedding_to_params(
         torch.as_tensor(e, dtype=torch.float32, device=z.device),
         full_params=full_params,
         min_embedding_dim=int(min_embedding_dim),

@@ -103,26 +103,6 @@ def compute_model_r2(
     return to_np(r2_mat), r2_mean_mat, r2_std_mat
 
 
-def _pad_embedding_to_params(
-    embedding: torch.Tensor,
-    *,
-    full_params: np.ndarray,
-    min_embedding_dim: int,
-) -> torch.Tensor:
-    if embedding.shape[-1] < int(min_embedding_dim):
-        raise ValueError(
-            f"Embedding must have at least {min_embedding_dim} coordinates, got shape {tuple(embedding.shape)}."
-        )
-    full = torch.as_tensor(full_params, dtype=embedding.dtype, device=embedding.device)
-    if embedding.shape[-1] >= full.shape[0]:
-        return embedding[..., : full.shape[0]]
-    tail = full[embedding.shape[-1]:]
-    if embedding.ndim == 1:
-        return torch.cat((embedding, tail), dim=0)
-    tail = tail.reshape(*([1] * (embedding.ndim - 1)), -1).expand(*embedding.shape[:-1], -1)
-    return torch.cat((embedding, tail), dim=-1)
-
-
 def trajectory_r2_vectorfield(
     e_est: torch.Tensor,
     e_true: torch.Tensor,
@@ -148,7 +128,7 @@ def trajectory_r2_vectorfield(
     use independent process-noise increments with the same ``sqrt(Q * dt)``
     scaling used by ``VectorFieldEnv.step``.
     """
-    from actdyn.environment.vectorfield import residual_torch
+    from actdyn.environment.vectorfield import pad_embedding_to_params, residual_torch
 
     starts = torch.as_tensor(
         rng.uniform(low=-3.0, high=3.0, size=(n_starts, 2)),
@@ -168,7 +148,7 @@ def trajectory_r2_vectorfield(
         min_embedding_dim: int,
     ) -> torch.Tensor:
         z = z0.clone()
-        dyn_params = _pad_embedding_to_params(
+        dyn_params = pad_embedding_to_params(
             embedding, full_params=full_params, min_embedding_dim=min_embedding_dim
         )
         traj = [z]
@@ -234,7 +214,7 @@ def trajectory_r2_vectorfield_many(
     ``e_estimates`` has shape ``(M, E)``.  Each output is the pooled R2 over
     ``n_starts`` stochastic rollouts of shape ``(horizon + 1, 2)``.
     """
-    from actdyn.environment.vectorfield import residual_torch
+    from actdyn.environment.vectorfield import pad_embedding_to_params, residual_torch
 
     e_estimates = torch.as_tensor(e_estimates, dtype=torch.float32, device=device)
     e_true = torch.as_tensor(e_true, dtype=torch.float32, device=device)
@@ -278,7 +258,7 @@ def trajectory_r2_vectorfield_many(
         noise: torch.Tensor | None,
     ) -> torch.Tensor:
         z = z0.clone()
-        dyn_params = _pad_embedding_to_params(
+        dyn_params = pad_embedding_to_params(
             embedding, full_params=full_params, min_embedding_dim=min_embedding_dim
         )
         traj = [z]
