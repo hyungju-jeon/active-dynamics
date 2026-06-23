@@ -169,6 +169,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="TBME results root. Defaults to results/tbme.",
     )
 
+    diagnostics = subparsers.add_parser(
+        "diagnostics",
+        help="Generate dynamics and observation diagnostics from TBME env catalogs.",
+    )
+    diagnostics.add_argument(
+        "--env-ids",
+        type=str,
+        default="all",
+        help="Comma-separated environment ids, clean slugs, or 'all'.",
+    )
+    diagnostics.add_argument("--output-dir", type=str, default="results/tbme/diagnostics")
+    diagnostics.add_argument("--figure-formats", type=str, default=".pdf")
+    diagnostics.add_argument("--steps", type=int, default=500)
+    diagnostics.add_argument("--trajectories", type=int, default=3)
+    diagnostics.add_argument("--seed", type=int, default=0)
+    diagnostics.add_argument("--grid", type=int, default=51)
+    diagnostics.add_argument("--snr-trajectories", type=int, default=100)
+    diagnostics.add_argument("--snr-trajectory-length", type=int, default=500)
+
     all_parser = subparsers.add_parser("all", help="Generate all TBME visual outputs.")
     all_parser.add_argument(
         "--groups",
@@ -206,6 +225,33 @@ def main(argv: list[str] | None = None) -> int:
         return int(tbme_figures.experiment_main(_experiment_args(args)))
     if args.output_set == "assets":
         return int(tbme_figures.assets_main(_assets_args(args)))
+    if args.output_set == "diagnostics":
+        from experiments.tbme import generate_env_diagnostics
+
+        return int(
+            generate_env_diagnostics.main(
+                [
+                    "--env-ids",
+                    str(args.env_ids),
+                    "--output-dir",
+                    str(args.output_dir),
+                    "--figure-formats",
+                    str(args.figure_formats),
+                    "--steps",
+                    str(args.steps),
+                    "--trajectories",
+                    str(args.trajectories),
+                    "--seed",
+                    str(args.seed),
+                    "--grid",
+                    str(args.grid),
+                    "--snr-trajectories",
+                    str(args.snr_trajectories),
+                    "--snr-trajectory-length",
+                    str(args.snr_trajectory_length),
+                ]
+            )
+        )
     if args.output_set == "all":
         args.trajectory_max_seeds = (
             args.trajectory_max_seeds if args.trajectory_max_seeds is not None else args.max_seeds
