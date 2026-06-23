@@ -17,6 +17,9 @@ from actdyn.utils.torch_utils import safe_cholesky, symmetrize
 from actdyn.utils.rollout import RolloutBuffer
 
 
+_PROCESS_PLANNER: Any | None = None
+
+
 def _clone_for_worker(value: Any) -> Any:
     if isinstance(value, dict):
         return {str(k): _clone_for_worker(v) for k, v in value.items()}
@@ -44,8 +47,56 @@ def _warm_process_worker() -> None:
 
 
 def _warm_process_planner_worker(planner: Any) -> None:
-    del planner
+    global _PROCESS_PLANNER
     _use_file_system_tensor_sharing()
+    _PROCESS_PLANNER = planner
+
+
+def _apply_process_planner_payload(planner: Any, payload: dict[str, Any]) -> None:
+    device = torch.device(getattr(planner, "device", "cpu"))
+    model = planner.model
+    state_dict = payload.get("model_state_dict")
+    if isinstance(state_dict, dict) and callable(getattr(model, "load_state_dict", None)):
+        model.load_state_dict(_move_tensors_to_device(state_dict, device), strict=False)
+
+    model_payload = payload.get("model", {})
+    if isinstance(model_payload, dict):
+        if "e" in model_payload:
+            model.e = _move_tensors_to_device(model_payload["e"], device)
+        if "z" in model_payload:
+            model.z = _move_tensors_to_device(model_payload["z"], device)
+        if "_state" in model_payload:
+            model._state = _move_tensors_to_device(model_payload["_state"], device)
+        if callable(getattr(model, "set_params", None)) and hasattr(model, "e"):
+            model.set_params(model.e["m"])
+
+    for attr in ("mean", "std", "elite_actions", "elite_costs_traj"):
+        setattr(planner, attr, _move_tensors_to_device(payload.get(attr), device))
+    planner.num_iterations = int(payload.get("num_iterations", planner.num_iterations))
+    planner._worker_anchor_seq = int(payload.get("worker_anchor_seq", 0))
+    planner._worker_reanchor_count = 0
+    planner._worker_reanchor_mismatch = 0.0
+    planner._yield_score_batch_size = 0
+    planner._return_worker_warm_start = True
+    planner.last_plan_status = dict(payload.get("last_plan_status", {}))
+    planner.last_update_info = dict(payload.get("last_update_info", {}))
+    planner._set_action_rng_seed(int(payload.get("action_rng_seed", 1)))
+
+
+def _background_plan_persistent_worker(
+    predicted_boundary_state: torch.Tensor,
+    kwargs: dict[str, Any],
+    payload: dict[str, Any],
+) -> "_AsyncPlanResult":
+    _use_file_system_tensor_sharing()
+    if _PROCESS_PLANNER is None:
+        raise RuntimeError("Process planner worker was not initialized.")
+    _apply_process_planner_payload(_PROCESS_PLANNER, payload)
+    return type(_PROCESS_PLANNER)._background_plan_worker(
+        _PROCESS_PLANNER,
+        predicted_boundary_state,
+        kwargs,
+    )
 
 
 def _use_file_system_tensor_sharing() -> None:
@@ -808,8 +859,9 @@ class AsyncMpcICem(MpcICem):
     """Double-buffered asynchronous iCEM planner.
 
     The live control loop only swaps action buffers. Background planning runs on
-    a deep-copied policy/model snapshot so iCEM warm starts and temporary dt
-    scaling do not mutate the live planner.
+    a copied policy/model snapshot so iCEM warm starts and temporary dt scaling
+    do not mutate the live planner. The process backend keeps that snapshot in
+    its worker and refreshes only small belief/warm-start tensors per launch.
     """
 
     def __init__(
@@ -1529,11 +1581,37 @@ class AsyncMpcICem(MpcICem):
         planner._set_model_planning_state(planner.model, predicted_boundary_state)
         return planner
 
+    def _make_process_planner_payload(self, num_iterations: int) -> dict[str, Any]:
+        state_dict = {}
+        if callable(getattr(self.model, "state_dict", None)):
+            state_dict = {
+                str(k): v.detach().clone()
+                for k, v in self.model.state_dict().items()
+                if torch.is_tensor(v)
+            }
+        return {
+            "model_state_dict": state_dict,
+            "model": {
+                "e": _clone_for_worker(getattr(self.model, "e", {})),
+                "z": _clone_for_worker(getattr(self.model, "z", {})),
+                "_state": _clone_for_worker(getattr(self.model, "_state", None)),
+            },
+            "mean": _clone_for_worker(self.mean),
+            "std": _clone_for_worker(self.std),
+            "elite_actions": _clone_for_worker(self.elite_actions),
+            "elite_costs_traj": _clone_for_worker(self.elite_costs_traj),
+            "num_iterations": int(num_iterations),
+            "worker_anchor_seq": int(self._async_anchor.get("seq", 0)),
+            "action_rng_seed": int(self._next_action_rng_seed()),
+            "last_plan_status": dict(self.last_plan_status),
+            "last_update_info": dict(self.last_update_info),
+        }
+
     def _submit_process_plan(
         self,
-        planner: "AsyncMpcICem",
         predicted_boundary_state: torch.Tensor,
         worker_kwargs: dict[str, Any],
+        payload: dict[str, Any],
     ) -> Future:
         proxy: Future = Future()
         if self._submit_executor is None:
@@ -1551,10 +1629,10 @@ class AsyncMpcICem(MpcICem):
                 if self._executor is None:
                     self._executor = self._new_executor()
                 worker_future = self._executor.submit(
-                    self._background_plan_worker,
-                    planner,
+                    _background_plan_persistent_worker,
                     predicted_boundary_state,
                     worker_kwargs,
+                    payload,
                 )
                 setattr(proxy, "_worker_future", worker_future)
                 if proxy.cancelled():
@@ -1663,33 +1741,39 @@ class AsyncMpcICem(MpcICem):
         if self._realtime_feedback_target_state is not None:
             worker_kwargs["realtime_prefix_index"] = int(self._buffer_index)
         launch_info["async_launch_clone_sec"] = time.perf_counter() - start
-        start = time.perf_counter()
-        planner = self._make_snapshot_planner(predicted_boundary)
-        launch_info["async_launch_snapshot_sec"] = time.perf_counter() - start
         self._async_background_plan_count += 1
         use_full_iterations = (
             self.async_worker_full_interval is not None
             and self._async_background_plan_count % self.async_worker_full_interval == 0
         )
+        num_iterations = int(self.num_iterations)
         if self.async_worker_iterations is not None and not use_full_iterations:
-            planner.num_iterations = int(self.async_worker_iterations)
+            num_iterations = int(self.async_worker_iterations)
         assert self._executor is not None
         predicted_boundary_for_worker = predicted_boundary.detach().clone()
-        start = time.perf_counter()
+        snapshot_start = time.perf_counter()
         if self.async_worker_backend == "process":
+            payload = self._make_process_planner_payload(num_iterations)
+            launch_info["async_launch_snapshot_sec"] = time.perf_counter() - snapshot_start
+            submit_start = time.perf_counter()
             self._planning_future = self._submit_process_plan(
-                planner,
                 predicted_boundary_for_worker,
                 worker_kwargs,
+                payload,
             )
         else:
+            planner = self._make_snapshot_planner(predicted_boundary)
+            if num_iterations != int(self.num_iterations):
+                planner.num_iterations = int(num_iterations)
+            launch_info["async_launch_snapshot_sec"] = time.perf_counter() - snapshot_start
+            submit_start = time.perf_counter()
             self._planning_future = self._executor.submit(
                 self._background_plan_worker,
                 planner,
                 predicted_boundary_for_worker,
                 worker_kwargs,
             )
-        launch_info["async_launch_submit_sec"] = time.perf_counter() - start
+        launch_info["async_launch_submit_sec"] = time.perf_counter() - submit_start
         launch_info["async_launch_started"] = True
         self.last_launch_info = launch_info
         return launch_info

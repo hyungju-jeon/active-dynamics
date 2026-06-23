@@ -1290,6 +1290,45 @@ def test_async_process_background_launch_defers_process_submit() -> None:
     policy.close()
 
 
+def test_async_process_background_launch_uses_persistent_worker_payload() -> None:
+    policy = _make_async_policy(chunk=3)
+    policy.async_worker_backend = "process"
+    policy.beginning_of_rollout(torch.zeros(1, 1, 2))
+    policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
+    submitted_process: list[tuple[Any, ...]] = []
+
+    def fail_snapshot(*args, **kwargs):
+        raise AssertionError("foreground launch should not deepcopy a process snapshot")
+
+    class _Submitter:
+        def submit(self, fn):
+            fn()
+            return Future()
+
+        def shutdown(self, *, wait, cancel_futures):
+            pass
+
+    class _ProcessExecutor:
+        def submit(self, *args):
+            submitted_process.append(args)
+            return Future()
+
+    policy._make_snapshot_planner = fail_snapshot
+    policy._submit_executor = _Submitter()
+    policy._executor = _ProcessExecutor()
+    launch_info = policy._launch_background_plan(torch.zeros(1, 1, 2), {})
+
+    assert len(submitted_process) == 1
+    assert submitted_process[0][0] is mpc_module._background_plan_persistent_worker
+    payload = submitted_process[0][3]
+    assert payload["model"]["_state"].shape == policy.model._state.shape
+    assert payload["mean"].shape == policy.mean.shape
+    assert launch_info["async_launch_started"] is True
+    policy._submit_executor = None
+    policy._executor = None
+    policy.close()
+
+
 def test_async_process_background_cancel_before_submit_skips_process_submit() -> None:
     policy = _make_async_policy(chunk=3)
     policy.async_worker_backend = "process"
