@@ -84,6 +84,17 @@ def _apply_process_planner_payload(planner: Any, payload: dict[str, Any]) -> Non
     planner._return_worker_warm_start = True
     planner.last_plan_status = dict(payload.get("last_plan_status", {}))
     planner.last_update_info = dict(payload.get("last_update_info", {}))
+    anytime = payload.get("async_anytime", {})
+    if isinstance(anytime, dict):
+        planner._async_anytime_shared_meta = anytime.get("meta")
+        planner._async_anytime_shared_stats = anytime.get("stats")
+        planner._async_anytime_shared_actions = anytime.get("actions")
+        planner._async_anytime_shared_anchor = anytime.get("anchor")
+        planner._active_anytime_worker_id = int(anytime.get("worker_id", 0))
+        planner._active_anytime_model_update_version = int(
+            anytime.get("model_update_version", 0)
+        )
+        planner._active_anytime_launch_step = int(anytime.get("launch_step", 0))
     planner._set_action_rng_seed(int(payload.get("action_rng_seed", 1)))
 
 
@@ -186,6 +197,7 @@ class _AsyncPlanResult:
     elite_actions: torch.Tensor | None = None
     elite_costs_traj: torch.Tensor | None = None
     realtime_prefix_index: int = 0
+    anytime_launch_step: int = 0
 
 
 class MpcICem(BaseMPC):
@@ -749,6 +761,13 @@ class MpcICem(BaseMPC):
 
             self.mean = (1 - self.alpha) * new_mean + self.alpha * self.mean
             self.std = (1 - self.alpha) * new_std + self.alpha * self.std
+            maybe_publish_anytime = getattr(self, "_maybe_publish_anytime_prefix", None)
+            if callable(maybe_publish_anytime):
+                maybe_publish_anytime(
+                    actions[min_cost_idx].unsqueeze(0),
+                    costs[min_cost_idx].unsqueeze(0).detach(),
+                    iter + 1,
+                )
 
             # Print cost for debugging
             if self.verbose:
@@ -881,6 +900,9 @@ class AsyncMpcICem(MpcICem):
         async_worker_device: str | None = None,
         async_start_after_first_plan: bool = True,
         async_realtime_prefix_steps: int = 10,
+        async_anytime_prefix_steps: int | None = 0,
+        async_anytime_min_iteration: int = 1,
+        async_anytime_std_tolerance: float = 0.5,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -901,6 +923,13 @@ class AsyncMpcICem(MpcICem):
         )
         self.async_start_after_first_plan = bool(async_start_after_first_plan)
         self.async_realtime_prefix_steps = max(1, int(async_realtime_prefix_steps))
+        self.async_anytime_prefix_steps = (
+            None
+            if async_anytime_prefix_steps is None
+            else max(0, int(async_anytime_prefix_steps))
+        )
+        self.async_anytime_min_iteration = max(1, int(async_anytime_min_iteration))
+        self.async_anytime_std_tolerance = float(max(async_anytime_std_tolerance, 0.0))
         self._executor: ThreadPoolExecutor | ProcessPoolExecutor | None = self._new_executor()
         self._foreground_active = threading.Event()
         self._async_anchor_lock = threading.Lock()
@@ -909,6 +938,15 @@ class AsyncMpcICem(MpcICem):
         self._async_anchor_shared_boundary: torch.Tensor | None = None
         self._async_anchor_shared_parameter_mean: torch.Tensor | None = None
         self._async_anchor_shared_parameter_cov: torch.Tensor | None = None
+        self._async_anytime_shared_meta: torch.Tensor | None = None
+        self._async_anytime_shared_stats: torch.Tensor | None = None
+        self._async_anytime_shared_actions: torch.Tensor | None = None
+        self._async_anytime_shared_anchor: torch.Tensor | None = None
+        self._async_anytime_worker_id = 0
+        self._active_anytime_worker_id = 0
+        self._active_anytime_model_update_version = 0
+        self._active_anytime_launch_step = 0
+        self._last_anytime_seq_seen = 0
         self._worker_anchor_seq = 0
         self._planning_future: Future | None = None
         self._submit_executor: ThreadPoolExecutor | None = ThreadPoolExecutor(max_workers=1)
@@ -941,6 +979,13 @@ class AsyncMpcICem(MpcICem):
         state["_foreground_active"] = None
         state["_async_anchor_lock"] = None
         state["_async_anchor"] = {"seq": 0, "boundary": None}
+        state["_async_anytime_shared_meta"] = None
+        state["_async_anytime_shared_stats"] = None
+        state["_async_anytime_shared_actions"] = None
+        state["_async_anytime_shared_anchor"] = None
+        state["_active_anytime_worker_id"] = 0
+        state["_active_anytime_launch_step"] = 0
+        state["_last_anytime_seq_seen"] = 0
         state["_action_np_rng"] = None
         state["_action_torch_generator"] = None
         state["_planning_future"] = None
@@ -968,6 +1013,12 @@ class AsyncMpcICem(MpcICem):
             "async_realtime_fallback_runtime_sec": 0.0,
             "async_realtime_fallback_steps": 0,
             "async_realtime_zero_prefix": False,
+            "async_anytime_plan_ready": False,
+            "async_anytime_plan_used": False,
+            "async_anytime_plan_stale": False,
+            "async_anytime_iteration": 0,
+            "async_anytime_std_max": 0.0,
+            "async_anytime_cost": 0.0,
         }
 
     def _empty_launch_info(self) -> dict[str, Any]:
@@ -989,6 +1040,9 @@ class AsyncMpcICem(MpcICem):
             if callable(cancel):
                 cancel()
         self._planning_future = None
+        self._active_anytime_worker_id = 0
+        self._active_anytime_launch_step = 0
+        self._clear_anytime_prefix()
 
     def _reset_submit_executor(self) -> None:
         if self._submit_executor is not None:
@@ -1073,6 +1127,15 @@ class AsyncMpcICem(MpcICem):
         self._async_anchor_shared_boundary = None
         self._async_anchor_shared_parameter_mean = None
         self._async_anchor_shared_parameter_cov = None
+        self._async_anytime_shared_meta = None
+        self._async_anytime_shared_stats = None
+        self._async_anytime_shared_actions = None
+        self._async_anytime_shared_anchor = None
+        self._async_anytime_worker_id = 0
+        self._active_anytime_worker_id = 0
+        self._active_anytime_model_update_version = 0
+        self._active_anytime_launch_step = 0
+        self._last_anytime_seq_seen = 0
         self._worker_anchor_seq = 0
         self._async_action_seed_base = int(torch.initial_seed() % (2**31 - 1))
         self._async_action_seed_counter = 0
@@ -1215,6 +1278,17 @@ class AsyncMpcICem(MpcICem):
         self, result: _AsyncPlanResult, state: torch.Tensor
     ) -> torch.Tensor:
         actions = result.actions.to(self.device)
+        before_boundary = (
+            self._current_buffer is not None
+            and self._buffer_index < self._async_buffer_boundary()
+        )
+        if self._async_anytime_max_fine_steps() > 0 and before_boundary:
+            launch_step = int(getattr(result, "anytime_launch_step", 0))
+            elapsed = max(0, int(self.count) - launch_step)
+            if elapsed > 0:
+                if elapsed < actions.shape[-2]:
+                    return actions[:, elapsed:, :]
+                return actions[:, -1:, :]
         prefix_steps = int(self._realtime_feedback_prefix_steps)
         if self._realtime_feedback_target_state is None or prefix_steps <= 1:
             return actions
@@ -1327,6 +1401,164 @@ class AsyncMpcICem(MpcICem):
             ):
                 self._async_anchor_shared_parameter_cov = _new_shared_tensor(cov)
 
+    def _clear_anytime_prefix(self) -> None:
+        meta = getattr(self, "_async_anytime_shared_meta", None)
+        if torch.is_tensor(meta):
+            meta.zero_()
+
+    def _async_anytime_max_fine_steps(self) -> int:
+        if self.async_anytime_prefix_steps is None:
+            return int(self.horizon) * int(self.coarse_dt_factor)
+        return int(self.async_anytime_prefix_steps)
+
+    def _ensure_shared_anytime_storage(self, boundary: torch.Tensor) -> None:
+        max_fine_steps = self._async_anytime_max_fine_steps()
+        if max_fine_steps <= 0:
+            return
+        boundary_cpu = torch.as_tensor(boundary).detach().cpu()
+        action_shape = (1, max_fine_steps, int(self.action_dim))
+        if self._async_anytime_shared_meta is None:
+            self._async_anytime_shared_meta = _new_shared_tensor(
+                torch.zeros(6, dtype=torch.int64)
+            )
+        if self._async_anytime_shared_stats is None:
+            self._async_anytime_shared_stats = _new_shared_tensor(
+                torch.zeros(2, dtype=torch.float32)
+            )
+        if (
+            self._async_anytime_shared_actions is None
+            or tuple(self._async_anytime_shared_actions.shape) != action_shape
+        ):
+            self._async_anytime_shared_actions = _new_shared_tensor(
+                torch.zeros(action_shape, dtype=torch.float32)
+            )
+        if (
+            self._async_anytime_shared_anchor is None
+            or tuple(self._async_anytime_shared_anchor.shape) != tuple(boundary_cpu.shape)
+            or self._async_anytime_shared_anchor.dtype != boundary_cpu.dtype
+        ):
+            self._async_anytime_shared_anchor = _new_shared_tensor(boundary_cpu)
+
+    def _maybe_publish_anytime_prefix(
+        self,
+        actions: torch.Tensor,
+        cost: torch.Tensor,
+        iteration: int,
+    ) -> None:
+        if (
+            not bool(getattr(self, "_yield_to_foreground", False))
+            or self._async_anytime_max_fine_steps() <= 0
+            or int(iteration) < self.async_anytime_min_iteration
+            or self.coarse_action_mapping != "hold"
+        ):
+            return
+        meta = getattr(self, "_async_anytime_shared_meta", None)
+        stats = getattr(self, "_async_anytime_shared_stats", None)
+        action_store = getattr(self, "_async_anytime_shared_actions", None)
+        anchor_store = getattr(self, "_async_anytime_shared_anchor", None)
+        if not all(torch.is_tensor(x) for x in (meta, stats, action_store, anchor_store)):
+            return
+        max_prefix_steps = self._async_anytime_max_fine_steps()
+        max_coarse = max(
+            1, int(np.ceil(float(max_prefix_steps) / float(self.coarse_dt_factor)))
+        )
+        max_coarse = min(max_coarse, int(actions.shape[-2]))
+        if max_coarse <= 0:
+            return
+        std = torch.as_tensor(self.std[:max_coarse], dtype=torch.float32, device=self.device)
+        action_scale = max(float(getattr(self, "action_radius", None) or 1.0), 1e-8)
+        std_per_coarse = std.reshape(max_coarse, -1).amax(dim=1) / action_scale
+        stable_count = 0
+        for value in std_per_coarse.tolist():
+            if float(value) > self.async_anytime_std_tolerance:
+                break
+            stable_count += 1
+        if stable_count == 0:
+            return
+        fine_steps = min(max_prefix_steps, stable_count * int(self.coarse_dt_factor))
+        std_max = float(std_per_coarse[:stable_count].max().item())
+        prefix = self._map_coarse_actions(
+            torch.as_tensor(actions[:, :stable_count], dtype=torch.float32, device=self.device),
+            fine_steps=fine_steps,
+        ).detach().cpu()
+        anchor = getattr(self, "_async_anytime_anchor_state", None)
+        if anchor is None:
+            anchor = getattr(self.model, "_state", None)
+        if anchor is None:
+            return
+        seq = abs(int(meta[0].item())) + 1
+        meta[0] = -seq
+        action_store.zero_()
+        action_store[:, : prefix.shape[-2], :].copy_(prefix)
+        anchor_store.copy_(torch.as_tensor(anchor).detach().cpu())
+        stats[0] = std_max
+        stats[1] = float(torch.as_tensor(cost).reshape(-1)[0].detach().cpu().item())
+        meta[1] = int(getattr(self, "_active_anytime_worker_id", 0))
+        meta[2] = int(getattr(self, "_active_anytime_model_update_version", 0))
+        meta[3] = int(iteration)
+        meta[4] = int(prefix.shape[-2])
+        meta[5] = int(getattr(self, "_active_anytime_launch_step", 0))
+        meta[0] = seq
+
+    def _try_use_anytime_prefix(
+        self,
+        state: torch.Tensor,
+        live_model_version: int,
+        status: dict[str, Any],
+    ) -> bool:
+        if self._async_anytime_max_fine_steps() <= 0:
+            return False
+        meta = self._async_anytime_shared_meta
+        stats = self._async_anytime_shared_stats
+        action_store = self._async_anytime_shared_actions
+        anchor_store = self._async_anytime_shared_anchor
+        if not all(torch.is_tensor(x) for x in (meta, stats, action_store, anchor_store)):
+            return False
+        seq = int(meta[0].item())
+        if seq <= 0 or seq <= self._last_anytime_seq_seen:
+            return False
+        worker_id = int(meta[1].item())
+        if worker_id != int(self._active_anytime_worker_id):
+            self._last_anytime_seq_seen = seq
+            return False
+        steps = int(meta[4].item())
+        if steps <= 0:
+            return False
+        launch_step = int(meta[5].item())
+        elapsed = max(0, int(self.count) - launch_step)
+        if elapsed >= steps:
+            self._last_anytime_seq_seen = seq
+            return False
+        actions = action_store[:, elapsed:steps, :].detach().clone().to(self.device)
+        anchor = anchor_store.detach().clone().to(self.device)
+        std_max = float(stats[0].item())
+        cost = float(stats[1].item())
+        if int(meta[0].item()) != seq:
+            return False
+        self._last_anytime_seq_seen = seq
+        plan_model_version = int(meta[2].item())
+        mismatch = self._boundary_mismatch(state, anchor)
+        status["async_anytime_plan_ready"] = True
+        status["async_anytime_iteration"] = int(meta[3].item())
+        status["async_anytime_std_max"] = std_max
+        status["async_anytime_cost"] = cost
+        status["async_boundary_mismatch"] = mismatch
+        status["async_plan_model_version"] = plan_model_version
+        status["async_model_version_mismatch"] = plan_model_version != int(live_model_version)
+        if mismatch > self.async_stale_tolerance:
+            status["async_anytime_plan_stale"] = True
+            status["async_plan_status"] = "anytime_stale"
+            return False
+        self._set_current_buffer(
+            actions,
+            torch.tensor([cost], dtype=torch.float32, device=self.device),
+            state=state,
+            repeat_single=False,
+        )
+        status["async_anytime_plan_used"] = True
+        status["async_plan_status"] = "used_anytime_prefix"
+        return True
+
     def _read_async_anchor(self) -> tuple[int, torch.Tensor | None, dict[str, Any] | None, int]:
         meta = getattr(self, "_async_anchor_shared_meta", None)
         boundary_shared = getattr(self, "_async_anchor_shared_boundary", None)
@@ -1432,6 +1664,9 @@ class AsyncMpcICem(MpcICem):
             return None
         future = self._planning_future
         self._planning_future = None
+        self._active_anytime_worker_id = 0
+        self._active_anytime_launch_step = 0
+        self._clear_anytime_prefix()
         return future.result()
 
     def _make_snapshot_planner(self, predicted_boundary_state: torch.Tensor):
@@ -1486,7 +1721,7 @@ class AsyncMpcICem(MpcICem):
                 for k, v in self.model.state_dict().items()
                 if torch.is_tensor(v)
             }
-        return {
+        payload = {
             "model_state_dict": state_dict,
             "model": {
                 "e": _clone_for_worker(getattr(self.model, "e", {})),
@@ -1503,6 +1738,17 @@ class AsyncMpcICem(MpcICem):
             "last_plan_status": dict(self.last_plan_status),
             "last_update_info": dict(self.last_update_info),
         }
+        if self._async_anytime_max_fine_steps() > 0:
+            payload["async_anytime"] = {
+                "meta": self._async_anytime_shared_meta,
+                "stats": self._async_anytime_shared_stats,
+                "actions": self._async_anytime_shared_actions,
+                "anchor": self._async_anytime_shared_anchor,
+                "worker_id": int(self._active_anytime_worker_id),
+                "model_update_version": int(self._active_anytime_model_update_version),
+                "launch_step": int(self._active_anytime_launch_step),
+            }
+        return payload
 
     def _submit_process_plan(
         self,
@@ -1571,6 +1817,7 @@ class AsyncMpcICem(MpcICem):
         realtime_prefix_index = int(kwargs.pop("realtime_prefix_index", 0) or 0)
         if getattr(planner, "_action_torch_generator", None) is None:
             planner._set_action_rng_seed(int(getattr(planner, "_action_rng_seed", 1)))
+        planner._async_anytime_anchor_state = predicted_boundary_state.detach().clone()
         _update_metric_from_rollout(planner.metric, kwargs.pop("recent_rollout", None))
         actions, cost = MpcICem.get_action(planner, predicted_boundary_state, **kwargs)
         model_update_version = int(
@@ -1593,6 +1840,7 @@ class AsyncMpcICem(MpcICem):
                 getattr(planner, "elite_costs_traj", None) if return_warm_start else None
             ),
             realtime_prefix_index=realtime_prefix_index,
+            anytime_launch_step=int(getattr(planner, "_active_anytime_launch_step", 0)),
         )
 
     def request_replan(self, reason: str) -> None:
@@ -1639,6 +1887,18 @@ class AsyncMpcICem(MpcICem):
             num_iterations = int(self.async_worker_iterations)
         assert self._executor is not None
         predicted_boundary_for_worker = predicted_boundary.detach().clone()
+        if self._async_anytime_max_fine_steps() > 0:
+            self._async_anytime_worker_id += 1
+            self._active_anytime_worker_id = int(self._async_anytime_worker_id)
+            self._active_anytime_model_update_version = int(
+                worker_kwargs.get(
+                    "parameter_update_version", worker_kwargs.get("model_update_version", 0)
+                )
+                or 0
+            )
+            self._active_anytime_launch_step = int(self.count)
+            self._ensure_shared_anytime_storage(predicted_boundary_for_worker)
+            self._clear_anytime_prefix()
         snapshot_start = time.perf_counter()
         payload = self._make_process_planner_payload(num_iterations)
         launch_info["async_launch_snapshot_sec"] = time.perf_counter() - snapshot_start
@@ -1712,6 +1972,12 @@ class AsyncMpcICem(MpcICem):
                     plan_info = {"plan_executed": False, "plan_reason": "stale_realtime_fallback"}
                     self._predicted_boundary_state = None
                     status["async_plan_stale"] = True
+        if (
+            self._planning_future is not None
+            and not self._planning_future.done()
+            and status["async_plan_status"] == "idle"
+        ):
+            self._try_use_anytime_prefix(state, live_model_version, status)
         if self._current_buffer is not None:
             exhausted = self._buffer_index >= self._current_buffer.shape[-2]
             waiting = self._planning_future is not None and not self._planning_future.done()
@@ -1753,21 +2019,32 @@ class AsyncMpcICem(MpcICem):
         if at_boundary:
             self._activate_new_chunk(state_t, dict(kwargs))
         elif self._realtime_feedback_target_state is None:
-            status = self._empty_plan_status()
-            status["async_live_model_version"] = int(
-                kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
-            )
-            if self._planning_future is not None:
-                status["async_plan_status"] = (
-                    "ready_waiting_boundary"
-                    if self._planning_future.done()
-                    else "waiting_ready_tail"
-                )
+            if (
+                self._async_anytime_max_fine_steps() > 0
+                and self._planning_future is not None
+                and self._planning_future.done()
+            ):
+                self._activate_new_chunk(state_t, dict(kwargs))
             else:
-                status["async_plan_status"] = "executing_buffer"
-            self.last_plan_status = status
-            self.last_update_info = dict(status)
-            self.last_plan_info = {"plan_executed": False, "plan_reason": "none"}
+                status = self._empty_plan_status()
+                live_model_version = int(
+                    kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
+                )
+                status["async_live_model_version"] = live_model_version
+                if self._planning_future is not None and not self._planning_future.done():
+                    self._try_use_anytime_prefix(state_t, live_model_version, status)
+                if status["async_plan_status"] == "idle":
+                    if self._planning_future is not None:
+                        status["async_plan_status"] = (
+                            "ready_waiting_boundary"
+                            if self._planning_future.done()
+                            else "waiting_ready_tail"
+                        )
+                    else:
+                        status["async_plan_status"] = "executing_buffer"
+                self.last_plan_status = status
+                self.last_update_info = dict(status)
+                self.last_plan_info = {"plan_executed": False, "plan_reason": "none"}
         else:
             self.last_plan_info = {"plan_executed": False, "plan_reason": "none"}
 
