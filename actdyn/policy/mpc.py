@@ -1,13 +1,14 @@
 import copy
 import time
 import threading
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
 from actdyn.environment import action
 import torch
+import torch.multiprocessing as torch_multiprocessing
 import colorednoise
 
 
@@ -36,6 +37,26 @@ def _move_tensors_to_device(value: Any, device: torch.device) -> Any:
     if isinstance(value, tuple):
         return tuple(_move_tensors_to_device(v, device) for v in value)
     return value
+
+
+def _warm_process_worker() -> None:
+    return None
+
+
+def _warm_process_planner_worker(planner: Any) -> None:
+    del planner
+    _use_file_system_tensor_sharing()
+
+
+def _use_file_system_tensor_sharing() -> None:
+    if "file_system" in torch_multiprocessing.get_all_sharing_strategies():
+        torch_multiprocessing.set_sharing_strategy("file_system")
+
+
+def _new_shared_tensor(value: Any) -> torch.Tensor:
+    tensor = torch.as_tensor(value).detach().clone().cpu()
+    tensor.share_memory_()
+    return tensor
 
 
 def _move_snapshot_to_device(planner: Any, device: torch.device) -> None:
@@ -111,6 +132,7 @@ class _AsyncPlanResult:
     elite_costs_traj: torch.Tensor | None = None
     reanchor_count: int = 0
     reanchor_mismatch: float = 0.0
+    realtime_prefix_index: int = 0
 
 
 class MpcICem(BaseMPC):
@@ -230,8 +252,8 @@ class MpcICem(BaseMPC):
             f"and {self.model_evals_per_timestep / self.horizon} trajectories per step"
         )
 
-    def end_of_rollout(self, total_time, total_return, mode):
-        super().end_of_rollout(total_time, total_return, mode)
+    def end_of_rollout(self, *args, **kwargs):
+        return None
 
     def get_init_mean(self):
         if self.action_bounds is not None:
@@ -274,15 +296,25 @@ class MpcICem(BaseMPC):
     def sample_action_sequences(self, num_samples):
         # Generate action sequences with colored noise
         if self.noise_beta > 0 and self.horizon > 1:
+            random_state = getattr(self, "_action_np_rng", None)
             samples = torch.tensor(
                 colorednoise.powerlaw_psd_gaussian(
-                    self.noise_beta, size=(num_samples, self.action_dim, self.horizon)
+                    self.noise_beta,
+                    size=(num_samples, self.action_dim, self.horizon),
+                    random_state=random_state,
                 ),
                 device=self.device,
                 dtype=torch.float32,
             ).transpose(1, 2)
         else:
-            samples = torch.randn(num_samples, self.horizon, self.action_dim, device=self.device)
+            generator = getattr(self, "_action_torch_generator", None)
+            samples = torch.randn(
+                num_samples,
+                self.horizon,
+                self.action_dim,
+                device=self.device,
+                generator=generator,
+            )
         actions = samples * self.std + self.mean
         actions = self._project_actions(actions)
         return actions
@@ -552,10 +584,13 @@ class MpcICem(BaseMPC):
                 setattr(metric, "_foreground_active", foreground_active)
         maybe_reanchor = getattr(self, "_maybe_reanchor_worker_plan", None)
 
-        current_num_samples = self.num_samples
-        for iter in range(self.num_iterations):
+        def wait_for_foreground() -> None:
             while foreground_active is not None and foreground_active.is_set():
                 time.sleep(0.0005)
+
+        current_num_samples = self.num_samples
+        for iter in range(self.num_iterations):
+            wait_for_foreground()
             if callable(maybe_reanchor):
                 state = maybe_reanchor(state, kwargs)
 
@@ -584,7 +619,7 @@ class MpcICem(BaseMPC):
                 elites_actions = torch.cat([reused_actions, last_actions], dim=-2)
                 actions = torch.cat([actions, elites_actions], dim=0)
 
-            def score_actions(candidate_actions: torch.Tensor) -> torch.Tensor:
+            def score_batch(candidate_actions: torch.Tensor) -> torch.Tensor:
                 rollout = self.simulate(state, candidate_actions)
                 with torch.no_grad():
                     candidate_costs = self.metric(rollout, **kwargs).reshape(-1)
@@ -594,6 +629,16 @@ class MpcICem(BaseMPC):
                         posinf=float("inf"),
                         neginf=float("inf"),
                     )
+
+            def score_actions(candidate_actions: torch.Tensor) -> torch.Tensor:
+                batch_size = int(getattr(self, "_yield_score_batch_size", 0) or 0)
+                if foreground_active is None or batch_size <= 0:
+                    return score_batch(candidate_actions)
+                costs_by_chunk = []
+                for chunk in candidate_actions.split(batch_size, dim=0):
+                    wait_for_foreground()
+                    costs_by_chunk.append(score_batch(chunk))
+                return torch.cat(costs_by_chunk, dim=0)
 
             # Simulate and compute cost. If a background worker receives a newer
             # live boundary while scoring, re-score the same candidate set before
@@ -692,7 +737,7 @@ class MpcICem(BaseMPC):
         assert coarse_plan is not None and coarse_cost is not None
         fine_steps = int(self.chunk)
         if bool(getattr(self, "_return_planning_tail", False)):
-            fine_steps = min(int(self.chunk) * 2, int(self.horizon) * int(self.coarse_dt_factor))
+            fine_steps = int(self.horizon) * int(self.coarse_dt_factor)
         n_coarse_return = int(np.ceil(float(fine_steps) / float(self.coarse_dt_factor)))
         coarse_actions = coarse_plan[:, : max(n_coarse_execute, n_coarse_return), :]
         fine_actions = self._map_coarse_actions(
@@ -780,6 +825,10 @@ class AsyncMpcICem(MpcICem):
         async_refine_on_parameter_update: bool = True,
         async_reanchor_live_state: bool = False,
         async_reanchor_tolerance: float = 0.25,
+        async_realtime_fallback_horizon: int = 0,
+        async_realtime_fallback_coarse_dt_factor: int | None = None,
+        async_realtime_fallback_iterations: int = 1,
+        async_realtime_fallback_zero_prefix: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -794,8 +843,8 @@ class AsyncMpcICem(MpcICem):
         self._async_background_plan_count = 0
         self._return_planning_tail = True
         self.async_worker_backend = str(async_worker_backend or "thread").strip().lower()
-        if self.async_worker_backend != "thread":
-            raise ValueError("AsyncMpcICem only supports async_worker_backend='thread'")
+        if self.async_worker_backend not in {"thread", "process"}:
+            raise ValueError("AsyncMpcICem only supports async_worker_backend='thread' or 'process'")
         self.async_worker_device = (
             None
             if async_worker_device is None or str(async_worker_device).strip() == ""
@@ -805,23 +854,42 @@ class AsyncMpcICem(MpcICem):
         self.async_refine_on_parameter_update = bool(async_refine_on_parameter_update)
         self.async_reanchor_live_state = bool(async_reanchor_live_state)
         self.async_reanchor_tolerance = float(max(async_reanchor_tolerance, 0.0))
-        self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(max_workers=1)
+        self.async_realtime_fallback_horizon = max(0, int(async_realtime_fallback_horizon))
+        self.async_realtime_fallback_coarse_dt_factor = (
+            None
+            if async_realtime_fallback_coarse_dt_factor is None
+            else max(1, int(async_realtime_fallback_coarse_dt_factor))
+        )
+        self.async_realtime_fallback_iterations = max(1, int(async_realtime_fallback_iterations))
+        self.async_realtime_fallback_zero_prefix = bool(async_realtime_fallback_zero_prefix)
+        self._executor: ThreadPoolExecutor | ProcessPoolExecutor | None = self._new_executor()
         self._foreground_active = threading.Event()
         self._async_anchor_lock = threading.Lock()
         self._async_anchor: dict[str, Any] = {"seq": 0, "boundary": None}
+        self._async_anchor_shared_meta: torch.Tensor | None = None
+        self._async_anchor_shared_boundary: torch.Tensor | None = None
+        self._async_anchor_shared_parameter_mean: torch.Tensor | None = None
+        self._async_anchor_shared_parameter_cov: torch.Tensor | None = None
         self._worker_anchor_seq = 0
         self._worker_reanchor_count = 0
         self._worker_reanchor_mismatch = 0.0
         self._planning_future: Future | None = None
+        self._submit_executor: ThreadPoolExecutor | None = (
+            ThreadPoolExecutor(max_workers=1) if self.async_worker_backend == "process" else None
+        )
         self._current_buffer: torch.Tensor | None = None
+        self._realtime_feedback_target_state: torch.Tensor | None = None
+        self._realtime_feedback_prefix_steps = 0
         self._buffer_index = 0
         self._predicted_boundary_state: torch.Tensor | None = None
+        self._async_action_seed_base = 0
+        self._async_action_seed_counter = 0
         self.last_plan_status: dict[str, Any] = self._empty_plan_status()
         self.last_update_info: dict[str, Any] = dict(self.last_plan_status)
 
     @property
     def updates_metric_in_background(self) -> bool:
-        return False
+        return True
 
     def set_foreground_active(self, active: bool) -> None:
         if self._foreground_active is None:
@@ -837,9 +905,13 @@ class AsyncMpcICem(MpcICem):
         state["_foreground_active"] = None
         state["_async_anchor_lock"] = None
         state["_async_anchor"] = {"seq": 0, "boundary": None}
-        state["_yield_to_foreground"] = False
+        state["_action_np_rng"] = None
+        state["_action_torch_generator"] = None
         state["_planning_future"] = None
+        state["_submit_executor"] = None
         state["_current_buffer"] = None
+        state["_realtime_feedback_target_state"] = None
+        state["_realtime_feedback_prefix_steps"] = 0
         state["_predicted_boundary_state"] = None
         return state
 
@@ -858,61 +930,149 @@ class AsyncMpcICem(MpcICem):
             "async_plan_status": "idle",
             "async_reanchor_count": 0,
             "async_reanchor_mismatch": 0.0,
+            "async_realtime_fallback": False,
+            "async_realtime_fallback_runtime_sec": 0.0,
+            "async_realtime_fallback_steps": 0,
+            "async_realtime_zero_prefix": False,
         }
 
     def _cancel_planning_future(self) -> None:
         if self._planning_future is not None:
+            worker_future = getattr(self._planning_future, "_worker_future", None)
+            cancel_worker = getattr(worker_future, "cancel", None)
+            if callable(cancel_worker):
+                cancel_worker()
             cancel = getattr(self._planning_future, "cancel", None)
             if callable(cancel):
                 cancel()
         self._planning_future = None
 
+    def _reset_submit_executor(self) -> None:
+        if self._submit_executor is not None:
+            self._submit_executor.shutdown(wait=False, cancel_futures=True)
+        self._submit_executor = (
+            ThreadPoolExecutor(max_workers=1) if self.async_worker_backend == "process" else None
+        )
+
+    def _new_executor(self) -> ThreadPoolExecutor | ProcessPoolExecutor:
+        if self.async_worker_backend == "process":
+            _use_file_system_tensor_sharing()
+            return ProcessPoolExecutor(max_workers=1)
+        return ThreadPoolExecutor(max_workers=1)
+
     def _reset_executor(self) -> None:
         self._cancel_planning_future()
+        self._reset_submit_executor()
         if self._executor is not None:
             self._executor.shutdown(wait=False, cancel_futures=True)
-        self._executor = ThreadPoolExecutor(max_workers=1)
+        self._executor = self._new_executor()
 
-    def close(self) -> None:
+    def _warm_executor(self) -> None:
+        if self.async_worker_backend != "process" or self._executor is None:
+            return
+        self._executor.submit(_warm_process_worker).result()
+
+    def _warm_process_snapshot(self, state: torch.Tensor) -> None:
+        if self.async_worker_backend != "process" or self._executor is None:
+            return
+        counter = int(self._async_action_seed_counter)
+        try:
+            state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+            if state_t.ndim == 1:
+                state_t = state_t.reshape(1, 1, -1)
+            elif state_t.ndim == 2:
+                state_t = state_t.unsqueeze(1) if state_t.shape[0] == 1 else state_t.unsqueeze(0)
+            planner = self._make_snapshot_planner(state_t)
+            self._executor.submit(_warm_process_planner_worker, planner).result()
+        finally:
+            self._async_action_seed_counter = counter
+
+    def _next_action_rng_seed(self) -> int:
+        seed = (int(self._async_action_seed_base) + int(self._async_action_seed_counter)) % (
+            2**31 - 1
+        )
+        self._async_action_seed_counter += 1
+        return max(1, seed)
+
+    def _set_action_rng_seed(self, seed: int) -> None:
+        seed = int(seed)
+        self._action_rng_seed = seed
+        self._action_np_rng = np.random.default_rng(seed)
+        generator = torch.Generator(device=torch.device(self.device))
+        generator.manual_seed(seed)
+        self._action_torch_generator = generator
+
+    def close(self, *, wait: bool = True) -> None:
         self._cancel_planning_future()
+        if self._submit_executor is not None:
+            self._submit_executor.shutdown(wait=wait, cancel_futures=True)
+            self._submit_executor = None
         if self._executor is not None:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._executor.shutdown(wait=wait, cancel_futures=True)
             self._executor = None
 
     def __del__(self):
         try:
-            self.close()
+            self.close(wait=False)
         except Exception:
             pass
 
     def beginning_of_rollout(self, state: torch.Tensor):
         super().beginning_of_rollout(state)
         self._reset_executor()
+        self._warm_executor()
         self._current_buffer = None
+        self._realtime_feedback_target_state = None
+        self._realtime_feedback_prefix_steps = 0
         self._buffer_index = 0
         self._predicted_boundary_state = None
         self._async_background_plan_count = 0
         self._foreground_active = threading.Event()
         self._async_anchor_lock = threading.Lock()
         self._async_anchor = {"seq": 0, "boundary": None}
+        self._async_anchor_shared_meta = None
+        self._async_anchor_shared_boundary = None
+        self._async_anchor_shared_parameter_mean = None
+        self._async_anchor_shared_parameter_cov = None
         self._worker_anchor_seq = 0
         self._worker_reanchor_count = 0
         self._worker_reanchor_mismatch = 0.0
+        self._async_action_seed_base = int(torch.initial_seed() % (2**31 - 1))
+        self._async_action_seed_counter = 0
+        self._set_action_rng_seed(self._next_action_rng_seed())
         self._yield_to_foreground = False
         self.last_plan_status = self._empty_plan_status()
         self.last_update_info = dict(self.last_plan_status)
+        self._warm_process_snapshot(state)
 
     def end_of_rollout(self, *args, **kwargs):
-        self.close()
+        self.close(wait=True)
         return super().end_of_rollout(*args, **kwargs)
 
-    def _normalize_action_buffer(self, actions: torch.Tensor) -> torch.Tensor:
+    def prime_initial_plan(self, state, **kwargs) -> None:
+        if self._current_buffer is not None or not self._has_realtime_fallback():
+            return
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+        if state_t.ndim == 1:
+            state_t = state_t.reshape(1, 1, -1)
+        elif state_t.ndim == 2:
+            state_t = state_t.unsqueeze(1) if state_t.shape[0] == 1 else state_t.unsqueeze(0)
+        actions, cost = self._sync_plan(state_t, **kwargs)
+        self._set_current_buffer(actions, cost, state=state_t)
+        status = self._empty_plan_status()
+        status["async_plan_status"] = "initial_primed"
+        self.last_plan_status = status
+        self.last_update_info = dict(status)
+
+    def _normalize_action_buffer(
+        self, actions: torch.Tensor, *, repeat_single: bool = True
+    ) -> torch.Tensor:
         action_seq = torch.as_tensor(actions, dtype=torch.float32, device=self.device)
         if action_seq.ndim == 2:
             action_seq = action_seq.unsqueeze(0)
-        if action_seq.shape[-2] == 1:
+        if action_seq.shape[-2] == 1 and repeat_single:
             action_seq = action_seq.repeat(1, self.chunk, 1)
-        elif action_seq.shape[-2] >= self.chunk:
+        elif action_seq.shape[-2] >= 1:
             action_seq = action_seq
         else:
             raise ValueError(
@@ -922,8 +1082,6 @@ class AsyncMpcICem(MpcICem):
         return action_seq.detach().clone()
 
     def _async_execution_interval(self) -> int:
-        if self.adaptive_replanning and not self.async_refine_on_parameter_update:
-            return 1
         return int(self.chunk)
 
     def _async_buffer_boundary(self) -> int:
@@ -936,11 +1094,16 @@ class AsyncMpcICem(MpcICem):
         actions: torch.Tensor,
         cost: torch.Tensor,
         state: torch.Tensor | None = None,
+        repeat_single: bool = True,
     ) -> None:
         if state is not None:
             self._set_model_planning_state(self.model, state)
-        self._current_buffer = self._normalize_action_buffer(actions)
-        self.action_list = [a.unsqueeze(0) for a in self._current_buffer[0]]
+        self._realtime_feedback_target_state = None
+        self._realtime_feedback_prefix_steps = 0
+        self._current_buffer = self._normalize_action_buffer(
+            actions, repeat_single=repeat_single
+        )
+        self.action_list = []
         self._buffer_index = 0
         self._chunk_step = 0
         self._last_action_index = None
@@ -975,6 +1138,158 @@ class AsyncMpcICem(MpcICem):
         finally:
             self.num_iterations = original_iterations
 
+    def _has_realtime_fallback(self) -> bool:
+        return self.async_realtime_fallback_horizon > 0 or self.async_realtime_fallback_zero_prefix
+
+    def _realtime_prefix_steps(self, *, use_coarse_prefix: bool = True) -> int:
+        if not self.async_realtime_fallback_zero_prefix:
+            return 0
+        if not use_coarse_prefix or self.async_realtime_fallback_coarse_dt_factor is None:
+            return 1
+        return max(1, int(self.async_realtime_fallback_coarse_dt_factor))
+
+    def _realtime_fallback_plan(
+        self,
+        state: torch.Tensor,
+        *,
+        use_coarse_prefix: bool = True,
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor, float, torch.Tensor | None, int]:
+        kwargs = dict(kwargs)
+        _update_metric_from_rollout(self.metric, kwargs.pop("recent_rollout", None))
+        start = time.perf_counter()
+
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+        if state_t.ndim == 1:
+            state_t = state_t.reshape(1, 1, -1)
+        elif state_t.ndim == 2:
+            state_t = state_t.unsqueeze(1) if state_t.shape[0] == 1 else state_t.unsqueeze(0)
+
+        prefix_steps = self._realtime_prefix_steps(use_coarse_prefix=use_coarse_prefix)
+        prefix_actions = torch.zeros(
+            1, prefix_steps, self.action_dim, dtype=torch.float32, device=self.device
+        )
+        feedback_target = (
+            self._rollout_from_state(state_t, prefix_actions) if prefix_steps > 1 else None
+        )
+        if self.async_realtime_fallback_horizon <= 0:
+            cost = torch.zeros(1, dtype=torch.float32, device=self.device)
+            return prefix_actions, cost, float(time.perf_counter() - start), feedback_target, prefix_steps
+        plan_state = (
+            self._rollout_from_state(state_t, prefix_actions) if prefix_steps else state_t
+        )
+        self._set_model_planning_state(self.model, plan_state)
+
+        original = {
+            "horizon": self.horizon,
+            "chunk": self.chunk,
+            "coarse_dt_factor": self.coarse_dt_factor,
+            "num_iterations": self.num_iterations,
+            "mean": self.mean,
+            "std": self.std,
+            "elite_actions": self.elite_actions,
+            "elite_costs_traj": self.elite_costs_traj,
+        }
+        horizon = max(1, int(self.async_realtime_fallback_horizon))
+        coarse_factor = max(
+            1, int(self.async_realtime_fallback_coarse_dt_factor or self.coarse_dt_factor)
+        )
+        self.horizon = horizon
+        self.chunk = horizon * coarse_factor
+        self.coarse_dt_factor = coarse_factor
+        self.num_iterations = int(self.async_realtime_fallback_iterations)
+        self.mean = self.get_init_mean()
+        self.std = self.get_init_std()
+        self.elite_actions = None
+        self.elite_costs_traj = None
+        try:
+            tail_actions, cost = MpcICem.get_action(self, plan_state, **kwargs)
+        finally:
+            self.horizon = original["horizon"]
+            self.chunk = original["chunk"]
+            self.coarse_dt_factor = original["coarse_dt_factor"]
+            self.num_iterations = original["num_iterations"]
+            self.mean = original["mean"]
+            self.std = original["std"]
+            self.elite_actions = original["elite_actions"]
+            self.elite_costs_traj = original["elite_costs_traj"]
+
+        actions = (
+            torch.cat([prefix_actions, tail_actions.to(self.device)], dim=-2)
+            if prefix_steps
+            else tail_actions.to(self.device)
+        )
+        return actions, cost.to(self.device), float(time.perf_counter() - start), feedback_target, prefix_steps
+
+    def _realtime_feedback_action(self, state: torch.Tensor) -> torch.Tensor | None:
+        target = self._realtime_feedback_target_state
+        if target is None or self._buffer_index >= self._realtime_feedback_prefix_steps:
+            return None
+        if target.shape[-1] != self.action_dim:
+            return None
+        state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+        zero = torch.zeros(1, 1, self.action_dim, dtype=torch.float32, device=self.device)
+        zero_next = self._rollout_from_state(state_t, zero)
+        remaining = max(1, int(self._realtime_feedback_prefix_steps - self._buffer_index))
+        dt = max(float(getattr(self.model, "dt", 1.0)), 1e-6)
+        action = (target - zero_next) / (float(remaining) * dt)
+        return self._project_actions(action)
+
+    def _reconcile_ready_plan_with_realtime_prefix(
+        self, result: _AsyncPlanResult, state: torch.Tensor
+    ) -> torch.Tensor:
+        actions = result.actions.to(self.device)
+        prefix_steps = int(self._realtime_feedback_prefix_steps)
+        if self._realtime_feedback_target_state is None or prefix_steps <= 1:
+            return actions
+        elapsed = max(0, int(self._buffer_index) - int(result.realtime_prefix_index))
+        if elapsed <= 0:
+            return actions
+        block_steps = min(prefix_steps, int(actions.shape[-2]))
+        if block_steps <= 0:
+            return actions
+        if elapsed >= block_steps:
+            tail = actions[:, block_steps:, :]
+            return tail if tail.shape[-2] > 0 else actions[:, -1:, :]
+
+        remaining = block_steps - elapsed
+        planned_target = self._rollout_from_state(
+            result.predicted_boundary_state.to(self.device),
+            actions[:, :block_steps, :],
+        )
+        zero = torch.zeros(
+            1, remaining, self.action_dim, dtype=torch.float32, device=self.device
+        )
+        zero_target = self._rollout_from_state(state, zero)
+        dt = max(float(getattr(self.model, "dt", 1.0)), 1e-6)
+        refined = self._project_actions((planned_target - zero_target) / (remaining * dt))
+        refined = refined.repeat(1, remaining, 1)
+        tail = actions[:, block_steps:, :]
+        return torch.cat([refined, tail], dim=-2) if tail.shape[-2] > 0 else refined
+
+    def _use_realtime_fallback(
+        self,
+        state: torch.Tensor,
+        status: dict[str, Any],
+        reason: str,
+        kwargs: dict[str, Any],
+    ) -> None:
+        use_coarse_prefix = reason != "initial_realtime_fallback"
+        actions, cost, runtime_sec, feedback_target, prefix_steps = (
+            self._realtime_fallback_plan(
+                state, use_coarse_prefix=use_coarse_prefix, **kwargs
+            )
+        )
+        self._set_current_buffer(actions, cost, state=state, repeat_single=False)
+        if feedback_target is not None:
+            self._realtime_feedback_target_state = feedback_target.detach().clone()
+            self._realtime_feedback_prefix_steps = int(prefix_steps)
+        status["async_realtime_fallback"] = True
+        status["async_realtime_fallback_runtime_sec"] = runtime_sec
+        status["async_realtime_fallback_steps"] = int(actions.shape[-2])
+        status["async_realtime_zero_prefix"] = bool(self.async_realtime_fallback_zero_prefix)
+        status["async_plan_status"] = reason
+
     def _boundary_mismatch(
         self, real_state: torch.Tensor, predicted_state: torch.Tensor | None
     ) -> float:
@@ -1007,18 +1322,102 @@ class AsyncMpcICem(MpcICem):
             boundary = boundary.unsqueeze(1) if boundary.shape[0] == 1 else boundary.unsqueeze(0)
         return boundary.detach().clone()
 
+    def _ensure_shared_anchor_storage(self, boundary: torch.Tensor) -> None:
+        if self.async_worker_backend != "process":
+            return
+        boundary_cpu = torch.as_tensor(boundary).detach().cpu()
+        if self._async_anchor_shared_meta is None:
+            self._async_anchor_shared_meta = _new_shared_tensor(
+                torch.zeros(2, dtype=torch.int64)
+            )
+        if (
+            self._async_anchor_shared_boundary is None
+            or tuple(self._async_anchor_shared_boundary.shape) != tuple(boundary_cpu.shape)
+            or self._async_anchor_shared_boundary.dtype != boundary_cpu.dtype
+        ):
+            self._async_anchor_shared_boundary = _new_shared_tensor(boundary_cpu)
+        parameter_belief = getattr(self.model, "e", None)
+        if isinstance(parameter_belief, dict):
+            mean = parameter_belief.get("m")
+            cov = parameter_belief.get("P")
+            if torch.is_tensor(mean) and (
+                self._async_anchor_shared_parameter_mean is None
+                or tuple(self._async_anchor_shared_parameter_mean.shape) != tuple(mean.shape)
+                or self._async_anchor_shared_parameter_mean.dtype != mean.dtype
+            ):
+                self._async_anchor_shared_parameter_mean = _new_shared_tensor(mean)
+            if torch.is_tensor(cov) and (
+                self._async_anchor_shared_parameter_cov is None
+                or tuple(self._async_anchor_shared_parameter_cov.shape) != tuple(cov.shape)
+                or self._async_anchor_shared_parameter_cov.dtype != cov.dtype
+            ):
+                self._async_anchor_shared_parameter_cov = _new_shared_tensor(cov)
+
+    def _read_async_anchor(self) -> tuple[int, torch.Tensor | None, dict[str, Any] | None, int]:
+        meta = getattr(self, "_async_anchor_shared_meta", None)
+        boundary_shared = getattr(self, "_async_anchor_shared_boundary", None)
+        if torch.is_tensor(meta):
+            seq = int(meta[0].item())
+            version = int(meta[1].item())
+            boundary = boundary_shared.detach().clone() if torch.is_tensor(boundary_shared) else None
+            parameter_belief = None
+            mean = getattr(self, "_async_anchor_shared_parameter_mean", None)
+            cov = getattr(self, "_async_anchor_shared_parameter_cov", None)
+            if torch.is_tensor(mean):
+                parameter_belief = {"m": mean.detach().clone()}
+                if torch.is_tensor(cov):
+                    parameter_belief["P"] = cov.detach().clone()
+            return seq, boundary, parameter_belief, version
+
+        if self._async_anchor_lock is None:
+            return 0, None, None, 0
+        with self._async_anchor_lock:
+            seq = int(self._async_anchor.get("seq", 0))
+            boundary = self._async_anchor.get("boundary")
+            parameter_belief = self._async_anchor.get("parameter_belief")
+            parameter_update_version = int(self._async_anchor.get("parameter_update_version", 0))
+        return seq, boundary, parameter_belief, parameter_update_version
+
     def _publish_async_anchor(
         self,
         boundary: torch.Tensor,
         kwargs: dict[str, Any],
     ) -> None:
-        if not self.async_reanchor_live_state:
-            return
+        self._ensure_shared_anchor_storage(boundary)
+        parameter_update_version = int(
+            kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
+        )
+        if torch.is_tensor(self._async_anchor_shared_meta):
+            assert self._async_anchor_shared_boundary is not None
+            self._async_anchor_shared_boundary.copy_(boundary.detach().cpu())
+            parameter_belief = getattr(self.model, "e", None)
+            if isinstance(parameter_belief, dict):
+                mean = parameter_belief.get("m")
+                cov = parameter_belief.get("P")
+                if torch.is_tensor(mean) and torch.is_tensor(
+                    self._async_anchor_shared_parameter_mean
+                ):
+                    self._async_anchor_shared_parameter_mean.copy_(mean.detach().cpu())
+                if torch.is_tensor(cov) and torch.is_tensor(
+                    self._async_anchor_shared_parameter_cov
+                ):
+                    self._async_anchor_shared_parameter_cov.copy_(cov.detach().cpu())
+            self._async_anchor_shared_meta[1] = int(parameter_update_version)
+            self._async_anchor_shared_meta[0] = int(self._async_anchor_shared_meta[0].item()) + 1
+        uses_shared_anchor = torch.is_tensor(self._async_anchor_shared_meta)
         if self._async_anchor_lock is None:
             self._async_anchor_lock = threading.Lock()
+        parameter_belief = getattr(self.model, "e", None)
         with self._async_anchor_lock:
             self._async_anchor["seq"] = int(self._async_anchor.get("seq", 0)) + 1
-            self._async_anchor["boundary"] = boundary.detach().clone()
+            self._async_anchor["parameter_update_version"] = parameter_update_version
+            if uses_shared_anchor:
+                self._async_anchor["boundary"] = None
+                self._async_anchor.pop("parameter_belief", None)
+            else:
+                self._async_anchor["boundary"] = boundary.detach().clone()
+            if parameter_belief is not None and not uses_shared_anchor:
+                self._async_anchor["parameter_belief"] = _clone_for_worker(parameter_belief)
 
     def _maybe_reanchor_worker_plan(
         self,
@@ -1026,18 +1425,27 @@ class AsyncMpcICem(MpcICem):
         kwargs: dict[str, Any],
     ) -> torch.Tensor:
         if (
-            not self.async_reanchor_live_state
-            or not bool(getattr(self, "_yield_to_foreground", False))
-            or self._async_anchor_lock is None
+            not bool(getattr(self, "_yield_to_foreground", False))
         ):
             return state
-        with self._async_anchor_lock:
-            seq = int(self._async_anchor.get("seq", 0))
-            if seq <= self._worker_anchor_seq:
-                return state
-            boundary = self._async_anchor.get("boundary")
-            self._worker_anchor_seq = seq
-        if boundary is None:
+        seq, boundary, parameter_belief, parameter_update_version = self._read_async_anchor()
+        if seq <= self._worker_anchor_seq:
+            return state
+        self._worker_anchor_seq = seq
+        if parameter_belief is not None and hasattr(self.model, "e"):
+            live_version = int(
+                kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
+            )
+            if parameter_update_version > live_version:
+                self.model.e = _move_tensors_to_device(
+                    parameter_belief,
+                    torch.device(self.device),
+                )
+                if callable(getattr(self.model, "set_params", None)) and "m" in self.model.e:
+                    self.model.set_params(self.model.e["m"])
+                kwargs["parameter_update_version"] = parameter_update_version
+                kwargs["model_update_version"] = parameter_update_version
+        if not self.async_reanchor_live_state or boundary is None:
             return state
         boundary_t = torch.as_tensor(boundary, dtype=torch.float32, device=self.device)
         mismatch = self._boundary_mismatch(getattr(self.model, "_state", state), boundary_t)
@@ -1065,6 +1473,7 @@ class AsyncMpcICem(MpcICem):
         return future.result()
 
     def _make_snapshot_planner(self, predicted_boundary_state: torch.Tensor):
+        self._ensure_shared_anchor_storage(predicted_boundary_state)
         try:
             planner = copy.copy(self)
             planner.model = copy.deepcopy(self.model)
@@ -1085,6 +1494,10 @@ class AsyncMpcICem(MpcICem):
         planner._foreground_active = self._foreground_active
         planner._async_anchor_lock = self._async_anchor_lock
         planner._async_anchor = self._async_anchor
+        planner._async_anchor_shared_meta = self._async_anchor_shared_meta
+        planner._async_anchor_shared_boundary = self._async_anchor_shared_boundary
+        planner._async_anchor_shared_parameter_mean = self._async_anchor_shared_parameter_mean
+        planner._async_anchor_shared_parameter_cov = self._async_anchor_shared_parameter_cov
         planner._yield_to_foreground = True
         planner._planning_future = None
         planner._current_buffer = None
@@ -1092,6 +1505,8 @@ class AsyncMpcICem(MpcICem):
         planner._worker_anchor_seq = int(self._async_anchor.get("seq", 0))
         planner._worker_reanchor_count = 0
         planner._worker_reanchor_mismatch = 0.0
+        planner._yield_score_batch_size = 0
+        planner._return_worker_warm_start = True
         planner.last_plan_status = dict(self.last_plan_status)
         planner.last_update_info = dict(self.last_update_info)
         if self.async_worker_device is not None:
@@ -1099,9 +1514,59 @@ class AsyncMpcICem(MpcICem):
             if torch.device(planner.device) != target_device:
                 _move_snapshot_to_device(planner, target_device)
             predicted_boundary_state = predicted_boundary_state.to(planner.device)
+        planner._set_action_rng_seed(self._next_action_rng_seed())
         planner._set_model_planning_state(planner.model, predicted_boundary_state)
         return planner
 
+    def _submit_process_plan(
+        self,
+        planner: "AsyncMpcICem",
+        predicted_boundary_state: torch.Tensor,
+        worker_kwargs: dict[str, Any],
+    ) -> Future:
+        proxy: Future = Future()
+        if self._submit_executor is None:
+            self._reset_submit_executor()
+        assert self._submit_executor is not None
+
+        def set_proxy_exception(exc: BaseException) -> None:
+            if not proxy.cancelled() and not proxy.done():
+                proxy.set_exception(exc)
+
+        def submit_worker() -> None:
+            if proxy.cancelled():
+                return
+            try:
+                if self._executor is None:
+                    self._executor = self._new_executor()
+                worker_future = self._executor.submit(
+                    self._background_plan_worker,
+                    planner,
+                    predicted_boundary_state,
+                    worker_kwargs,
+                )
+                setattr(proxy, "_worker_future", worker_future)
+                if proxy.cancelled():
+                    worker_future.cancel()
+                    return
+
+                def copy_result(done_future: Future) -> None:
+                    if proxy.cancelled() or proxy.done():
+                        return
+                    try:
+                        proxy.set_result(done_future.result())
+                    except BaseException as exc:
+                        set_proxy_exception(exc)
+
+                worker_future.add_done_callback(copy_result)
+            except BaseException as exc:
+                set_proxy_exception(exc)
+
+        try:
+            self._submit_executor.submit(submit_worker)
+        except BaseException as exc:
+            set_proxy_exception(exc)
+        return proxy
 
     @staticmethod
     def _background_plan_worker(
@@ -1109,6 +1574,7 @@ class AsyncMpcICem(MpcICem):
         predicted_boundary_state: torch.Tensor,
         kwargs: dict[str, Any],
     ) -> _AsyncPlanResult:
+        _use_file_system_tensor_sharing()
         start = time.perf_counter()
         kwargs = dict(kwargs)
         worker_device = torch.device(getattr(planner, "device", "cpu"))
@@ -1116,13 +1582,17 @@ class AsyncMpcICem(MpcICem):
             predicted_boundary_state, dtype=torch.float32, device=worker_device
         )
         kwargs = _move_tensors_to_device(kwargs, worker_device)
+        realtime_prefix_index = int(kwargs.pop("realtime_prefix_index", 0) or 0)
+        if getattr(planner, "_action_torch_generator", None) is None:
+            planner._set_action_rng_seed(int(getattr(planner, "_action_rng_seed", 1)))
+        _update_metric_from_rollout(planner.metric, kwargs.pop("recent_rollout", None))
+        actions, cost = MpcICem.get_action(planner, predicted_boundary_state, **kwargs)
         model_update_version = int(
             kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
         )
-        _update_metric_from_rollout(planner.metric, kwargs.pop("recent_rollout", None))
-        actions, cost = MpcICem.get_action(planner, predicted_boundary_state, **kwargs)
         runtime = time.perf_counter() - start
         final_boundary_state = getattr(planner.model, "_state", predicted_boundary_state)
+        return_warm_start = bool(getattr(planner, "_return_worker_warm_start", True))
         return _AsyncPlanResult(
             actions=actions.detach().clone(),
             cost=cost.detach().clone(),
@@ -1130,17 +1600,20 @@ class AsyncMpcICem(MpcICem):
             runtime_sec=float(runtime),
             status="completed",
             model_update_version=model_update_version,
-            mean=getattr(planner, "mean", None),
-            std=getattr(planner, "std", None),
-            elite_actions=getattr(planner, "elite_actions", None),
-            elite_costs_traj=getattr(planner, "elite_costs_traj", None),
+            mean=getattr(planner, "mean", None) if return_warm_start else None,
+            std=getattr(planner, "std", None) if return_warm_start else None,
+            elite_actions=getattr(planner, "elite_actions", None) if return_warm_start else None,
+            elite_costs_traj=(
+                getattr(planner, "elite_costs_traj", None) if return_warm_start else None
+            ),
             reanchor_count=int(getattr(planner, "_worker_reanchor_count", 0)),
             reanchor_mismatch=float(getattr(planner, "_worker_reanchor_mismatch", 0.0)),
+            realtime_prefix_index=realtime_prefix_index,
         )
 
     def request_replan(self, reason: str) -> None:
         reason = str(reason)
-        if reason == "parameter_update":
+        if reason == "parameter_update" and not self.async_refine_on_parameter_update:
             return
         if reason == "state_tracking_error" and not self.async_refine_on_parameter_update:
             return
@@ -1154,16 +1627,20 @@ class AsyncMpcICem(MpcICem):
             predicted_boundary = self._async_live_boundary(state)
             self._publish_async_anchor(predicted_boundary, kwargs)
         if self._planning_future is not None:
+            self._publish_async_anchor(self._async_live_boundary(state), kwargs)
             return
         if self._executor is None:
-            self._executor = ThreadPoolExecutor(max_workers=1)
+            self._executor = self._new_executor()
         if predicted_boundary is None:
             predicted_boundary = self._async_live_boundary(state)
         self._predicted_boundary_state = predicted_boundary.detach().clone()
         worker_kwargs = dict(kwargs)
-        worker_kwargs.pop("recent_rollout", None)
+        if not self.updates_metric_in_background:
+            worker_kwargs.pop("recent_rollout", None)
         worker_kwargs = _clone_for_worker(worker_kwargs)
         worker_kwargs["observed_state"] = predicted_boundary.detach().clone()
+        if self._realtime_feedback_target_state is not None:
+            worker_kwargs["realtime_prefix_index"] = int(self._buffer_index)
         planner = self._make_snapshot_planner(predicted_boundary)
         self._async_background_plan_count += 1
         use_full_iterations = (
@@ -1173,12 +1650,20 @@ class AsyncMpcICem(MpcICem):
         if self.async_worker_iterations is not None and not use_full_iterations:
             planner.num_iterations = int(self.async_worker_iterations)
         assert self._executor is not None
-        self._planning_future = self._executor.submit(
-            self._background_plan_worker,
-            planner,
-            predicted_boundary.detach().clone(),
-            worker_kwargs,
-        )
+        predicted_boundary_for_worker = predicted_boundary.detach().clone()
+        if self.async_worker_backend == "process":
+            self._planning_future = self._submit_process_plan(
+                planner,
+                predicted_boundary_for_worker,
+                worker_kwargs,
+            )
+        else:
+            self._planning_future = self._executor.submit(
+                self._background_plan_worker,
+                planner,
+                predicted_boundary_for_worker,
+                worker_kwargs,
+            )
 
     def _activate_new_chunk(self, state: torch.Tensor, kwargs: dict[str, Any]) -> None:
         status = self._empty_plan_status()
@@ -1193,17 +1678,25 @@ class AsyncMpcICem(MpcICem):
                 self._cancel_planning_future()
             else:
                 self._planning_future = None
-            actions, cost = self._sync_plan(state, **kwargs)
-            status["async_blocking_fallback"] = True
-            status["async_plan_status"] = f"forced_{forced_reason}"
-            self._set_current_buffer(actions, cost, state=state)
+            if self._has_realtime_fallback():
+                self._use_realtime_fallback(
+                    state, status, f"forced_{forced_reason}_realtime_fallback", kwargs
+                )
+            else:
+                actions, cost = self._sync_plan(state, **kwargs)
+                status["async_blocking_fallback"] = True
+                status["async_plan_status"] = f"forced_{forced_reason}"
+                self._set_current_buffer(actions, cost, state=state)
             self._force_replan_next = False
             self._force_replan_reason = None
         elif self._current_buffer is None:
-            actions, cost = self._sync_plan(state, **kwargs)
-            status["async_blocking_fallback"] = True
-            status["async_plan_status"] = "initial_blocking"
-            self._set_current_buffer(actions, cost)
+            if self._has_realtime_fallback():
+                self._use_realtime_fallback(state, status, "initial_realtime_fallback", kwargs)
+            else:
+                actions, cost = self._sync_plan(state, **kwargs)
+                status["async_blocking_fallback"] = True
+                status["async_plan_status"] = "initial_blocking"
+                self._set_current_buffer(actions, cost)
         elif self._planning_future is not None and self._planning_future.done():
             try:
                 result = self._consume_completed_future()
@@ -1228,23 +1721,30 @@ class AsyncMpcICem(MpcICem):
                 parameter_stale = version_mismatch and self.async_refine_on_parameter_update
                 if mismatch <= self.async_stale_tolerance and not parameter_stale:
                     self._apply_worker_warm_start(result)
-                    self._set_current_buffer(result.actions, result.cost, state=state)
+                    actions = self._reconcile_ready_plan_with_realtime_prefix(result, state)
+                    self._set_current_buffer(actions, result.cost, state=state)
                     status["async_plan_used"] = True
                     status["async_plan_status"] = (
                         "used_ready_parameter_stale" if version_mismatch else "used_ready"
                     )
                 else:
                     self._apply_worker_warm_start(result)
-                    actions, cost = self._sync_plan(
-                        state,
-                        num_iterations=self.async_stale_refine_iterations,
-                        **kwargs,
-                    )
-                    self._set_current_buffer(actions, cost, state=state)
+                    if self._has_realtime_fallback():
+                        self._use_realtime_fallback(
+                            state, status, "stale_realtime_fallback", kwargs
+                        )
+                    else:
+                        actions, cost = self._sync_plan(
+                            state,
+                            num_iterations=self.async_stale_refine_iterations,
+                            **kwargs,
+                        )
+                        self._set_current_buffer(actions, cost, state=state)
                     self._predicted_boundary_state = None
                     status["async_plan_stale"] = True
-                    status["async_refined"] = True
-                    status["async_plan_status"] = "refined_stale"
+                    status["async_refined"] = not self._has_realtime_fallback()
+                    if not self._has_realtime_fallback():
+                        status["async_plan_status"] = "refined_stale"
         if self._current_buffer is not None:
             exhausted = self._buffer_index >= self._current_buffer.shape[-2]
             waiting = self._planning_future is not None and not self._planning_future.done()
@@ -1254,17 +1754,20 @@ class AsyncMpcICem(MpcICem):
                 if waiting:
                     hold = self._current_buffer[:, -1:, :].detach().clone()
                     self._current_buffer = hold
-                    self.action_list = [hold[0, 0].unsqueeze(0)]
+                    self.action_list = []
                     self._buffer_index = 0
                     self._chunk_step = 0
                     if status["async_plan_status"] == "idle":
                         status["async_plan_status"] = "waiting_ready_hold"
                 else:
-                    actions, cost = self._sync_plan(state, **kwargs)
-                    self._set_current_buffer(actions, cost, state=state)
-                    status["async_blocking_fallback"] = True
-                    if status["async_plan_status"] == "idle":
-                        status["async_plan_status"] = "blocking_fallback"
+                    if self._has_realtime_fallback():
+                        self._use_realtime_fallback(state, status, "realtime_fallback", kwargs)
+                    else:
+                        actions, cost = self._sync_plan(state, **kwargs)
+                        self._set_current_buffer(actions, cost, state=state)
+                        status["async_blocking_fallback"] = True
+                        if status["async_plan_status"] == "idle":
+                            status["async_plan_status"] = "blocking_fallback"
 
         self.last_plan_status = status
         self.last_update_info = dict(status)
@@ -1287,8 +1790,23 @@ class AsyncMpcICem(MpcICem):
         )
         if at_boundary:
             self._activate_new_chunk(state_t, dict(kwargs))
+        elif self._realtime_feedback_target_state is None:
+            status = self._empty_plan_status()
+            status["async_live_model_version"] = int(
+                kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
+            )
+            if self._planning_future is not None:
+                status["async_plan_status"] = (
+                    "ready_waiting_boundary"
+                    if self._planning_future.done()
+                    else "waiting_ready_tail"
+                )
+            else:
+                status["async_plan_status"] = "executing_buffer"
+            self.last_plan_status = status
+            self.last_update_info = dict(status)
 
-        if defer_background_launch and self.async_reanchor_live_state:
+        if defer_background_launch and self._planning_future is not None:
             self._publish_async_anchor(self._async_live_boundary(state_t), kwargs)
 
         if not defer_background_launch and (self.async_start_after_first_plan or self.count > 0):
@@ -1296,9 +1814,16 @@ class AsyncMpcICem(MpcICem):
 
         assert self._current_buffer is not None
         self._last_action_index = int(self._buffer_index)
-        action = self._current_buffer[:, self._buffer_index : self._buffer_index + 1, :]
+        feedback_action = self._realtime_feedback_action(state_t)
+        if feedback_action is None:
+            action = self._current_buffer[:, self._buffer_index : self._buffer_index + 1, :]
+        else:
+            action = feedback_action
         self._buffer_index += 1
         self._chunk_step = int(self._buffer_index)
+        if self._buffer_index >= self._realtime_feedback_prefix_steps:
+            self._realtime_feedback_target_state = None
+            self._realtime_feedback_prefix_steps = 0
         self.count += 1
         return action
 

@@ -843,7 +843,7 @@ class FilteringEmbedding(BaseModel):
         # No measurement-error-dependent scaling: process drift uses fixed q_theta.
         q_theta_eff = torch.full((self.e["m"].shape[0],), float(self.q_theta), device=self.device)
 
-        P_prior = self._project_spd(self.e["P"] + q_theta_eff.view(-1, 1, 1) * eye)
+        P_prior = symmetrize(self.e["P"] + q_theta_eff.view(-1, 1, 1) * eye)
         try:
             chol_P_prior = safe_cholesky(P_prior)
         except Exception:
@@ -851,7 +851,7 @@ class FilteringEmbedding(BaseModel):
             chol_P_prior = safe_cholesky(P_prior)
         L_prior = torch.cholesky_inverse(chol_P_prior)
 
-        L_new = self._project_spd(L_prior + info)
+        L_new = symmetrize(L_prior + info)
         try:
             chol_L_new = safe_cholesky(L_new)
         except Exception:
@@ -877,14 +877,19 @@ class FilteringEmbedding(BaseModel):
         )
         if info.shape[0] != self.e["P"].shape[0]:
             info = info.mean(dim=0, keepdim=True)
-        P = self._project_spd(self.e["P"])
-        chol_P = safe_cholesky(P)
+        P = symmetrize(self.e["P"])
+        try:
+            chol_P = safe_cholesky(P)
+        except Exception:
+            P = self._project_spd(P)
+            chol_P = safe_cholesky(P)
         eye = torch.eye(d_embed, device=self.device).unsqueeze(0).expand(P.shape[0], -1, -1)
-        scaled_info = self._project_spd(
-            eye + chol_P.transpose(-1, -2) @ info @ chol_P,
-            min_eig=1e-9,
-        )
-        chol_scaled = safe_cholesky(scaled_info)
+        scaled_info = symmetrize(eye + chol_P.transpose(-1, -2) @ info @ chol_P)
+        try:
+            chol_scaled = safe_cholesky(scaled_info)
+        except Exception:
+            scaled_info = self._project_spd(scaled_info, min_eig=1e-9)
+            chol_scaled = safe_cholesky(scaled_info)
         logdet = 2.0 * torch.log(
             torch.diagonal(chol_scaled, dim1=-2, dim2=-1).clamp_min(eps)
         ).sum(dim=-1)
@@ -1205,11 +1210,22 @@ class FilteringEmbedding(BaseModel):
         # Predict
 
         pred_m = torch.nan_to_num(self.predict(action=u_enc), nan=0.0, posinf=1e6, neginf=-1e6)
-        pred_cov = dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q + 1e-6 * I
-        pred_cov = torch.nan_to_num(pred_cov, nan=0.0, posinf=1e6, neginf=-1e6)
+        pred_cov = symmetrize(
+            torch.nan_to_num(
+                dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q + 1e-6 * I,
+                nan=0.0,
+                posinf=1e6,
+                neginf=-1e6,
+            )
+        )
+        try:
+            chol_P_pred = safe_cholesky(pred_cov)
+        except Exception:
+            pred_cov = self._project_spd(pred_cov)
+            chol_P_pred = safe_cholesky(pred_cov)
         z_pred = {
             "m": pred_m,
-            "P": self._project_spd(pred_cov),
+            "P": pred_cov,
         }
 
         # Re-linearize observation at new z_pred. Observation noise is diagonal
@@ -1221,7 +1237,6 @@ class FilteringEmbedding(BaseModel):
         )
         assert obs_score is not None and r_Rinv_r is not None
 
-        chol_P_pred = safe_cholesky(z_pred["P"])
         P_pred_inv = torch.cholesky_inverse(chol_P_pred)
         L_post = symmetrize(P_pred_inv + I_z)
         try:
@@ -1271,8 +1286,12 @@ class FilteringEmbedding(BaseModel):
             score_t = tau_t.unsqueeze(-1) * score_t
 
             # Information: I_t = S_t^T (I + Pz_pred I_z)^-1 I_z S_t.
-            atten_mat = self._project_spd(I + z_pred["P"] @ I_z)
-            chol_atten = safe_cholesky(atten_mat)
+            atten_mat = symmetrize(I + z_pred["P"] @ I_z)
+            try:
+                chol_atten = safe_cholesky(atten_mat)
+            except Exception:
+                atten_mat = self._project_spd(atten_mat)
+                chol_atten = safe_cholesky(atten_mat)
             atten_Iz = torch.cholesky_solve(I_z, chol_atten).squeeze(1)
             info_t = symmetrize(S_t.transpose(-1, -2) @ atten_Iz @ S_t)
 

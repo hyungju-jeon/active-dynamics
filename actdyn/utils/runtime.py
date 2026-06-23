@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import subprocess
 
@@ -12,6 +13,13 @@ def configure_runtime(seed: int = 0, device: str | None = None) -> str:
     """Configure deterministic runtime defaults and resolve device."""
     torch.manual_seed(seed)
     np.random.seed(seed)
+    num_threads = int(os.environ.get("TORCH_NUM_THREADS") or os.environ.get("OMP_NUM_THREADS") or 1)
+    torch.set_num_threads(max(1, num_threads))
+    interop_threads = int(os.environ.get("TORCH_NUM_INTEROP_THREADS") or 1)
+    try:
+        torch.set_num_interop_threads(max(1, interop_threads))
+    except RuntimeError:
+        pass
 
     if device is None:
         return "cuda" if torch.cuda.is_available() else "cpu"

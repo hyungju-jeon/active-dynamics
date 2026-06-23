@@ -43,6 +43,15 @@ def _clone_filter_belief_state(model: Any) -> dict[str, Any]:
             getattr(model, '_theta_active_mask_block', None)
         ),
         '_theta_sensitivity': _clone_value(getattr(model, '_theta_sensitivity', None)),
+        '_last_theta_score_block_applied': _clone_value(
+            getattr(model, '_last_theta_score_block_applied', None)
+        ),
+        '_last_theta_info_block_applied': _clone_value(
+            getattr(model, '_last_theta_info_block_applied', None)
+        ),
+        '_last_theta_block_steps_applied': int(
+            getattr(model, '_last_theta_block_steps_applied', 0)
+        ),
         '_theta_block_steps': int(getattr(model, '_theta_block_steps', 0)),
         '_last_innovation_statistic': _clone_value(
             getattr(model, '_last_innovation_statistic', None)
@@ -74,6 +83,13 @@ def _restore_filter_belief_state(model: Any, snapshot: dict[str, Any]) -> None:
         model._theta_active_mask_block = snapshot['_theta_active_mask_block']
     if snapshot.get('_theta_sensitivity') is not None:
         model._theta_sensitivity = snapshot['_theta_sensitivity']
+    if snapshot.get('_last_theta_score_block_applied') is not None:
+        model._last_theta_score_block_applied = snapshot['_last_theta_score_block_applied']
+    if snapshot.get('_last_theta_info_block_applied') is not None:
+        model._last_theta_info_block_applied = snapshot['_last_theta_info_block_applied']
+    model._last_theta_block_steps_applied = int(
+        snapshot.get('_last_theta_block_steps_applied', 0)
+    )
     if snapshot.get('_last_innovation_statistic') is not None:
         model._last_innovation_statistic = snapshot['_last_innovation_statistic']
     if snapshot.get('_last_parameter_shrinkage') is not None:
@@ -257,6 +273,33 @@ class Agent:
         if callable(beginning_of_rollout):
             beginning_of_rollout(self._env_state)
 
+        # Warm cold filter kernels outside the realtime loop, then restore the belief.
+        if (
+            bool(getattr(self.policy, 'async_realtime_fallback_zero_prefix', False))
+            or int(getattr(self.policy, 'async_realtime_fallback_horizon', 0) or 0) > 0
+        ):
+            action_dim = int(getattr(self.policy, 'action_dim', 0) or 0)
+            if action_dim > 0:
+                snapshot = _clone_filter_belief_state(self.model)
+                warm_rollout = RecentRollout(max_len=1, device=str(self.device))
+                warm_rollout.add(
+                    next_obs=_ensure_batch_time_tensor(self._observation, device=self.device),
+                    action=torch.zeros(1, 1, action_dim, device=self.device),
+                )
+                try:
+                    self.model.update(warm_rollout)
+                finally:
+                    _restore_filter_belief_state(self.model, snapshot)
+
+        prime_initial_plan = getattr(self.policy, 'prime_initial_plan', None)
+        if callable(prime_initial_plan):
+            prime_initial_plan(
+                self._model_state,
+                observed_state=self._env_state,
+                model_update_version=self._parameter_update_version,
+                parameter_update_version=self._parameter_update_version,
+            )
+
         return self._observation
 
     def step(self, action: torch.Tensor | None = None) -> Tuple[Transition, bool]:
@@ -401,6 +444,18 @@ class Agent:
             'async_reanchor_count': int(policy_update_info.get('async_reanchor_count', 0)),
             'async_reanchor_mismatch': float(
                 policy_update_info.get('async_reanchor_mismatch', 0.0) or 0.0
+            ),
+            'async_realtime_fallback': bool(
+                policy_update_info.get('async_realtime_fallback', False)
+            ),
+            'async_realtime_fallback_runtime_sec': float(
+                policy_update_info.get('async_realtime_fallback_runtime_sec', 0.0) or 0.0
+            ),
+            'async_realtime_fallback_steps': int(
+                policy_update_info.get('async_realtime_fallback_steps', 0)
+            ),
+            'async_realtime_zero_prefix': bool(
+                policy_update_info.get('async_realtime_zero_prefix', False)
             ),
             'model_update_version': int(self._model_update_version),
             'parameter_update_version': int(self._parameter_update_version),
