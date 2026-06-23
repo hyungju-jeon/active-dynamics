@@ -744,6 +744,183 @@ def test_async_mpc_uses_buffer_tail_while_future_runs_at_boundary() -> None:
     policy.close()
 
 
+def test_async_mpc_publishes_dynamic_anytime_prefix() -> None:
+    policy = _make_async_policy(chunk=3, horizon=3)
+    policy.coarse_dt_factor = 10
+    policy.async_anytime_prefix_steps = None
+    policy.async_anytime_std_tolerance = 0.5
+    policy.beginning_of_rollout(torch.zeros(1, 1, 2))
+    policy._yield_to_foreground = True
+    policy._active_anytime_worker_id = 4
+    policy._active_anytime_model_update_version = 7
+    policy._active_anytime_launch_step = 0
+    policy._async_anytime_anchor_state = torch.zeros(1, 1, 2)
+    policy._ensure_shared_anytime_storage(torch.zeros(1, 1, 2))
+    policy.std = torch.zeros_like(policy.std)
+    policy.std[2] = 1.0
+
+    policy._maybe_publish_anytime_prefix(
+        torch.tensor([[[0.8, 0.0], [0.6, 0.0], [0.4, 0.0]]], dtype=torch.float32),
+        torch.tensor([1.25]),
+        iteration=1,
+    )
+
+    assert int(policy._async_anytime_shared_meta[0].item()) == 1
+    assert int(policy._async_anytime_shared_meta[1].item()) == 4
+    assert int(policy._async_anytime_shared_meta[2].item()) == 7
+    assert int(policy._async_anytime_shared_meta[3].item()) == 1
+    assert int(policy._async_anytime_shared_meta[4].item()) == 20
+    assert int(policy._async_anytime_shared_meta[5].item()) == 0
+    assert policy._async_anytime_shared_actions.shape == (1, 30, 2)
+    assert policy._async_anytime_shared_stats[0].item() == pytest.approx(0.0)
+    assert policy._async_anytime_shared_stats[1].item() == pytest.approx(1.25)
+    assert torch.allclose(
+        policy._async_anytime_shared_actions[:, :10],
+        torch.tensor([[[0.8, 0.0]]], dtype=torch.float32).expand(1, 10, 2),
+    )
+    assert torch.allclose(
+        policy._async_anytime_shared_actions[:, 10:20],
+        torch.tensor([[[0.6, 0.0]]], dtype=torch.float32).expand(1, 10, 2),
+    )
+    policy.close()
+
+
+def test_async_mpc_uses_anytime_prefix_while_future_runs() -> None:
+    policy = _make_async_policy(chunk=3)
+    policy.async_anytime_prefix_steps = 2
+    policy.beginning_of_rollout(torch.zeros(1, 1, 2))
+    policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
+    policy._buffer_index = 3
+    policy._planning_future = Future()
+    policy._launch_background_plan = types.MethodType(lambda self, state, kwargs: None, policy)
+    policy._active_anytime_worker_id = 5
+    policy._ensure_shared_anytime_storage(torch.zeros(1, 1, 2))
+    policy._async_anytime_shared_actions.copy_(
+        torch.tensor([[[0.7, 0.0], [0.9, 0.0]]], dtype=torch.float32)
+    )
+    policy._async_anytime_shared_anchor.copy_(torch.zeros(1, 1, 2))
+    policy._async_anytime_shared_stats[0] = 0.2
+    policy._async_anytime_shared_stats[1] = 1.0
+    policy._async_anytime_shared_meta[1] = 5
+    policy._async_anytime_shared_meta[2] = 0
+    policy._async_anytime_shared_meta[3] = 1
+    policy._async_anytime_shared_meta[4] = 2
+    policy._async_anytime_shared_meta[0] = 1
+
+    action = policy(torch.zeros(1, 1, 2))
+
+    assert torch.allclose(action, torch.tensor([[[0.7, 0.0]]], dtype=torch.float32))
+    assert policy.last_plan_status["async_plan_status"] == "used_anytime_prefix"
+    assert policy.last_plan_status["async_anytime_plan_ready"] is True
+    assert policy.last_plan_status["async_anytime_plan_used"] is True
+    assert policy.last_plan_status["async_plan_used"] is False
+    policy.close()
+
+
+def test_async_mpc_uses_anytime_prefix_instead_of_tail() -> None:
+    policy = _make_async_policy(chunk=3, horizon=5)
+    policy.coarse_dt_factor = 10
+    policy.async_anytime_prefix_steps = None
+    policy.beginning_of_rollout(torch.zeros(1, 1, 2))
+    policy._set_current_buffer(
+        torch.tensor(
+            [[[0.1, 0.0], [0.2, 0.0], [0.3, 0.0], [0.4, 0.0], [0.5, 0.0]]],
+            dtype=torch.float32,
+        ),
+        torch.tensor([0.0]),
+    )
+    policy._buffer_index = 1
+    policy.count = 7
+    policy._planning_future = Future()
+    policy._active_anytime_worker_id = 6
+    policy._ensure_shared_anytime_storage(torch.zeros(1, 1, 2))
+    policy._async_anytime_shared_actions[:, :10].copy_(
+        torch.tensor([[[0.8, 0.0]]], dtype=torch.float32).expand(1, 10, 2)
+    )
+    policy._async_anytime_shared_actions[:, 10:20].copy_(
+        torch.tensor([[[0.9, 0.0]]], dtype=torch.float32).expand(1, 10, 2)
+    )
+    policy._async_anytime_shared_anchor.copy_(torch.zeros(1, 1, 2))
+    policy._async_anytime_shared_stats[0] = 0.1
+    policy._async_anytime_shared_stats[1] = 2.0
+    policy._async_anytime_shared_meta[1] = 6
+    policy._async_anytime_shared_meta[2] = 0
+    policy._async_anytime_shared_meta[3] = 1
+    policy._async_anytime_shared_meta[4] = 20
+    policy._async_anytime_shared_meta[5] = 0
+    policy._async_anytime_shared_meta[0] = 1
+
+    action = policy(torch.zeros(1, 1, 2))
+
+    assert torch.allclose(action, torch.tensor([[[0.8, 0.0]]], dtype=torch.float32))
+    assert policy._current_buffer.shape[-2] == 13
+    assert torch.allclose(
+        policy._current_buffer[:, :3],
+        torch.tensor([[[0.8, 0.0]]], dtype=torch.float32).expand(1, 3, 2),
+    )
+    assert torch.allclose(
+        policy._current_buffer[:, 3:],
+        torch.tensor([[[0.9, 0.0]]], dtype=torch.float32).expand(1, 10, 2),
+    )
+    assert policy.last_plan_status["async_plan_status"] == "used_anytime_prefix"
+    assert policy.last_plan_status["async_anytime_plan_used"] is True
+    policy.close()
+
+
+def test_async_mpc_replaces_anytime_prefix_when_final_plan_is_ready() -> None:
+    policy = _make_async_policy(chunk=3, horizon=5)
+    policy.async_anytime_prefix_steps = None
+    policy.beginning_of_rollout(torch.zeros(1, 1, 2))
+    policy._set_current_buffer(
+        torch.tensor(
+            [[[0.1, 0.0], [0.2, 0.0], [0.3, 0.0], [0.4, 0.0], [0.5, 0.0]]],
+            dtype=torch.float32,
+        ),
+        torch.tensor([0.0]),
+    )
+    policy._buffer_index = 1
+    policy.count = 7
+    policy._launch_background_plan = types.MethodType(lambda self, state, kwargs: None, policy)
+    future = Future()
+    future.set_result(
+        types.SimpleNamespace(
+            actions=torch.cat(
+                [
+                    torch.tensor([[[0.8, 0.0]]], dtype=torch.float32).expand(1, 10, 2),
+                    torch.tensor([[[0.9, 0.0]]], dtype=torch.float32).expand(1, 10, 2),
+                ],
+                dim=1,
+            ),
+            cost=torch.tensor([2.0]),
+            predicted_boundary_state=torch.zeros(1, 1, 2),
+            runtime_sec=0.01,
+            model_update_version=0,
+            mean=None,
+            std=None,
+            elite_actions=None,
+            elite_costs_traj=None,
+            anytime_launch_step=0,
+        )
+    )
+    policy._planning_future = future
+
+    action = policy(torch.zeros(1, 1, 2))
+
+    assert torch.allclose(action, torch.tensor([[[0.8, 0.0]]], dtype=torch.float32))
+    assert policy._current_buffer.shape[-2] == 13
+    assert torch.allclose(
+        policy._current_buffer[:, :3],
+        torch.tensor([[[0.8, 0.0]]], dtype=torch.float32).expand(1, 3, 2),
+    )
+    assert torch.allclose(
+        policy._current_buffer[:, 3:],
+        torch.tensor([[[0.9, 0.0]]], dtype=torch.float32).expand(1, 10, 2),
+    )
+    assert policy.last_plan_status["async_plan_status"] == "used_ready"
+    assert policy.last_plan_status["async_plan_used"] is True
+    policy.close()
+
+
 def test_async_mpc_swaps_ready_background_plan_at_boundary() -> None:
     policy = _make_async_policy(chunk=3)
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
@@ -1712,6 +1889,11 @@ def test_async_policy_catalog_entry_is_available() -> None:
         realtime = get_policy_spec("active_planning_adaptive_async_realtime_u20_r20_h40")
         assert realtime.async_worker_iterations == 2
         assert realtime.async_realtime_prefix_steps == 10
+        anytime = get_policy_spec("active_planning_adaptive_async_anytime_u20_r20_h40")
+        assert anytime.async_worker_iterations == 2
+        assert anytime.async_anytime_prefix_steps is None
+        assert anytime.async_anytime_min_iteration == 1
+        assert anytime.async_anytime_std_tolerance == pytest.approx(0.75)
     finally:
         configure_catalogs()
 
@@ -1722,6 +1904,7 @@ def test_exp02_defaults_use_realtime_async() -> None:
     for suite in EXPERIMENT_SUITES.values():
         model_ids = suite["model_ids"]
         assert "active_planning_adaptive_async_realtime_u20_r20_h40" in model_ids
+        assert "active_planning_adaptive_async_anytime_u20_r20_h40" in model_ids
 
 
 def test_tbme_runner_callables_are_pickle_safe() -> None:

@@ -81,6 +81,12 @@ models:
     async_stale_tolerance: 1.0
     async_realtime_prefix_steps: 10
 
+  active_planning_adaptive_async_anytime_u20_r20_h40:
+    extends: active_planning_adaptive_async_realtime_u20_r20_h40
+    async_anytime_prefix_steps: null
+    async_anytime_min_iteration: 1
+    async_anytime_std_tolerance: 0.75
+
   active_planning_adaptive_state_fixed_update_u20_r20_h40:
     extends: active_planning
     update_interval: 20
