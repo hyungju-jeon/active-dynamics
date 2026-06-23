@@ -1,53 +1,47 @@
 from __future__ import annotations
 
-BASE_DIR = "results/tbme/exp07_mismatch_stress"
-DEFAULT_SEED_COUNT = 500
+
+DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "exp07_duffing_observation_mismatch_mild",
-    "exp07_duffing_observation_mismatch_strong",
-    "exp07_asymmetric_basin_observation_mismatch_mild",
-    "exp07_asymmetric_basin_observation_mismatch_strong",
+    "duffing_hard",
+    "gated_duffing_hard",
+    "damped_pendulum_hard",
 )
 MODEL_IDS = [
     "adaptive",
     "adaptive_async_realtime",
-    "active_planning_u5_r5_h40",
+    "adaptive_async_anytime",
     "active_planning_u20_r20_h40",
     "active_myopic",
     "prbs",
     "random",
+    "flex",
+    "flex_true_state",
     "ensemble",
+    "rhc",
 ]
 
 EXPERIMENT_SUITES = {
-    "exp07_duffing_observation_mismatch_mild": {
+    "duffing_hard": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_duffing_observation_mismatch_mild",
+        "env_preset_id": "tbme_duffing_hard",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp07_duffing_observation_mismatch_strong": {
+    "gated_duffing_hard": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_duffing_observation_mismatch_strong",
+        "env_preset_id": "tbme_asymmetric_basin_hard",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp07_asymmetric_basin_observation_mismatch_mild": {
+    "damped_pendulum_hard": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_observation_mismatch_mild",
-        "model_ids": MODEL_IDS,
-        "trajectory_eval_horizon": 200,
-        "trajectory_eval_samples": 100,
-    },
-    "exp07_asymmetric_basin_observation_mismatch_strong": {
-        "experiment_kind": "parameter",
-        "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_observation_mismatch_strong",
+        "env_preset_id": "tbme_damped_pendulum_hard",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,

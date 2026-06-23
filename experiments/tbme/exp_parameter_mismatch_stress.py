@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-BASE_DIR = "results/tbme/exp08_parameter_mismatch_stress"
-DEFAULT_SEED_COUNT = 500
+DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "exp08_duffing_parameter_mismatch",
-    "exp08_duffing_parameter_mismatch_mild",
-    "exp08_duffing_parameter_mismatch_strong",
-    "exp08_asymmetric_basin_parameter_mismatch",
-    "exp08_asymmetric_basin_parameter_mismatch_mild",
-    "exp08_asymmetric_basin_parameter_mismatch_strong",
+    "duffing_parameter_mismatch",
+    "duffing_parameter_mismatch_mild",
+    "duffing_parameter_mismatch_strong",
+    "gated_duffing_parameter_mismatch",
+    "gated_duffing_parameter_mismatch_mild",
+    "gated_duffing_parameter_mismatch_strong",
 )
 
 MODEL_IDS = [
@@ -23,7 +22,7 @@ MODEL_IDS = [
 ]
 
 EXPERIMENT_SUITES = {
-    "exp08_duffing_parameter_mismatch": {
+    "duffing_parameter_mismatch": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_duffing_parameter_mismatch",
@@ -31,7 +30,7 @@ EXPERIMENT_SUITES = {
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp08_duffing_parameter_mismatch_mild": {
+    "duffing_parameter_mismatch_mild": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_duffing_parameter_mismatch_mild",
@@ -39,7 +38,7 @@ EXPERIMENT_SUITES = {
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp08_duffing_parameter_mismatch_strong": {
+    "duffing_parameter_mismatch_strong": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_duffing_parameter_mismatch_strong",
@@ -47,7 +46,7 @@ EXPERIMENT_SUITES = {
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp08_asymmetric_basin_parameter_mismatch": {
+    "gated_duffing_parameter_mismatch": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_asymmetric_basin_parameter_mismatch",
@@ -55,7 +54,7 @@ EXPERIMENT_SUITES = {
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp08_asymmetric_basin_parameter_mismatch_mild": {
+    "gated_duffing_parameter_mismatch_mild": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_asymmetric_basin_parameter_mismatch_mild",
@@ -63,7 +62,7 @@ EXPERIMENT_SUITES = {
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp08_asymmetric_basin_parameter_mismatch_strong": {
+    "gated_duffing_parameter_mismatch_strong": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_asymmetric_basin_parameter_mismatch_strong",

@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-BASE_DIR = "results/tbme/exp03_schedule"
-DEFAULT_SEED_COUNT = 500
+DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "exp03_schedule_duffing",
-    "exp03_schedule_damped_pendulum",
-    "exp03_schedule_asymmetric_basin",
+    "duffing",
+    "damped_pendulum",
+    "gated_duffing",
 )
 MODEL_IDS = [
     "active_planning_u1_r1_h40",
@@ -20,7 +19,7 @@ MODEL_IDS = [
 ]
 
 EXPERIMENT_SUITES = {
-    "exp03_schedule_duffing": {
+    "duffing": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_duffing",
@@ -28,7 +27,7 @@ EXPERIMENT_SUITES = {
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp03_schedule_damped_pendulum": {
+    "damped_pendulum": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_damped_pendulum",
@@ -36,7 +35,7 @@ EXPERIMENT_SUITES = {
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp03_schedule_asymmetric_basin": {
+    "gated_duffing": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
         "env_preset_id": "tbme_asymmetric_basin",

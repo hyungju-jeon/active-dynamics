@@ -1,52 +1,52 @@
 from __future__ import annotations
 
-import os
-
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-os.environ.setdefault("MKL_NUM_THREADS", "1")
-
-BASE_DIR = "results/tbme/exp02_hard"
-DEFAULT_SEED_COUNT = 500
+DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "exp02_hard_duffing",
-    "exp02_hard_asymmetric_basin",
-    "exp02_hard_damped_pendulum",
+    "duffing_observation_mismatch_mild",
+    "duffing_observation_mismatch_strong",
+    "gated_duffing_observation_mismatch_mild",
+    "gated_duffing_observation_mismatch_strong",
 )
 MODEL_IDS = [
     "adaptive",
     "adaptive_async_realtime",
-    "adaptive_async_anytime",
+    "active_planning_u5_r5_h40",
     "active_planning_u20_r20_h40",
     "active_myopic",
     "prbs",
     "random",
-    "flex",
-    "flex_true_state",
     "ensemble",
-    "rhc",
 ]
 
 EXPERIMENT_SUITES = {
-    "exp02_hard_duffing": {
+    "duffing_observation_mismatch_mild": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_duffing_hard",
+        "env_preset_id": "tbme_duffing_observation_mismatch_mild",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp02_hard_asymmetric_basin": {
+    "duffing_observation_mismatch_strong": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_hard",
+        "env_preset_id": "tbme_duffing_observation_mismatch_strong",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp02_hard_damped_pendulum": {
+    "gated_duffing_observation_mismatch_mild": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_damped_pendulum_hard",
+        "env_preset_id": "tbme_asymmetric_basin_observation_mismatch_mild",
+        "model_ids": MODEL_IDS,
+        "trajectory_eval_horizon": 200,
+        "trajectory_eval_samples": 100,
+    },
+    "gated_duffing_observation_mismatch_strong": {
+        "experiment_kind": "parameter",
+        "total_steps": 2000,
+        "env_preset_id": "tbme_asymmetric_basin_observation_mismatch_strong",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,

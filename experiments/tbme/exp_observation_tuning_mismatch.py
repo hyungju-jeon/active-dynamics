@@ -1,52 +1,52 @@
 from __future__ import annotations
 
-BASE_DIR = "results/tbme/exp06_bottleneck"
-DEFAULT_SEED_COUNT = 500
+DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "exp06_asymmetric_basin_observation_bottleneck_mild",
-    "exp06_asymmetric_basin_observation_bottleneck_strong",
-    "exp06_asymmetric_basin_action_bottleneck_mild",
-    "exp06_asymmetric_basin_action_bottleneck_strong",
+    "duffing_observation_tuning_mismatch_mild",
+    "duffing_observation_tuning_mismatch_strong",
+    "gated_duffing_observation_tuning_mismatch_mild",
+    "gated_duffing_observation_tuning_mismatch_strong",
 )
+
 MODEL_IDS = [
     "adaptive",
-    "adaptive_async_realtime",
+    "active_planning_u5_r5_h40",
     "active_planning_u20_r20_h40",
     "active_myopic",
-    "ensemble",
     "prbs",
     "random",
+    "ensemble",
 ]
 
 EXPERIMENT_SUITES = {
-    "exp06_asymmetric_basin_observation_bottleneck_mild": {
+    "duffing_observation_tuning_mismatch_mild": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_observation_bottleneck_mild",
+        "env_preset_id": "tbme_duffing_observation_tuning_mismatch_mild",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp06_asymmetric_basin_observation_bottleneck_strong": {
+    "duffing_observation_tuning_mismatch_strong": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_observation_bottleneck_strong",
+        "env_preset_id": "tbme_duffing_observation_tuning_mismatch_strong",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp06_asymmetric_basin_action_bottleneck_mild": {
+    "gated_duffing_observation_tuning_mismatch_mild": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_action_bottleneck_mild",
+        "env_preset_id": "tbme_asymmetric_basin_observation_tuning_mismatch_mild",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp06_asymmetric_basin_action_bottleneck_strong": {
+    "gated_duffing_observation_tuning_mismatch_strong": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_action_bottleneck_strong",
+        "env_preset_id": "tbme_asymmetric_basin_observation_tuning_mismatch_strong",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,

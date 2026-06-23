@@ -28,20 +28,24 @@ from experiments.experiment_io import experiment_env_slug
 
 
 TBME_TRACKS_BASE_DIR = "results/tbme/tracks"
-DEFAULT_SHARED_SEED_COUNT = 500
+DEFAULT_SHARED_SEED_COUNT = 100
 SHARED_TBME_GROUP_MODULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("simple_system_identification", ("experiments.tbme.exp01_baseEnv",)),
-    ("observation_action_bottleneck", ("experiments.tbme.exp06_bottleneck",)),
+    ("simple_system_identification", ("experiments.tbme.exp_simple_system_identification",)),
+    ("observation_action_bottleneck", ("experiments.tbme.exp_observation_action_bottleneck",)),
     (
         "model_mismatch",
         (
-            "experiments.tbme.exp04_mismatch",
-            "experiments.tbme.exp08_parameter_mismatch_stress",
-            "experiments.tbme.exp09_observation_tuning_mismatch",
+            "experiments.tbme.exp_model_mismatch",
+            "experiments.tbme.exp_parameter_mismatch_stress",
+            "experiments.tbme.exp_observation_tuning_mismatch",
         ),
     ),
-    ("objective_ablation", ("experiments.tbme.exp05_ablation",)),
-    ("scheduling", ("experiments.tbme.exp03_schedule",)),
+    ("objective_ablation", ("experiments.tbme.exp_objective_ablation",)),
+    ("scheduling", ("experiments.tbme.exp_scheduling",)),
+)
+LEGACY_TBME_MODULES = (
+    "experiments.tbme.exp_hard_environment",
+    "experiments.tbme.exp_observation_mismatch_stress",
 )
 
 
@@ -77,10 +81,16 @@ def _module_family_name(module: ModuleType) -> str:
 
 
 def _iter_tbme_suite_modules():
-    for path in sorted(TBME_DIR.glob("exp*.py")):
-        module = importlib.import_module(f"experiments.tbme.{path.stem}")
-        if hasattr(module, "EXPERIMENT_SUITES"):
-            yield module
+    seen: set[str] = set()
+    for _group_id, module_refs in SHARED_TBME_GROUP_MODULES:
+        for module_ref in module_refs:
+            if module_ref not in seen:
+                seen.add(module_ref)
+                yield _load_suite_module(module_ref)
+    for module_ref in LEGACY_TBME_MODULES:
+        if module_ref not in seen:
+            seen.add(module_ref)
+            yield _load_suite_module(module_ref)
 
 
 def _csv_tuple(value: Any) -> tuple[str, ...]:
@@ -141,14 +151,17 @@ def _family_from_module(
 
 
 def raw_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
-    """Return the suite definitions declared by local `exp*.py` modules."""
+    """Return suite definitions declared by local TBME modules."""
     suites: dict[str, dict[str, Any]] = {}
     for module in _iter_tbme_suite_modules():
+        module_name = _module_family_name(module)
         family = _family_from_module(module)
         for exp_id, spec in family.experiment_suites.items():
-            if exp_id in suites:
-                raise ValueError(f"Duplicate TBME suite id: {exp_id}")
-            suites[exp_id] = dict(spec)
+            suites[f"{module_name}:{exp_id}"] = {
+                **dict(spec),
+                "source_module": module_name,
+                "source_exp_id": str(exp_id),
+            }
     return suites
 
 
@@ -160,6 +173,7 @@ def _shared_tbme_data() -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[
         group_entries: list[dict[str, Any]] = []
         for module_ref in module_refs:
             module = _load_suite_module(module_ref)
+            source_module = _module_family_name(module)
             family = _family_from_module(module)
             for source_exp_id in family.exp_ids:
                 source_spec = dict(family.experiment_suites[source_exp_id])
@@ -182,6 +196,7 @@ def _shared_tbme_data() -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[
                         **source_spec,
                         "exp_id": suite_id,
                         "model_ids": [],
+                        "source_modules": [],
                         "source_exp_ids": [],
                     },
                 )
@@ -189,10 +204,13 @@ def _shared_tbme_data() -> tuple[dict[str, dict[str, Any]], dict[str, list[dict[
                 suite_spec["model_ids"].extend(
                     policy_id for policy_id in kept_policy_ids if policy_id not in existing
                 )
+                if source_module not in suite_spec["source_modules"]:
+                    suite_spec["source_modules"].append(source_module)
                 suite_spec["source_exp_ids"].append(str(source_exp_id))
                 group_entries.append(
                     {
                         "suite_id": suite_id,
+                        "source_module": source_module,
                         "source_exp_id": str(source_exp_id),
                         "env_preset_id": env_preset_id,
                         "policy_ids": tuple(kept_policy_ids),
@@ -288,7 +306,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "suite_module",
-        help="Suite module, for example exp01_baseEnv or experiments.tbme.exp01_baseEnv.",
+        help="Suite module, for example exp_simple_system_identification or experiments.tbme.exp_simple_system_identification.",
     )
     return _add_entrypoint_arguments(parser)
 

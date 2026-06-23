@@ -27,21 +27,29 @@ def test_tbme_env_slug_uses_gated_duffing_name() -> None:
 def test_shared_tbme_suites_dedupe_and_merge_methods() -> None:
     suites = shared_tbme_experiment_suites()
     assert "gated_duffing" in suites
-    assert "exp01_asymmetric_basin" not in suites
+    assert all(not suite_id.startswith("exp") for suite_id in suites)
+    assert all(
+        not source_id.startswith("exp")
+        for spec in suites.values()
+        for source_id in spec["source_exp_ids"]
+    )
 
     methods = tuple(suites["gated_duffing"]["model_ids"])
     assert methods.count("active_planning_u20_r20_h40") == 1
     assert "active_myopic" in methods
     assert "active_e_optimality_u20_r20_h40" in methods
     assert "active_planning_u1_r1_h40" in methods
-    assert suites["duffing_parameter_mismatch"]["source_exp_ids"] == [
-        "exp04_duffing_parameter_mismatch"
-    ]
+    assert suites["duffing_parameter_mismatch"]["source_exp_ids"] == ["duffing_parameter_mismatch"]
+    assert suites["duffing_parameter_mismatch"]["source_modules"] == ["exp_model_mismatch"]
     assert suites["gated_duffing_parameter_mismatch"]["source_exp_ids"] == [
-        "exp04_asymmetric_basin_parameter_mismatch"
+        "gated_duffing_parameter_mismatch"
     ]
+    assert suites["gated_duffing_parameter_mismatch"]["source_modules"] == ["exp_model_mismatch"]
     assert suites["duffing_parameter_mismatch_mild"]["source_exp_ids"] == [
-        "exp08_duffing_parameter_mismatch_mild"
+        "duffing_parameter_mismatch_mild"
+    ]
+    assert suites["duffing_parameter_mismatch_mild"]["source_modules"] == [
+        "exp_parameter_mismatch_stress"
     ]
 
     groups = shared_tbme_group_suites()

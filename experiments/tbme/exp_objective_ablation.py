@@ -1,35 +1,35 @@
 from __future__ import annotations
 
-BASE_DIR = "results/tbme/exp04_mismatch"
-DEFAULT_SEED_COUNT = 500
-DEFAULT_EXP_IDS = ("exp04_duffing_parameter_mismatch", "exp04_asymmetric_basin_parameter_mismatch")
+DEFAULT_SEED_COUNT = 100
+DEFAULT_EXP_IDS = (
+    "gated_duffing",
+    "gated_duffing_hard",
+)
 MODEL_IDS = [
-    "adaptive",
-    "adaptive_async_realtime",
-    "active_planning_u5_r5_h40",
     "active_planning_u20_r20_h40",
-    "active_myopic",
-    "prbs",
-    "random",
-    "flex",
-    "flex_true_state",
+    "adaptive_async_realtime",
+    "active_fully_observable_u20_r20_h40",
+    "active_e_optimality_u20_r20_h40",
+    "active_state_information_u20_r20_h40",
+    "active_dynamics_u20_r20_h40",
+    "active_sampling_variance_u20_r20_h40",
     "ensemble",
-    "rhc",
+    "prbs",
 ]
 
 EXPERIMENT_SUITES = {
-    "exp04_duffing_parameter_mismatch": {
+    "gated_duffing": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_duffing_parameter_mismatch",
+        "env_preset_id": "tbme_asymmetric_basin",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp04_asymmetric_basin_parameter_mismatch": {
+    "gated_duffing_hard": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_parameter_mismatch",
+        "env_preset_id": "tbme_asymmetric_basin_hard",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,

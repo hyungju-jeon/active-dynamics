@@ -1,36 +1,41 @@
 from __future__ import annotations
 
-BASE_DIR = "results/tbme/exp05_ablation"
-DEFAULT_SEED_COUNT = 500
-DEFAULT_EXP_IDS = (
-    "exp05_asymmetric_basin_objective_ablation",
-    "exp05_hard_asymmetric_basin_objective_ablation",
-)
+DEFAULT_SEED_COUNT = 100
+DEFAULT_EXP_IDS = ("duffing", "damped_pendulum", "gated_duffing")
 MODEL_IDS = [
-    "active_planning_u20_r20_h40",
+    "adaptive",
     "adaptive_async_realtime",
-    "active_fully_observable_u20_r20_h40",
-    "active_e_optimality_u20_r20_h40",
-    "active_state_information_u20_r20_h40",
-    "active_dynamics_u20_r20_h40",
-    "active_sampling_variance_u20_r20_h40",
-    "ensemble",
+    "active_planning_u20_r20_h40",
+    "active_myopic",
     "prbs",
+    "random",
+    "flex",
+    "flex_true_state",
+    "ensemble",
+    "rhc",
 ]
 
 EXPERIMENT_SUITES = {
-    "exp05_asymmetric_basin_objective_ablation": {
+    "duffing": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin",
+        "env_preset_id": "tbme_duffing",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
     },
-    "exp05_hard_asymmetric_basin_objective_ablation": {
+    "damped_pendulum": {
         "experiment_kind": "parameter",
         "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_hard",
+        "env_preset_id": "tbme_damped_pendulum",
+        "model_ids": MODEL_IDS,
+        "trajectory_eval_horizon": 200,
+        "trajectory_eval_samples": 100,
+    },
+    "gated_duffing": {
+        "experiment_kind": "parameter",
+        "total_steps": 2000,
+        "env_preset_id": "tbme_asymmetric_basin",
         "model_ids": MODEL_IDS,
         "trajectory_eval_horizon": 200,
         "trajectory_eval_samples": 100,
