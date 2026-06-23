@@ -11,6 +11,7 @@ import numpy as np
 
 DEFAULT_LOG_LINEAR_LOADING_SEED = 0
 DEFAULT_LOG_LINEAR_SNR_SEED = 0
+ASYMMETRIC_LOADING_HORIZONTAL_SCALE = 0.05
 
 
 def write_trace_csv(path: Path, rows: list[dict[str, Any]], fields: list[str]) -> None:
@@ -108,18 +109,25 @@ def extract_remaining_plan_actions(policy: Any):
 
 
 def apply_loglinear_loading_asymmetry(weight: Any, env_preset: Any):
+    """Set TBME log-linear loading geometry before rate/SNR calibration."""
     import torch
 
     c = weight.detach().clone()
     if not bool(getattr(env_preset, "asymmetric_loading", False)):
+        if c.shape[1] >= 2 and c.shape[0] > 0:
+            row_norm = torch.linalg.norm(c[:, :2], dim=1).clamp_min(1e-12)
+            angle = torch.arange(c.shape[0], dtype=c.dtype, device=c.device)
+            angle = angle * (float(math.tau) / float(c.shape[0]))
+            c[:, 0] = row_norm * torch.cos(angle)
+            c[:, 1] = row_norm * torch.sin(angle)
         return c
     primary_scale = float(getattr(env_preset, "observation_primary_scale", 1.0))
     secondary_scale = float(getattr(env_preset, "observation_secondary_scale", 2.0))
     row_skew = float(getattr(env_preset, "observation_row_skew", 0.0))
     if c.shape[1] >= 1:
-        c[:, 0] = torch.abs(c[:, 0]) * primary_scale
+        c[:, 0] = c[:, 0] * primary_scale * ASYMMETRIC_LOADING_HORIZONTAL_SCALE
     if c.shape[1] >= 2:
-        c[:, 1] = c[:, 1] * secondary_scale
+        c[:, 1] = torch.abs(c[:, 1]) * secondary_scale
         if abs(row_skew) > 1e-8 and c.shape[0] > 1:
             row_axis = torch.linspace(-1.0, 1.0, steps=c.shape[0], device=c.device)
             primary_gain = 1.0 + row_skew * torch.clamp(row_axis, min=0.0)
