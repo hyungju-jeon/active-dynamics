@@ -404,6 +404,7 @@ class Experiment:
                 if callable(set_foreground_active):
                     set_foreground_active(False)
             plan_sec = time.perf_counter() - plan_start
+            plan_info = getattr(getattr(self.agent, "policy", None), "last_plan_info", {}) or {}
             step_start = time.perf_counter()
             if callable(set_foreground_active):
                 set_foreground_active(True)
@@ -424,6 +425,9 @@ class Experiment:
             transition["loop_plan_sec"] = float(plan_sec)
             transition["loop_step_sec"] = float(step_sec)
             transition["loop_async_launch_sec"] = float(launch_sec)
+            transition["loop_compute_sec"] = float(plan_sec + step_sec + launch_sec)
+            transition["loop_plan_executed"] = bool(plan_info.get("plan_executed", False))
+            transition["loop_plan_reason"] = str(plan_info.get("plan_reason", "none"))
             self.rollout.add(**transition)
             add_transition = getattr(getattr(self, "writer", None), "add_transition", None)
             if callable(add_transition):

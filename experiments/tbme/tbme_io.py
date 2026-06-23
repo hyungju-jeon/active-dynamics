@@ -13,7 +13,10 @@ from experiments.experiment_io import get_environment_preset_from_metadata, reso
 
 def trace_path(run_dir: Path, metadata: dict[str, Any], key: str, fallback_name: str) -> Path:
     """Resolve a run artifact path from metadata, falling back to run_dir/fallback_name."""
-    return resolve_artifact_path(run_dir, metadata, key=key, fallback_name=fallback_name)
+    path = resolve_artifact_path(run_dir, metadata, key=key, fallback_name=fallback_name)
+    if path.exists():
+        return path
+    return run_dir / fallback_name
 
 
 def read_xy_trace(path: Path, *, max_step: int | None = None) -> np.ndarray:

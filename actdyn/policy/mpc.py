@@ -267,6 +267,10 @@ class MpcICem(BaseMPC):
         self._force_replan_next = False
         self._force_replan_reason = None
         self.last_update_info: dict[str, Any] = {}
+        self.last_plan_info: dict[str, Any] = {
+            "plan_executed": False,
+            "plan_reason": "none",
+        }
         self._foreground_active = None
         self._yield_to_foreground = False
 
@@ -286,6 +290,7 @@ class MpcICem(BaseMPC):
         self._force_replan_next = False
         self._force_replan_reason = None
         self.last_update_info = {}
+        self.last_plan_info = {"plan_executed": False, "plan_reason": "none"}
 
         self.model_evals_per_timestep = (
             sum(
@@ -804,12 +809,17 @@ class MpcICem(BaseMPC):
             or self._chunk_step >= self._current_replan_interval
             or bool(self._force_replan_next)
         )
+        plan_info = {"plan_executed": False, "plan_reason": "none"}
         if need_plan:
-            actions, cost = self.get_action(state, **kwargs)
             forced_reason = self._force_replan_reason if self._force_replan_next else None
+            actions, cost = self.get_action(state, **kwargs)
             self._set_action_chunk(actions, cost, int(self.chunk))
             self._force_replan_next = False
             self._force_replan_reason = None
+            plan_info = {
+                "plan_executed": True,
+                "plan_reason": "cadence" if forced_reason is None else forced_reason,
+            }
             self.last_update_info = {
                 **self.last_update_info,
                 "adaptive_replan_triggered": bool(forced_reason),
@@ -817,6 +827,7 @@ class MpcICem(BaseMPC):
                 "adaptive_replan_interval": int(self._current_replan_interval),
                 "adaptive_state_tracking_error": self._last_state_tracking_error,
             }
+        self.last_plan_info = plan_info
 
         action = self.action_list[self._chunk_step]
         self._last_action_index = int(self._chunk_step)
@@ -1070,6 +1081,7 @@ class AsyncMpcICem(MpcICem):
         self.last_launch_info = self._empty_launch_info()
         self.last_plan_status = self._empty_plan_status()
         self.last_update_info = dict(self.last_plan_status)
+        self.last_plan_info = {"plan_executed": False, "plan_reason": "none"}
         self._warm_process_snapshot(state)
 
     def end_of_rollout(self, *args, **kwargs):
@@ -1643,6 +1655,7 @@ class AsyncMpcICem(MpcICem):
 
     def _activate_new_chunk(self, state: torch.Tensor, kwargs: dict[str, Any]) -> None:
         status = self._empty_plan_status()
+        plan_info = {"plan_executed": False, "plan_reason": "none"}
         live_model_version = int(
             kwargs.get("parameter_update_version", kwargs.get("model_update_version", 0))
         )
@@ -1657,10 +1670,15 @@ class AsyncMpcICem(MpcICem):
             self._use_realtime_fallback(
                 state, status, f"forced_{forced_reason}_realtime_fallback", kwargs
             )
+            plan_info = {
+                "plan_executed": False,
+                "plan_reason": f"forced_{forced_reason}_realtime_fallback",
+            }
             self._force_replan_next = False
             self._force_replan_reason = None
         elif self._current_buffer is None:
             self._use_realtime_fallback(state, status, "initial_realtime_fallback", kwargs)
+            plan_info = {"plan_executed": False, "plan_reason": "initial_realtime_fallback"}
         elif self._planning_future is not None and self._planning_future.done():
             try:
                 result = self._consume_completed_future()
@@ -1691,6 +1709,7 @@ class AsyncMpcICem(MpcICem):
                     self._use_realtime_fallback(
                         state, status, "stale_realtime_fallback", kwargs
                     )
+                    plan_info = {"plan_executed": False, "plan_reason": "stale_realtime_fallback"}
                     self._predicted_boundary_state = None
                     status["async_plan_stale"] = True
         if self._current_buffer is not None:
@@ -1709,9 +1728,11 @@ class AsyncMpcICem(MpcICem):
                         status["async_plan_status"] = "waiting_ready_hold"
                 else:
                     self._use_realtime_fallback(state, status, "realtime_fallback", kwargs)
+                    plan_info = {"plan_executed": False, "plan_reason": "realtime_fallback"}
 
         self.last_plan_status = status
         self.last_update_info = dict(status)
+        self.last_plan_info = plan_info
 
     def __call__(self, state, **kwargs) -> torch.Tensor:
         defer_background_launch = bool(kwargs.pop("defer_background_launch", False))
@@ -1746,6 +1767,9 @@ class AsyncMpcICem(MpcICem):
                 status["async_plan_status"] = "executing_buffer"
             self.last_plan_status = status
             self.last_update_info = dict(status)
+            self.last_plan_info = {"plan_executed": False, "plan_reason": "none"}
+        else:
+            self.last_plan_info = {"plan_executed": False, "plan_reason": "none"}
 
         if defer_background_launch and self._planning_future is not None:
             self._publish_async_anchor(self._async_live_boundary(state_t), kwargs)

@@ -92,6 +92,9 @@ def _experiment_args(args: argparse.Namespace) -> list[str]:
 
 def _assets_args(args: argparse.Namespace) -> list[str]:
     argv = ["--groups", str(args.groups)]
+    results_dir = getattr(args, "results_dir", None)
+    if results_dir is not None:
+        argv.extend(["--results-dir", str(results_dir)])
     output_dir = getattr(args, "output_dir", None)
     if output_dir is None:
         output_dir = getattr(args, "assets_output_dir", None)
@@ -161,6 +164,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Directory for assembled manuscript assets.",
+    )
+    assets.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="TBME results root. Defaults to results/tbme.",
     )
 
     all_parser = subparsers.add_parser("all", help="Generate all TBME visual outputs.")

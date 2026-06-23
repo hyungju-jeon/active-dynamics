@@ -38,6 +38,14 @@ else:
 
 
 TRAJECTORY_R2_THRESHOLDS = (0.90, 0.95, 0.99)
+TRAJECTORY_R2_TRACE_FIELDS = [
+    "step",
+    "cpu_time_sec",
+    "trajectory_r2",
+    "traj_eval_horizon",
+    "traj_eval_samples",
+    "traj_eval_state_noise",
+]
 
 
 def collect_track_records(
@@ -88,16 +96,17 @@ def collect_track_rows(records: list[dict[str, Any]], value_key: str) -> list[di
         runtimes = [safe_float(run["metadata"].get("runtime_sec")) for run in runs]
         trajectory_r2_finals: list[float | None] = []
         for run in runs:
-            traj_final = safe_float(run["metadata"].get("trajectory_r2_final"))
+            traj_final = None
+            trace_path = _trace_path(
+                run,
+                metadata_key="trajectory_r2_trace_path",
+                fallback_name="trajectory_r2_trace.csv",
+            )
+            trace_rows = [] if trace_path is None else read_trace_csv(trace_path)
+            if trace_rows:
+                traj_final = safe_float(trace_rows[-1].get("trajectory_r2"))
             if traj_final is None:
-                trace_path = _trace_path(
-                    run,
-                    metadata_key="trajectory_r2_trace_path",
-                    fallback_name="trajectory_r2_trace.csv",
-                )
-                trace_rows = [] if trace_path is None else read_trace_csv(trace_path)
-                if trace_rows:
-                    traj_final = safe_float(trace_rows[-1].get("trajectory_r2"))
+                traj_final = safe_float(run["metadata"].get("trajectory_r2_final"))
             trajectory_r2_finals.append(traj_final)
         finals_num = [v for v in finals if v is not None]
         runtimes_num = [v for v in runtimes if v is not None]
@@ -125,7 +134,10 @@ def _trace_path(record: dict[str, Any], metadata_key: str, fallback_name: str) -
     path = resolve_artifact_path(
         record["run_dir"], record["metadata"], key=metadata_key, fallback_name=fallback_name
     )
-    return path if path.exists() else None
+    if path.exists():
+        return path
+    fallback = Path(record["run_dir"]) / fallback_name
+    return fallback if fallback.exists() else None
 
 
 def aggregate_custom_trace(
@@ -232,9 +244,9 @@ def _recompute_trajectory_trace_rows(
         return []
 
     import torch
-    from actdyn.utils.validation import trajectory_r2_vectorfield
+    from actdyn.utils.validation import trajectory_r2_vectorfield_many
 
-    out_rows: list[dict[str, Any]] = []
+    rows: list[tuple[int, float | None, np.ndarray]] = []
     for row in embedding_rows:
         step = safe_float(row.get("step"))
         cpu_sec = safe_float(row.get("cpu_time_sec"))
@@ -246,56 +258,79 @@ def _recompute_trajectory_trace_rows(
         embedding = _extract_embedding_vector(row)
         if embedding is None or embedding.shape[0] < expected_dim:
             return []
-        local_rng = np.random.default_rng(int(record["seed"]) * 100_000 + step_i + 137)
+        rows.append((step_i, cpu_sec, embedding[:expected_dim]))
+    if not rows:
+        return []
+
+    state_noise = safe_float(metadata.get("state_noise"))
+    if state_noise is None:
+        state_noise = float(env_preset.state_noise)
+    horizon = int(metadata.get("trajectory_eval_horizon") or exp_spec.trajectory_eval_horizon)
+    n_starts = int(metadata.get("trajectory_eval_samples") or exp_spec.trajectory_eval_samples)
+    rng = np.random.default_rng(int(record["seed"]) + 137)
+    r2_values = trajectory_r2_vectorfield_many(
+        e_estimates=torch.as_tensor(np.stack([row[2] for row in rows]), dtype=torch.float32),
+        e_true=torch.as_tensor(true_embedding[:expected_dim], dtype=torch.float32),
+        true_dynamics_type=str(metadata.get("dynamics_type") or env_preset.resolved_dynamics_type()),
+        true_full_params=np.asarray(
+            metadata.get("true_params_full") or env_preset.resolved_true_params(),
+            dtype=np.float32,
+        ),
+        estimator_dynamics_type=str(
+            metadata.get("estimator_dynamics_type")
+            or env_preset.resolved_dynamics_type(estimator=True)
+        ),
+        estimator_full_params=np.asarray(
+            metadata.get("estimator_true_params_full")
+            or env_preset.resolved_true_params(estimator=True),
+            dtype=np.float32,
+        ),
+        true_min_embedding_dim=int(
+            metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
+        ),
+        estimator_min_embedding_dim=int(
+            metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
+        ),
+        dt=float(env_preset.dt),
+        dynamics_alpha=float(env_preset.dynamics_alpha),
+        horizon=horizon,
+        n_starts=n_starts,
+        rng=rng,
+        device="cpu",
+        state_noise=state_noise,
+    )
+
+    out_rows: list[dict[str, Any]] = []
+    for (step_i, cpu_sec, _), r2_value in zip(rows, r2_values, strict=True):
         out_rows.append(
             {
                 "step": step_i,
                 "cpu_time_sec": cpu_sec,
-                "trajectory_r2": trajectory_r2_vectorfield(
-                    e_est=torch.as_tensor(embedding[:expected_dim], dtype=torch.float32),
-                    e_true=torch.as_tensor(true_embedding[:expected_dim], dtype=torch.float32),
-                    true_dynamics_type=str(metadata.get("dynamics_type") or env_preset.resolved_dynamics_type()),
-                    true_full_params=np.asarray(
-                        metadata.get("true_params_full") or env_preset.resolved_true_params(),
-                        dtype=np.float32,
-                    ),
-                    estimator_dynamics_type=str(
-                        metadata.get("estimator_dynamics_type")
-                        or env_preset.resolved_dynamics_type(estimator=True)
-                    ),
-                    estimator_full_params=np.asarray(
-                        metadata.get("estimator_true_params_full")
-                        or env_preset.resolved_true_params(estimator=True),
-                        dtype=np.float32,
-                    ),
-                    true_min_embedding_dim=int(
-                        metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
-                    ),
-                    estimator_min_embedding_dim=int(
-                        metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
-                    ),
-                    dt=float(env_preset.dt),
-                    dynamics_alpha=float(env_preset.dynamics_alpha),
-                    horizon=int(
-                        metadata.get("trajectory_eval_horizon")
-                        or exp_spec.trajectory_eval_horizon
-                    ),
-                    n_starts=int(
-                        metadata.get("trajectory_eval_samples")
-                        or exp_spec.trajectory_eval_samples
-                    ),
-                    rng=local_rng,
-                    device="cpu",
-                ),
-                "traj_eval_horizon": int(
-                    metadata.get("trajectory_eval_horizon") or exp_spec.trajectory_eval_horizon
-                ),
-                "traj_eval_samples": int(
-                    metadata.get("trajectory_eval_samples") or exp_spec.trajectory_eval_samples
-                ),
+                "trajectory_r2": float(r2_value),
+                "traj_eval_horizon": horizon,
+                "traj_eval_samples": n_starts,
+                "traj_eval_state_noise": state_noise,
             }
         )
     return out_rows
+
+
+def recompute_trajectory_r2_traces(records: list[dict[str, Any]], *, exp_spec: Any) -> int:
+    count = 0
+    for record in records:
+        env_preset = get_environment_preset_from_metadata(record["metadata"])
+        rows = _recompute_trajectory_trace_rows(
+            record,
+            exp_spec=exp_spec,
+            env_preset=env_preset,
+            interval=int(exp_spec.trajectory_eval_interval),
+        )
+        if not rows:
+            continue
+        path = record["run_dir"] / "trajectory_r2_trace.csv"
+        write_trace_csv(path, rows, TRAJECTORY_R2_TRACE_FIELDS)
+        count += 1
+    return count
 
 
 def aggregate_trajectory_r2_trace(
@@ -546,6 +581,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-ids", type=str, default=None)
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
     parser.add_argument("--fail-on-missing", action="store_true")
+    parser.add_argument(
+        "--recompute-trajectory-r2",
+        action="store_true",
+        help="Rewrite per-run trajectory_r2_trace.csv from embedding traces before summarizing.",
+    )
     return parser
 
 
@@ -568,6 +608,9 @@ def main(argv: list[str] | None = None) -> int:
     records, missing = collect_track_records(
         base_dir, exp_spec.exp_id, seeds, policy_filter=policy_filter
     )
+    if args.recompute_trajectory_r2:
+        refreshed = recompute_trajectory_r2_traces(records, exp_spec=exp_spec)
+        print(f"Refreshed {refreshed} trajectory R2 traces for {exp_spec.exp_id}")
     value_key = "embedding_error_final"
     trace_key = "parameter_error_trace_path"
     trace_name = "parameter_error_trace.csv"
