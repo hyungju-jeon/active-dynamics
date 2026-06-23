@@ -1,25 +1,13 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import math
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 import numpy as np
 
+from actdyn.utils.experiment_runtime import safe_float as _safe_float
 from actdyn.utils.figure_io import load_plotting, sample_sem, save_figure_formats
-
-
-def _safe_float(raw: object) -> float | None:
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(value):
-        return None
-    return value
 
 
 def _identity_policy_sort_key(policy_id: str) -> str:
