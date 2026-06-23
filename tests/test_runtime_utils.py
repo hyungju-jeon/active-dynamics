@@ -1490,7 +1490,15 @@ def test_async_process_background_launch_defers_process_submit() -> None:
 def test_async_process_background_launch_uses_persistent_worker_payload() -> None:
     policy = _make_async_policy(chunk=3)
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
-    policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
+    policy.mean.fill_(0.25)
+    mean_before = policy.mean.clone()
+    policy._set_current_buffer(
+        torch.tensor(
+            [[[0.1, 0.0], [0.8, 0.0], [0.3, 0.0], [0.2, 0.0]]], dtype=torch.float32
+        ),
+        torch.tensor([0.0]),
+    )
+    policy._buffer_index = 1
     submitted_process: list[tuple[Any, ...]] = []
 
     def fail_snapshot(*args, **kwargs):
@@ -1519,6 +1527,8 @@ def test_async_process_background_launch_uses_persistent_worker_payload() -> Non
     payload = submitted_process[0][3]
     assert payload["model"]["_state"].shape == policy.model._state.shape
     assert payload["mean"].shape == policy.mean.shape
+    assert torch.allclose(payload["mean"][0], torch.tensor([0.8, 0.0]))
+    assert torch.allclose(policy.mean, mean_before)
     assert launch_info["async_launch_started"] is True
     policy._submit_executor = None
     policy._executor = None
@@ -1886,10 +1896,10 @@ def test_async_policy_catalog_entry_is_available() -> None:
     assert spec.async_worker_device is None
     try:
         configure_tbme_catalogs()
-        realtime = get_policy_spec("active_planning_adaptive_async_realtime_u20_r20_h40")
+        realtime = get_policy_spec("adaptive_async_realtime")
         assert realtime.async_worker_iterations == 2
         assert realtime.async_realtime_prefix_steps == 10
-        anytime = get_policy_spec("active_planning_adaptive_async_anytime_u20_r20_h40")
+        anytime = get_policy_spec("adaptive_async_anytime")
         assert anytime.async_worker_iterations == 2
         assert anytime.async_anytime_prefix_steps is None
         assert anytime.async_anytime_min_iteration == 1
@@ -1903,8 +1913,8 @@ def test_exp02_defaults_use_realtime_async() -> None:
 
     for suite in EXPERIMENT_SUITES.values():
         model_ids = suite["model_ids"]
-        assert "active_planning_adaptive_async_realtime_u20_r20_h40" in model_ids
-        assert "active_planning_adaptive_async_anytime_u20_r20_h40" in model_ids
+        assert "adaptive_async_realtime" in model_ids
+        assert "adaptive_async_anytime" in model_ids
 
 
 def test_tbme_runner_callables_are_pickle_safe() -> None:

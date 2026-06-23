@@ -1669,6 +1669,17 @@ class AsyncMpcICem(MpcICem):
         self._clear_anytime_prefix()
         return future.result()
 
+    def _background_plan_mean(self) -> torch.Tensor:
+        mean = self.mean.detach().clone()
+        if (
+            self.coarse_action_mapping == "hold"
+            and self._current_buffer is not None
+            and self._buffer_index < self._current_buffer.shape[-2]
+        ):
+            action = self._current_buffer[:, self._buffer_index, :].reshape(-1, self.action_dim)[0]
+            mean[0] = self._project_actions(action.to(self.device))
+        return mean
+
     def _make_snapshot_planner(self, predicted_boundary_state: torch.Tensor):
         self._ensure_shared_anchor_storage(predicted_boundary_state)
         try:
@@ -1682,6 +1693,7 @@ class AsyncMpcICem(MpcICem):
                 else:
                     value = copy.deepcopy(value)
                 setattr(planner, attr, value)
+            planner.mean = self._background_plan_mean()
         except Exception as exc:
             raise RuntimeError(
                 "AsyncMpcICem could not copy the policy/model snapshot. "
@@ -1728,7 +1740,7 @@ class AsyncMpcICem(MpcICem):
                 "z": _clone_for_worker(getattr(self.model, "z", {})),
                 "_state": _clone_for_worker(getattr(self.model, "_state", None)),
             },
-            "mean": _clone_for_worker(self.mean),
+            "mean": _clone_for_worker(self._background_plan_mean()),
             "std": _clone_for_worker(self.std),
             "elite_actions": _clone_for_worker(self.elite_actions),
             "elite_costs_traj": _clone_for_worker(self.elite_costs_traj),

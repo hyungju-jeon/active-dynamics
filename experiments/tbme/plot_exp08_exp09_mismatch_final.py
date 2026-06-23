@@ -26,7 +26,7 @@ from actdyn.utils.figure_io import (
 )
 
 
-ADAPTIVE = "active_planning_adaptive_u20_r20_h40"
+ADAPTIVE = "adaptive"
 FIXED = "active_planning_u20_r20_h40"
 SYSTEM = "asymmetric_basin"
 THRESHOLD = 3.0

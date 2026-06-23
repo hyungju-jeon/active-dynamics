@@ -12,8 +12,8 @@ DEFAULT_EXP_IDS = (
 )
 
 MODEL_IDS = [
-    "active_planning_adaptive_u20_r20_h40",
-    "active_planning_adaptive_async_realtime_u20_r20_h40",
+    "adaptive",
+    "adaptive_async_realtime",
     "active_planning_u5_r5_h40",
     "active_planning_u20_r20_h40",
     "active_myopic",

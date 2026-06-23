@@ -4,8 +4,8 @@ BASE_DIR = "results/tbme/exp01_base"
 DEFAULT_SEED_COUNT = 500
 DEFAULT_EXP_IDS = ("exp01_duffing", "exp01_damped_pendulum", "exp01_asymmetric_basin")
 MODEL_IDS = [
-    "active_planning_adaptive_u20_r20_h40",
-    "active_planning_adaptive_async_realtime_u20_r20_h40",
+    "adaptive",
+    "adaptive_async_realtime",
     "active_planning_u20_r20_h40",
     "active_myopic",
     "prbs",
