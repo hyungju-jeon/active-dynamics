@@ -467,10 +467,10 @@ class Agent:
 
         return transition, done
 
-    def launch_background_plan(self) -> None:
+    def launch_background_plan(self) -> dict[str, Any]:
         launch_background_plan = getattr(self.policy, 'launch_background_plan', None)
         if not callable(launch_background_plan):
-            return
+            return {}
         plan_kwargs = {
             'observed_state': self._env_state,
             'model_update_version': self._parameter_update_version,
@@ -478,7 +478,8 @@ class Agent:
         }
         if bool(getattr(self.policy, 'updates_metric_in_background', False)):
             plan_kwargs['recent_rollout'] = self.recent
-        launch_background_plan(self._model_state, **plan_kwargs)
+        launch_info = launch_background_plan(self._model_state, **plan_kwargs)
+        return launch_info if isinstance(launch_info, dict) else {}
 
     def plan(self) -> torch.Tensor:
         """Plan next action using the policy."""

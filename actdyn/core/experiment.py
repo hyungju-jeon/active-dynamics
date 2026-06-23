@@ -339,9 +339,12 @@ class Experiment:
             step_sec = time.perf_counter() - step_start
             launch_start = time.perf_counter()
             launch_background_plan = getattr(self.agent, "launch_background_plan", None)
+            launch_info = {}
             if callable(launch_background_plan):
-                launch_background_plan()
+                launch_info = launch_background_plan() or {}
             launch_sec = time.perf_counter() - launch_start
+            if isinstance(launch_info, dict):
+                transition.update(launch_info)
             transition["loop_plan_sec"] = float(plan_sec)
             transition["loop_step_sec"] = float(step_sec)
             transition["loop_async_launch_sec"] = float(launch_sec)

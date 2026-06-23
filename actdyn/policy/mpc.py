@@ -884,6 +884,7 @@ class AsyncMpcICem(MpcICem):
         self._predicted_boundary_state: torch.Tensor | None = None
         self._async_action_seed_base = 0
         self._async_action_seed_counter = 0
+        self.last_launch_info: dict[str, Any] = self._empty_launch_info()
         self.last_plan_status: dict[str, Any] = self._empty_plan_status()
         self.last_update_info: dict[str, Any] = dict(self.last_plan_status)
 
@@ -934,6 +935,15 @@ class AsyncMpcICem(MpcICem):
             "async_realtime_fallback_runtime_sec": 0.0,
             "async_realtime_fallback_steps": 0,
             "async_realtime_zero_prefix": False,
+        }
+
+    def _empty_launch_info(self) -> dict[str, Any]:
+        return {
+            "async_launch_started": False,
+            "async_launch_boundary_sec": 0.0,
+            "async_launch_clone_sec": 0.0,
+            "async_launch_snapshot_sec": 0.0,
+            "async_launch_submit_sec": 0.0,
         }
 
     def _cancel_planning_future(self) -> None:
@@ -1041,6 +1051,7 @@ class AsyncMpcICem(MpcICem):
         self._async_action_seed_counter = 0
         self._set_action_rng_seed(self._next_action_rng_seed())
         self._yield_to_foreground = False
+        self.last_launch_info = self._empty_launch_info()
         self.last_plan_status = self._empty_plan_status()
         self.last_update_info = dict(self.last_plan_status)
         self._warm_process_snapshot(state)
@@ -1619,21 +1630,31 @@ class AsyncMpcICem(MpcICem):
             return
         super().request_replan(reason)
 
-    def _launch_background_plan(self, state: torch.Tensor, kwargs: dict[str, Any]) -> None:
+    def _launch_background_plan(self, state: torch.Tensor, kwargs: dict[str, Any]) -> dict[str, Any]:
+        launch_info = self._empty_launch_info()
+        self.last_launch_info = launch_info
         if self._current_buffer is None:
-            return
+            return launch_info
         predicted_boundary = None
         if self.async_reanchor_live_state:
+            start = time.perf_counter()
             predicted_boundary = self._async_live_boundary(state)
+            launch_info["async_launch_boundary_sec"] += time.perf_counter() - start
             self._publish_async_anchor(predicted_boundary, kwargs)
         if self._planning_future is not None:
+            start = time.perf_counter()
             self._publish_async_anchor(self._async_live_boundary(state), kwargs)
-            return
+            launch_info["async_launch_boundary_sec"] += time.perf_counter() - start
+            self.last_launch_info = launch_info
+            return launch_info
         if self._executor is None:
             self._executor = self._new_executor()
         if predicted_boundary is None:
+            start = time.perf_counter()
             predicted_boundary = self._async_live_boundary(state)
+            launch_info["async_launch_boundary_sec"] += time.perf_counter() - start
         self._predicted_boundary_state = predicted_boundary.detach().clone()
+        start = time.perf_counter()
         worker_kwargs = dict(kwargs)
         if not self.updates_metric_in_background:
             worker_kwargs.pop("recent_rollout", None)
@@ -1641,7 +1662,10 @@ class AsyncMpcICem(MpcICem):
         worker_kwargs["observed_state"] = predicted_boundary.detach().clone()
         if self._realtime_feedback_target_state is not None:
             worker_kwargs["realtime_prefix_index"] = int(self._buffer_index)
+        launch_info["async_launch_clone_sec"] = time.perf_counter() - start
+        start = time.perf_counter()
         planner = self._make_snapshot_planner(predicted_boundary)
+        launch_info["async_launch_snapshot_sec"] = time.perf_counter() - start
         self._async_background_plan_count += 1
         use_full_iterations = (
             self.async_worker_full_interval is not None
@@ -1651,6 +1675,7 @@ class AsyncMpcICem(MpcICem):
             planner.num_iterations = int(self.async_worker_iterations)
         assert self._executor is not None
         predicted_boundary_for_worker = predicted_boundary.detach().clone()
+        start = time.perf_counter()
         if self.async_worker_backend == "process":
             self._planning_future = self._submit_process_plan(
                 planner,
@@ -1664,6 +1689,10 @@ class AsyncMpcICem(MpcICem):
                 predicted_boundary_for_worker,
                 worker_kwargs,
             )
+        launch_info["async_launch_submit_sec"] = time.perf_counter() - start
+        launch_info["async_launch_started"] = True
+        self.last_launch_info = launch_info
+        return launch_info
 
     def _activate_new_chunk(self, state: torch.Tensor, kwargs: dict[str, Any]) -> None:
         status = self._empty_plan_status()
@@ -1827,14 +1856,16 @@ class AsyncMpcICem(MpcICem):
         self.count += 1
         return action
 
-    def launch_background_plan(self, state, **kwargs) -> None:
+    def launch_background_plan(self, state, **kwargs) -> dict[str, Any]:
         state_t = torch.as_tensor(state, dtype=torch.float32, device=self.device)
         if state_t.ndim == 1:
             state_t = state_t.reshape(1, 1, -1)
         elif state_t.ndim == 2:
             state_t = state_t.unsqueeze(1) if state_t.shape[0] == 1 else state_t.unsqueeze(0)
         if self.async_start_after_first_plan or self.count > 0:
-            self._launch_background_plan(state_t, dict(kwargs))
+            return self._launch_background_plan(state_t, dict(kwargs))
+        self.last_launch_info = self._empty_launch_info()
+        return self.last_launch_info
 
     def update(self, batch) -> dict[str, Any]:
         if self.adaptive_replanning and not self.async_refine_on_parameter_update:

@@ -1277,9 +1277,12 @@ def test_async_process_background_launch_defers_process_submit() -> None:
 
     policy._submit_executor = _Submitter()
     policy._executor = _ProcessExecutor()
-    policy._launch_background_plan(torch.zeros(1, 1, 2), {})
+    launch_info = policy._launch_background_plan(torch.zeros(1, 1, 2), {})
 
     assert len(submitted) == 1
+    assert launch_info["async_launch_started"] is True
+    assert launch_info["async_launch_snapshot_sec"] >= 0.0
+    assert launch_info["async_launch_submit_sec"] >= 0.0
     assert policy._planning_future is not None
     assert not policy._planning_future.done()
     policy._submit_executor = None

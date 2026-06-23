@@ -1259,6 +1259,21 @@ def _run_single_parameter_identification(
                 "async_realtime_zero_prefix": as_bool(
                     transition.get("async_realtime_zero_prefix", False)
                 ),
+                "async_launch_started": as_bool(
+                    transition.get("async_launch_started", False)
+                ),
+                "async_launch_boundary_sec": float(
+                    transition.get("async_launch_boundary_sec", 0.0) or 0.0
+                ),
+                "async_launch_clone_sec": float(
+                    transition.get("async_launch_clone_sec", 0.0) or 0.0
+                ),
+                "async_launch_snapshot_sec": float(
+                    transition.get("async_launch_snapshot_sec", 0.0) or 0.0
+                ),
+                "async_launch_submit_sec": float(
+                    transition.get("async_launch_submit_sec", 0.0) or 0.0
+                ),
                 "async_plan_model_version": int(
                     transition.get("async_plan_model_version", -1)
                 ),
@@ -1374,6 +1389,21 @@ def _run_single_parameter_identification(
                 ),
                 "async_realtime_zero_prefix": as_bool(
                     transition.get("async_realtime_zero_prefix", False)
+                ),
+                "async_launch_started": as_bool(
+                    transition.get("async_launch_started", False)
+                ),
+                "async_launch_boundary_sec": float(
+                    transition.get("async_launch_boundary_sec", 0.0) or 0.0
+                ),
+                "async_launch_clone_sec": float(
+                    transition.get("async_launch_clone_sec", 0.0) or 0.0
+                ),
+                "async_launch_snapshot_sec": float(
+                    transition.get("async_launch_snapshot_sec", 0.0) or 0.0
+                ),
+                "async_launch_submit_sec": float(
+                    transition.get("async_launch_submit_sec", 0.0) or 0.0
                 ),
                 "model_update_version": int(transition.get("model_update_version", 0)),
                 "parameter_update_version": int(
@@ -1555,6 +1585,11 @@ def _run_single_parameter_identification(
             "async_realtime_fallback_runtime_sec",
             "async_realtime_fallback_steps",
             "async_realtime_zero_prefix",
+            "async_launch_started",
+            "async_launch_boundary_sec",
+            "async_launch_clone_sec",
+            "async_launch_snapshot_sec",
+            "async_launch_submit_sec",
             "async_plan_model_version",
             "async_live_model_version",
             "model_update_version",
@@ -1615,6 +1650,11 @@ def _run_single_parameter_identification(
             "async_realtime_fallback_runtime_sec",
             "async_realtime_fallback_steps",
             "async_realtime_zero_prefix",
+            "async_launch_started",
+            "async_launch_boundary_sec",
+            "async_launch_clone_sec",
+            "async_launch_snapshot_sec",
+            "async_launch_submit_sec",
             "model_update_version",
             "parameter_update_version",
             "loop_async_launch_sec",
