@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import torch
 
+from actdyn.environment.vectorfield import pad_embedding_to_params
 from actdyn.models.model import _kl_div_mc
 from actdyn.utils.torch_utils import jacobian_wrt_param, make_uniform_sampler
 
@@ -47,3 +48,15 @@ def test_kl_div_mc_broadcasts_posterior_terms():
 
     assert kl.shape == (2,)
     assert torch.allclose(kl, torch.full((2,), 1.5))
+
+
+def test_pad_embedding_to_params_fills_fixed_tail():
+    embedding = torch.tensor([[1.0, 2.0]])
+
+    params = pad_embedding_to_params(
+        embedding,
+        full_params=torch.tensor([0.0, 0.0, 3.0]),
+        min_embedding_dim=2,
+    )
+
+    assert torch.allclose(params, torch.tensor([[1.0, 2.0, 3.0]]))

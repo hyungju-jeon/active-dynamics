@@ -14,6 +14,7 @@ import torch
 
 import actdyn.policy.mpc as mpc_module
 from actdyn.core.agent import Agent
+from actdyn.core.experiment import _numeric_suffix
 from actdyn.policy.mpc import AsyncMpcICem, MpcICem
 from actdyn.utils.experiment_runtime import (
     apply_loglinear_loading_mismatch,
@@ -41,6 +42,11 @@ def test_ensure_dir_creates_directory(tmp_path: Path):
     result = ensure_dir(target)
     assert Path(result).exists()
     assert Path(result).is_dir()
+
+
+def test_numeric_suffix_uses_last_number() -> None:
+    assert _numeric_suffix(Path("rollout_step_0010.pkl")) == 10
+    assert _numeric_suffix(Path("model_final.pt")) is None
 
 
 def test_eig_covariance_ablations_are_catalog_knobs(tmp_path: Path):

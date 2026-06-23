@@ -22,6 +22,11 @@ from actdyn.utils.persistence import load_and_concatenate_rollouts
 SESSION_DIR_PATTERN = re.compile(r"\d{8}_\d{4}_session\d{2}")
 
 
+def _numeric_suffix(path: Path) -> int | None:
+    matches = re.findall(r"\d+", path.stem)
+    return int(matches[-1]) if matches else None
+
+
 class _AsyncExperimentWriter:
     """Background TensorBoard and rollout writer for online experiments."""
 
@@ -196,13 +201,9 @@ class Experiment:
         if not rollout_files:
             return None
 
-        def extract_step(path: Path) -> int | None:
-            matches = re.findall(r"\d+", path.stem)
-            return int(matches[-1]) if matches else None
-
         candidates: list[tuple[int, Path]] = []
         for path in rollout_files:
-            step = extract_step(path)
+            step = _numeric_suffix(path)
             if step is not None:
                 candidates.append((step, path))
 
@@ -221,13 +222,9 @@ class Experiment:
         if not checkpoint_files:
             return None
 
-        def extract_step(path: Path) -> int | None:
-            matches = re.findall(r"\d+", path.stem)
-            return int(matches[-1]) if matches else None
-
         numeric_candidates: list[tuple[int, Path]] = []
         for path in checkpoint_files:
-            step = extract_step(path)
+            step = _numeric_suffix(path)
             if step is not None:
                 numeric_candidates.append((step, path))
 
