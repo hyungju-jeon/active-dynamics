@@ -14,7 +14,7 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_asymmetric_basin",
         "model_ids": [
             "active_planning_u20_r20_h40",
-            "active_planning_async_u20_r20_h40",
+            "active_planning_adaptive_async_realtime_u20_r20_h40",
             "active_fully_observable_u20_r20_h40",
             "active_e_optimality_u20_r20_h40",
             "active_state_information_u20_r20_h40",
@@ -32,7 +32,7 @@ EXPERIMENT_SUITES = {
         "env_preset_id": "tbme_asymmetric_basin_hard",
         "model_ids": [
             "active_planning_u20_r20_h40",
-            "active_planning_async_u20_r20_h40",
+            "active_planning_adaptive_async_realtime_u20_r20_h40",
             "active_fully_observable_u20_r20_h40",
             "active_e_optimality_u20_r20_h40",
             "active_state_information_u20_r20_h40",

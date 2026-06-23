@@ -274,10 +274,7 @@ class Agent:
             beginning_of_rollout(self._env_state)
 
         # Warm cold filter kernels outside the realtime loop, then restore the belief.
-        if (
-            bool(getattr(self.policy, 'async_realtime_fallback_zero_prefix', False))
-            or int(getattr(self.policy, 'async_realtime_fallback_horizon', 0) or 0) > 0
-        ):
+        if int(getattr(self.policy, 'async_realtime_prefix_steps', 0) or 0) > 0:
             action_dim = int(getattr(self.policy, 'action_dim', 0) or 0)
             if action_dim > 0:
                 snapshot = _clone_filter_belief_state(self.model)
@@ -441,10 +438,6 @@ class Agent:
                 policy_update_info.get('async_plan_runtime_sec', 0.0) or 0.0
             ),
             'async_plan_status': str(policy_update_info.get('async_plan_status', 'idle')),
-            'async_reanchor_count': int(policy_update_info.get('async_reanchor_count', 0)),
-            'async_reanchor_mismatch': float(
-                policy_update_info.get('async_reanchor_mismatch', 0.0) or 0.0
-            ),
             'async_realtime_fallback': bool(
                 policy_update_info.get('async_realtime_fallback', False)
             ),

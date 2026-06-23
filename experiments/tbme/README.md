@@ -42,7 +42,7 @@ TBME runs use both the base experiment catalogs and the TBME catalogs:
 - models/policies: `experiments/experiment_model.yaml`, then `experiments/tbme/config/experiment_model.yaml`
 - suites: injected from the selected `exp*.py` module, with file-backed suite catalogs disabled
 
-When the same model or policy id appears in both model catalog files, the later TBME catalog entry overrides the base entry as a whole. This is not a deep merge. Current duplicated ids include `active_myopic`, `active_planning`, `active_planning_async`, and `random`.
+When the same model or policy id appears in both model catalog files, the later TBME catalog entry overrides the base entry as a whole. This is not a deep merge. Current duplicated ids include `active_myopic`, `active_planning`, and `random`.
 
 ## Experiment Families
 

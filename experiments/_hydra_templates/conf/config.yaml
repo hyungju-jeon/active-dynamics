@@ -90,9 +90,8 @@ policy:
   mpc_coarse_mapping_opt_lr: 0.05
   mpc_async_planning: false
   mpc_async_stale_tolerance: 0.5
-  mpc_async_stale_refine_iterations: 2
-  mpc_async_worker_backend: "thread"
   mpc_async_start_after_first_plan: true
+  mpc_async_realtime_prefix_steps: 10
 
 # Metric configuration
 metric:

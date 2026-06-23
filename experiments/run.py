@@ -733,33 +733,13 @@ def _instantiate_synthetic_policy(
     if mpc_cls is actdyn_module.policy.mpc.AsyncMpcICem:
         kwargs.update(
             async_stale_tolerance=getattr(policy_spec, "async_stale_tolerance", 0.5),
-            async_stale_refine_iterations=getattr(
-                policy_spec, "async_stale_refine_iterations", 2
-            ),
             async_worker_iterations=getattr(policy_spec, "async_worker_iterations", None),
             async_worker_full_interval=getattr(policy_spec, "async_worker_full_interval", None),
-            async_worker_backend=getattr(policy_spec, "async_worker_backend", "thread"),
             async_worker_device=getattr(policy_spec, "async_worker_device", None),
             async_start_after_first_plan=getattr(
                 policy_spec, "async_start_after_first_plan", True
             ),
-            async_refine_on_parameter_update=getattr(
-                policy_spec, "async_refine_on_parameter_update", True
-            ),
-            async_reanchor_live_state=getattr(policy_spec, "async_reanchor_live_state", False),
-            async_reanchor_tolerance=getattr(policy_spec, "async_reanchor_tolerance", 0.25),
-            async_realtime_fallback_horizon=getattr(
-                policy_spec, "async_realtime_fallback_horizon", 0
-            ),
-            async_realtime_fallback_coarse_dt_factor=getattr(
-                policy_spec, "async_realtime_fallback_coarse_dt_factor", None
-            ),
-            async_realtime_fallback_iterations=getattr(
-                policy_spec, "async_realtime_fallback_iterations", 1
-            ),
-            async_realtime_fallback_zero_prefix=getattr(
-                policy_spec, "async_realtime_fallback_zero_prefix", False
-            ),
+            async_realtime_prefix_steps=getattr(policy_spec, "async_realtime_prefix_steps", 10),
         )
     return mpc_cls(
         metric=metric,
@@ -1243,10 +1223,6 @@ def _run_single_parameter_identification(
                     transition.get("async_plan_runtime_sec", 0.0) or 0.0
                 ),
                 "async_plan_status": str(transition.get("async_plan_status", "idle")),
-                "async_reanchor_count": int(transition.get("async_reanchor_count", 0)),
-                "async_reanchor_mismatch": float(
-                    transition.get("async_reanchor_mismatch", 0.0) or 0.0
-                ),
                 "async_realtime_fallback": as_bool(
                     transition.get("async_realtime_fallback", False)
                 ),
@@ -1374,10 +1350,6 @@ def _run_single_parameter_identification(
                     transition.get("async_plan_runtime_sec", 0.0) or 0.0
                 ),
                 "async_plan_status": str(transition.get("async_plan_status", "idle")),
-                "async_reanchor_count": int(transition.get("async_reanchor_count", 0)),
-                "async_reanchor_mismatch": float(
-                    transition.get("async_reanchor_mismatch", 0.0) or 0.0
-                ),
                 "async_realtime_fallback": as_bool(
                     transition.get("async_realtime_fallback", False)
                 ),
@@ -1579,8 +1551,6 @@ def _run_single_parameter_identification(
             "async_boundary_mismatch",
             "async_plan_runtime_sec",
             "async_plan_status",
-            "async_reanchor_count",
-            "async_reanchor_mismatch",
             "async_realtime_fallback",
             "async_realtime_fallback_runtime_sec",
             "async_realtime_fallback_steps",
@@ -1644,8 +1614,6 @@ def _run_single_parameter_identification(
             "async_boundary_mismatch",
             "async_plan_runtime_sec",
             "async_plan_status",
-            "async_reanchor_count",
-            "async_reanchor_mismatch",
             "async_realtime_fallback",
             "async_realtime_fallback_runtime_sec",
             "async_realtime_fallback_steps",
@@ -1790,23 +1758,14 @@ def _run_single_parameter_identification(
             "coarse_mapping_opt_lr": float(getattr(policy_spec, "coarse_mapping_opt_lr", 0.05)),
             "async_planning": bool(getattr(policy_spec, "async_planning", False)),
             "async_stale_tolerance": float(getattr(policy_spec, "async_stale_tolerance", 0.5)),
-            "async_stale_refine_iterations": int(
-                getattr(policy_spec, "async_stale_refine_iterations", 2)
-            ),
             "async_worker_iterations": getattr(policy_spec, "async_worker_iterations", None),
             "async_worker_full_interval": getattr(
                 policy_spec, "async_worker_full_interval", None
             ),
-            "async_worker_backend": getattr(policy_spec, "async_worker_backend", "thread"),
+            "async_worker_backend": "process",
             "async_worker_device": getattr(policy_spec, "async_worker_device", None),
-            "async_refine_on_parameter_update": bool(
-                getattr(policy_spec, "async_refine_on_parameter_update", True)
-            ),
-            "async_reanchor_live_state": bool(
-                getattr(policy_spec, "async_reanchor_live_state", False)
-            ),
-            "async_reanchor_tolerance": float(
-                getattr(policy_spec, "async_reanchor_tolerance", 0.25)
+            "async_realtime_prefix_steps": int(
+                getattr(policy_spec, "async_realtime_prefix_steps", 10)
             ),
             "predictive_only_window": bool(schedule_spec.predictive_only_window),
             "state_update_interval": int(schedule_spec.update_interval),
@@ -2021,13 +1980,10 @@ def _build_session_experiment_entry(
                 "coarse_action_mapping": str(getattr(policy_spec, "coarse_action_mapping", "hold")),
                 "async_planning": bool(getattr(policy_spec, "async_planning", False)),
                 "async_stale_tolerance": float(getattr(policy_spec, "async_stale_tolerance", 0.5)),
-                "async_worker_backend": getattr(policy_spec, "async_worker_backend", "thread"),
+                "async_worker_backend": "process",
                 "async_worker_device": getattr(policy_spec, "async_worker_device", None),
-                "async_refine_on_parameter_update": bool(
-                    getattr(policy_spec, "async_refine_on_parameter_update", True)
-                ),
-                "async_reanchor_live_state": bool(
-                    getattr(policy_spec, "async_reanchor_live_state", False)
+                "async_realtime_prefix_steps": int(
+                    getattr(policy_spec, "async_realtime_prefix_steps", 10)
                 ),
                 "model": {
                     "runner": experiment_kind,

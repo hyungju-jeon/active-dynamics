@@ -71,12 +71,7 @@ models:
     async_worker_iterations: 3
     async_worker_full_interval: 5
     async_worker_device: cpu
-    async_reanchor_live_state: true
-    async_reanchor_tolerance: 0.1
-    async_realtime_fallback_horizon: 2
-    async_realtime_fallback_coarse_dt_factor: 5
-    async_realtime_fallback_iterations: 1
-    async_realtime_fallback_zero_prefix: true
+    async_realtime_prefix_steps: 5
 """,
         encoding="utf-8",
     )
@@ -91,12 +86,7 @@ models:
         assert get_policy_spec("async_planning").async_worker_iterations == 3
         assert get_policy_spec("async_planning").async_worker_full_interval == 5
         assert get_policy_spec("async_planning").async_worker_device == "cpu"
-        assert get_policy_spec("async_planning").async_reanchor_live_state is True
-        assert get_policy_spec("async_planning").async_reanchor_tolerance == pytest.approx(0.1)
-        assert get_policy_spec("async_planning").async_realtime_fallback_horizon == 2
-        assert get_policy_spec("async_planning").async_realtime_fallback_coarse_dt_factor == 5
-        assert get_policy_spec("async_planning").async_realtime_fallback_iterations == 1
-        assert get_policy_spec("async_planning").async_realtime_fallback_zero_prefix is True
+        assert get_policy_spec("async_planning").async_realtime_prefix_steps == 5
     finally:
         configure_catalogs()
 
@@ -360,8 +350,7 @@ class _WarmupModel:
 
 
 class _WarmupPolicy:
-    async_realtime_fallback_zero_prefix = True
-    async_realtime_fallback_horizon = 0
+    async_realtime_prefix_steps = 10
     action_dim = 2
 
     def __init__(self):
@@ -431,18 +420,17 @@ def _make_async_policy(*, chunk: int = 3, horizon: int = 4) -> AsyncMpcICem:
         device="cpu",
         noise_beta=0.0,
         async_stale_tolerance=0.25,
-        async_stale_refine_iterations=2,
+        async_realtime_prefix_steps=3,
     )
 
 
 def _process_anchor_worker(planner, state: torch.Tensor) -> dict[str, Any]:
     time.sleep(0.2)
     kwargs = {"parameter_update_version": 0}
-    updated_state = planner._maybe_reanchor_worker_plan(state, kwargs)
+    updated_state = planner._maybe_refresh_worker_belief(state, kwargs)
     return {
         "state": updated_state,
         "parameter_update_version": kwargs["parameter_update_version"],
-        "reanchor_count": int(planner._worker_reanchor_count),
         "model_state": planner.model._state,
         "parameter_mean": planner.model.e["m"],
         "parameter_cov": planner.model.e["P"],
@@ -682,18 +670,16 @@ def test_async_mpc_swaps_ready_background_plan_at_boundary() -> None:
     policy.close()
 
 
-def test_async_mpc_stale_plan_runs_two_iteration_refinement() -> None:
+def test_async_mpc_stale_plan_uses_realtime_fallback() -> None:
     policy = _make_async_policy(chunk=3)
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     policy._buffer_index = 3
     policy._launch_background_plan = types.MethodType(lambda self, state, kwargs: None, policy)
-    seen_iterations: list[int | None] = []
 
     def fake_sync(self, state, *, num_iterations=None, **kwargs):
-        del state, kwargs
-        seen_iterations.append(num_iterations)
-        return torch.ones(1, 3, 2) * 0.7, torch.tensor([2.0])
+        del self, state, num_iterations, kwargs
+        raise AssertionError("stale async result should use realtime fallback")
 
     policy._sync_plan = types.MethodType(fake_sync, policy)
     future = Future()
@@ -713,25 +699,23 @@ def test_async_mpc_stale_plan_runs_two_iteration_refinement() -> None:
 
     action = policy(torch.zeros(1, 1, 2))
 
-    assert seen_iterations == [2]
-    assert torch.allclose(action, torch.ones(1, 1, 2) * 0.7)
+    assert torch.allclose(action, torch.zeros(1, 1, 2))
     assert policy.last_plan_status["async_plan_stale"] is True
-    assert policy.last_plan_status["async_refined"] is True
+    assert policy.last_plan_status["async_refined"] is False
+    assert policy.last_plan_status["async_realtime_fallback"] is True
     policy.close()
 
 
-def test_async_mpc_refines_when_background_model_version_is_stale() -> None:
+def test_async_mpc_uses_parameter_stale_ready_plan() -> None:
     policy = _make_async_policy(chunk=3)
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     policy._buffer_index = 3
     policy._launch_background_plan = types.MethodType(lambda self, state, kwargs: None, policy)
-    seen_iterations: list[int | None] = []
 
     def fake_sync(self, state, *, num_iterations=None, **kwargs):
-        del state, kwargs
-        seen_iterations.append(num_iterations)
-        return torch.ones(1, 3, 2) * 0.8, torch.tensor([2.0])
+        del self, state, num_iterations, kwargs
+        raise AssertionError("parameter-version mismatch alone should not refine synchronously")
 
     policy._sync_plan = types.MethodType(fake_sync, policy)
     future = Future()
@@ -752,17 +736,14 @@ def test_async_mpc_refines_when_background_model_version_is_stale() -> None:
 
     action = policy(torch.zeros(1, 1, 2), model_update_version=2)
 
-    assert seen_iterations == [2]
-    assert torch.allclose(action, torch.ones(1, 1, 2) * 0.8)
-    assert policy.last_plan_status["async_plan_stale"] is True
+    assert torch.allclose(action, torch.ones(1, 1, 2) * 0.4)
+    assert policy.last_plan_status["async_plan_used"] is True
     assert policy.last_plan_status["async_model_version_mismatch"] is True
-    assert policy.last_plan_status["async_refined"] is True
     policy.close()
 
 
 def test_async_mpc_can_use_parameter_stale_ready_plan_when_configured() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_refine_on_parameter_update = False
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     policy._buffer_index = 3
@@ -792,7 +773,7 @@ def test_async_mpc_can_use_parameter_stale_ready_plan_when_configured() -> None:
     policy.close()
 
 
-def test_async_mpc_update_keeps_adaptive_state_tracking() -> None:
+def test_async_mpc_update_skips_unused_state_tracking() -> None:
     policy = _make_async_policy(chunk=3)
     policy.adaptive_replanning = True
     policy.adaptive_replan_min_interval = 1
@@ -804,15 +785,14 @@ def test_async_mpc_update_keeps_adaptive_state_tracking() -> None:
 
     update_info = policy.update({"next_model_state": torch.tensor([[[1.0, 0.0]]])})
 
-    assert update_info["adaptive_replan_triggered"] is True
-    assert update_info["adaptive_replan_reason"] == "state_tracking_error"
-    assert policy._force_replan_next is True
+    assert update_info["adaptive_replan_triggered"] is False
+    assert update_info["adaptive_replan_reason"] == "none"
+    assert policy._force_replan_next is False
     policy.close()
 
 
 def test_async_mpc_defers_parameter_replans_to_boundary_reconciliation() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_refine_on_parameter_update = False
 
     policy.request_replan("parameter_update")
     assert policy._force_replan_next is False
@@ -824,7 +804,6 @@ def test_async_mpc_defers_parameter_replans_to_boundary_reconciliation() -> None
 
 def test_async_mpc_defers_state_replans_when_stale_parameter_plans_are_allowed() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_refine_on_parameter_update = False
 
     policy.request_replan("state_tracking_error")
     assert policy._force_replan_next is False
@@ -833,7 +812,6 @@ def test_async_mpc_defers_state_replans_when_stale_parameter_plans_are_allowed()
 
 def test_async_mpc_fast_stale_mode_skips_unused_state_tracking() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_refine_on_parameter_update = False
     policy.adaptive_replanning = True
     policy.adaptive_replan_min_interval = 1
     policy.adaptive_replan_state_error_threshold = 0.1
@@ -850,7 +828,6 @@ def test_async_mpc_fast_stale_mode_skips_unused_state_tracking() -> None:
 
 def test_async_mpc_stale_parameter_mode_keeps_chunk_swap_cadence() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_refine_on_parameter_update = False
     policy.adaptive_replanning = True
 
     assert policy._async_execution_interval() == 3
@@ -859,7 +836,6 @@ def test_async_mpc_stale_parameter_mode_keeps_chunk_swap_cadence() -> None:
 
 def test_async_mpc_warms_process_executor_before_rollout() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
     calls = []
 
     class _ImmediateFuture:
@@ -882,7 +858,6 @@ def test_async_mpc_warms_process_executor_before_rollout() -> None:
 def test_async_mpc_warms_process_snapshot_without_advancing_action_rng() -> None:
     policy = _make_async_policy(chunk=3)
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
-    policy.async_worker_backend = "process"
     counter_before = int(policy._async_action_seed_counter)
     calls = []
 
@@ -913,12 +888,11 @@ def test_async_mpc_process_executor_sets_tensor_sharing_strategy(monkeypatch) ->
         lambda: calls.append("sharing"),
     )
     policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
 
     executor = policy._new_executor()
     executor.shutdown(wait=True, cancel_futures=True)
 
-    assert calls == ["sharing"]
+    assert calls[-1:] == ["sharing"]
     policy.close()
 
 
@@ -944,32 +918,28 @@ def test_async_mpc_process_snapshot_keeps_warm_start_payload() -> None:
     planner = policy._make_snapshot_planner(torch.zeros(1, 1, 2))
     assert planner._return_worker_warm_start is True
 
-    policy.async_worker_backend = "process"
     planner = policy._make_snapshot_planner(torch.zeros(1, 1, 2))
     assert planner._return_worker_warm_start is True
     policy.close()
 
 
-def test_async_mpc_missing_plan_uses_blocking_fallback() -> None:
+def test_async_mpc_missing_plan_uses_realtime_fallback() -> None:
     policy = _make_async_policy(chunk=3)
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     policy._buffer_index = 3
     policy._launch_background_plan = types.MethodType(lambda self, state, kwargs: None, policy)
-    seen_iterations: list[int | None] = []
-
     def fake_sync(self, state, *, num_iterations=None, **kwargs):
-        del state, kwargs
-        seen_iterations.append(num_iterations)
-        return torch.ones(1, 3, 2) * 0.9, torch.tensor([3.0])
+        del self, state, num_iterations, kwargs
+        raise AssertionError("missing async plan should use realtime fallback")
 
     policy._sync_plan = types.MethodType(fake_sync, policy)
 
     action = policy(torch.zeros(1, 1, 2))
 
-    assert seen_iterations == [None]
-    assert torch.allclose(action, torch.ones(1, 1, 2) * 0.9)
-    assert policy.last_plan_status["async_blocking_fallback"] is True
+    assert torch.allclose(action, torch.zeros(1, 1, 2))
+    assert policy.last_plan_status["async_realtime_fallback"] is True
+    assert policy.last_plan_status["async_blocking_fallback"] is False
     policy.close()
 
 
@@ -1017,52 +987,9 @@ def test_async_mpc_waits_with_last_action_when_future_is_running() -> None:
     policy.close()
 
 
-def test_async_mpc_realtime_fallback_zero_prefixes_short_coarse_plan() -> None:
-    policy = _make_async_policy(chunk=3, horizon=6)
-    policy.async_realtime_fallback_horizon = 1
-    policy.async_realtime_fallback_coarse_dt_factor = 3
-    policy.async_realtime_fallback_iterations = 1
-    policy.async_realtime_fallback_zero_prefix = True
-    policy.beginning_of_rollout(torch.zeros(1, 1, 2))
-    policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
-    policy._buffer_index = 3
-    policy._launch_background_plan = types.MethodType(lambda self, state, kwargs: None, policy)
-    seen: list[tuple[int, int, int, int]] = []
-
-    def fail_sync(self, state, *, num_iterations=None, **kwargs):
-        del self, state, num_iterations, kwargs
-        raise AssertionError("realtime fallback should not call full foreground _sync_plan")
-
-    def fake_search(self, state, *, shift_steps=1, debug=False, **kwargs):
-        del state, debug, kwargs
-        seen.append((self.horizon, self.chunk, self.coarse_dt_factor, shift_steps))
-        return torch.tensor([[[0.4, 0.0]]], dtype=torch.float32), torch.tensor([0.0])
-
-    policy._sync_plan = types.MethodType(fail_sync, policy)
-    policy._run_icem_search = types.MethodType(fake_search, policy)
-
-    action = policy(torch.zeros(1, 1, 2))
-
-    assert seen == [(1, 3, 3, 1)]
-    assert policy.horizon == 6
-    assert policy.chunk == 3
-    assert torch.allclose(action, torch.zeros(1, 1, 2))
-    assert torch.allclose(policy._current_buffer[:, :3], torch.zeros(1, 3, 2))
-    assert torch.allclose(
-        policy._current_buffer[:, 3:],
-        torch.tensor([[[0.4, 0.0]]], dtype=torch.float32).expand(1, 3, 2),
-    )
-    assert policy.last_plan_status["async_realtime_fallback"] is True
-    assert policy.last_plan_status["async_realtime_fallback_steps"] == 6
-    assert policy.last_plan_status["async_realtime_zero_prefix"] is True
-    assert policy.last_plan_status["async_blocking_fallback"] is False
-    policy.close()
-
-
 def test_async_mpc_realtime_zero_only_fallback_does_not_run_icem() -> None:
     policy = _make_async_policy(chunk=3, horizon=6)
-    policy.async_realtime_fallback_horizon = 0
-    policy.async_realtime_fallback_zero_prefix = True
+    policy.async_realtime_prefix_steps = 1
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     policy._buffer_index = 3
@@ -1092,9 +1019,7 @@ def test_async_mpc_realtime_zero_only_fallback_does_not_run_icem() -> None:
 
 def test_async_mpc_realtime_initial_fallback_uses_one_fine_step() -> None:
     policy = _make_async_policy(chunk=3, horizon=6)
-    policy.async_realtime_fallback_horizon = 0
-    policy.async_realtime_fallback_coarse_dt_factor = 3
-    policy.async_realtime_fallback_zero_prefix = True
+    policy.async_realtime_prefix_steps = 3
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._launch_background_plan = types.MethodType(lambda self, state, kwargs: None, policy)
 
@@ -1121,8 +1046,6 @@ def test_async_mpc_realtime_initial_fallback_uses_one_fine_step() -> None:
 
 def test_async_mpc_prime_initial_plan_sets_buffer_before_realtime_loop() -> None:
     policy = _make_async_policy(chunk=3, horizon=6)
-    policy.async_realtime_fallback_horizon = 0
-    policy.async_realtime_fallback_zero_prefix = True
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
 
     def fake_sync(self, state, **kwargs):
@@ -1165,24 +1088,19 @@ def test_async_mpc_does_not_duplicate_buffer_into_action_list() -> None:
     policy.close()
 
 
-def test_async_mpc_parameter_update_replan_respects_refine_knob() -> None:
+def test_async_mpc_parameter_update_replan_is_ignored() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_refine_on_parameter_update = False
     policy.request_replan("parameter_update")
     assert policy._force_replan_next is False
 
-    policy.async_refine_on_parameter_update = True
     policy.request_replan("parameter_update")
-    assert policy._force_replan_next is True
-    assert policy._force_replan_reason == "parameter_update"
+    assert policy._force_replan_next is False
     policy.close()
 
 
 def test_async_mpc_realtime_zero_prefix_feedback_tracks_zero_boundary() -> None:
     policy = _make_async_policy(chunk=3, horizon=6)
-    policy.async_realtime_fallback_horizon = 0
-    policy.async_realtime_fallback_coarse_dt_factor = 3
-    policy.async_realtime_fallback_zero_prefix = True
+    policy.async_realtime_prefix_steps = 3
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     policy._buffer_index = 3
@@ -1258,7 +1176,6 @@ def test_async_background_launch_passes_rollout_to_worker() -> None:
 
 def test_async_process_background_launch_defers_process_submit() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     submitted: list[Any] = []
@@ -1292,7 +1209,6 @@ def test_async_process_background_launch_defers_process_submit() -> None:
 
 def test_async_process_background_launch_uses_persistent_worker_payload() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     submitted_process: list[tuple[Any, ...]] = []
@@ -1331,7 +1247,6 @@ def test_async_process_background_launch_uses_persistent_worker_payload() -> Non
 
 def test_async_process_background_cancel_before_submit_skips_process_submit() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     submitted: list[Any] = []
@@ -1363,7 +1278,6 @@ def test_async_process_background_cancel_before_submit_skips_process_submit() ->
 
 def test_async_process_background_cancel_cancels_worker_future() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     submitted: list[Any] = []
@@ -1396,7 +1310,6 @@ def test_async_process_background_cancel_cancels_worker_future() -> None:
 
 def test_async_process_background_submitter_error_returns_failed_proxy() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
 
@@ -1468,7 +1381,6 @@ def test_async_background_launch_predicts_next_chunk_boundary() -> None:
 def test_async_adaptive_launches_from_chunk_boundary() -> None:
     policy = _make_async_policy(chunk=3, horizon=6)
     policy.adaptive_replanning = True
-    policy.async_refine_on_parameter_update = False
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     policy._set_current_buffer(torch.zeros(1, 6, 2), torch.tensor([0.0]))
     policy._buffer_index = 1
@@ -1536,7 +1448,6 @@ def test_async_realtime_snapshot_scores_worker_candidates_in_full_batches() -> N
     planner = policy._make_snapshot_planner(torch.zeros(1, 1, 2))
     assert getattr(planner, "_yield_score_batch_size", 0) == 0
 
-    policy.async_realtime_fallback_zero_prefix = True
     planner = policy._make_snapshot_planner(torch.zeros(1, 1, 2))
     assert planner._yield_score_batch_size == 0
     policy.close()
@@ -1574,10 +1485,6 @@ def test_async_snapshot_sampling_uses_local_rngs() -> None:
 def test_async_worker_anchor_refreshes_parameter_belief() -> None:
     policy = _make_async_policy(chunk=3)
     policy.model.e = {"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)}
-    policy.model.set_params = types.MethodType(
-        lambda self, params: setattr(self, "params", params.detach().clone()),
-        policy.model,
-    )
     policy.beginning_of_rollout(torch.zeros(1, 1, 2))
     planner = policy._make_snapshot_planner(torch.zeros(1, 1, 2))
 
@@ -1587,7 +1494,7 @@ def test_async_worker_anchor_refreshes_parameter_belief() -> None:
         {"parameter_update_version": 1},
     )
     kwargs = {"parameter_update_version": 0}
-    planner._maybe_reanchor_worker_plan(torch.zeros(1, 1, 2), kwargs)
+    planner._maybe_refresh_worker_belief(torch.zeros(1, 1, 2), kwargs)
 
     assert kwargs["parameter_update_version"] == 1
     assert torch.allclose(planner.model.e["m"], torch.ones(1, 2))
@@ -1596,39 +1503,8 @@ def test_async_worker_anchor_refreshes_parameter_belief() -> None:
     policy.close()
 
 
-def test_async_process_worker_anchor_sees_late_foreground_publish() -> None:
+def test_async_process_worker_refreshes_parameters_from_late_foreground_publish() -> None:
     policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
-    policy.async_reanchor_live_state = True
-    policy.async_reanchor_tolerance = 0.0
-    policy.model.e = {"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)}
-    launch_boundary = torch.zeros(1, 1, 2)
-    live_boundary = torch.tensor([[[0.6, -0.2]]], dtype=torch.float32)
-    policy.beginning_of_rollout(launch_boundary)
-
-    planner = policy._make_snapshot_planner(launch_boundary)
-    mpc_module._use_file_system_tensor_sharing()
-    with ProcessPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_process_anchor_worker, planner, launch_boundary)
-        time.sleep(0.05)
-        policy.model.e = {"m": torch.ones(1, 2), "P": 2.0 * torch.eye(2).unsqueeze(0)}
-        policy._publish_async_anchor(live_boundary, {"parameter_update_version": 1})
-        result = future.result(timeout=10)
-
-    assert torch.allclose(result["state"], live_boundary)
-    assert result["parameter_update_version"] == 1
-    assert result["reanchor_count"] == 1
-    assert torch.allclose(result["model_state"], live_boundary)
-    assert torch.allclose(result["parameter_mean"], torch.ones(1, 2))
-    assert torch.allclose(result["parameter_cov"], 2.0 * torch.eye(2).unsqueeze(0))
-    assert torch.allclose(result["params"], torch.ones(1, 2))
-    policy.close()
-
-
-def test_async_process_worker_refreshes_parameters_without_live_reanchor() -> None:
-    policy = _make_async_policy(chunk=3)
-    policy.async_worker_backend = "process"
-    policy.async_reanchor_live_state = False
     policy.model.e = {"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)}
     launch_boundary = torch.zeros(1, 1, 2)
     live_boundary = torch.tensor([[[0.6, -0.2]]], dtype=torch.float32)
@@ -1645,28 +1521,9 @@ def test_async_process_worker_refreshes_parameters_without_live_reanchor() -> No
 
     assert torch.allclose(result["state"], launch_boundary)
     assert result["parameter_update_version"] == 1
-    assert result["reanchor_count"] == 0
     assert torch.allclose(result["parameter_mean"], torch.ones(1, 2))
     assert torch.allclose(result["parameter_cov"], 2.0 * torch.eye(2).unsqueeze(0))
     assert torch.allclose(result["params"], torch.ones(1, 2))
-    policy.close()
-
-
-def test_async_background_worker_reanchors_to_live_boundary() -> None:
-    policy = _make_async_policy(chunk=3)
-    policy.async_reanchor_live_state = True
-    policy.async_reanchor_tolerance = 0.0
-    launch_boundary = torch.zeros(1, 1, 2)
-    live_boundary = torch.tensor([[[0.8, -0.4]]], dtype=torch.float32)
-    policy.beginning_of_rollout(launch_boundary)
-    planner = policy._make_snapshot_planner(launch_boundary)
-
-    policy._publish_async_anchor(live_boundary, {})
-    result = AsyncMpcICem._background_plan_worker(planner, launch_boundary, {})
-
-    assert result.reanchor_count == 1
-    assert torch.allclose(result.predicted_boundary_state, live_boundary)
-    assert torch.allclose(planner.model._state, live_boundary)
     policy.close()
 
 
@@ -1700,10 +1557,19 @@ def test_async_background_plan_uses_worker_iteration_override() -> None:
     policy._set_current_buffer(torch.zeros(1, 3, 2), torch.tensor([0.0]))
     seen_iterations: list[int] = []
 
+    class _Submitter:
+        def submit(self, fn):
+            fn()
+            future = Future()
+            return future
+
+        def shutdown(self, *, wait, cancel_futures):
+            pass
+
     class _Executor:
-        def submit(self, fn, planner, predicted_boundary_state, kwargs):
-            del predicted_boundary_state, kwargs
-            seen_iterations.append(planner.num_iterations)
+        def submit(self, fn, predicted_boundary_state, kwargs, payload):
+            del fn, predicted_boundary_state, kwargs
+            seen_iterations.append(int(payload["num_iterations"]))
             future = Future()
             future.set_result(
                 types.SimpleNamespace(
@@ -1720,6 +1586,7 @@ def test_async_background_plan_uses_worker_iteration_override() -> None:
             )
             return future
 
+    policy._submit_executor = _Submitter()
     policy._executor = _Executor()
     policy._launch_background_plan(torch.zeros(1, 1, 2), {})
     policy._planning_future = None
@@ -1734,38 +1601,24 @@ def test_async_policy_catalog_entry_is_available() -> None:
     spec = get_policy_spec("active_planning_async")
     assert spec.policy_type == "async-mpc-icem"
     assert spec.async_planning is True
-    assert spec.async_refine_on_parameter_update is True
     assert spec.async_worker_iterations is None
     assert spec.async_worker_full_interval is None
     assert spec.async_worker_device is None
     try:
         configure_tbme_catalogs()
         realtime = get_policy_spec("active_planning_adaptive_async_realtime_u20_r20_h40")
-        assert realtime.async_worker_backend == "process"
         assert realtime.async_worker_iterations == 2
-        assert realtime.async_realtime_fallback_horizon == 0
-        assert realtime.async_realtime_fallback_coarse_dt_factor == 10
-        assert realtime.async_realtime_fallback_iterations == 1
-        assert realtime.async_realtime_fallback_zero_prefix is True
-        assert realtime.async_reanchor_live_state is False
-        short = get_policy_spec("active_planning_adaptive_async_realtime_short_u20_r20_h40")
-        assert short.async_worker_backend == "process"
-        assert short.async_realtime_fallback_horizon == 1
-        assert short.async_realtime_fallback_coarse_dt_factor == 10
-        assert short.async_realtime_fallback_iterations == 1
-        assert short.async_realtime_fallback_zero_prefix is True
-        assert short.async_reanchor_live_state is False
+        assert realtime.async_realtime_prefix_steps == 10
     finally:
         configure_catalogs()
 
 
-def test_exp02_defaults_use_realtime_async_not_short_ablation() -> None:
+def test_exp02_defaults_use_realtime_async() -> None:
     from experiments.tbme.exp02_hardEnv import EXPERIMENT_SUITES
 
     for suite in EXPERIMENT_SUITES.values():
         model_ids = suite["model_ids"]
         assert "active_planning_adaptive_async_realtime_u20_r20_h40" in model_ids
-        assert "active_planning_adaptive_async_realtime_short_u20_r20_h40" not in model_ids
 
 
 def test_tbme_runner_callables_are_pickle_safe() -> None:
