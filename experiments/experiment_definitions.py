@@ -316,6 +316,9 @@ class PolicySpec:
     async_worker_device: str | None = None
     async_start_after_first_plan: bool = True
     async_realtime_prefix_steps: int = 10
+    async_anytime_prefix_steps: int | None = 0
+    async_anytime_min_iteration: int = 1
+    async_anytime_std_tolerance: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -807,6 +810,13 @@ def load_catalog_bundle(
             ),
             async_start_after_first_plan=bool(spec.get("async_start_after_first_plan", True)),
             async_realtime_prefix_steps=int(spec.get("async_realtime_prefix_steps", 10)),
+            async_anytime_prefix_steps=(
+                None
+                if spec.get("async_anytime_prefix_steps", 0) is None
+                else int(spec.get("async_anytime_prefix_steps", 0))
+            ),
+            async_anytime_min_iteration=int(spec.get("async_anytime_min_iteration", 1)),
+            async_anytime_std_tolerance=float(spec.get("async_anytime_std_tolerance", 0.5)),
         )
         for policy_id, spec in model_raw.items()
     }

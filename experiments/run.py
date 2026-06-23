@@ -740,6 +740,11 @@ def _instantiate_synthetic_policy(
                 policy_spec, "async_start_after_first_plan", True
             ),
             async_realtime_prefix_steps=getattr(policy_spec, "async_realtime_prefix_steps", 10),
+            async_anytime_prefix_steps=getattr(policy_spec, "async_anytime_prefix_steps", 0),
+            async_anytime_min_iteration=getattr(policy_spec, "async_anytime_min_iteration", 1),
+            async_anytime_std_tolerance=getattr(
+                policy_spec, "async_anytime_std_tolerance", 0.5
+            ),
         )
     return mpc_cls(
         metric=metric,
@@ -1247,6 +1252,24 @@ def _run_single_parameter_identification(
                 "async_realtime_zero_prefix": as_bool(
                     transition.get("async_realtime_zero_prefix", False)
                 ),
+                "async_anytime_plan_ready": as_bool(
+                    transition.get("async_anytime_plan_ready", False)
+                ),
+                "async_anytime_plan_used": as_bool(
+                    transition.get("async_anytime_plan_used", False)
+                ),
+                "async_anytime_plan_stale": as_bool(
+                    transition.get("async_anytime_plan_stale", False)
+                ),
+                "async_anytime_iteration": int(
+                    transition.get("async_anytime_iteration", 0) or 0
+                ),
+                "async_anytime_std_max": float(
+                    transition.get("async_anytime_std_max", 0.0) or 0.0
+                ),
+                "async_anytime_cost": float(
+                    transition.get("async_anytime_cost", 0.0) or 0.0
+                ),
                 "async_launch_started": as_bool(
                     transition.get("async_launch_started", False)
                 ),
@@ -1374,6 +1397,24 @@ def _run_single_parameter_identification(
                 ),
                 "async_realtime_zero_prefix": as_bool(
                     transition.get("async_realtime_zero_prefix", False)
+                ),
+                "async_anytime_plan_ready": as_bool(
+                    transition.get("async_anytime_plan_ready", False)
+                ),
+                "async_anytime_plan_used": as_bool(
+                    transition.get("async_anytime_plan_used", False)
+                ),
+                "async_anytime_plan_stale": as_bool(
+                    transition.get("async_anytime_plan_stale", False)
+                ),
+                "async_anytime_iteration": int(
+                    transition.get("async_anytime_iteration", 0) or 0
+                ),
+                "async_anytime_std_max": float(
+                    transition.get("async_anytime_std_max", 0.0) or 0.0
+                ),
+                "async_anytime_cost": float(
+                    transition.get("async_anytime_cost", 0.0) or 0.0
                 ),
                 "async_launch_started": as_bool(
                     transition.get("async_launch_started", False)
@@ -1580,6 +1621,12 @@ def _run_single_parameter_identification(
             "async_realtime_fallback_runtime_sec",
             "async_realtime_fallback_steps",
             "async_realtime_zero_prefix",
+            "async_anytime_plan_ready",
+            "async_anytime_plan_used",
+            "async_anytime_plan_stale",
+            "async_anytime_iteration",
+            "async_anytime_std_max",
+            "async_anytime_cost",
             "async_launch_started",
             "async_launch_boundary_sec",
             "async_launch_clone_sec",
@@ -1646,6 +1693,12 @@ def _run_single_parameter_identification(
             "async_realtime_fallback_runtime_sec",
             "async_realtime_fallback_steps",
             "async_realtime_zero_prefix",
+            "async_anytime_plan_ready",
+            "async_anytime_plan_used",
+            "async_anytime_plan_stale",
+            "async_anytime_iteration",
+            "async_anytime_std_max",
+            "async_anytime_cost",
             "async_launch_started",
             "async_launch_boundary_sec",
             "async_launch_clone_sec",
@@ -1850,6 +1903,15 @@ def _run_single_parameter_identification(
             "async_worker_device": getattr(policy_spec, "async_worker_device", None),
             "async_realtime_prefix_steps": int(
                 getattr(policy_spec, "async_realtime_prefix_steps", 10)
+            ),
+            "async_anytime_prefix_steps": getattr(
+                policy_spec, "async_anytime_prefix_steps", 0
+            ),
+            "async_anytime_min_iteration": int(
+                getattr(policy_spec, "async_anytime_min_iteration", 1)
+            ),
+            "async_anytime_std_tolerance": float(
+                getattr(policy_spec, "async_anytime_std_tolerance", 0.5)
             ),
             "predictive_only_window": bool(schedule_spec.predictive_only_window),
             "state_update_interval": int(schedule_spec.update_interval),
@@ -2068,6 +2130,15 @@ def _build_session_experiment_entry(
                 "async_worker_device": getattr(policy_spec, "async_worker_device", None),
                 "async_realtime_prefix_steps": int(
                     getattr(policy_spec, "async_realtime_prefix_steps", 10)
+                ),
+                "async_anytime_prefix_steps": getattr(
+                    policy_spec, "async_anytime_prefix_steps", 0
+                ),
+                "async_anytime_min_iteration": int(
+                    getattr(policy_spec, "async_anytime_min_iteration", 1)
+                ),
+                "async_anytime_std_tolerance": float(
+                    getattr(policy_spec, "async_anytime_std_tolerance", 0.5)
                 ),
                 "model": {
                     "runner": experiment_kind,

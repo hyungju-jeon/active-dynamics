@@ -450,6 +450,24 @@ class Agent:
             'async_realtime_zero_prefix': bool(
                 policy_update_info.get('async_realtime_zero_prefix', False)
             ),
+            'async_anytime_plan_ready': bool(
+                policy_update_info.get('async_anytime_plan_ready', False)
+            ),
+            'async_anytime_plan_used': bool(
+                policy_update_info.get('async_anytime_plan_used', False)
+            ),
+            'async_anytime_plan_stale': bool(
+                policy_update_info.get('async_anytime_plan_stale', False)
+            ),
+            'async_anytime_iteration': int(
+                policy_update_info.get('async_anytime_iteration', 0) or 0
+            ),
+            'async_anytime_std_max': float(
+                policy_update_info.get('async_anytime_std_max', 0.0) or 0.0
+            ),
+            'async_anytime_cost': float(
+                policy_update_info.get('async_anytime_cost', 0.0) or 0.0
+            ),
             'model_update_version': int(self._model_update_version),
             'parameter_update_version': int(self._parameter_update_version),
         }
