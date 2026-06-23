@@ -240,6 +240,103 @@ def test_experiment_loop_does_not_update_policy_outside_agent_step():
     assert experiment.rollout.add_calls == 3
 
 
+def test_experiment_loop_queues_rollout_saves(monkeypatch, tmp_path: Path):
+    from actdyn.core import experiment as experiment_module
+
+    def fail_sync_save(*_args, **_kwargs):
+        raise AssertionError("online loop should not synchronously save rollout")
+
+    monkeypatch.setattr(experiment_module, "save_rollout", fail_sync_save)
+
+    class _Agent:
+        device = "cpu"
+
+        def plan(self):
+            return torch.zeros(1, 1)
+
+        def step(self, action):
+            return {"action": action}, False
+
+    class _Rollout:
+        def __init__(self):
+            self.add_calls = 0
+            self.clear_keep_last = []
+
+        def add(self, **_transition):
+            self.add_calls += 1
+
+        def clear(self, keep_last=0):
+            self.clear_keep_last.append(keep_last)
+
+    class _Writer:
+        def __init__(self):
+            self.transitions = 0
+            self.scalar_calls = 0
+            self.saves = []
+
+        def add_transition(self, _transition):
+            self.transitions += 1
+
+        def add_scalar(self, *_args, **_kwargs):
+            self.scalar_calls += 1
+
+        def save_rollout(self, path, *, keep_last=None):
+            self.saves.append((Path(path).name, keep_last))
+
+    experiment = experiment_module.Experiment.__new__(experiment_module.Experiment)
+    experiment.agent = _Agent()
+    experiment.env_step = 0
+    experiment.results_path = tmp_path
+    experiment.rollout = _Rollout()
+    experiment.writer = _Writer()
+    experiment.training_info = {"loss": 1.0}
+    experiment.init_experiment = lambda reset=True: None
+    experiment._setup_video_recording = lambda: None
+    experiment.check_step = lambda kind: kind == "save"
+    experiment.update_writer = experiment_module.Experiment.update_writer.__get__(
+        experiment, experiment_module.Experiment
+    )
+    experiment.update_pbar = lambda _pbar: None
+    experiment._finalize_experiment = lambda: None
+
+    experiment._run_online_loop(
+        train_cfg=types.SimpleNamespace(total_steps=2),
+        pbar_desc="test",
+        plot_fcn=None,
+        reset=False,
+    )
+
+    assert experiment.rollout.add_calls == 2
+    assert experiment.rollout.clear_keep_last == [100]
+    assert experiment.writer.transitions == 2
+    assert experiment.writer.scalar_calls == 2
+    assert experiment.writer.saves == [
+        ("rollout_1.pkl", 100),
+        ("rollout_2.pkl", None),
+    ]
+
+
+def test_async_experiment_writer_saves_rollout(tmp_path: Path):
+    from actdyn.core.experiment import _AsyncExperimentWriter
+
+    rollout_path = tmp_path / "rollout.pkl"
+    writer = _AsyncExperimentWriter(tmp_path / "logs")
+    writer.add_transition(
+        {
+            "action": torch.ones(1, 2),
+            "obs": torch.zeros(1, 2),
+        }
+    )
+    writer.save_rollout(rollout_path, keep_last=1)
+    writer.close()
+
+    with rollout_path.open("rb") as f:
+        rollout = pickle.load(f)
+
+    assert rollout.length == 1
+    assert torch.allclose(rollout["action"], torch.ones(1, 1, 2))
+
+
 class _IdentityActionEncoder:
     def __init__(self, action_space: gym.Space) -> None:
         self.action_space = action_space

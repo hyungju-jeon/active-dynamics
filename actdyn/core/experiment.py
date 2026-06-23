@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import copy
+import queue
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from matplotlib.figure import Figure
 import torch
@@ -18,6 +20,80 @@ from actdyn.utils import to_np, format_list, VideoRecorder, Rollout, RolloutBuff
 from actdyn.utils.persistence import load_and_concatenate_rollouts
 
 SESSION_DIR_PATTERN = re.compile(r"\d{8}_\d{4}_session\d{2}")
+
+
+class _AsyncExperimentWriter:
+    """Background TensorBoard and rollout writer for online experiments."""
+
+    def __init__(self, log_dir: Path):
+        self._log_dir = Path(log_dir)
+        self._queue: queue.Queue[tuple] = queue.Queue()
+        self._closed = False
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="actdyn-experiment-writer",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _check_error(self) -> None:
+        if self._error is not None:
+            raise RuntimeError("background experiment writer failed") from self._error
+
+    def _put(self, item: tuple) -> None:
+        if self._closed:
+            return
+        self._check_error()
+        self._queue.put(item)
+
+    def add_scalar(self, *args: Any, **kwargs: Any) -> None:
+        self._put(("scalar", args, kwargs))
+
+    def add_scalars(self, *args: Any, **kwargs: Any) -> None:
+        self._put(("scalars", args, kwargs))
+
+    def add_transition(self, transition: dict) -> None:
+        self._put(("transition", dict(transition)))
+
+    def save_rollout(self, path: Path, *, keep_last: int | None = None) -> None:
+        self._put(("save_rollout", str(path), keep_last))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(("close",))
+        self._thread.join()
+        self._check_error()
+
+    def _run(self) -> None:
+        writer = SummaryWriter(log_dir=str(self._log_dir))
+        rollout = Rollout(device="cpu")
+        try:
+            while True:
+                item = self._queue.get()
+                op = item[0]
+                if op == "close":
+                    return
+                if op == "scalar":
+                    _, args, kwargs = item
+                    writer.add_scalar(*args, **kwargs)
+                elif op == "scalars":
+                    _, args, kwargs = item
+                    writer.add_scalars(*args, **kwargs)
+                elif op == "transition":
+                    _, transition = item
+                    rollout.add(**transition)
+                elif op == "save_rollout":
+                    _, path, keep_last = item
+                    save_rollout(rollout, path)
+                    if keep_last is not None:
+                        rollout.clear(keep_last=keep_last)
+        except BaseException as exc:
+            self._error = exc
+        finally:
+            writer.close()
 
 
 class Experiment:
@@ -201,7 +277,7 @@ class Experiment:
         # Create necessary directories
         for subdir in ["rollouts", "logs", "model", "video"]:
             (self.results_path / subdir).mkdir(parents=True, exist_ok=True)
-        self.writer = SummaryWriter(log_dir=self.results_path / "logs")
+        self.writer = _AsyncExperimentWriter(self.results_path / "logs")
 
         # Initialize environment
         if reset:
@@ -349,6 +425,9 @@ class Experiment:
             transition["loop_step_sec"] = float(step_sec)
             transition["loop_async_launch_sec"] = float(launch_sec)
             self.rollout.add(**transition)
+            add_transition = getattr(getattr(self, "writer", None), "add_transition", None)
+            if callable(add_transition):
+                add_transition(transition)
 
             if self.check_step("train"):
                 sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
@@ -363,10 +442,13 @@ class Experiment:
             self.update_pbar(self.pbar)
 
             if self.check_step("save"):
-                save_rollout(
-                    self.rollout,
-                    str(self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"),
-                )
+                rollout_path = self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"
+                save_async = getattr(getattr(self, "writer", None), "save_rollout", None)
+                keep_last = 100 if self.env_step < train_cfg.total_steps else None
+                if callable(save_async):
+                    save_async(rollout_path, keep_last=keep_last)
+                else:
+                    save_rollout(self.rollout, str(rollout_path))
                 if self.env_step < train_cfg.total_steps:
                     self.rollout.clear(keep_last=100)
 
