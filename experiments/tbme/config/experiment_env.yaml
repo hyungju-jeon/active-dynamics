@@ -13,7 +13,7 @@ environments:
     initial_parameter_variance: 0.25
     observation_dim: 20
     dynamics_alpha: 1.0
-    state_noise: 0.1
+    state_noise: 0.5
     state_init_uncertainty: 1.0
     action_max: 1.0
     asymmetric_loading: false
@@ -45,14 +45,10 @@ environments:
     information_boundary_margin: 1.0
     information_boundary_temperature: 0.15
 
-  tbme_duffing_hard:
+  tbme_duffing_asymmetric:
     extends: tbme_duffing
     system_label: hard duffing oscillator with asymmetric loading
     asymmetric_loading: true
-    state_noise: 0.1
-    state_init_uncertainty: 10.0
-    action_max: 1
-    loading_target_snr_db: -10.0
 
   tbme_duffing_parameter_mismatch:
     extends: tbme_duffing
@@ -112,17 +108,21 @@ environments:
     - -0.5
     - 1.0
 
-  tbme_damped_pendulum_hard:
-    extends: tbme_duffing_hard
+  tbme_damped_pendulum_asymmetric:
+    extends: tbme_duffing_asymmetric
     system_id: damped_pendulum
     system_label: damped pendulum with asymmetric loading
     dynamics_type: damped_pendulum
+    true_params:
+    - -0.5
+    - 1.0
 
-  tbme_asymmetric_basin:
+
+  tbme_gated_duffing:
     extends: tbme_duffing
-    system_id: asymmetric_basin
+    system_id: gated_duffing
     system_label: Gated Duffing
-    dynamics_type: asymmetric_basin
+    dynamics_type: gated_duffing
     embedding_dim: 4
     true_params:
     - -1.2
@@ -130,11 +130,11 @@ environments:
     - 0.5
     - 1.1
 
-  tbme_asymmetric_basin_hard:
-    extends: tbme_duffing_hard
-    system_id: asymmetric_basin
+  tbme_gated_duffing_asymmetric:
+    extends: tbme_duffing_asymmetric
+    system_id: gated_duffing
     system_label: Gated Duffing
-    dynamics_type: asymmetric_basin
+    dynamics_type: gated_duffing
     embedding_dim: 4
     true_params:
     - -1.2
@@ -142,41 +142,37 @@ environments:
     - 0.5
     - 1.1
 
-  tbme_asymmetric_basin_observation_bottleneck_mild:
-    extends: tbme_asymmetric_basin
+  tbme_gated_duffing_challenging:
+    extends: tbme_duffing_asymmetric
+    system_label: Gated Duffing / challenging
+    state_noise: 1.0
+    loading_target_snr_db: -10.0
+    action_max: 0.75
+
+  tbme_gated_duffing_observation_bottleneck_mild:
+    extends: tbme_gated_duffing
     system_label: Gated Duffing / mild observation SNR bottleneck
     loading_target_snr_db: -10.0
 
-  tbme_asymmetric_basin_observation_bottleneck_strong:
-    extends: tbme_asymmetric_basin
+  tbme_gated_duffing_observation_bottleneck_strong:
+    extends: tbme_gated_duffing
     system_label: Gated Duffing / strong observation SNR bottleneck
     loading_target_snr_db: -15.0
 
-  tbme_asymmetric_basin_action_bottleneck_mild:
-    extends: tbme_asymmetric_basin
+  tbme_gated_duffing_action_bottleneck_mild:
+    extends: tbme_gated_duffing
     system_label: Gated Duffing / mild action bottleneck
-    action_max: 0.55
+    action_max: 0.75
 
-  tbme_asymmetric_basin_action_bottleneck_strong:
-    extends: tbme_asymmetric_basin
+  tbme_gated_duffing_action_bottleneck_strong:
+    extends: tbme_gated_duffing
     system_label: Gated Duffing / strong action bottleneck
-    action_max: 0.35
+    action_max: 0.5
 
-  tbme_asymmetric_basin_parameter_mismatch:
-    extends: tbme_asymmetric_basin
-    system_label: Gated Duffing / mid fixed-parameter mismatch
-    estimator_dynamics_type: asymmetric_basin
-    estimator_true_params:
-    - -1.2
-    - -0.8
-    - 0.5
-    - 0.25
-    embedding_dim: 3
-
-  tbme_asymmetric_basin_parameter_mismatch_mild:
-    extends: tbme_asymmetric_basin
+  tbme_gated_duffing_parameter_mismatch_mild:
+    extends: tbme_gated_duffing
     system_label: Gated Duffing / mild fixed-parameter mismatch
-    estimator_dynamics_type: asymmetric_basin
+    estimator_dynamics_type: gated_duffing
     estimator_true_params:
     - -1.2
     - -0.8
@@ -184,10 +180,10 @@ environments:
     - 0.55
     embedding_dim: 3
 
-  tbme_asymmetric_basin_parameter_mismatch_strong:
-    extends: tbme_asymmetric_basin
+  tbme_gated_duffing_parameter_mismatch_strong:
+    extends: tbme_gated_duffing
     system_label: Gated Duffing / strong fixed-parameter mismatch
-    estimator_dynamics_type: asymmetric_basin
+    estimator_dynamics_type: gated_duffing
     estimator_true_params:
     - -1.2
     - -0.8
@@ -195,24 +191,14 @@ environments:
     - -1.0
     embedding_dim: 3
 
-  tbme_asymmetric_basin_observation_mismatch_mild:
-    extends: tbme_asymmetric_basin
-    system_label: Gated Duffing / mild observation-loading mismatch
-    observation_loading_mismatch_variance: 0.01
-
-  tbme_asymmetric_basin_observation_mismatch_strong:
-    extends: tbme_asymmetric_basin
-    system_label: Gated Duffing / strong observation-loading mismatch
-    observation_loading_mismatch_variance: 0.1
-
-  tbme_asymmetric_basin_observation_tuning_mismatch_mild:
-    extends: tbme_asymmetric_basin
-    system_label: Gated Duffing / mild observation tuning mismatch
+  tbme_gated_duffing_observation_mismatch_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild observation mismatch
     observation_loading_direction_mismatch_max_deg: 15.0
     observation_loading_gain_mismatch_max_factor: 1.25
 
-  tbme_asymmetric_basin_observation_tuning_mismatch_strong:
-    extends: tbme_asymmetric_basin
-    system_label: Gated Duffing / strong observation tuning mismatch
+  tbme_gated_duffing_observation_mismatch_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong observation mismatch
     observation_loading_direction_mismatch_max_deg: 30.0
     observation_loading_gain_mismatch_max_factor: 1.5
