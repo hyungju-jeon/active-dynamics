@@ -36,16 +36,8 @@ def write_json(path: str | Path, payload: Mapping[str, Any]) -> None:
 
 
 def experiment_env_slug(env_preset_id: str) -> str:
-    """Return the TBME-facing environment slug used in result paths.
-
-    The runtime dynamics key stays `asymmetric_basin`; only result paths,
-    suite ids, and labels use `gated_duffing`.
-    """
-    slug = str(env_preset_id).removeprefix("tbme_")
-    prefix = "asymmetric_basin"
-    if slug == prefix or slug.startswith(f"{prefix}_"):
-        return f"gated_duffing{slug[len(prefix):]}"
-    return slug
+    """Return the experiment id matching a TBME environment preset id."""
+    return str(env_preset_id).removeprefix("tbme_")
 
 
 def experiment_policy_seed_dir(

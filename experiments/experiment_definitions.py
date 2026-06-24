@@ -19,8 +19,9 @@ ObjectiveKind = Literal[
     "fully_observable_parameter_eig",
     "state_information",
     "dynamics",
-    "sampling_variance",
-    "corrected_sampling_variance",
+    "observation_variance",
+    "corrected_observation_variance",
+    "state_variance",
 ]
 ExperimentKind = Literal["parameter", "rbf"]
 

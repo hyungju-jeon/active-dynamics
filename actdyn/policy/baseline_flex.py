@@ -216,7 +216,7 @@ def build_flex_model(
         return FlexDampedPendulumModel(**kwargs)
     if dynamics_type == "duffing":
         return FlexDuffingModel(**kwargs)
-    if dynamics_type == "asymmetric_basin":
+    if dynamics_type == "gated_duffing":
         return FlexAsymmetricBasinModel(**kwargs)
     if dynamics_type == "multi_stable":
         return FlexMultiStableModel(**kwargs)

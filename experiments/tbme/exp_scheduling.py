@@ -2,46 +2,36 @@ from __future__ import annotations
 
 DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "duffing",
-    "damped_pendulum",
     "gated_duffing",
+    "gated_duffing_challenging",
 )
 MODEL_IDS = [
     "active_planning_u1_r1_h40",
     "active_planning_u5_r5_h40",
-    "active_planning_u10_r10_h40",
-    "active_planning_u20_r20_h40",
     "active_planning_u5_r10_h40",
+    "active_planning_u10_r10_h40",
     "active_planning_u5_r20_h40",
     "active_planning_u10_r20_h40",
+    "active_planning_u20_r20_h40",
     "adaptive",
-    "adaptive_async_realtime",
+    "adaptive_async_anytime",
 ]
+SHARED_EXP_ARGS = {
+    "experiment_kind": "parameter",
+    "total_steps": 2000,
+    "model_ids": MODEL_IDS,
+    "trajectory_eval_horizon": 200,
+    "trajectory_eval_samples": 100,
+}
 
 EXPERIMENT_SUITES = {
-    "duffing": {
-        "experiment_kind": "parameter",
-        "total_steps": 2000,
-        "env_preset_id": "tbme_duffing",
-        "model_ids": MODEL_IDS,
-        "trajectory_eval_horizon": 200,
-        "trajectory_eval_samples": 100,
-    },
-    "damped_pendulum": {
-        "experiment_kind": "parameter",
-        "total_steps": 2000,
-        "env_preset_id": "tbme_damped_pendulum",
-        "model_ids": MODEL_IDS,
-        "trajectory_eval_horizon": 200,
-        "trajectory_eval_samples": 100,
+    "gated_duffing_challenging": {
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_challenging",
     },
     "gated_duffing": {
-        "experiment_kind": "parameter",
-        "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin",
-        "model_ids": MODEL_IDS,
-        "trajectory_eval_horizon": 200,
-        "trajectory_eval_samples": 100,
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing",
     },
 }
 

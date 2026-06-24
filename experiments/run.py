@@ -483,8 +483,8 @@ def _build_metric(
     Fz_net: Any,
     gamma: float,
     device: str,
-    sampling_variance_samples: int,
-    sampling_variance_seed: int | None,
+    observation_variance_samples: int,
+    observation_variance_seed: int | None,
     ambiguity_temperature: float | None = None,
     ensemble_kind: str | None = None,
     eig_freeze_covariance: bool = False,
@@ -496,8 +496,8 @@ def _build_metric(
         e_optimality as build_e_optimality_metric,
         fully_observable_parameter_eig,
         parameter_eig,
-        corrected_sampling_variance as build_corrected_sampling_variance_metric,
-        sampling_variance as build_sampling_variance_metric,
+        corrected_observation_variance as build_corrected_observation_variance_metric,
+        observation_variance as build_observation_variance_metric,
         state_variance as build_state_variance_metric,
         shrinkage_parameter_eig,
         state_information as build_state_information_metric,
@@ -565,25 +565,25 @@ def _build_metric(
             gamma=gamma,
             device=device,
         )
-    if objective_kind == "sampling_variance":
-        return build_sampling_variance_metric(
+    if objective_kind == "observation_variance":
+        return build_observation_variance_metric(
             model=model,
             Fe_net=Fe_net,
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
-            num_parameter_samples=int(sampling_variance_samples),
-            sample_seed=sampling_variance_seed,
+            num_parameter_samples=int(observation_variance_samples),
+            sample_seed=observation_variance_seed,
         )
-    if objective_kind == "corrected_sampling_variance":
-        return build_corrected_sampling_variance_metric(
+    if objective_kind == "corrected_observation_variance":
+        return build_corrected_observation_variance_metric(
             model=model,
             Fe_net=Fe_net,
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
-            num_parameter_samples=int(sampling_variance_samples),
-            sample_seed=sampling_variance_seed,
+            num_parameter_samples=int(observation_variance_samples),
+            sample_seed=observation_variance_seed,
             correction_df=3.0,
             ess_gate_fraction=0.05,
         )
@@ -594,8 +594,8 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
-            num_parameter_samples=int(sampling_variance_samples),
-            sample_seed=sampling_variance_seed,
+            num_parameter_samples=int(observation_variance_samples),
+            sample_seed=observation_variance_seed,
         )
     raise ValueError(f"Unsupported objective_kind={objective_kind}")
 
@@ -792,7 +792,7 @@ def _run_single_parameter_identification(
     traj_eval_interval: int,
     traj_eval_horizon: int,
     traj_eval_samples: int,
-    sampling_variance_samples: int,
+    observation_variance_samples: int,
     capture_planned_trajectory: bool = False,
 ) -> dict[str, Any]:
     import torch
@@ -1058,8 +1058,8 @@ def _run_single_parameter_identification(
             Fz_net=fz_true,
             gamma=eig_gamma,
             device=device,
-            sampling_variance_samples=int(sampling_variance_samples),
-            sampling_variance_seed=int(seed),
+            observation_variance_samples=int(observation_variance_samples),
+            observation_variance_seed=int(seed),
             ambiguity_temperature=getattr(policy_spec, "ambiguity_temperature", None),
             ensemble_kind=getattr(policy_spec, "ensemble_kind", None),
             eig_freeze_covariance=bool(getattr(policy_spec, "eig_freeze_covariance", False)),
@@ -1948,7 +1948,7 @@ def _run_single_parameter_identification(
             "q_theta_max_scale": float(q_theta_max_scale),
             "eig_gamma": float(eig_gamma),
             "action_cost_weight": float(getattr(policy_spec, "action_cost_weight", 0.01)),
-            "sampling_variance_samples": int(sampling_variance_samples),
+            "observation_variance_samples": int(observation_variance_samples),
             "state_noise": float(noise_scale),
             "action_max": float(action_max),
             "dynamics_alpha": float(alpha),
@@ -2009,7 +2009,7 @@ def _run_one(
                 traj_eval_interval=int(exp_spec.trajectory_eval_interval),
                 traj_eval_horizon=int(exp_spec.trajectory_eval_horizon),
                 traj_eval_samples=int(exp_spec.trajectory_eval_samples),
-                sampling_variance_samples=int(args.sampling_variance_samples),
+                observation_variance_samples=int(args.observation_variance_samples),
                 capture_planned_trajectory=bool(args.capture_planned_trajectory),
             )
         else:
@@ -2388,7 +2388,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-theta-meas-coeff", type=float, default=0.0)
     parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
     parser.add_argument("--eig-gamma", type=float, default=1.0)
-    parser.add_argument("--sampling-variance-samples", type=int, default=8)
+    parser.add_argument("--observation-variance-samples", type=int, default=8)
     parser.add_argument("--capture-planned-trajectory", action="store_true")
     return parser
 

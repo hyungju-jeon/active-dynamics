@@ -33,7 +33,7 @@ vf_from_string = {
     "multi_attractor": MultiAttractor,
     "van_der_pol": VanDerPol,
     "duffing": Duffing,
-    "asymmetric_basin": AsymmetricBasin,
+    "gated_duffing": AsymmetricBasin,
     "multi_stable": MultiStable,
     "damped_pendulum": DampedPendulum,
     "double_integrator": DoubleIntegrator,

@@ -8,144 +8,9 @@ models:
 
   active_planning:
     objective_kind: parameter_eig
-    update_interval: 1
-    replan_interval: 1
-    planning_horizon: 20
-    action_constraint: radius
-    coarse_dt_factor: 20
-    coarse_action_mapping: hold
-
-  tbme_active_nominal:
-    extends: active_planning
-
-  active_planning_u1_r1_h40:
-    extends: active_planning
-    update_interval: 1
-    replan_interval: 1
-    planning_horizon: 40
-
-  active_planning_u5_r5_h40:
-    extends: active_planning
-    update_interval: 5
-    replan_interval: 5
-    planning_horizon: 40
-
-  active_planning_u5_r10_h40:
-    extends: active_planning
-    update_interval: 5
-    replan_interval: 10
-    planning_horizon: 40
-
-  active_planning_u5_r20_h40:
-    extends: active_planning
-    update_interval: 5
-    replan_interval: 20
-    planning_horizon: 40
-
-  active_planning_u10_r20_h40:
-    extends: active_planning
-    update_interval: 10
-    replan_interval: 20
-    planning_horizon: 40
-
-  active_planning_u10_r10_h40:
-    extends: active_planning
-    update_interval: 10
-    replan_interval: 10
-    planning_horizon: 40
-    predictive_only_window: true
-
-  active_planning_u20_r20_h40:
-    extends: active_planning
     update_interval: 20
     replan_interval: 20
     planning_horizon: 40
-
-  adaptive:
-    extends: active_planning
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 40
-    adaptive_cadence: true
-    adaptive_update_min_interval: 5
-    adaptive_update_eig_threshold: 0.05
-    adaptive_replan_min_interval: 5
-    adaptive_replan_state_error_threshold: 3.0
-
-  adaptive_async_realtime:
-    extends: adaptive
-    policy_type: async-mpc-icem
-    async_planning: true
-    async_worker_iterations: 2
-    async_worker_device: cpu
-    async_stale_tolerance: 1.0
-    async_realtime_prefix_steps: 10
-
-  adaptive_async_anytime:
-    extends: adaptive_async_realtime
-    async_anytime_prefix_steps: null
-    async_anytime_min_iteration: 1
-    async_anytime_std_tolerance: 0.75
-
-  adaptive_state_fixed_update:
-    extends: active_planning
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 40
-    adaptive_cadence: true
-    adaptive_replan_min_interval: 5
-    adaptive_replan_state_error_threshold: 3.0
-
-  active_fully_observable_u20_r20_h40:
-    objective_kind: fully_observable_parameter_eig
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 40
-    action_constraint: radius
-    coarse_dt_factor: 20
-    coarse_action_mapping: hold
-
-  active_e_optimality_u20_r20_h40:
-    objective_kind: e_optimality
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 40
-    action_constraint: radius
-    coarse_dt_factor: 20
-    coarse_action_mapping: hold
-
-  active_state_information_u20_r20_h40:
-    objective_kind: state_information
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 40
-    action_constraint: radius
-    coarse_dt_factor: 20
-    coarse_action_mapping: hold
-
-  active_dynamics_u20_r20_h40:
-    objective_kind: dynamics
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 40
-    action_constraint: radius
-    coarse_dt_factor: 20
-    coarse_action_mapping: hold
-
-  active_sampling_variance_u20_r20_h40:
-    objective_kind: sampling_variance
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 40
-    action_constraint: radius
-    coarse_dt_factor: 20
-    coarse_action_mapping: hold
-
-  ig_laplace_corrected_sampling_variance:
-    objective_kind: corrected_sampling_variance
-    update_interval: 1
-    replan_interval: 1
-    planning_horizon: 20
     action_constraint: radius
     coarse_dt_factor: 20
     coarse_action_mapping: hold
@@ -182,32 +47,6 @@ models:
     planning_horizon: 20
     policy_type: rhc
 
-  rhc_mvr:
-    objective_kind: null
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 20
-    policy_type: rhc
-
-  ensemble:
-    objective_kind: state_variance
-    update_interval: 20
-    replan_interval: 20
-    planning_horizon: 20
-    coarse_dt_factor: 20
-
-  random:
-    update_interval: 1
-    replan_interval: 1
-    planning_horizon: 1
-    policy_type: random
-    passive: true
-
-  baseline_random:
-    extends: random
-    update_interval: 1
-    replan_interval: 1
-    planning_horizon: 1
 
   prbs:
     update_interval: 1
@@ -216,11 +55,104 @@ models:
     policy_type: baseline-prbs
     passive: true
 
-  baseline_prbs:
-    extends: prbs
 
-  off-policy:
-    extends: off_policy
+# Schedule Experiment
+  active_planning_u1_r1_h40:
+    extends: active_planning
     update_interval: 1
     replan_interval: 1
-    planning_horizon: 1
+    planning_horizon: 40
+
+  active_planning_u5_r5_h40:
+    extends: active_planning
+    update_interval: 5
+    replan_interval: 5
+    planning_horizon: 40
+
+  active_planning_u5_r10_h40:
+    extends: active_planning
+    update_interval: 5
+    replan_interval: 10
+    planning_horizon: 40
+
+  active_planning_u5_r20_h40:
+    extends: active_planning
+    update_interval: 5
+    replan_interval: 20
+    planning_horizon: 40
+
+  active_planning_u10_r20_h40:
+    extends: active_planning
+    update_interval: 10
+    replan_interval: 20
+    planning_horizon: 40
+
+  active_planning_u10_r10_h40:
+    extends: active_planning
+    update_interval: 10
+    replan_interval: 10
+    planning_horizon: 40
+
+
+# Adaptive
+  adaptive:
+    extends: active_planning
+    adaptive_cadence: true
+    adaptive_update_min_interval: 5
+    adaptive_update_eig_threshold: 0.05
+    adaptive_replan_min_interval: 5
+    adaptive_replan_state_error_threshold: 3.0
+
+  adaptive_async_realtime:
+    extends: adaptive
+    policy_type: async-mpc-icem
+    async_planning: true
+    async_worker_iterations: 2
+    async_worker_device: cpu
+    async_stale_tolerance: 1.0
+    async_realtime_prefix_steps: 10
+
+  adaptive_async_anytime:
+    extends: adaptive_async_realtime
+    async_anytime_prefix_steps: null
+    async_anytime_min_iteration: 1
+    async_anytime_std_tolerance: 0.75
+
+  adaptive_state_fixed_update:
+    extends: adaptive
+    adaptive_update_eig_threshold: null
+
+
+# Objective Ablation
+  active_fully_observable:
+    extends: active_planning
+    objective_kind: fully_observable_parameter_eig
+
+  active_e_optimality:
+    extends: active_planning
+    objective_kind: e_optimality
+
+  active_state_information:
+    extends: active_planning
+    objective_kind: state_information
+
+  active_dynamics:
+    extends: active_planning
+    objective_kind: dynamics
+
+  active_observation_variance_u20_r20_h40:
+    extends: active_planning
+    objective_kind: observation_variance
+
+  state_variance:
+    extends: active_planning
+    objective_kind: state_variance
+
+  active_laplace_corrected_observation_variance:
+    objective_kind: corrected_observation_variance
+    update_interval: 1
+    replan_interval: 1
+    planning_horizon: 20
+    action_constraint: radius
+    coarse_dt_factor: 20
+    coarse_action_mapping: hold

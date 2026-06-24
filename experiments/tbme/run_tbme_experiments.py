@@ -34,18 +34,10 @@ SHARED_TBME_GROUP_MODULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("observation_action_bottleneck", ("experiments.tbme.exp_observation_action_bottleneck",)),
     (
         "model_mismatch",
-        (
-            "experiments.tbme.exp_model_mismatch",
-            "experiments.tbme.exp_parameter_mismatch_stress",
-            "experiments.tbme.exp_observation_tuning_mismatch",
-        ),
+        ("experiments.tbme.exp_model_mismatch",),
     ),
     ("objective_ablation", ("experiments.tbme.exp_objective_ablation",)),
     ("scheduling", ("experiments.tbme.exp_scheduling",)),
-)
-LEGACY_TBME_MODULES = (
-    "experiments.tbme.exp_hard_environment",
-    "experiments.tbme.exp_observation_mismatch_stress",
 )
 
 
@@ -87,10 +79,6 @@ def _iter_tbme_suite_modules():
             if module_ref not in seen:
                 seen.add(module_ref)
                 yield _load_suite_module(module_ref)
-    for module_ref in LEGACY_TBME_MODULES:
-        if module_ref not in seen:
-            seen.add(module_ref)
-            yield _load_suite_module(module_ref)
 
 
 def _csv_tuple(value: Any) -> tuple[str, ...]:
@@ -229,24 +217,17 @@ def shared_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
 def shared_tbme_group_suites() -> dict[str, list[dict[str, Any]]]:
     """Return grouped shared-track suites with per-group policy ids."""
     _suites, groups = _shared_tbme_data()
-    return {
-        group_id: [dict(entry) for entry in entries]
-        for group_id, entries in groups.items()
-    }
+    return {group_id: [dict(entry) for entry in entries] for group_id, entries in groups.items()}
 
 
-def all_tbme_experiment_suites() -> dict[str, dict[str, Any]]:
-    """Return the default TBME suite definitions."""
-    return shared_tbme_experiment_suites()
-
-
-def shared_tbme_family(
+def all_tbme_family(
     *,
     default_exp_ids: Any = None,
     default_base_dir: str | None = None,
     default_seeds: str | None = None,
 ) -> TbmeExperimentFamily:
-    """Return the deduplicated shared-tracks TBME experiment family."""
+    """Return the deduplicated all TBME experiment family."""
+
     suites = shared_tbme_experiment_suites()
     return _family_from_suite_data(
         suites,
@@ -267,7 +248,7 @@ def configure_tbme_catalogs(suite_entries: dict[str, dict[str, Any]] | None = No
         env_catalog_paths=paths["env_catalog_paths"],
         model_catalog_paths=paths["model_catalog_paths"],
         suite_catalog_paths=(),
-        suite_entries=all_tbme_experiment_suites() if suite_entries is None else suite_entries,
+        suite_entries=shared_tbme_experiment_suites() if suite_entries is None else suite_entries,
     )
 
 
@@ -372,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args, passthrough = parser.parse_known_args(argv)
     if str(args.suite_module) == "all":
-        family = shared_tbme_family(
+        family = all_tbme_family(
             default_exp_ids=args.exp_ids,
             default_base_dir=args.base_dir,
             default_seeds=args.seeds,

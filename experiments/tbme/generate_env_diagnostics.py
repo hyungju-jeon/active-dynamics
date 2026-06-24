@@ -38,9 +38,8 @@ DEFAULT_ENV_IDS = ("all",)
 ENV_ALIASES = {
     "duffing": "tbme_duffing",
     "damped_pendulum": "tbme_damped_pendulum",
-    "asymmetric_basin": "tbme_asymmetric_basin",
-    "gated_duffing": "tbme_asymmetric_basin",
-    "tbme_gated_duffing": "tbme_asymmetric_basin",
+    "gated_duffing": "tbme_gated_duffing",
+    "tbme_gated_duffing": "tbme_gated_duffing",
 }
 
 
@@ -51,9 +50,9 @@ def _resolve_env_id(raw: str) -> str:
     if value in ENV_ALIASES:
         return ENV_ALIASES[value]
     if value.startswith("gated_duffing_"):
-        return f"tbme_asymmetric_basin_{value.removeprefix('gated_duffing_')}"
+        return f"tbme_gated_duffing_{value.removeprefix('gated_duffing_')}"
     if value.startswith("tbme_gated_duffing_"):
-        return f"tbme_asymmetric_basin_{value.removeprefix('tbme_gated_duffing_')}"
+        return f"tbme_gated_duffing_{value.removeprefix('tbme_gated_duffing_')}"
     if value.startswith("tbme_"):
         return value
     return f"tbme_{value}"

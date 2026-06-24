@@ -403,7 +403,7 @@ class DynamicsMetric(_FilteringObjectiveBase):
         return self.current_cost
 
 
-class SamplingVarianceMetric(BaseMetric):
+class ObservationVarianceMetric(BaseMetric):
     def __init__(
         self,
         *,
@@ -527,7 +527,7 @@ class SamplingVarianceMetric(BaseMetric):
         theta_samples: torch.Tensor,
     ) -> torch.Tensor:
         if not hasattr(self.model, "predict"):
-            raise AttributeError("SamplingVarianceMetric requires model.predict for fallback mode")
+            raise AttributeError("ObservationVarianceMetric requires model.predict for fallback mode")
         batch, _steps, _ = encoded_actions.shape
         original_state = None
         if hasattr(self.model, "_state"):
@@ -566,7 +566,7 @@ class SamplingVarianceMetric(BaseMetric):
         else:
             if encoded_action_value is None:
                 raise KeyError(
-                    "SamplingVarianceMetric requires one of 'action', 'encoded_action', "
+                    "ObservationVarianceMetric requires one of 'action', 'encoded_action', "
                     "'env_action', or 'model_action' in rollout"
                 )
             encoded_actions = encoded_action_value.to(self.device).float()
@@ -597,7 +597,7 @@ class SamplingVarianceMetric(BaseMetric):
                     encoded_actions = encoded_actions.unsqueeze(0)
         else:
             if actions is None:
-                raise KeyError("SamplingVarianceMetric cannot encode actions when rollout['action'] is missing")
+                raise KeyError("ObservationVarianceMetric cannot encode actions when rollout['action'] is missing")
             encoded_actions = self._encode_actions(actions, state0)
         theta_samples = self._sample_theta_belief()
         lam_stack = self._predict_lambda_samples(
@@ -620,8 +620,8 @@ class SamplingVarianceMetric(BaseMetric):
         return self.current_cost
 
 
-class CorrectedSamplingVarianceMetric(SamplingVarianceMetric):
-    """Sampling-variance objective with Laplace-proposal importance correction.
+class CorrectedObservationVarianceMetric(ObservationVarianceMetric):
+    """Observation-variance objective with Laplace-proposal importance correction.
 
     The current TBME filtering posterior is Gaussian. We treat that Gaussian as the
     Laplace proposal and reweight parameter samples toward a multivariate-Student-t
@@ -693,7 +693,7 @@ class CorrectedSamplingVarianceMetric(SamplingVarianceMetric):
         else:
             if encoded_action_value is None:
                 raise KeyError(
-                    "CorrectedSamplingVarianceMetric requires one of 'action', 'encoded_action', "
+                    "CorrectedObservationVarianceMetric requires one of 'action', 'encoded_action', "
                     "'env_action', or 'model_action' in rollout"
                 )
             encoded_actions = encoded_action_value.to(self.device).float()
@@ -724,7 +724,7 @@ class CorrectedSamplingVarianceMetric(SamplingVarianceMetric):
                     encoded_actions = encoded_actions.unsqueeze(0)
         else:
             if actions is None:
-                raise KeyError("CorrectedSamplingVarianceMetric cannot encode actions when rollout['action'] is missing")
+                raise KeyError("CorrectedObservationVarianceMetric cannot encode actions when rollout['action'] is missing")
             encoded_actions = self._encode_actions(actions, state0)
         theta_samples, weights = self._sample_theta_belief_with_weights()
         lam_stack = self._predict_lambda_samples(
@@ -777,7 +777,7 @@ def dynamics(
     )
 
 
-def sampling_variance(
+def observation_variance(
     *,
     model: FilteringEmbedding,
     Fe_net: Callable,
@@ -786,9 +786,9 @@ def sampling_variance(
     device: str,
     num_parameter_samples: int,
     sample_seed: int | None = None,
-) -> SamplingVarianceMetric:
+) -> ObservationVarianceMetric:
     del Fe_net, Fz_net
-    return SamplingVarianceMetric(
+    return ObservationVarianceMetric(
         model=model,
         gamma=gamma,
         num_parameter_samples=num_parameter_samples,
@@ -797,7 +797,7 @@ def sampling_variance(
     )
 
 
-def corrected_sampling_variance(
+def corrected_observation_variance(
     *,
     model: FilteringEmbedding,
     Fe_net: Callable,
@@ -808,9 +808,9 @@ def corrected_sampling_variance(
     sample_seed: int | None = None,
     correction_df: float = 3.0,
     ess_gate_fraction: float = 0.05,
-) -> CorrectedSamplingVarianceMetric:
+) -> CorrectedObservationVarianceMetric:
     del Fe_net, Fz_net
-    return CorrectedSamplingVarianceMetric(
+    return CorrectedObservationVarianceMetric(
         model=model,
         gamma=gamma,
         num_parameter_samples=num_parameter_samples,
@@ -821,7 +821,7 @@ def corrected_sampling_variance(
     )
 
 
-class StateVarianceMetric(SamplingVarianceMetric):
+class StateVarianceMetric(ObservationVarianceMetric):
     """State-variance objective using theta samples from the current parameter posterior."""
 
     def __init__(self, *, aggregation: str = "sum", **kwargs) -> None:

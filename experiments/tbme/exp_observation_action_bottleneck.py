@@ -2,6 +2,8 @@ from __future__ import annotations
 
 DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
+    "gated_duffing_asymmetric",
+    "gated_duffing_challenging",
     "gated_duffing_observation_bottleneck_mild",
     "gated_duffing_observation_bottleneck_strong",
     "gated_duffing_action_bottleneck_mild",
@@ -9,46 +11,49 @@ DEFAULT_EXP_IDS = (
 )
 MODEL_IDS = [
     "adaptive",
+    "adaptive_async_anytime",
     "adaptive_async_realtime",
-    "active_planning_u20_r20_h40",
+    "active_planning",
     "active_myopic",
-    "ensemble",
     "prbs",
     "random",
+    "flex",
+    "state_variance",
+    "rhc",
+    "off_policy",
 ]
+SHARED_EXP_ARGS = {
+    "experiment_kind": "parameter",
+    "total_steps": 2000,
+    "model_ids": MODEL_IDS,
+    "trajectory_eval_horizon": 200,
+    "trajectory_eval_samples": 100,
+}
 
 EXPERIMENT_SUITES = {
+    "gated_duffing_asymmetric": {
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_asymmetric",
+    },
+    "gated_duffing_challenging": {
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_challenging",
+    },
     "gated_duffing_observation_bottleneck_mild": {
-        "experiment_kind": "parameter",
-        "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_observation_bottleneck_mild",
-        "model_ids": MODEL_IDS,
-        "trajectory_eval_horizon": 200,
-        "trajectory_eval_samples": 100,
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_observation_bottleneck_mild",
     },
     "gated_duffing_observation_bottleneck_strong": {
-        "experiment_kind": "parameter",
-        "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_observation_bottleneck_strong",
-        "model_ids": MODEL_IDS,
-        "trajectory_eval_horizon": 200,
-        "trajectory_eval_samples": 100,
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_observation_bottleneck_strong",
     },
     "gated_duffing_action_bottleneck_mild": {
-        "experiment_kind": "parameter",
-        "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_action_bottleneck_mild",
-        "model_ids": MODEL_IDS,
-        "trajectory_eval_horizon": 200,
-        "trajectory_eval_samples": 100,
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_action_bottleneck_mild",
     },
     "gated_duffing_action_bottleneck_strong": {
-        "experiment_kind": "parameter",
-        "total_steps": 2000,
-        "env_preset_id": "tbme_asymmetric_basin_action_bottleneck_strong",
-        "model_ids": MODEL_IDS,
-        "trajectory_eval_horizon": 200,
-        "trajectory_eval_samples": 100,
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_action_bottleneck_strong",
     },
 }
 
