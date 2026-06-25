@@ -46,7 +46,7 @@ configure_tbme_catalogs()
 DEFAULT_ASSET_DIR = REPO_ROOT / "results/tbme/assets"
 # Reference commands for the 60 fps vector-field error videos:
 # ./.venv/bin/python experiments/tbme/render_exp02_gated_duffing_behavior.py \
-#     --mode video --policy active_planning_u20_r20_h40 --seed 0 --fps 60 \
+#     --mode video --policy active_planning --seed 0 --fps 60 \
 #     --stride 1 --inferred-panel error --error-vmax 4.275478363037109 \
 #     --output results/tbme/assets/exp02_hard_gated_duffing_session4_seed0_active_planning_behavior_vf_error_every_step_60fps.mp4
 # ./.venv/bin/python experiments/tbme/render_exp02_gated_duffing_behavior.py \
@@ -838,7 +838,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session", type=int, default=4)
     parser.add_argument("--environment", default="exp02_hard_gated_duffing")
     parser.add_argument("--task", default="track")
-    parser.add_argument("--policy", default="active_planning_u20_r20_h40")
+    parser.add_argument("--policy", default="active_planning")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--repeat", default="repeat_01")
     parser.add_argument("--step", type=int, default=500)

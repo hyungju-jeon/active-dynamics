@@ -18,9 +18,9 @@ import matplotlib.pyplot as plt
 from experiments.tbme.tbme_io import safe_float as _safe_float
 
 
-ADAPTIVE = "active_planning_adaptive_u20_r20_h40"
-FIXED = "active_planning_u20_r20_h40"
-SYSTEM = "asymmetric_basin"
+ADAPTIVE = "adaptive"
+FIXED = "active_planning"
+SYSTEM = "gated_duffing"
 THRESHOLD = 3.0
 SHORT_HORIZON = 5
 FIXED_REPLAN_INTERVAL = 20
@@ -56,9 +56,9 @@ def _smooth(values: np.ndarray, width: int = 25) -> np.ndarray:
 
 
 def _condition_from_exp_id(exp_id: str) -> tuple[str, str] | None:
-    if exp_id == "exp01_asymmetric_basin":
+    if exp_id == "exp01_gated_duffing":
         return SYSTEM, "perfect"
-    prefix = "exp09_asymmetric_basin_observation_tuning_mismatch_"
+    prefix = "exp09_gated_duffing_observation_tuning_mismatch_"
     if exp_id.startswith(prefix):
         return SYSTEM, exp_id.removeprefix(prefix)
     return None
@@ -364,7 +364,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("results/tbme/exp09_observation_tuning_mismatch/session_1/summary/adaptive_mismatch_mechanism_compact_asymmetric_basin"),
+        default=Path("results/tbme/exp09_observation_tuning_mismatch/session_1/summary/adaptive_mismatch_mechanism_compact_gated_duffing"),
     )
     args = parser.parse_args()
 

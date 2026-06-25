@@ -140,11 +140,11 @@ models:
     extends: active_planning
     objective_kind: dynamics
 
-  active_observation_variance_u20_r20_h40:
+  active_observation_variance:
     extends: active_planning
     objective_kind: observation_variance
 
-  state_variance:
+  active_state_variance:
     extends: active_planning
     objective_kind: state_variance
 

@@ -18,7 +18,6 @@ MODEL_IDS = [
     "prbs",
     "random",
     "flex",
-    "state_variance",
     "rhc",
     "off_policy",
 ]

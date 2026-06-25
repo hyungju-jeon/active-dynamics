@@ -257,7 +257,7 @@ def test_current_tbme_catalog_configures_initial_parameter_distribution():
         suite_catalog_paths=DEFAULT_SUITE_CATALOG_PATHS,
     )
     try:
-        preset = get_environment_preset("tbme_asymmetric_basin")
+        preset = get_environment_preset("tbme_gated_duffing")
         assert np.allclose(preset.initial_parameter_mean_vector(), np.zeros(4))
         assert preset.initial_parameter_variance == pytest.approx(0.25)
     finally:

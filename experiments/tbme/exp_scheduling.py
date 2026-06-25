@@ -12,7 +12,7 @@ MODEL_IDS = [
     "active_planning_u10_r10_h40",
     "active_planning_u5_r20_h40",
     "active_planning_u10_r20_h40",
-    "active_planning_u20_r20_h40",
+    "active_planning",
     "adaptive",
     "adaptive_async_anytime",
 ]

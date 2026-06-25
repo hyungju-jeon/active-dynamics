@@ -27,7 +27,7 @@ from actdyn.utils.experiment_runtime import seed_range_csv
 from experiments.experiment_io import experiment_env_slug
 
 
-TBME_TRACKS_BASE_DIR = "results/tbme/tracks"
+TBME_TRACKS_BASE_DIR = "results/tbme"
 DEFAULT_SHARED_SEED_COUNT = 100
 SHARED_TBME_GROUP_MODULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("simple_system_identification", ("experiments.tbme.exp_simple_system_identification",)),

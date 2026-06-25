@@ -55,6 +55,7 @@ def experiment_policy_seed_dir(
     if layout == "tbme_tracks":
         return (
             root
+            / "tracks"
             / experiment_env_slug(str(exp_spec.env_preset_id))
             / str(policy_id)
             / f"seed_{int(seed)}"
@@ -92,7 +93,7 @@ def experiment_summary_dir(
     if layout == "legacy":
         return root / str(exp_spec.exp_id) / "summary"
     if layout == "tbme_tracks":
-        return root / experiment_env_slug(str(exp_spec.env_preset_id)) / "summary"
+        return root / "tracks" / experiment_env_slug(str(exp_spec.env_preset_id)) / "summary"
     raise ValueError(f"Unknown experiment path layout: {layout}")
 
 

@@ -16,7 +16,6 @@ MODEL_IDS = [
     "prbs",
     "random",
     "flex",
-    "state_variance",
     "rhc",
 ]
 SHARED_EXP_ARGS = {

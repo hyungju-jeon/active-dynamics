@@ -16,16 +16,16 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-ADAPTIVE = "active_planning_adaptive_u20_r20_h40"
-FIXED = "active_planning_u20_r20_h40"
+ADAPTIVE = "adaptive"
+FIXED = "active_planning"
 GOOD_R2 = 0.9
 EARLY_STEP_MAX = 500
 
 GROUPS = [
     ("duffing", "mild"),
     ("duffing", "strong"),
-    ("asymmetric_basin", "mild"),
-    ("asymmetric_basin", "strong"),
+    ("gated_duffing", "mild"),
+    ("gated_duffing", "strong"),
 ]
 FAMILIES = ["parameter", "observation"]
 

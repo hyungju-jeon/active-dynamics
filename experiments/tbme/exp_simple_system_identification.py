@@ -12,7 +12,6 @@ MODEL_IDS = [
     "random",
     "flex",
     "flex_true_state",
-    "state_variance",
     "rhc",
     "off_policy",
 ]

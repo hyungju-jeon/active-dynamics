@@ -15,8 +15,8 @@ MODEL_IDS = [
     "active_e_optimality",
     "active_state_information",
     "active_dynamics",
-    "active_observation_variance_u20_r20_h40",
-    "state_variance",
+    "active_observation_variance",
+    "active_state_variance",
 ]
 SHARED_EXP_ARGS = {
     "experiment_kind": "parameter",

@@ -27,8 +27,8 @@ from actdyn.utils.figure_io import (
 
 
 ADAPTIVE = "adaptive"
-FIXED = "active_planning_u20_r20_h40"
-SYSTEM = "asymmetric_basin"
+FIXED = "active_planning"
+SYSTEM = "gated_duffing"
 THRESHOLD = 3.0
 SHORT_HORIZON = 5
 FIXED_REPLAN_INTERVAL = 20
@@ -36,8 +36,8 @@ FIXED_REPLAN_INTERVAL = 20
 
 def _parse_exp_id(exp_id: str) -> tuple[str, str] | None:
     families = [
-        ("parameter", "exp08_asymmetric_basin_parameter_mismatch_"),
-        ("observation", "exp09_asymmetric_basin_observation_tuning_mismatch_"),
+        ("parameter", "exp08_gated_duffing_parameter_mismatch_"),
+        ("observation", "exp09_gated_duffing_observation_tuning_mismatch_"),
     ]
     for family, prefix in families:
         if exp_id.startswith(prefix):
@@ -408,7 +408,7 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("results/tbme/exp09_observation_tuning_mismatch/session_1/summary/adaptive_mismatch_mechanism_final_with_parameter_asymmetric_basin"),
+        default=Path("results/tbme/exp09_observation_tuning_mismatch/session_1/summary/adaptive_mismatch_mechanism_final_with_parameter_gated_duffing"),
     )
     args = parser.parse_args()
 
