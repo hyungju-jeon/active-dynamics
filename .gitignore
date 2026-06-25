@@ -87,6 +87,7 @@ coverage.xml
 .hypothesis/
 tests/*
 !tests/test_boundary_constraints.py
+!tests/test_eig_1d_example.py
 
 # Documentation
 docs/_build/
@@ -107,3 +108,4 @@ build/
 *.egg-info/
 
 .venv/
+**/gcp_runs/
