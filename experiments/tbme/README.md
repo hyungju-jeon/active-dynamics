@@ -24,11 +24,13 @@ Suite ids use clean environment slugs such as `duffing` and `gated_duffing`, not
 - `exp_observation_mismatch_stress.py`: legacy observation-loading mismatch stress suite.
 - `run_tbme_experiments.py`: helper that connects each explicit TBME suite module to `experiments.run`.
 - `generate_figures.py`: single entrypoint for TBME figure and asset generation.
-- `generate_env_diagnostics.py`: catalog-level dynamics and observation diagnostics.
 - `generate_behavior_video.py`: TBME behavior frame/video renderer.
 - `tbme_io.py`: shared TBME run trace and metadata-loading helpers.
-- `tbme_figures.py`: TBME summary, overview, and experiment-figure implementation.
-- `tbme_assets.py`: manuscript asset assembly used by `generate_figures.py assets`.
+- `tbme_figures.py`: shared TBME figure configuration and thin figure entrypoint delegates.
+- `tbme_figures_summary.py`: per-suite summary and trajectory figures.
+- `tbme_figures_experiment.py`: experiment-level manuscript figures.
+- `tbme_figures_assets.py`: manuscript asset assembly used by `generate_figures.py assets`.
+- `tbme_figures_diagnostics.py`: catalog-level dynamics and observation diagnostics.
 
 The shared experiment runtime remains outside this directory:
 
@@ -56,7 +58,7 @@ The default TBME entrypoint is the shared tracks family:
 ./.venv/bin/python -m experiments.tbme.run_tbme_experiments all --mode all --skip-existing
 ```
 
-It writes to `results/tbme/tracks/session_<n>` and deduplicates repeated
+It writes to `results/tbme/session_<n>/tracks` and deduplicates repeated
 environment-method pairs in this order:
 
 | Shared group | Source modules |
@@ -115,7 +117,7 @@ Do not prefer direct file execution such as `./.venv/bin/python experiments/tbme
 Each suite module accepts these TBME-level defaults and forwards all other arguments to `experiments.run`:
 
 - `--exp-ids`: comma-separated suite ids; defaults to that experiment family's suites.
-- `--base-dir`: output root; defaults to `results/tbme/tracks`.
+- `--base-dir`: output root; defaults to `results/tbme`.
 - `--seeds`: comma-separated integer seeds; defaults to the family seed range.
 
 Common forwarded arguments include:
@@ -142,9 +144,10 @@ Runs write one session under the selected `--base-dir`. A typical run contains:
 
 - `session_metadata.json`: resolved catalogs, command line, experiments, policies, seeds, and run summary.
 - `experiment_driver.log`: redirected stdout and stderr when running non-interactively.
-- `<env>/<policy_id>/seed_<seed>/repeat_<repeat>/run_metadata.json`: per-run metadata.
+- `tracks/<env>/<policy_id>/seed_<seed>/repeat_<repeat>/run_metadata.json`: per-run metadata.
 - Trace CSV files such as `parameter_error_trace.csv`, `trajectory_r2_trace.csv`, `embedding_estimate_trace.csv`, `information_trace.csv`, and `state_action_trace.csv`.
 - Summary artifacts when `--mode summary` or `--mode all` is used.
+- Figure assets and diagnostics default to `assets/` and `diagnostics/` under the same `session_<n>` root.
 
 ## Figure Generation
 
@@ -153,16 +156,15 @@ Use `generate_figures.py` as the single figure entrypoint:
 ```bash
 ./.venv/bin/python -m experiments.tbme.generate_figures --help
 ./.venv/bin/python -m experiments.tbme.generate_figures summary
-./.venv/bin/python -m experiments.tbme.generate_figures overview
 ./.venv/bin/python -m experiments.tbme.generate_figures experiment
 ./.venv/bin/python -m experiments.tbme.generate_figures assets
 ./.venv/bin/python -m experiments.tbme.generate_figures diagnostics
 ./.venv/bin/python -m experiments.tbme.generate_figures all
-./.venv/bin/python -m experiments.tbme.tbme_assets --help
+./.venv/bin/python -m experiments.tbme.tbme_figures_assets --help
 ```
 
 The figure code keeps TBME result-group definitions in `tbme_figures.py`. If result roots are renamed, update the `GROUPS` table there before relying on the figure commands.
-The diagnostics command does not require completed runs; by default it plots every unique environment preset used by the shared TBME suites.
+The diagnostics command does not require completed runs. The top-level `generate_figures diagnostics` entrypoint uses the fixed core environment list in `generate_figures.py`.
 
 ## Reproducibility Checklist
 

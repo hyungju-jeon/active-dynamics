@@ -17,6 +17,7 @@ if __package__ in {None, ""}:
 
 from actdyn.environment.vectorfield import (
     ResidualDynamicsCallable,
+    jacobian_embedding_torch,
     jacobian_state_torch,
     step_np,
 )
@@ -32,6 +33,7 @@ from experiments.tbme.run_tbme_experiments import (
     configure_tbme_catalogs,
     shared_tbme_experiment_suites,
 )
+from experiments.tbme import tbme_figures as _figures
 
 
 DEFAULT_ENV_IDS = ("all",)
@@ -41,6 +43,10 @@ ENV_ALIASES = {
     "gated_duffing": "tbme_gated_duffing",
     "tbme_gated_duffing": "tbme_gated_duffing",
 }
+
+
+def _default_output_dir() -> Path:
+    return _figures._latest_session(_figures._TBME_RESULTS_DIR) / "diagnostics"
 
 
 def _resolve_env_id(raw: str) -> str:
@@ -135,49 +141,29 @@ def _simulate_trajectories(
     return trajectories
 
 
-def _local_lyapunov_grid(
+def _asymptotic_lyapunov_exponent_qr(
     env_preset: EnvironmentPreset,
     *,
-    plot_lim: float,
-    n_grid: int,
-    chunk_size: int = 512,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
-    """Compute the local one-sided growth coefficient over a 2D state grid."""
-    axis = np.linspace(-plot_lim, plot_lim, int(n_grid), dtype=np.float32)
-    xx, yy = np.meshgrid(axis, axis, indexing="xy")
-    states = np.stack([xx.reshape(-1), yy.reshape(-1)], axis=1)
-    dyn_params = torch.as_tensor(env_preset.resolved_true_params(), dtype=torch.float32)
-    values: list[np.ndarray] = []
-    for start in range(0, states.shape[0], int(chunk_size)):
-        batch = torch.as_tensor(states[start : start + int(chunk_size)], dtype=torch.float32)
-        jac = jacobian_state_torch(
-            env_preset.resolved_dynamics_type(),
-            batch,
-            dyn_params,
-            dynamics_alpha=float(env_preset.dynamics_alpha),
-        )
-        jac_np = jac.detach().cpu().numpy()
-        sym = 0.5 * (jac_np + np.swapaxes(jac_np, -1, -2))
-        values.append(np.linalg.eigvalsh(sym)[:, -1])
-    local = np.concatenate(values, axis=0).reshape(xx.shape)
-    finite = local[np.isfinite(local)]
-    coefficient = float(np.max(finite)) if finite.size else float("nan")
-    return xx, yy, local, coefficient
-
-
-def _finite_time_lyapunov_exponent(
-    env_preset: EnvironmentPreset,
     trajectories: Sequence[np.ndarray],
 ) -> float:
-    """Estimate the largest finite-time Lyapunov exponent along trajectories."""
+    """Estimate the largest Lyapunov exponent by QR renormalization.
+
+    For trajectories with states ``(T, state_dim)``, this applies the tangent
+    step ``I + dt * df/dx(x_k)`` and accumulates QR stretch factors. The tangent
+    step matches ``step_np`` away from clipping because TBME diagnostics use
+    explicit Euler integration. The estimate approaches the asymptotic largest
+    exponent as trajectory length grows.
+    """
     dt = float(env_preset.dt)
     if dt <= 0.0:
         return float("nan")
     dyn_params = torch.as_tensor(env_preset.resolved_true_params(), dtype=torch.float32)
-    exponents: list[float] = []
+    weighted_sum = 0.0
+    total_time = 0.0
     for trajectory in trajectories:
         states = np.asarray(trajectory[:-1], dtype=np.float32)
-        if states.shape[0] == 0:
+        n_steps = states.shape[0]
+        if n_steps == 0:
             continue
         jac = jacobian_state_torch(
             env_preset.resolved_dynamics_type(),
@@ -185,15 +171,21 @@ def _finite_time_lyapunov_exponent(
             dyn_params,
             dynamics_alpha=float(env_preset.dynamics_alpha),
         )
-        q = np.eye(jac.shape[-1], dtype=np.float64)
-        log_diag = np.zeros(jac.shape[-1], dtype=np.float64)
-        eye = np.eye(jac.shape[-1], dtype=np.float64)
+        dim = int(jac.shape[-1])
+        q = np.eye(dim, dtype=np.float64)
+        log_diag = np.zeros(dim, dtype=np.float64)
+        eye = np.eye(dim, dtype=np.float64)
         for jac_step in jac.detach().cpu().numpy():
             q, r = np.linalg.qr((eye + dt * jac_step.astype(np.float64)) @ q)
-            diag = np.clip(np.abs(np.diag(r)), 1e-12, None)
-            log_diag += np.log(diag)
-        exponents.append(float(np.max(log_diag / (states.shape[0] * dt))))
-    return float(np.mean(exponents)) if exponents else float("nan")
+            diag = np.abs(np.diag(r))
+            if not np.all(np.isfinite(diag)):
+                return float("nan")
+            log_diag += np.log(np.clip(diag, 1e-300, None))
+        trajectory_time = n_steps * dt
+        lambda_traj = float(np.max(log_diag / trajectory_time))
+        weighted_sum += trajectory_time * float(lambda_traj)
+        total_time += trajectory_time
+    return float(weighted_sum / total_time) if total_time > 0.0 else float("nan")
 
 
 def _loading_model(
@@ -244,6 +236,36 @@ def _state_information_grid(
     sign, logabsdet = np.linalg.slogdet(info)
     logdet = np.where(sign > 0.0, logabsdet, np.nan).reshape(xx.shape)
     return xx, yy, logdet
+
+
+def _parameter_sensitivity_grid(
+    env_preset: EnvironmentPreset,
+    *,
+    plot_lim: float,
+    n_grid: int,
+    chunk_size: int = 512,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute ||df/dtheta||_F over a 2D state grid for the learned embedding theta."""
+    axis = np.linspace(-plot_lim, plot_lim, int(n_grid), dtype=np.float32)
+    xx, yy = np.meshgrid(axis, axis, indexing="xy")
+    states = np.stack([xx.reshape(-1), yy.reshape(-1)], axis=1)
+    theta = torch.as_tensor(env_preset.true_embedding_vector(), dtype=torch.float32)
+    values: list[np.ndarray] = []
+    for start in range(0, states.shape[0], int(chunk_size)):
+        batch = torch.as_tensor(states[start : start + int(chunk_size)], dtype=torch.float32)
+        embedding = theta.reshape(1, -1).expand(batch.shape[0], -1)
+        jac = jacobian_embedding_torch(
+            env_preset.resolved_dynamics_type(),
+            batch,
+            embedding,
+            full_params=env_preset.resolved_true_params(),
+            min_embedding_dim=env_preset.resolved_min_embedding_dim(),
+            dynamics_alpha=float(env_preset.dynamics_alpha),
+        )
+        jac_np = jac.detach().cpu().numpy()
+        values.append(np.linalg.norm(jac_np, axis=(-2, -1)))
+    sensitivity = np.concatenate(values, axis=0).reshape(xx.shape)
+    return xx, yy, sensitivity
 
 
 def _snr_label(
@@ -307,12 +329,13 @@ def _plot_env_diagnostics(
         steps=steps,
         seed=seed,
     )
-    _lx, _ly, lyap, lyap_coeff = _local_lyapunov_grid(
-        env_preset,
-        plot_lim=plot_lim,
-        n_grid=n_grid,
+    lyap_exponent = _asymptotic_lyapunov_exponent_qr(env_preset, trajectories=trajectories)
+    lyap_time = (
+        1.0 / lyap_exponent
+        if np.isfinite(lyap_exponent) and lyap_exponent > 0.0
+        else np.inf
     )
-    lyap_exponent = _finite_time_lyapunov_exponent(env_preset, trajectories)
+    lyap_time_text = "inf" if not np.isfinite(lyap_time) else f"{lyap_time:.2f}"
     weights, bias, dt = _loading_model(
         env_preset,
         snr_trajectories=snr_trajectories,
@@ -325,29 +348,33 @@ def _plot_env_diagnostics(
         plot_lim=plot_lim,
         n_grid=n_grid,
     )
-    first_traj = trajectories[0]
-    mean_counts = np.clip(
-        _rate_hz(first_traj, weights=weights, bias=bias) * dt,
-        1e-8,
-        1e8,
+    _sx, _sy, sensitivity = _parameter_sensitivity_grid(
+        env_preset,
+        plot_lim=plot_lim,
+        n_grid=n_grid,
     )
+    first_traj = trajectories[0]
+    rate_hz = _rate_hz(first_traj, weights=weights, bias=bias)
+    mean_counts = np.clip(rate_hz * dt, 1e-8, 1e8)
     observations = np.random.default_rng(int(seed)).poisson(mean_counts).astype(np.float32)
+    obs_display = observations[:, : min(observations.shape[1], 24)]
+    rate_display = rate_hz[:, : obs_display.shape[1]]
     snr_text = _snr_label(
         env_preset,
         snr_trajectories=snr_trajectories,
         snr_trajectory_length=snr_trajectory_length,
     )
 
-    fig = plt_module.figure(figsize=(9.4, 5.9), constrained_layout=True)
+    fig = plt_module.figure(figsize=(9.6, 5.8), constrained_layout=True)
     gs = fig.add_gridspec(2, 3)
     ax_vector = fig.add_subplot(gs[0, 0])
-    ax_lyapunov = fig.add_subplot(gs[0, 1])
-    ax_loading = fig.add_subplot(gs[0, 2])
-    ax_info = fig.add_subplot(gs[1, 0])
+    ax_info = fig.add_subplot(gs[0, 1])
+    ax_sensitivity = fig.add_subplot(gs[0, 2])
+    ax_loading = fig.add_subplot(gs[1, 0])
     obs_gs = gs[1, 1:].subgridspec(2, 1, hspace=0.0, height_ratios=[1, 2])
     ax_rate = fig.add_subplot(obs_gs[0, 0])
     ax_spikes = fig.add_subplot(obs_gs[1, 0], sharex=ax_rate)
-    axes = [ax_vector, ax_lyapunov, ax_loading, ax_info, ax_rate, ax_spikes]
+    axes = [ax_vector, ax_info, ax_sensitivity, ax_loading, ax_rate, ax_spikes]
     title = env_preset.system_label or slug.replace("_", " ").title()
     fig.suptitle(title, y=1.02, fontsize=9.5)
 
@@ -361,44 +388,17 @@ def _plot_env_diagnostics(
         device="cpu",
     )
     for idx, traj in enumerate(trajectories):
-        ax.plot(traj[:, 0], traj[:, 1], linewidth=0.8, alpha=0.85, label=f"traj {idx}")
+        ax.plot(traj[:, 0], traj[:, 1], linewidth=1.35, alpha=0.88, label=f"traj {idx}")
         ax.scatter(traj[0, 0], traj[0, 1], s=8, zorder=3)
-    ax.set_title(f"vector field + noisy trajectories (mean speed {float(np.nanmean(speed)):.2f})")
+    ax.set_title(
+        "Vector field + noisy trajectories\n"
+        f"mean speed: {float(np.nanmean(speed)):.2f}, Lyapunov time: {lyap_time_text}"
+    )
     ax.set_xlim(-plot_lim, plot_lim)
     ax.set_ylim(-plot_lim, plot_lim)
     ax.set_aspect("equal", adjustable="box")
     ax.set_xlabel("x")
     ax.set_ylabel("v")
-
-    ax = ax_lyapunov
-    vmin, vmax = _finite_limits(lyap)
-    im = ax.imshow(
-        lyap,
-        origin="lower",
-        extent=[-plot_lim, plot_lim, -plot_lim, plot_lim],
-        cmap="coolwarm",
-        vmin=vmin,
-        vmax=vmax,
-        interpolation="nearest",
-    )
-    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
-    ax.set_title(f"Lyapunov coeff. {lyap_coeff:.2f}; exponent {lyap_exponent:.2f}")
-    ax.set_xlabel("x")
-    ax.set_ylabel("v")
-
-    ax = ax_loading
-    ax.axhline(0.0, color="#B0B0B0", linewidth=0.45)
-    ax.axvline(0.0, color="#B0B0B0", linewidth=0.45)
-    colors = np.linspace(0.15, 0.95, weights.shape[0])
-    ax.scatter(weights[:, 0], weights[:, 1], c=colors, cmap="magma", s=14, alpha=0.85)
-    for row in weights:
-        ax.plot([0.0, row[0]], [0.0, row[1]], color="#606060", alpha=0.25, linewidth=0.35)
-    h_norm = float(np.linalg.norm(weights[:, 0]))
-    v_norm = float(np.linalg.norm(weights[:, 1]))
-    ax.set_title(f"loading vectors (|C_v|/|C_x|={v_norm / max(h_norm, 1e-12):.1f})")
-    ax.set_xlabel("horizontal loading")
-    ax.set_ylabel("vertical loading")
-    ax.set_aspect("equal", adjustable="datalim")
 
     ax = ax_info
     info_vmin, info_vmax = _finite_limits(info)
@@ -411,20 +411,49 @@ def _plot_env_diagnostics(
         vmax=info_vmax,
         interpolation="nearest",
     )
-    ax.plot(first_traj[:, 0], first_traj[:, 1], color="white", linewidth=0.7, alpha=0.9)
+    ax.plot(first_traj[:, 0], first_traj[:, 1], color="white", linewidth=0.8, alpha=0.9)
     fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
     ax.set_title("Poisson state information")
     ax.set_xlabel("x")
     ax.set_ylabel("v")
 
+    ax = ax_sensitivity
+    sens_vmin, sens_vmax = _finite_limits(sensitivity)
+    im = ax.imshow(
+        sensitivity,
+        origin="lower",
+        extent=[-plot_lim, plot_lim, -plot_lim, plot_lim],
+        cmap="magma",
+        vmin=sens_vmin,
+        vmax=sens_vmax,
+        interpolation="nearest",
+    )
+    fig.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
+    ax.set_title(r"Parameter sensitivity $\|df/d\theta\|_F$")
+    ax.set_xlabel("x")
+    ax.set_ylabel("v")
+
+    ax = ax_loading
+    ax.axhline(0.0, color="#B0B0B0", linewidth=0.45)
+    ax.axvline(0.0, color="#B0B0B0", linewidth=0.45)
+    colors = np.linspace(0.15, 0.95, weights.shape[0])
+    ax.scatter(weights[:, 0], weights[:, 1], c=colors, cmap="magma", s=14, alpha=0.85)
+    for row in weights:
+        ax.plot([0.0, row[0]], [0.0, row[1]], color="#606060", alpha=0.25, linewidth=0.35)
+    h_norm = float(np.linalg.norm(weights[:, 0]))
+    v_norm = float(np.linalg.norm(weights[:, 1]))
+    ax.set_title(f"Loading vectors (|C_v|/|C_x|={v_norm / max(h_norm, 1e-12):.1f})")
+    ax.set_xlabel("horizontal loading")
+    ax.set_ylabel("vertical loading")
+    ax.set_aspect("equal", adjustable="datalim")
+
     ax = ax_rate
-    obs_display = observations[:, : min(observations.shape[1], 24)]
-    rate_display = _rate_hz(first_traj, weights=weights, bias=bias)[:, : obs_display.shape[1]]
     time = np.arange(rate_display.shape[0])
     for neuron_idx in range(rate_display.shape[1]):
         ax.plot(time, rate_display[:, neuron_idx], linewidth=0.45, alpha=0.65)
-    ax.set_title(f"firing rate, {snr_text}")
+    ax.set_title(f"Observation rates, {snr_text}")
     ax.set_ylabel("Hz")
+    ax.set_xlim(0.0, float(steps))
     ax.tick_params(labelbottom=False)
 
     ax = ax_spikes
@@ -436,21 +465,21 @@ def _plot_env_diagnostics(
             spike_steps,
             spike_neurons,
             obs_display[spike_steps, spike_neurons].astype(int),
+            strict=True,
         ):
             offsets = [0.0] if count <= 1 else np.linspace(-0.32, 0.32, count)
             bar_steps.extend(float(step_idx) + float(offset) for offset in offsets)
             bar_neurons.extend([float(neuron_idx)] * len(offsets))
-        bar_steps_np = np.asarray(bar_steps, dtype=np.float32)
-        bar_neurons_np = np.asarray(bar_neurons, dtype=np.float32)
         ax.vlines(
-            bar_steps_np,
-            bar_neurons_np - 0.36,
-            bar_neurons_np + 0.36,
+            np.asarray(bar_steps, dtype=np.float32),
+            np.asarray(bar_neurons, dtype=np.float32) - 0.36,
+            np.asarray(bar_neurons, dtype=np.float32) + 0.36,
             color="#222222",
             linewidth=0.35,
         )
     ax.set_xlabel("step")
     ax.set_ylabel("neuron")
+    ax.set_xlim(0.0, float(steps))
     ax.set_ylim(-0.5, obs_display.shape[1] - 0.5)
 
     for ax in axes:
@@ -512,11 +541,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("results/tbme/diagnostics"),
+        default=None,
         help="Directory for diagnostic figures.",
     )
     parser.add_argument("--figure-formats", type=str, default=".pdf")
-    parser.add_argument("--steps", type=int, default=500)
+    parser.add_argument("--steps", type=int, default=2000)
     parser.add_argument("--trajectories", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--grid", type=int, default=51)
@@ -527,9 +556,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    output_dir = Path(args.output_dir) if args.output_dir is not None else _default_output_dir()
     paths = generate_diagnostics(
         env_ids=parse_csv_list(args.env_ids),
-        output_dir=Path(args.output_dir),
+        output_dir=output_dir,
         figure_formats=parse_figure_formats(args.figure_formats),
         steps=int(args.steps),
         n_trajectories=int(args.trajectories),

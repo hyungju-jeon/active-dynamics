@@ -13,28 +13,32 @@ from actdyn.utils.figure_io import load_plotting, save_figure
 
 from . import tbme_figures as _figures
 from .tbme_figures import (
-    _ExperimentSuiteSource,
     _REPO_ROOT,
     _RESULTS_ROOT,
     _apply_style,
+    _latest_session,
+    _policy_color,
+    _style_manuscript_axis,
+    _suite_dir,
+    _write_csv,
+    _write_text,
+)
+from .tbme_figures_experiment import (
+    _ExperimentRunRecord,
+    _ExperimentSuiteSource,
     _experiment_C_NEUTRAL_FILL,
     _experiment_C_NEUTRAL_LIGHT,
     _experiment_C_STROKE,
     _experiment_OBJECTIVE_POLICIES,
     _experiment_curve_rows,
+    _experiment_load_xy_trace,
+    _experiment_make_information_grid,
     _experiment_metric_mean_sem,
     _experiment_objective_sources,
     _experiment_r2_threshold_step,
     _experiment_r2_threshold_times,
     _experiment_short_policy_label,
-    _latest_session,
-    _overview_figures_dir,
-    _policy_color,
     _style_experiment_axis,
-    _style_manuscript_axis,
-    _suite_dir,
-    _write_csv,
-    _write_text,
     plot_neutral_vector_field,
 )
 from .tbme_io import (
@@ -44,26 +48,29 @@ from .tbme_io import (
 )
 
 # Manuscript asset assembly
-_ASSET_POLICY_LABELS = {
+_POLICY_LABELS = {
     "adaptive": "PALDI",
-    "active_planning_u20_r20_h40": "Fixed PALDI",
+    "adaptive_async_anytime": "Async PALDI(anytime)",
+    "adaptive_async_realtime": "Async PALDI",
+    "active_planning": "Fixed PALDI",
     "active_myopic": "Myopic",
-    "ensemble": "Ensemble",
     "prbs": "PRBS",
     "random": "Random",
-    "active_fully_observable_u20_r20_h40": "Full obs.",
-    "active_state_information_u20_r20_h40": "State info",
-    "active_dynamics_u20_r20_h40": "Dyn. sens.",
-    "active_sampling_variance_u20_r20_h40": "Sample var.",
-    "active_e_optimality_u20_r20_h40": "E-opt.",
+    "active_fully_observable": "Full obs.",
+    "active_state_information": "State info",
+    "active_dynamics": "Dyn. sens.",
+    "active_e_optimality": "E-opt.",
+    "active_observation_variance": "Obs. var.",
+    "active_state_variance": "State var.",
     "flex": "FLEX",
     "rhc": "RHC-US",
+    "off_policy": "Off-policy",
 }
 _ASSET_BENCHMARK_POLICIES = [
     "adaptive",
-    "active_planning_u20_r20_h40",
+    "active_planning",
     "active_myopic",
-    "ensemble",
+    "active_state_variance",
     "prbs",
     "random",
 ]
@@ -79,7 +86,7 @@ _ASSET_R2_THRESHOLDS = (0.90, 0.95, 0.99)
 
 
 def _asset_policy_label(policy_id: str) -> str:
-    return _ASSET_POLICY_LABELS.get(policy_id, _experiment_short_policy_label(policy_id))
+    return _POLICY_LABELS.get(policy_id, _experiment_short_policy_label(policy_id))
 
 
 def _asset_require_suite_dirs(paths: Sequence[Path]) -> None:
@@ -282,7 +289,7 @@ def _asset_plot_r2_strips(
 
 def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
     sources = [
-        _ExperimentSuiteSource(ref.suite_id, ref.label, ref.session_root / ref.suite_id)
+        _ExperimentSuiteSource(ref.suite_id, ref.label, ref.session_root / "tracks" / ref.suite_id)
         for ref in _figures.GROUPS["simple_system_identification"]
     ]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
@@ -527,15 +534,15 @@ def _asset_trace_abs(record: _ExperimentRunRecord, traj: np.ndarray) -> float:
 
 def _asset_plot_mechanism(output_path: Path) -> Path:
     policy_id = "adaptive"
-    nominal = _asset_first_record("exp02_hard", "exp02_hard_asymmetric_basin", policy_id)
+    nominal = _asset_first_record("exp02_hard", "exp02_hard_gated_duffing", policy_id)
     obs_mismatch = _asset_first_record(
         "exp07_mismatch_stress",
-        "exp07_asymmetric_basin_observation_mismatch_strong",
+        "exp07_gated_duffing_observation_mismatch_strong",
         policy_id,
     )
     param_mismatch = _asset_first_record(
         "exp08_parameter_mismatch_stress",
-        "exp08_asymmetric_basin_parameter_mismatch_strong",
+        "exp08_gated_duffing_parameter_mismatch_strong",
         policy_id,
     )
 
@@ -649,12 +656,17 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
             "state-error replan",
             _policy_color("active_myopic"),
         ),
-        ("parameter_update_reason", "max_interval", "interval update", _policy_color("ensemble")),
+        (
+            "parameter_update_reason",
+            "max_interval",
+            "interval update",
+            _policy_color("active_state_variance"),
+        ),
         (
             "parameter_update_reason",
             "block_eig",
             "block-EIG update",
-            _policy_color("active_planning_u20_r20_h40"),
+            _policy_color("active_planning"),
         ),
     ]
     event_steps: list[list[float]] = []
@@ -688,7 +700,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     mismatch_specs = [
         ("Nominal", _policy_color("adaptive")),
         ("Obs. mismatch", _policy_color("active_myopic")),
-        ("Param. mismatch", _policy_color("ensemble")),
+        ("Param. mismatch", _policy_color("active_state_variance")),
     ]
     ax = axes[1, 0]
     rolling_values = []
@@ -738,7 +750,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
         x + 0.16,
         block_updates,
         width=0.30,
-        color=_policy_color("active_planning_u20_r20_h40"),
+        color=_policy_color("active_planning"),
         edgecolor=_experiment_C_STROKE,
         linewidth=0.35,
         label="block-EIG updates",
@@ -821,7 +833,8 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
     plt_module = load_plotting(output_path, apply_style=_apply_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(2, 2, figsize=(7.25, 5.15), squeeze=False)
+    n_rows = len(sources)
+    fig, axes = plt_module.subplots(n_rows, 2, figsize=(7.25, 2.25 * n_rows + 0.65), squeeze=False)
     for source_idx, source in enumerate(sources):
         ax_curve = axes[source_idx, 0]
         curves = curves_by_source[source.exp_id]
@@ -856,15 +869,18 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
         _style_experiment_axis(ax_curve)
 
     x = np.arange(len(_experiment_OBJECTIVE_POLICIES), dtype=np.float64)
-    width = 0.34
-    offsets = np.linspace(-0.18, 0.18, len(sources))
+    width = min(0.28, 0.72 / max(len(sources), 1))
+    offsets = np.linspace(-0.32, 0.32, len(sources))
     x_labels = [_asset_policy_label(policy_id) for policy_id in _experiment_OBJECTIVE_POLICIES]
     ax_final = axes[0, 1]
-    ax_delta = axes[1, 1]
+    ax_delta = axes[min(1, n_rows - 1), 1]
+    for row_idx in range(2, n_rows):
+        axes[row_idx, 1].set_axis_off()
+    bar_colors = (_experiment_C_STROKE, "#6F6A62", _experiment_C_NEUTRAL_LIGHT)
     for source_idx, source in enumerate(sources):
         source_rows = [row for row in metric_rows if row["experiment"] == source.exp_id]
         row_by_policy = {str(row["policy_id"]): row for row in source_rows}
-        baseline = row_by_policy["active_planning_u20_r20_h40"]["trajectory_r2_mean"]
+        baseline = row_by_policy["active_planning"]["trajectory_r2_mean"]
         final_r2 = []
         final_sem = []
         delta_r2 = []
@@ -878,7 +894,7 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
             delta_r2.append(
                 np.nan if value is None or baseline is None else float(value) - float(baseline)
             )
-        color = _experiment_C_STROKE if source_idx == 0 else _experiment_C_NEUTRAL_LIGHT
+        color = bar_colors[source_idx % len(bar_colors)]
         ax_final.bar(
             x + offsets[source_idx],
             final_r2,
@@ -904,14 +920,6 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
     ax_final.set_ylabel("Final predictive R2")
     ax_final.set_ylim(-0.05, 1.05)
     ax_final.set_title("C. Final ablation performance")
-    ax_final.text(
-        0.02,
-        1.01,
-        "dark: nominal, light: hard",
-        transform=ax_final.transAxes,
-        fontsize=6.0,
-        va="bottom",
-    )
     ax_delta.axhline(0.0, color=_experiment_C_STROKE, linewidth=0.7)
     ax_delta.set_ylabel("R2 change vs full EIG")
     ax_delta.set_title("D. Contribution relative to full EIG")
@@ -932,6 +940,12 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
     )
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94), w_pad=0.85, h_pad=1.0)
     return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _asset_plot_eig_components(output_path: Path) -> Path:
+    from experiments.eig_1d_example import main as _eig_1d_main
+
+    return _eig_1d_main(["--output", str(output_path)])
 
 
 def _assets_build_parser() -> argparse.ArgumentParser:
@@ -981,6 +995,11 @@ def assets_main(argv: list[str] | None = None) -> int:
     selected_groups = set(group_ids)
     asset_specs = [
         (
+            "tbme_eig_planning_components.pdf",
+            set(),
+            _asset_plot_eig_components,
+        ),
+        (
             "tbme_fig03_active_vs_baselines.pdf",
             {"simple_system_identification"},
             _asset_plot_active_vs_baselines,
@@ -1025,9 +1044,8 @@ def assets_main(argv: list[str] | None = None) -> int:
         ]
     lines.append("Component roots:")
     for group_id in group_ids:
-        lines.append(_asset_display_path(_overview_figures_dir(group_id)))
         for ref in _figures.GROUPS[group_id]:
-            suite_dir = ref.session_root / ref.suite_id
+            suite_dir = ref.session_root / "tracks" / ref.suite_id
             lines.append(_asset_display_path(suite_dir / "summary" / "figures"))
             lines.append(_asset_display_path(suite_dir / "experiment" / "figures"))
     manifest = output_dir / "tbme_assets_manifest.txt"

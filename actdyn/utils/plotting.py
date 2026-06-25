@@ -143,10 +143,17 @@ def compute_vector_field(
     return X, Y, U, V
 
 
-def plot_vector_field(dynamics, ax=None, title=None, **kwargs):
+def plot_vector_field(dynamics, ax=None, title=None, streamplot_kwargs=None, **kwargs):
     X, Y, U, V = compute_vector_field(dynamics, **kwargs)
     X, Y, U, V = X.cpu().numpy(), Y.cpu().numpy(), U.cpu().numpy(), V.cpu().numpy()
     speed = np.sqrt(U**2 + V**2)
+    stream_kwargs = dict(streamplot_kwargs or {})
+    color_provided = "color" in stream_kwargs
+    color = stream_kwargs.pop("color", speed)
+    stream_kwargs.setdefault("linewidth", 0.5)
+    stream_kwargs.setdefault("density", 2)
+    if not color_provided:
+        stream_kwargs.setdefault("cmap", "viridis")
 
     if ax is not None:
         plt.sca(ax)
@@ -157,10 +164,8 @@ def plot_vector_field(dynamics, ax=None, title=None, **kwargs):
         Y,
         U,
         V,
-        color=speed,
-        linewidth=0.5,
-        density=2,
-        cmap="viridis",
+        color=color,
+        **stream_kwargs,
     )
     title = "Vector Field of Latent Dynamics" if title is None else title
     if ax is None:
