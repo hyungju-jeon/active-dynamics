@@ -125,6 +125,26 @@ def symmetrize(M):
     return 0.5 * (M + M.transpose(-1, -2))
 
 
+def attenuated_state_information(prior_cov: torch.Tensor, state_info: torch.Tensor) -> torch.Tensor:
+    """Return the Schur-complement information transferred through uncertain state.
+
+    For prior covariance ``P`` and state Fisher information ``J``, this computes
+    ``J - J (P^{-1} + J)^{-1} J`` with input and output shape ``(..., d, d)``.
+    This is equivalent to ``J (I + P J)^{-1}`` without requiring ``J`` to be
+    invertible.
+    """
+    prior_cov = symmetrize(
+        torch.nan_to_num(prior_cov, nan=0.0, posinf=1e6, neginf=-1e6)
+    )
+    state_info = symmetrize(
+        torch.nan_to_num(state_info, nan=0.0, posinf=1e6, neginf=-1e6)
+    )
+    prior_precision = torch.cholesky_inverse(safe_cholesky(prior_cov))
+    joint_precision = safe_cholesky(prior_precision + state_info)
+    missing_info = state_info @ torch.cholesky_solve(state_info, joint_precision)
+    return symmetrize(state_info - missing_info)
+
+
 def activation_from_str(activation_str: str):
     """Convert a string to a PyTorch activation function."""
     if activation_str is None:

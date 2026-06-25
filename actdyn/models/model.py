@@ -8,7 +8,13 @@ from einops import rearrange, repeat, einsum
 from torch.nn.functional import softplus
 
 from actdyn.environment.action import BaseAction
-from actdyn.utils.torch_utils import safe_cholesky, symmetrize, eps, Belief
+from actdyn.utils.torch_utils import (
+    attenuated_state_information,
+    safe_cholesky,
+    symmetrize,
+    eps,
+    Belief,
+)
 from actdyn.utils.rollout import RolloutBuffer
 
 from .base import BaseDynamicsEnsemble, BaseModel
@@ -1255,14 +1261,8 @@ class FilteringEmbedding(BaseModel):
             score_t = torch.einsum("bze,bz->be", S_t, invP_delta)
             score_t = tau_t.unsqueeze(-1) * score_t
 
-            # Information: I_t = S_t^T (I + Pz_pred I_z)^-1 I_z S_t.
-            atten_mat = symmetrize(I + z_pred["P"] @ I_z)
-            try:
-                chol_atten = safe_cholesky(atten_mat)
-            except Exception:
-                atten_mat = self._project_spd(atten_mat)
-                chol_atten = safe_cholesky(atten_mat)
-            atten_Iz = torch.cholesky_solve(I_z, chol_atten).squeeze(1)
+            # Information: I_t = S_t^T I_z (I + Pz_pred I_z)^-1 S_t.
+            atten_Iz = attenuated_state_information(z_pred["P"], I_z).squeeze(1)
             info_t = symmetrize(S_t.transpose(-1, -2) @ atten_Iz @ S_t)
 
         # Diagnostic traces for visualization: average matrix trace over batch.

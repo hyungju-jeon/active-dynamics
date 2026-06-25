@@ -13,7 +13,11 @@ from actdyn.metrics.information import (
     EmbeddingFisherMetric,
 )
 from actdyn.models.model import FilteringEmbedding
-from actdyn.utils.torch_utils import safe_cholesky, symmetrize
+from actdyn.utils.torch_utils import (
+    attenuated_state_information,
+    safe_cholesky,
+    symmetrize,
+)
 
 eps = 1e-12
 
@@ -202,9 +206,7 @@ class EOptimalityMetric(BaseMetric):
             invr_h = torch.cholesky_solve(H_i, chol_r)
             i_z = symmetrize(H_i.transpose(-1, -2) @ invr_h)
 
-            atten = symmetrize(eye_latent + p_pred @ i_z)
-            chol_atten = safe_cholesky(atten + 1e-8 * eye_latent)
-            atten_i_z = torch.cholesky_solve(i_z, chol_atten)
+            atten_i_z = attenuated_state_information(p_pred, i_z)
             info_step = symmetrize(s_sens.transpose(-1, -2) @ atten_i_z @ s_sens)
             j_total = j_total + (self.gamma**i) * info_step
 
@@ -215,7 +217,8 @@ class EOptimalityMetric(BaseMetric):
             p_theta = p_theta.unsqueeze(0)
         if p_theta.shape[0] == 1 and batch > 1:
             p_theta = p_theta.expand(batch, -1, -1)
-        scaled_info = symmetrize(p_theta @ j_total)
+        chol_theta = safe_cholesky(symmetrize(p_theta) + 1e-8 * eye_embed)
+        scaled_info = symmetrize(chol_theta.transpose(-1, -2) @ j_total @ chol_theta)
         eigvals = torch.linalg.eigvalsh(scaled_info + 1e-8 * eye_embed)
         e_opt = eigvals[..., 0]
         self.current_cost = (-e_opt).unsqueeze(-1)
@@ -344,7 +347,8 @@ class StateInformationMetric(_FilteringObjectiveBase):
             chol_r = safe_cholesky(r + 1e-8 * eye_obs)
             invr_h = torch.cholesky_solve(H_i, chol_r)
             i_z = symmetrize(H_i.transpose(-1, -2) @ invr_h)
-            mat = symmetrize(eye + p_pred @ i_z)
+            chol_p = safe_cholesky(symmetrize(p_pred) + 1e-8 * eye)
+            mat = symmetrize(eye + chol_p.transpose(-1, -2) @ i_z @ chol_p)
             chol = safe_cholesky(mat + 1e-8 * eye)
             current = current + (self.gamma**i) * torch.log(
                 torch.diagonal(chol, dim1=-2, dim2=-1).clamp_min(eps)

@@ -4,7 +4,11 @@ import torch
 
 from actdyn.environment.vectorfield import pad_embedding_to_params
 from actdyn.models.model import _kl_div_mc
-from actdyn.utils.torch_utils import jacobian_wrt_param, make_uniform_sampler
+from actdyn.utils.torch_utils import (
+    attenuated_state_information,
+    jacobian_wrt_param,
+    make_uniform_sampler,
+)
 
 
 def test_make_uniform_sampler_shape_and_bounds():
@@ -35,6 +39,26 @@ def test_jacobian_wrt_param_matches_expected_values():
         ]
     )
     assert torch.allclose(J, expected)
+
+
+def test_attenuated_state_information_matches_schur_complement_for_noncommuting_matrices():
+    prior_cov = torch.tensor([[2.0, 0.4], [0.4, 0.8]], dtype=torch.float64)
+    state_info = torch.tensor([[1.5, -0.7], [-0.7, 1.2]], dtype=torch.float64)
+    precision = torch.linalg.inv(prior_cov)
+
+    observed = attenuated_state_information(
+        prior_cov.unsqueeze(0), state_info.unsqueeze(0)
+    )[0]
+    expected = state_info - state_info @ torch.linalg.solve(
+        precision + state_info, state_info
+    )
+    wrong_order = torch.linalg.solve(
+        torch.eye(2, dtype=torch.float64) + prior_cov @ state_info, state_info
+    )
+
+    assert not torch.allclose(wrong_order, expected)
+    assert torch.allclose(observed, expected, atol=1e-10, rtol=1e-10)
+    assert torch.allclose(observed, observed.T, atol=1e-12, rtol=1e-12)
 
 
 def test_kl_div_mc_broadcasts_posterior_terms():

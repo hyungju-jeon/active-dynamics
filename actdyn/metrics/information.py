@@ -13,7 +13,11 @@ from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from .base import BaseMetric
 from torch.nn.functional import softplus
-from actdyn.utils.torch_utils import safe_cholesky, symmetrize
+from actdyn.utils.torch_utils import (
+    attenuated_state_information,
+    safe_cholesky,
+    symmetrize,
+)
 
 eps = 1e-12
 
@@ -499,7 +503,7 @@ class EmbeddingFisherMetric(BaseMetric):
             # I_z = H^T R^{-1} H (Fisher approximation in state space).
             I_z = I_z_all[:, i]
 
-            # DeltaLambda = S^T (I + P^- I_z)^{-1} I_z S.
+            # DeltaLambda = S^T I_z (I + P^- I_z)^{-1} S.
             if self.fully_observed:
                 atten_Iz = I_z
             else:
@@ -507,8 +511,7 @@ class EmbeddingFisherMetric(BaseMetric):
                     P_for_gain = torch.diag_embed(P_diag)
                 else:
                     P_for_gain = P_pred_initial if self.freeze_covariance else P_pred
-                chol_atten = _spd_cholesky(eye_latent + P_for_gain @ I_z, eye_latent)
-                atten_Iz = torch.cholesky_solve(I_z, chol_atten)
+                atten_Iz = attenuated_state_information(P_for_gain, I_z)
             info_step = symmetrize(S_sens.transpose(-1, -2) @ atten_Iz @ S_sens)
             if self.boundary_visibility_enabled:
                 visibility = boundary_visibility(
@@ -535,7 +538,11 @@ class EmbeddingFisherMetric(BaseMetric):
         if P_theta.shape[0] == 1 and batch > 1:
             P_theta = P_theta.expand(batch, -1, -1)
 
-        chol_mat = _spd_cholesky(eye_embedding + P_theta @ J, eye_embedding)
+        chol_theta = _spd_cholesky(P_theta, eye_embedding)
+        scaled_info = symmetrize(
+            eye_embedding + chol_theta.transpose(-1, -2) @ J @ chol_theta
+        )
+        chol_mat = _spd_cholesky(scaled_info, eye_embedding)
         chol_diag = torch.diagonal(chol_mat, dim1=-2, dim2=-1).clamp_min(eps)
         logabsdet = 2.0 * torch.log(chol_diag).sum(dim=-1)
         return 0.5 * logabsdet
