@@ -39,7 +39,6 @@ if __package__ in {None, ""}:
     )
     from actdyn.environment import jacobian_embedding_torch, jacobian_state_torch, residual_np, step_np
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
-    from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
         DEFAULT_LOG_LINEAR_LOADING_SEED,
         DEFAULT_LOG_LINEAR_SNR_SEED,
@@ -73,7 +72,6 @@ else:
     )
     from actdyn.environment import jacobian_embedding_torch, jacobian_state_torch, residual_np, step_np
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
-    from actdyn.utils.validation import trajectory_r2_vectorfield
     from actdyn.utils.experiment_runtime import (
         DEFAULT_LOG_LINEAR_LOADING_SEED,
         DEFAULT_LOG_LINEAR_SNR_SEED,
@@ -1124,7 +1122,6 @@ def _run_single_parameter_identification(
     param_rows: list[dict[str, Any]] = []
     emb_rows: list[dict[str, Any]] = []
     info_rows: list[dict[str, Any]] = []
-    traj_rows: list[dict[str, Any]] = []
     state_action_rows: list[dict[str, Any]] = []
     planned_traj_steps: list[int] = []
     planned_traj_frames: list[np.ndarray] = []
@@ -1478,48 +1475,6 @@ def _run_single_parameter_identification(
             row[f"dyn_param{idx}"] = float(value)
             row[f"dyn_param_learned{idx}"] = int(idx < embedding_dim_active)
 
-    if traj_eval_interval > 0:
-        traj_rng = np.random.default_rng(seed + 137)
-        true_dynamics_type = str(env_preset.resolved_dynamics_type())
-        estimator_dynamics_type = str(env_preset.resolved_dynamics_type(estimator=True))
-        true_full_params = np.asarray(env_preset.resolved_true_params(), dtype=np.float32)
-        estimator_full_params = np.asarray(
-            env_preset.resolved_true_params(estimator=True), dtype=np.float32
-        )
-        min_embedding_dim = int(env_preset.resolved_min_embedding_dim())
-        for row in emb_rows:
-            step = int(row["step"])
-            if step % traj_eval_interval != 0:
-                continue
-            e_values = [float(row[f"e{idx}"]) for idx in range(int(row["embedding_dim"]))]
-            e_trace = torch.as_tensor(e_values, dtype=torch.float32, device=device)
-            traj_rows.append(
-                {
-                    "step": step,
-                    "cpu_time_sec": float(row["cpu_time_sec"]),
-                    "trajectory_r2": trajectory_r2_vectorfield(
-                        e_est=e_trace,
-                        e_true=e_true_flat,
-                        true_dynamics_type=true_dynamics_type,
-                        true_full_params=true_full_params,
-                        estimator_dynamics_type=estimator_dynamics_type,
-                        estimator_full_params=estimator_full_params,
-                        true_min_embedding_dim=min_embedding_dim,
-                        estimator_min_embedding_dim=min_embedding_dim,
-                        dt=dt,
-                        dynamics_alpha=alpha,
-                        horizon=traj_eval_horizon,
-                        n_starts=traj_eval_samples,
-                        rng=traj_rng,
-                        device=device,
-                        state_noise=noise_scale,
-                    ),
-                    "traj_eval_horizon": int(traj_eval_horizon),
-                    "traj_eval_samples": int(traj_eval_samples),
-                    "traj_eval_state_noise": float(noise_scale),
-                }
-            )
-
     ended = datetime.now(timezone.utc)
     result_dir = Path(experiment.results_path)
     param_trace_path = run_dir / "parameter_error_trace.csv"
@@ -1576,18 +1531,6 @@ def _run_single_parameter_identification(
             *emb_dyn_param_learned_fields,
             *emb_cov_fields,
             "cov_diag_mean",
-        ],
-    )
-    write_trace_csv(
-        traj_trace_path,
-        traj_rows,
-        [
-            "step",
-            "cpu_time_sec",
-            "trajectory_r2",
-            "traj_eval_horizon",
-            "traj_eval_samples",
-            "traj_eval_state_noise",
         ],
     )
     write_trace_csv(
@@ -1874,10 +1817,8 @@ def _run_single_parameter_identification(
                 if param_rows
                 else None
             ),
-            "trajectory_r2_final": float(traj_rows[-1]["trajectory_r2"]) if traj_rows else None,
-            "trajectory_r2_mean": (
-                float(np.mean([row["trajectory_r2"] for row in traj_rows])) if traj_rows else None
-            ),
+            "trajectory_r2_final": None,
+            "trajectory_r2_mean": None,
             "trajectory_eval_interval": int(traj_eval_interval),
             "trajectory_eval_horizon": int(traj_eval_horizon),
             "trajectory_eval_samples": int(traj_eval_samples),

@@ -2,14 +2,15 @@ from pathlib import Path
 
 import pytest
 
+from actdyn.utils.experiment_runtime import read_trace_csv, write_trace_csv
 from experiments.experiment_io import (
     experiment_env_slug,
     experiment_run_dir,
     experiment_summary_dir,
     write_json,
 )
-from experiments.experiment_definitions import get_experiment_spec
-from experiments.summarize import collect_track_records
+from experiments.experiment_definitions import get_environment_preset, get_experiment_spec
+from experiments.summarize import collect_track_records, main as summarize_main
 from experiments.tbme import tbme_figures_summary as tbme_summary
 from experiments.tbme.run_tbme_experiments import (
     _shared_tbme_data,
@@ -161,3 +162,80 @@ def test_summary_collects_records_from_tbme_tracks_layout(tmp_path: Path) -> Non
     assert not missing
     assert len(records) == 1
     assert records[0]["run_dir"] == run_dir
+
+
+def test_summary_recomputes_trajectory_r2_from_embedding_trace(tmp_path: Path) -> None:
+    configure_tbme_catalogs()
+    exp_spec = get_experiment_spec("duffing")
+    env_preset = get_environment_preset("tbme_duffing")
+    run_dir = tmp_path / "tracks" / "duffing" / "random" / "seed_0" / "repeat_01"
+    e_true = env_preset.true_embedding_vector(embedding_dim=2)
+    metadata = {
+        "status": "completed",
+        "exp_id": "duffing",
+        "env_preset_id": "tbme_duffing",
+        "policy_id": "random",
+        "seed": 0,
+        "runtime_sec": 1.0,
+        "embedding_error_final": 0.0,
+        "embedding_true": [float(x) for x in e_true.tolist()],
+        "embedding_estimate": [float(x) for x in e_true.tolist()],
+        "dynamics_type": env_preset.resolved_dynamics_type(),
+        "estimator_dynamics_type": env_preset.resolved_dynamics_type(estimator=True),
+        "true_params_full": [float(x) for x in env_preset.resolved_true_params()],
+        "estimator_true_params_full": [
+            float(x) for x in env_preset.resolved_true_params(estimator=True)
+        ],
+        "min_embedding_dim": env_preset.resolved_min_embedding_dim(),
+        "state_noise": 0.0,
+        "trajectory_eval_interval": exp_spec.trajectory_eval_interval,
+        "trajectory_eval_horizon": 3,
+        "trajectory_eval_samples": 4,
+        "embedding_estimate_trace_path": str(run_dir / "embedding_estimate_trace.csv"),
+    }
+    write_json(run_dir / "run_metadata.json", metadata)
+    write_trace_csv(
+        run_dir / "embedding_estimate_trace.csv",
+        [
+            {
+                "step": 0,
+                "cpu_time_sec": 0.0,
+                "embedding_dim": 2,
+                "e0": float(e_true[0]),
+                "e1": float(e_true[1]),
+                "cov_diag_mean": 1.0,
+            },
+            {
+                "step": exp_spec.trajectory_eval_interval,
+                "cpu_time_sec": 0.1,
+                "embedding_dim": 2,
+                "e0": float(e_true[0]),
+                "e1": float(e_true[1]),
+                "cov_diag_mean": 0.5,
+            },
+        ],
+        ["step", "cpu_time_sec", "embedding_dim", "e0", "e1", "cov_diag_mean"],
+    )
+
+    exit_code = summarize_main(
+        [
+            "--base-dir",
+            str(tmp_path),
+            "--exp-id",
+            "duffing",
+            "--summary-dir",
+            str(tmp_path / "summary"),
+            "--policy-ids",
+            "random",
+            "--seeds",
+            "0",
+            "--path-layout",
+            "tbme_tracks",
+        ]
+    )
+
+    assert exit_code == 0
+    traj_rows = read_trace_csv(run_dir / "trajectory_r2_trace.csv")
+    assert [int(row["step"]) for row in traj_rows] == [0, exp_spec.trajectory_eval_interval]
+    metrics_rows = read_trace_csv(tmp_path / "summary" / "metrics.csv")
+    assert float(metrics_rows[0]["trajectory_r2_final_mean"]) >= 0.999

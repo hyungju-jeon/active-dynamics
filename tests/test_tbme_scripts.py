@@ -322,6 +322,56 @@ def test_trajectory_r2_accounts_for_estimator_system_mismatch():
     assert r2 < 0.999
 
 
+def test_trajectory_r2_many_matches_repeated_single_call():
+    from actdyn.utils.validation import trajectory_r2_vectorfield, trajectory_r2_vectorfield_many
+
+    e_true = torch.tensor([-0.55, 1.0], dtype=torch.float32)
+    estimates = torch.tensor(
+        [
+            [-0.55, 1.0],
+            [-0.45, 0.85],
+            [-0.65, 1.15],
+        ],
+        dtype=torch.float32,
+    )
+    kwargs = {
+        "true_dynamics_type": "duffing",
+        "true_full_params": np.asarray([-0.55, 1.0, 0.1], dtype=np.float32),
+        "estimator_dynamics_type": "duffing",
+        "estimator_full_params": np.asarray([-0.55, 1.0, 0.1], dtype=np.float32),
+        "true_min_embedding_dim": 2,
+        "estimator_min_embedding_dim": 2,
+        "dt": 0.01,
+        "dynamics_alpha": 1.0,
+        "horizon": 8,
+        "n_starts": 5,
+        "device": "cpu",
+        "state_noise": 0.1,
+    }
+
+    sequential_rng = np.random.default_rng(123)
+    expected = np.asarray(
+        [
+            trajectory_r2_vectorfield(
+                e_est=estimate,
+                e_true=e_true,
+                rng=sequential_rng,
+                **kwargs,
+            )
+            for estimate in estimates
+        ],
+        dtype=np.float32,
+    )
+    observed = trajectory_r2_vectorfield_many(
+        e_estimates=estimates,
+        e_true=e_true,
+        rng=np.random.default_rng(123),
+        **kwargs,
+    )
+
+    np.testing.assert_allclose(observed, expected, rtol=1e-6, atol=1e-6)
+
+
 def test_tbme_all_runner_parser_accepts_expected_args(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

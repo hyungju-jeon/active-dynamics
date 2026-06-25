@@ -234,6 +234,9 @@ def _recompute_trajectory_trace_rows(
     env_preset: Any,
     interval: int = 10,
 ) -> list[dict[str, Any]]:
+    interval = int(interval)
+    if interval <= 0:
+        return []
     emb_trace_path = _trace_path(
         record,
         metadata_key="embedding_estimate_trace_path",
@@ -264,7 +267,7 @@ def _recompute_trajectory_trace_rows(
         if step is None:
             continue
         step_i = int(step)
-        if step_i % int(interval) != 0:
+        if step_i % interval != 0:
             continue
         embedding = _extract_embedding_vector(row)
         if embedding is None or embedding.shape[0] < expected_dim:
@@ -326,6 +329,15 @@ def _recompute_trajectory_trace_rows(
     return out_rows
 
 
+def _trajectory_eval_interval(metadata: dict[str, Any], exp_spec: Any) -> int:
+    raw = metadata.get("trajectory_eval_interval")
+    if raw is None:
+        raw = metadata.get("traj_eval_interval")
+    if raw is None:
+        raw = exp_spec.trajectory_eval_interval
+    return int(raw)
+
+
 def recompute_trajectory_r2_traces(records: list[dict[str, Any]], *, exp_spec: Any) -> int:
     count = 0
     for record in records:
@@ -334,7 +346,7 @@ def recompute_trajectory_r2_traces(records: list[dict[str, Any]], *, exp_spec: A
             record,
             exp_spec=exp_spec,
             env_preset=env_preset,
-            interval=int(exp_spec.trajectory_eval_interval),
+            interval=_trajectory_eval_interval(record["metadata"], exp_spec),
         )
         if not rows:
             continue
@@ -366,7 +378,7 @@ def aggregate_trajectory_r2_trace(
                     record,
                     exp_spec=exp_spec,
                     env_preset=env_preset,
-                    interval=10,
+                    interval=_trajectory_eval_interval(record["metadata"], exp_spec),
                 )
             for row in trace_rows:
                 step = safe_float(row.get("step"))
@@ -596,7 +608,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--recompute-trajectory-r2",
         action="store_true",
-        help="Rewrite per-run trajectory_r2_trace.csv from embedding traces before summarizing.",
+        help="Deprecated: summaries recompute trajectory R2 from embedding traces by default.",
     )
     return parser
 
@@ -626,8 +638,8 @@ def main(argv: list[str] | None = None) -> int:
         policy_filter=policy_filter,
         layout=str(args.path_layout),
     )
+    refreshed = recompute_trajectory_r2_traces(records, exp_spec=exp_spec)
     if args.recompute_trajectory_r2:
-        refreshed = recompute_trajectory_r2_traces(records, exp_spec=exp_spec)
         print(f"Refreshed {refreshed} trajectory R2 traces for {exp_spec.exp_id}")
     value_key = "embedding_error_final"
     trace_key = "parameter_error_trace_path"
