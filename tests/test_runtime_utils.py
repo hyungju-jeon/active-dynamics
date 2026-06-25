@@ -37,6 +37,16 @@ def test_configure_runtime_returns_valid_device():
     assert device in {"cpu", "cuda", "mps"}
 
 
+def test_worker_result_tensor_uses_shared_cpu_storage() -> None:
+    tensor = torch.ones(2, 3)
+    result = mpc_module._worker_result_tensor(tensor)
+
+    assert result is not None
+    assert result.is_shared()
+    assert torch.allclose(result, tensor)
+    assert result.data_ptr() != tensor.data_ptr()
+
+
 def test_ensure_dir_creates_directory(tmp_path: Path):
     target = tmp_path / "a" / "b" / "c"
     result = ensure_dir(target)
@@ -246,7 +256,7 @@ def test_experiment_loop_does_not_update_policy_outside_agent_step():
     assert experiment.rollout.add_calls == 3
 
 
-def test_experiment_loop_queues_rollout_saves(monkeypatch, tmp_path: Path):
+def test_experiment_loop_skips_intermediate_async_rollout_save(monkeypatch, tmp_path: Path):
     from actdyn.core import experiment as experiment_module
 
     def fail_sync_save(*_args, **_kwargs):
@@ -298,7 +308,7 @@ def test_experiment_loop_queues_rollout_saves(monkeypatch, tmp_path: Path):
     experiment.training_info = {"loss": 1.0}
     experiment.init_experiment = lambda reset=True: None
     experiment._setup_video_recording = lambda: None
-    experiment.check_step = lambda kind: kind == "save"
+    experiment.check_step = lambda kind: kind == "save" and experiment.env_step == 1
     experiment.update_writer = experiment_module.Experiment.update_writer.__get__(
         experiment, experiment_module.Experiment
     )
@@ -317,7 +327,6 @@ def test_experiment_loop_queues_rollout_saves(monkeypatch, tmp_path: Path):
     assert experiment.writer.transitions == 2
     assert experiment.writer.scalar_calls == 2
     assert experiment.writer.saves == [
-        ("rollout_1.pkl", 100),
         ("rollout_2.pkl", None),
     ]
 

@@ -442,15 +442,19 @@ class Experiment:
             self.update_writer(self.training_info)
             self.update_pbar(self.pbar)
 
-            if self.check_step("save"):
+            final_save = done or self.env_step >= train_cfg.total_steps
+            if self.check_step("save") or final_save:
                 rollout_path = self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"
                 save_async = getattr(getattr(self, "writer", None), "save_rollout", None)
-                keep_last = 100 if self.env_step < train_cfg.total_steps else None
+                keep_last = None if final_save else 100
                 if callable(save_async):
-                    save_async(rollout_path, keep_last=keep_last)
+                    # ponytail: skip nonfinal async pickle checkpoints; add a realtime-safe
+                    # checkpoint format if mid-run resume becomes important again.
+                    if final_save:
+                        save_async(rollout_path, keep_last=keep_last)
                 else:
                     save_rollout(self.rollout, str(rollout_path))
-                if self.env_step < train_cfg.total_steps:
+                if not final_save:
                     self.rollout.clear(keep_last=100)
 
             if self.check_step("plot") and plot_fcn:

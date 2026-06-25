@@ -42,6 +42,15 @@ def _move_tensors_to_device(value: Any, device: torch.device) -> Any:
     return value
 
 
+def _worker_result_tensor(value: torch.Tensor | None) -> torch.Tensor | None:
+    if value is None:
+        return None
+    tensor = value.detach().clone()
+    if tensor.device.type == "cpu":
+        tensor.share_memory_()
+    return tensor
+
+
 def _warm_process_worker() -> None:
     return None
 
@@ -1839,17 +1848,27 @@ class AsyncMpcICem(MpcICem):
         final_boundary_state = getattr(planner.model, "_state", predicted_boundary_state)
         return_warm_start = bool(getattr(planner, "_return_worker_warm_start", True))
         return _AsyncPlanResult(
-            actions=actions.detach().clone(),
-            cost=cost.detach().clone(),
-            predicted_boundary_state=final_boundary_state.detach().clone(),
+            actions=_worker_result_tensor(actions),
+            cost=_worker_result_tensor(cost),
+            predicted_boundary_state=_worker_result_tensor(final_boundary_state),
             runtime_sec=float(runtime),
             status="completed",
             model_update_version=model_update_version,
-            mean=getattr(planner, "mean", None) if return_warm_start else None,
-            std=getattr(planner, "std", None) if return_warm_start else None,
-            elite_actions=getattr(planner, "elite_actions", None) if return_warm_start else None,
+            mean=_worker_result_tensor(getattr(planner, "mean", None))
+            if return_warm_start
+            else None,
+            std=(
+                _worker_result_tensor(getattr(planner, "std", None))
+                if return_warm_start
+                else None
+            ),
+            elite_actions=_worker_result_tensor(getattr(planner, "elite_actions", None))
+            if return_warm_start
+            else None,
             elite_costs_traj=(
-                getattr(planner, "elite_costs_traj", None) if return_warm_start else None
+                _worker_result_tensor(getattr(planner, "elite_costs_traj", None))
+                if return_warm_start
+                else None
             ),
             realtime_prefix_index=realtime_prefix_index,
             anytime_launch_step=int(getattr(planner, "_active_anytime_launch_step", 0)),
