@@ -57,6 +57,7 @@ uv.lock
 # IDE
 .idea/
 .vscode/
+.debug-journal.md
 *.swp
 *.swo
 .DS_Store
