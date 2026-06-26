@@ -49,6 +49,7 @@ environments:
     extends: tbme_duffing
     system_label: hard duffing oscillator with asymmetric loading
     asymmetric_loading: true
+    observation_primary_scale: 5.0
 
   tbme_duffing_parameter_mismatch:
     extends: tbme_duffing
@@ -143,11 +144,21 @@ environments:
     - 1.1
 
   tbme_gated_duffing_challenging:
-    extends: tbme_duffing_asymmetric
+    extends: tbme_gated_duffing_asymmetric
     system_label: Gated Duffing / challenging
     state_noise: 0.25
     loading_target_snr_db: -10.0
     action_max: 0.75
+
+  tbme_gated_duffing_state_noise_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild state noise
+    state_noise: 0.25
+  
+  tbme_gated_duffing_state_noise_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong state noise
+    state_noise: 0.5
 
   tbme_gated_duffing_observation_bottleneck_mild:
     extends: tbme_gated_duffing
