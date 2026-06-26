@@ -8,6 +8,8 @@ DEFAULT_EXP_IDS = (
     "gated_duffing_observation_bottleneck_strong",
     "gated_duffing_action_bottleneck_mild",
     "gated_duffing_action_bottleneck_strong",
+    "gated_duffing_state_noise_mild",
+    "gated_duffing_state_noise_strong",
 )
 MODEL_IDS = [
     "adaptive",
@@ -53,6 +55,14 @@ EXPERIMENT_SUITES = {
     "gated_duffing_action_bottleneck_strong": {
         **SHARED_EXP_ARGS,
         "env_preset_id": "tbme_gated_duffing_action_bottleneck_strong",
+    },
+    "gated_duffing_state_noise_mild": {
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_state_noise_mild",
+    },
+    "gated_duffing_state_noise_strong": {
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_gated_duffing_state_noise_strong",
     },
 }
 
