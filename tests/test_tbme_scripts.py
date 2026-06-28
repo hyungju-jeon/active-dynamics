@@ -82,6 +82,52 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
     ]
 
 
+def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    from experiments.tbme.tbme_figures_experiment import plot_objective_ablation
+
+    policy_id = "active_dynamics"
+    sources = [
+        SimpleNamespace(exp_id=f"condition_{idx}", label=f"Condition {idx}")
+        for idx in range(3)
+    ]
+    metric_rows = [
+        {
+            "experiment": source.exp_id,
+            "policy_id": policy_id,
+            "step_to_r2_0p95": 10.0 + idx,
+        }
+        for idx, source in enumerate(sources)
+    ]
+    curves_by_source = {
+        source.exp_id: {
+            policy_id: [
+                {"step": 0.0, "value": 0.1, "sem": 0.0},
+                {"step": 1.0, "value": 0.96, "sem": 0.01},
+            ]
+        }
+        for source in sources
+    }
+    output_path = tmp_path / "objective_ablation.pdf"
+
+    written = plot_objective_ablation(
+        output_path,
+        sources=sources,
+        metric_rows=metric_rows,
+        curves_by_source=curves_by_source,
+        policy_ids=[policy_id],
+        policy_label=lambda _policy_id: "Active dynamics",
+        policy_color=lambda _policy_id: "#1f77b4",
+        apply_style=None,
+        style_axis=lambda _ax: None,
+        stroke_color="#000000",
+        neutral_light="#cccccc",
+    )
+
+    assert written == output_path
+    assert output_path.exists()
+
+
 def test_tbme_catalog_define_expected_matrices():
     module = _load_module("tbme_catalogs_current", "experiments/tbme/run_tbme_experiments.py")
     bundle = module.configure_tbme_catalogs()

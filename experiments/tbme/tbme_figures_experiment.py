@@ -350,7 +350,7 @@ def plot_objective_ablation(
     fig, axes = plt_module.subplots(len(sources), 2, figsize=(7.15, 5.05), squeeze=False)
     x = np.arange(len(policy_ids), dtype=np.float64)
     x_labels = [policy_label(policy_id) for policy_id in policy_ids]
-    letters = ["A", "B", "C", "D"]
+    letters = [chr(ord("A") + idx) for idx in range(2 * len(sources))]
     for source_idx, source in enumerate(sources):
         row_metrics = [row for row in metric_rows if row["experiment"] == source.exp_id]
         bars = [

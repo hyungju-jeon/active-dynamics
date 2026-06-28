@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import math
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -66,14 +65,6 @@ _POLICY_LABELS = {
     "rhc": "RHC-US",
     "off_policy": "Off-policy",
 }
-_ASSET_BENCHMARK_POLICIES = [
-    "adaptive",
-    "active_planning",
-    "active_myopic",
-    "active_state_variance",
-    "prbs",
-    "random",
-]
 _ASSET_MATCHED_POLICIES = [
     "adaptive",
     "active_myopic",
@@ -203,113 +194,6 @@ def _asset_plot_r2_curves(
         ax.set_ylabel("Predictive R2")
 
 
-def _asset_sort_r2_strip_rows(
-    suite_policy_rows: Sequence[tuple[Path, str, str]],
-    curve_cache: Mapping[Path, dict[str, list[dict[str, float]]]],
-) -> list[tuple[Path, str, str]]:
-    threshold_steps = []
-    for suite_dir, policy_id, _label in suite_policy_rows:
-        step = _experiment_r2_threshold_step(suite_dir, policy_id, 0.90)
-        if step is not None:
-            threshold_steps.append(step)
-    comparison_step = max(threshold_steps) if threshold_steps else math.inf
-
-    keyed_rows = []
-    for order, row in enumerate(suite_policy_rows):
-        suite_dir, policy_id, _label = row
-        step = _experiment_r2_threshold_step(suite_dir, policy_id, 0.90)
-        if step is not None:
-            keyed_rows.append((0, step, order, row))
-            continue
-        values = [
-            float(curve_row["value"])
-            for curve_row in curve_cache[suite_dir].get(policy_id, [])
-            if float(curve_row["step"]) <= comparison_step
-            and math.isfinite(float(curve_row["value"]))
-        ]
-        keyed_rows.append((1, -max(values) if values else math.inf, order, row))
-    keyed_rows.sort(key=lambda item: item[:3])
-    return [row for _rank, _score, _order, row in keyed_rows]
-
-
-def _asset_plot_r2_strips(
-    ax: Any,
-    suite_policy_rows: Sequence[tuple[Path, str, str]],
-    *,
-    title: str,
-    show_ylabels: bool = True,
-    policy_order: Sequence[str] | None = None,
-) -> Any:
-    curve_cache = {
-        suite_dir: _experiment_curve_rows(
-            suite_dir,
-            "trajectory_r2_over_steps.csv",
-            "trajectory_r2_mean",
-        )
-        for suite_dir, _policy_id, _label in suite_policy_rows
-    }
-    if policy_order is None:
-        suite_policy_rows = _asset_sort_r2_strip_rows(suite_policy_rows, curve_cache)
-    else:
-        order_by_policy = {policy_id: order for order, policy_id in enumerate(policy_order)}
-        suite_policy_rows = sorted(
-            suite_policy_rows,
-            key=lambda row: order_by_policy.get(row[1], len(order_by_policy)),
-        )
-    steps = sorted(
-        {
-            float(row["step"])
-            for suite_dir, policy_id, _label in suite_policy_rows
-            for row in curve_cache[suite_dir].get(policy_id, [])
-        }
-    )
-    if not steps:
-        raise RuntimeError(f"No trajectory R2 curves available for {title}")
-    step_to_idx = {step: idx for idx, step in enumerate(steps)}
-    matrix = np.full((len(suite_policy_rows), len(steps)), np.nan, dtype=np.float64)
-    for row_idx, (suite_dir, policy_id, _label) in enumerate(suite_policy_rows):
-        for row in curve_cache[suite_dir].get(policy_id, []):
-            matrix[row_idx, step_to_idx[float(row["step"])]] = float(row["value"])
-
-    import matplotlib.pyplot as plt
-    from matplotlib.colors import PowerNorm
-
-    strip_cmap = plt.get_cmap("afmhot_r", 20).copy()
-    strip_cmap.set_bad("#F1F1EE")
-    im = ax.imshow(
-        matrix,
-        aspect="auto",
-        origin="upper",
-        cmap=strip_cmap,
-        norm=PowerNorm(gamma=2.0, vmin=0.5, vmax=1.0),
-        extent=[steps[0], steps[-1], len(suite_policy_rows) - 0.5, -0.5],
-    )
-    threshold_styles = {0.90: ":", 0.95: "--", 0.99: "-."}
-    for row_idx, (suite_dir, policy_id, _label) in enumerate(suite_policy_rows):
-        for threshold in _ASSET_R2_THRESHOLDS:
-            step = _experiment_r2_threshold_step(suite_dir, policy_id, threshold)
-            if step is None:
-                continue
-            ax.vlines(
-                step,
-                row_idx - 0.42,
-                row_idx + 0.42,
-                color="white",
-                linestyle=threshold_styles[threshold],
-                linewidth=0.75,
-                alpha=0.95,
-            )
-    ax.set_title(title, pad=3.0, fontsize=9.5)
-    ax.set_xlabel("Environment step")
-    ax.set_yticks(np.arange(len(suite_policy_rows), dtype=np.float64))
-    ax.set_yticklabels(
-        [label for _suite_dir, _policy_id, label in suite_policy_rows] if show_ylabels else [],
-        fontsize=5.7,
-    )
-    _style_manuscript_axis(ax, grid_alpha=0.0)
-    return im
-
-
 def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
     sources = [
         _ExperimentSuiteSource(ref.suite_id, ref.label, ref.session_root / "tracks" / ref.suite_id)
@@ -370,142 +254,15 @@ def _asset_bottleneck_sources() -> list[_ExperimentSuiteSource]:
         ),
         _ExperimentSuiteSource(
             "gated_duffing_action_bottleneck_mild",
-            "Act. 0.55",
+            "Act. 0.75",
             _suite_dir("observation_action_bottleneck", "gated_duffing_action_bottleneck_mild"),
         ),
         _ExperimentSuiteSource(
             "gated_duffing_action_bottleneck_strong",
-            "Act. 0.35",
+            "Act. 0.50",
             _suite_dir("observation_action_bottleneck", "gated_duffing_action_bottleneck_strong"),
         ),
     ]
-
-
-def _asset_bottleneck_rows(
-    sources: Sequence[_ExperimentSuiteSource],
-    policy_ids: Sequence[str],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for source in sources:
-        for policy_id in policy_ids:
-            r2, r2_sem, n_r2 = _experiment_metric_mean_sem(
-                source.suite_dir,
-                policy_id,
-                "trajectory_r2_final_mean",
-            )
-            rows.append(
-                {
-                    "experiment": source.exp_id,
-                    "condition": source.label,
-                    "policy_id": policy_id,
-                    "policy_label": _asset_policy_label(policy_id),
-                    "trajectory_r2_mean": r2,
-                    "trajectory_r2_sem": r2_sem,
-                    "step_to_r2_0p90": _experiment_r2_threshold_step(
-                        source.suite_dir,
-                        policy_id,
-                        threshold=0.90,
-                    ),
-                    "n_r2": n_r2,
-                }
-            )
-    return rows
-
-
-def _asset_plot_constraints(output_path: Path) -> Path:
-    sources = _asset_bottleneck_sources()
-    _asset_require_suite_dirs([source.suite_dir for source in sources])
-    rows = _asset_bottleneck_rows(sources, _ASSET_BENCHMARK_POLICIES)
-    row_by_key = {(row["condition"], row["policy_id"]): row for row in rows}
-    for row in rows:
-        baseline = row_by_key.get(("Nominal", row["policy_id"]), {})
-        baseline_r2 = baseline.get("trajectory_r2_mean")
-        row["trajectory_r2_delta_from_nominal"] = (
-            None
-            if row["condition"] == "Nominal"
-            or row["trajectory_r2_mean"] is None
-            or baseline_r2 is None
-            else float(row["trajectory_r2_mean"]) - float(baseline_r2)
-        )
-    _write_csv(
-        output_path.with_suffix(".csv"),
-        rows,
-        [
-            "experiment",
-            "condition",
-            "policy_id",
-            "policy_label",
-            "trajectory_r2_mean",
-            "trajectory_r2_sem",
-            "trajectory_r2_delta_from_nominal",
-            "step_to_r2_0p90",
-            "n_r2",
-        ],
-    )
-    plt_module = load_plotting(output_path, apply_style=_apply_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(
-        2,
-        1,
-        figsize=(7.25, 5.15),
-        gridspec_kw={"height_ratios": [1.45, 1.0]},
-    )
-    strip_rows = [
-        (source.suite_dir, policy_id, f"{source.label}: {_asset_policy_label(policy_id)}")
-        for source in sources
-        for policy_id in _ASSET_BENCHMARK_POLICIES
-    ]
-    im = _asset_plot_r2_strips(
-        axes[0],
-        strip_rows,
-        title="A. Predictive R2 over bottlenecked rollouts",
-    )
-    cbar = fig.colorbar(im, ax=axes[0], fraction=0.030, pad=0.01)
-    cbar.set_label("Predictive R2")
-    cbar.outline.set_linewidth(0.45)
-
-    x = np.arange(len(sources), dtype=np.float64)
-    for idx, policy_id in enumerate(_ASSET_BENCHMARK_POLICIES):
-        deltas = []
-        delta_sem = []
-        baseline = row_by_key[("Nominal", policy_id)]
-        baseline_r2 = baseline["trajectory_r2_mean"]
-        baseline_sem = baseline["trajectory_r2_sem"]
-        for source in sources:
-            row = row_by_key[(source.label, policy_id)]
-            value = row["trajectory_r2_mean"]
-            if value is None or baseline_r2 is None:
-                deltas.append(np.nan)
-                delta_sem.append(0.0)
-            elif source.label == "Nominal":
-                deltas.append(0.0)
-                delta_sem.append(0.0)
-            else:
-                deltas.append(float(value) - float(baseline_r2))
-                delta_sem.append(
-                    math.sqrt(float(row["trajectory_r2_sem"]) ** 2 + float(baseline_sem) ** 2)
-                )
-        axes[1].errorbar(
-            x,
-            deltas,
-            yerr=delta_sem,
-            marker="o",
-            color=_policy_color(policy_id),
-            markersize=3.6,
-            capsize=2.0,
-            linewidth=0.9,
-            label=_asset_policy_label(policy_id),
-        )
-    axes[1].axhline(0.0, color=_experiment_C_STROKE, linewidth=0.7)
-    axes[1].set_xticks(x)
-    axes[1].set_xticklabels([source.label for source in sources], rotation=18, ha="right")
-    axes[1].set_ylabel("Final R2 change vs nominal")
-    axes[1].set_title("B. Degradation from easy observation/action setting")
-    axes[1].legend(loc="lower left", fontsize=6.0, ncol=3)
-    _style_experiment_axis(axes[1])
-    fig.tight_layout(h_pad=1.0)
-    return save_figure(fig, output_path, plt_module=plt_module)
 
 
 def _asset_trace_abs(record: _ExperimentRunRecord, traj: np.ndarray) -> float:
@@ -756,19 +513,18 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
-def _asset_plot_objective_ablation(output_path: Path) -> Path:
-    sources = _experiment_objective_sources()
+def _asset_plot_method_comparison(
+    output_path: Path,
+    *,
+    figure_title: str,
+    sources: Sequence[_ExperimentSuiteSource],
+    policy_ids: Sequence[str],
+) -> Path:
     _asset_require_suite_dirs([source.suite_dir for source in sources])
     threshold = 0.95
     metric_rows: list[dict[str, Any]] = []
-    curves_by_source: dict[str, dict[str, list[dict[str, float]]]] = {}
     for source in sources:
-        curves_by_source[source.exp_id] = _experiment_curve_rows(
-            source.suite_dir,
-            "trajectory_r2_over_steps.csv",
-            "trajectory_r2_mean",
-        )
-        for policy_id in _experiment_OBJECTIVE_POLICIES:
+        for policy_id in policy_ids:
             err, err_sem, n_err = _experiment_metric_mean_sem(
                 source.suite_dir,
                 policy_id,
@@ -823,69 +579,38 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
     plt_module = load_plotting(output_path, apply_style=_apply_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    n_rows = len(sources)
-    fig, axes = plt_module.subplots(n_rows, 2, figsize=(7.25, 2.25 * n_rows + 0.65), squeeze=False)
+    fig = plt_module.figure(figsize=(7.25, 4.55))
+    gs = fig.add_gridspec(2, len(sources), height_ratios=[1.18, 1.0])
+    curve_axes = [fig.add_subplot(gs[0, idx]) for idx in range(len(sources))]
+    ax_bar = fig.add_subplot(gs[1, :])
     for source_idx, source in enumerate(sources):
-        ax_curve = axes[source_idx, 0]
-        curves = curves_by_source[source.exp_id]
-        for policy_id in _experiment_OBJECTIVE_POLICIES:
-            curve_rows = curves.get(policy_id, [])
-            if not curve_rows:
-                continue
-            steps = np.asarray([row["step"] for row in curve_rows], dtype=np.float64)
-            values = np.asarray([row["value"] for row in curve_rows], dtype=np.float64)
-            sem = np.asarray([row["sem"] for row in curve_rows], dtype=np.float64)
-            color = _policy_color(policy_id)
-            ax_curve.plot(
-                steps,
-                values,
-                color=color,
-                linewidth=0.95,
-                label=_asset_policy_label(policy_id),
-            )
-            ax_curve.fill_between(
-                steps,
-                values - sem,
-                values + sem,
-                color=color,
-                alpha=0.10,
-                linewidth=0.0,
-            )
-        ax_curve.axhline(0.95, color=_experiment_C_NEUTRAL_LIGHT, linestyle="--", linewidth=0.75)
-        ax_curve.set_xlabel("Environment step")
-        ax_curve.set_ylabel("Predictive R2")
-        ax_curve.set_ylim(-0.1, 1.05)
-        ax_curve.set_title(f"{chr(65 + source_idx)}. {source.label}: recovery")
-        _style_experiment_axis(ax_curve)
+        _asset_plot_r2_curves(
+            curve_axes[source_idx],
+            source.suite_dir,
+            policy_ids,
+            title=f"{chr(65 + source_idx)}. {source.label}: recovery",
+            ylabel=source_idx == 0,
+        )
 
-    x = np.arange(len(_experiment_OBJECTIVE_POLICIES), dtype=np.float64)
-    width = min(0.28, 0.72 / max(len(sources), 1))
-    offsets = np.linspace(-0.32, 0.32, len(sources))
-    x_labels = [_asset_policy_label(policy_id) for policy_id in _experiment_OBJECTIVE_POLICIES]
-    ax_final = axes[0, 1]
-    ax_delta = axes[min(1, n_rows - 1), 1]
-    for row_idx in range(2, n_rows):
-        axes[row_idx, 1].set_axis_off()
+    x = np.arange(len(policy_ids), dtype=np.float64) * 1.24
+    width = 0.15
+    offsets = (np.arange(len(sources), dtype=np.float64) - (len(sources) - 1) / 2.0) * 0.18
+    x_labels = [_asset_policy_label(policy_id) for policy_id in policy_ids]
     bar_colors = (_experiment_C_STROKE, "#6F6A62", _experiment_C_NEUTRAL_LIGHT)
     for source_idx, source in enumerate(sources):
         source_rows = [row for row in metric_rows if row["experiment"] == source.exp_id]
         row_by_policy = {str(row["policy_id"]): row for row in source_rows}
-        baseline = row_by_policy["active_planning"]["trajectory_r2_mean"]
         final_r2 = []
         final_sem = []
-        delta_r2 = []
-        for policy_id in _experiment_OBJECTIVE_POLICIES:
+        for policy_id in policy_ids:
             row = row_by_policy[policy_id]
             value = row["trajectory_r2_mean"]
             final_r2.append(np.nan if value is None else float(value))
             final_sem.append(
                 0.0 if row["trajectory_r2_sem"] is None else float(row["trajectory_r2_sem"])
             )
-            delta_r2.append(
-                np.nan if value is None or baseline is None else float(value) - float(baseline)
-            )
         color = bar_colors[source_idx % len(bar_colors)]
-        ax_final.bar(
+        ax_bar.bar(
             x + offsets[source_idx],
             final_r2,
             width=width,
@@ -897,39 +622,80 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
             capsize=1.6,
             label=source.label,
         )
-        ax_delta.bar(
-            x + offsets[source_idx],
-            delta_r2,
-            width=width,
-            color=color,
-            edgecolor=_experiment_C_STROKE,
-            linewidth=0.4,
-            alpha=0.78,
-            label=source.label,
-        )
-    ax_final.set_ylabel("Final predictive R2")
-    ax_final.set_ylim(-0.05, 1.05)
-    ax_final.set_title("C. Final ablation performance")
-    ax_delta.axhline(0.0, color=_experiment_C_STROKE, linewidth=0.7)
-    ax_delta.set_ylabel("R2 change vs full EIG")
-    ax_delta.set_title("D. Contribution relative to full EIG")
-    for ax in (ax_final, ax_delta):
-        ax.set_xticks(x)
-        ax.set_xticklabels(x_labels, rotation=34, ha="right", fontsize=6.0)
-        _style_manuscript_axis(ax, grid_axis="y")
-    handles, labels = axes[0, 0].get_legend_handles_labels()
+    ax_bar.set_ylabel("Final predictive R2")
+    ax_bar.set_ylim(0.0, 1.0)
+    ax_bar.set_title(f"{chr(65 + len(sources))}. {figure_title}: final performance")
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels(x_labels, rotation=34, ha="right", fontsize=6.0)
+    ax_bar.legend(loc="upper left", fontsize=6.0, ncol=len(sources))
+    _style_manuscript_axis(ax_bar, grid_axis="y")
+    handles, labels = curve_axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
         labels,
         loc="upper center",
         bbox_to_anchor=(0.5, 1.01),
-        ncol=4,
+        ncol=min(4, len(policy_ids)),
         fontsize=6.2,
         columnspacing=0.9,
         handlelength=1.4,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94), w_pad=0.85, h_pad=1.0)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92), w_pad=0.75, h_pad=1.0)
     return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _asset_plot_objective_ablation(output_path: Path) -> Path:
+    sources = [
+        _ExperimentSuiteSource(source.exp_id, label, source.suite_dir)
+        for source, label in zip(
+            _experiment_objective_sources(),
+            ("Nominal", "Asymmetric", "Challenging"),
+        )
+    ]
+    return _asset_plot_method_comparison(
+        output_path,
+        figure_title="Objective ablation",
+        sources=sources,
+        policy_ids=_experiment_OBJECTIVE_POLICIES,
+    )
+
+
+def _asset_plot_constraints(output_path: Path) -> list[Path]:
+    bottleneck_sources = _asset_bottleneck_sources()
+    figures = (
+        ("snr", "Observation SNR", tuple(bottleneck_sources[:3])),
+        (
+            "asymmetry",
+            "Asymmetry",
+            (
+                _ExperimentSuiteSource(
+                    "gated_duffing",
+                    "Nominal",
+                    _suite_dir("simple_system_identification", "gated_duffing"),
+                ),
+                _ExperimentSuiteSource(
+                    "gated_duffing_asymmetric",
+                    "Asymmetric",
+                    _suite_dir("observation_action_bottleneck", "gated_duffing_asymmetric"),
+                ),
+            ),
+        ),
+        ("action", "Action budget", (bottleneck_sources[0], *bottleneck_sources[3:])),
+    )
+    written: list[Path] = []
+    for suffix, figure_title, sources in figures:
+        figure_path = output_path.with_name(
+            f"{output_path.stem}_{suffix}{output_path.suffix}"
+        )
+        written.append(
+            _asset_plot_method_comparison(
+                figure_path,
+                figure_title=figure_title,
+                sources=sources,
+                policy_ids=_ASSET_MATCHED_POLICIES,
+            )
+        )
+    return written
 
 
 def _asset_plot_eig_components(output_path: Path) -> Path:
@@ -995,7 +761,7 @@ def assets_main(argv: list[str] | None = None) -> int:
             _asset_plot_active_vs_baselines,
         ),
         (
-            "tbme_fig04_bottlenecks.pdf",
+            "tbme_fig04_constraints.pdf",
             {"simple_system_identification", "observation_action_bottleneck"},
             _asset_plot_constraints,
         ),
@@ -1013,7 +779,11 @@ def assets_main(argv: list[str] | None = None) -> int:
             skipped.append((filename, "missing groups " + ", ".join(sorted(missing))))
             continue
         try:
-            written.append(plotter(output_dir / filename))
+            result = plotter(output_dir / filename)
+            if isinstance(result, Path):
+                written.append(result)
+            else:
+                written.extend(result)
         except RuntimeError as exc:
             if "No trajectory R2 curves available" not in str(exc):
                 raise
