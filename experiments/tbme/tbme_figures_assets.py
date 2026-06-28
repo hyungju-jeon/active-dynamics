@@ -142,11 +142,14 @@ def _asset_plot_r2_curves(
     title: str,
     ylabel: bool,
 ) -> None:
+    from matplotlib.ticker import FixedLocator, LogFormatterMathtext, NullFormatter
+
     curves = _experiment_curve_rows(
         suite_dir,
         "trajectory_r2_over_steps.csv",
         "trajectory_r2_mean",
     )
+    curve_series = []
     for policy_id in policy_ids:
         rows = curves.get(policy_id, [])
         if not rows:
@@ -155,29 +158,49 @@ def _asset_plot_r2_curves(
         values = np.asarray([row["value"] for row in rows], dtype=np.float64)
         sem = np.asarray([row["sem"] for row in rows], dtype=np.float64)
         color = _policy_color(policy_id)
-        ax.plot(
-            steps,
-            values,
-            color=color,
-            linewidth=0.95,
-            label=_asset_policy_label(policy_id),
+        curve_series.append((steps, values, sem, color, _asset_policy_label(policy_id)))
+
+    inset = ax.inset_axes([0.55, 0.13, 0.40, 0.40])
+    for curve_ax, linewidth, alpha, labels in (
+        (ax, 0.95, 0.10, True),
+        (inset, 0.65, 0.08, False),
+    ):
+        for steps, values, sem, color, label in curve_series:
+            curve_ax.plot(
+                steps,
+                values,
+                color=color,
+                linewidth=linewidth,
+                label=label if labels else None,
+            )
+            curve_ax.fill_between(
+                steps,
+                values - sem,
+                values + sem,
+                color=color,
+                alpha=alpha,
+                linewidth=0.0,
+            )
+        for threshold in _ASSET_R2_THRESHOLDS:
+            curve_ax.axhline(
+                threshold,
+                color=_experiment_C_NEUTRAL_LIGHT,
+                linestyle="--",
+                linewidth=0.55,
         )
-        ax.fill_between(
-            steps,
-            values - sem,
-            values + sem,
-            color=color,
-            alpha=0.10,
-            linewidth=0.0,
-        )
-    for threshold in _ASSET_R2_THRESHOLDS:
-        ax.axhline(threshold, color=_experiment_C_NEUTRAL_LIGHT, linestyle="--", linewidth=0.55)
+        curve_ax.set_xlim(left=0.0)
+        curve_ax.set_yscale("log", nonpositive="clip")
+        curve_ax.set_ylim(0.1, 1.0)
+        curve_ax.yaxis.set_major_locator(FixedLocator([0.1, 1.0]))
+        curve_ax.yaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
+        curve_ax.yaxis.set_minor_formatter(NullFormatter())
+        _style_experiment_axis(curve_ax)
+    inset.set_xlim(0.0, 500.0)
+    inset.tick_params(axis="both", labelsize=5.2, pad=1.0)
     ax.set_title(title, pad=3.0, fontsize=9.5)
     ax.set_xlabel("Environment step")
     if ylabel:
         ax.set_ylabel("Predictive R2")
-    ax.set_ylim(-0.05, 1.04)
-    _style_experiment_axis(ax)
 
 
 def _asset_sort_r2_strip_rows(
@@ -296,26 +319,8 @@ def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
     plt_module = load_plotting(output_path, apply_style=_apply_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(2, len(sources), figsize=(7.25, 4.65), squeeze=False)
-    im = None
+    fig, axes = plt_module.subplots(1, len(sources), figsize=(7.25, 2.35), squeeze=False)
     short_labels = {"Damped pendulum": "Pendulum", "Gated Duffing": "Gated"}
-    leftmost_strip_rows = [
-        (sources[0].suite_dir, policy_id, _asset_policy_label(policy_id))
-        for policy_id in _ASSET_MATCHED_POLICIES
-    ]
-    leftmost_curve_cache = {
-        sources[0].suite_dir: _experiment_curve_rows(
-            sources[0].suite_dir,
-            "trajectory_r2_over_steps.csv",
-            "trajectory_r2_mean",
-        )
-    }
-    strip_policy_order = [
-        policy_id
-        for _suite_dir, policy_id, _label in _asset_sort_r2_strip_rows(
-            leftmost_strip_rows, leftmost_curve_cache
-        )
-    ]
     for idx, source in enumerate(sources):
         label = short_labels.get(source.label, source.label)
         _asset_plot_r2_curves(
@@ -324,16 +329,6 @@ def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
             _ASSET_MATCHED_POLICIES,
             title=f"{chr(65 + idx)}. {label}: recovery",
             ylabel=idx == 0,
-        )
-        im = _asset_plot_r2_strips(
-            axes[1, idx],
-            [
-                (source.suite_dir, policy_id, _asset_policy_label(policy_id))
-                for policy_id in _ASSET_MATCHED_POLICIES
-            ],
-            title=f"{chr(68 + idx)}. R2 over time",
-            show_ylabels=idx == 0,
-            policy_order=strip_policy_order,
         )
     handles, labels = axes[0, 0].get_legend_handles_labels()
     fig.legend(
@@ -346,12 +341,7 @@ def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
         columnspacing=0.9,
         handlelength=1.5,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 0.92, 0.94), w_pad=0.75, h_pad=0.95)
-    if im is not None:
-        cax = fig.add_axes([0.94, 0.12, 0.018, 0.36])
-        cbar = fig.colorbar(im, cax=cax)
-        cbar.set_label("Predictive R2")
-        cbar.outline.set_linewidth(0.45)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90), w_pad=0.75)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
