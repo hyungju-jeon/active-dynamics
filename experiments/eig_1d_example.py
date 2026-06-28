@@ -244,13 +244,143 @@ def build_figure(
     return fig
 
 
+def build_detailed_figure(
+    curve: dict[str, np.ndarray],
+    *,
+    theta_mean: float,
+    c: float,
+    b: float,
+    state_noise: float,
+    plt,
+):
+    """Build a detailed two-step diagnostic figure for the scalar EIG example."""
+    z_probe = curve["z_probe"]
+    best = int(np.argmax(curve["eig"]))
+    best_z = float(z_probe[best])
+    horizon = curve["theta_information_steps"].shape[0]
+    colors = [_C_STEP[idx % len(_C_STEP)] for idx in range(horizon)]
+
+    fig, axes_grid = plt.subplots(2, 4, figsize=(9.5, 4.9), sharex=True)
+    axes = axes_grid.ravel()
+
+    axes[0].plot(
+        z_probe,
+        np.sin(z_probe * theta_mean),
+        color=colors[0],
+        linewidth=2.0,
+    )
+    axes[1].plot(
+        z_probe,
+        np.exp(c * z_probe + b),
+        color=colors[0],
+        linewidth=2.0,
+    )
+    for step in range(horizon):
+        z_next = curve["z_path"][step + 1]
+        linewidth = 2.0 if step == horizon - 1 else 1.25
+        axes[2].plot(
+            z_probe,
+            z_next,
+            color=colors[step],
+            linewidth=linewidth,
+            label=fr"$z_{{{step + 1}}}$",
+        )
+        axes[3].plot(
+            z_probe,
+            curve["sensitivity_path"][step + 1],
+            color=colors[step],
+            linewidth=linewidth,
+        )
+        axes[4].plot(
+            z_probe,
+            curve["state_information_steps"][step],
+            color=colors[step],
+            linewidth=linewidth,
+        )
+        axes[5].plot(
+            z_probe,
+            np.clip(curve["state_variance_path"][step + 1], 1e-24, None),
+            color=colors[step],
+            linewidth=linewidth,
+        )
+        axes[6].plot(
+            z_probe,
+            np.clip(curve["theta_information_steps"][step], 1e-3, None),
+            color=colors[step],
+            linewidth=linewidth,
+        )
+
+    axes[0].set_title(r"A. initial residual $f(z_0,\theta)$")
+    axes[0].set_ylabel(r"residual $f$")
+
+    axes[1].set_title(r"B. initial observation rate")
+    axes[1].set_ylabel(r"$\lambda_0=\exp(cz_0+b)$")
+
+    axes[2].set_title(r"C. two-step state rollout")
+    axes[2].set_ylabel(r"state $z_k$")
+    axes[2].legend(loc="upper left", frameon=False, fontsize=6.3)
+
+    axes[3].axhline(0.0, color=_C_STROKE, linewidth=0.65, alpha=0.48)
+    axes[3].set_title(r"D. sensitivity propagation")
+    axes[3].set_ylabel(r"$S_k=\partial z_k/\partial\theta$")
+    axes[3].set_yscale("symlog", linthresh=1.0)
+
+    axes[4].set_title(r"E. state Fisher information")
+    axes[4].set_ylabel(r"$I_{z,k}=c^2\lambda_k$")
+    axes[4].set_yscale("log")
+
+    axes[5].set_title(r"F. latent prior covariance")
+    axes[5].set_ylabel(r"$P_k^-$")
+    axes[5].set_yscale("log")
+
+    axes[6].plot(
+        z_probe,
+        np.clip(curve["theta_fisher"], 1e-3, None),
+        color=_C_STROKE,
+        linewidth=2.2,
+        label="sum",
+    )
+    axes[6].set_title(r"G. parameter information")
+    axes[6].set_ylabel(r"$I_{\theta,k}$")
+    axes[6].set_yscale("log")
+    axes[6].legend(loc="upper left", frameon=False, fontsize=6.3)
+
+    axes[7].plot(z_probe, curve["eig"], color=_C_EIG, linewidth=2.0)
+    axes[7].scatter([best_z], [curve["eig"][best]], color=_C_STROKE, s=16, zorder=3)
+    axes[7].set_title(fr"H. two-step EIG, best $z_0={best_z:.2f}$")
+    axes[7].set_ylabel("EIG")
+
+    for ax in axes:
+        ax.axvline(best_z, color=_C_STROKE, linewidth=0.8, alpha=0.38)
+        ax.title.set_fontsize(9.3)
+        style_manuscript_axis(ax, grid_color=_C_GRID, grid_alpha=0.35)
+    for ax in axes[4:]:
+        ax.set_xlabel(r"candidate initial state $z_0$")
+    axes[0].text(
+        0.02,
+        0.05,
+        fr"$\hat\theta={theta_mean:g}$, $c={c:g}$, $b={b:g}$, $Q={state_noise:g}$",
+        transform=axes[0].transAxes,
+        fontsize=6.5,
+        color=_C_STROKE,
+    )
+    fig.tight_layout(w_pad=0.95, h_pad=1.0)
+    return fig
+
+
 def main(argv: list[str] | None = None) -> Path:
     """Write the 1D EIG planning figure and return its path."""
     parser = argparse.ArgumentParser(description=__doc__)
+    default_output = Path("results/eig_1d_example/eig_1d_example.png")
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("results/eig_1d_example/eig_1d_example.png"),
+        default=default_output,
+    )
+    parser.add_argument(
+        "--detailed",
+        action="store_true",
+        help="Write the two-step diagnostic plot.",
     )
     parser.add_argument("--theta-mean", type=float, default=2.0)
     parser.add_argument("--theta-var", type=float, default=0.35)
@@ -263,6 +393,11 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--z-max", type=float, default=2.25)
     parser.add_argument("--num-points", type=int, default=401)
     args = parser.parse_args(argv)
+
+    if args.detailed:
+        args.horizon = 2
+        if args.output == default_output:
+            args.output = Path("results/eig_1d_example/eig_1d_example_detailed.png")
 
     z_probe = np.linspace(args.z_min, args.z_max, args.num_points)
     curve = compute_eig_curve(
@@ -283,7 +418,8 @@ def main(argv: list[str] | None = None) -> Path:
     )
     if plt is None:
         raise RuntimeError("Matplotlib is required to build the EIG example figure.")
-    fig = build_figure(
+    figure_builder = build_detailed_figure if args.detailed else build_figure
+    fig = figure_builder(
         curve,
         theta_mean=args.theta_mean,
         c=args.c,
