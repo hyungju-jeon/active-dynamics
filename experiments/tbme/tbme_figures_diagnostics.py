@@ -545,12 +545,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Directory for diagnostic figures.",
     )
     parser.add_argument("--figure-formats", type=str, default=".pdf")
-    parser.add_argument("--steps", type=int, default=2000)
+    parser.add_argument("--steps", type=int, default=500)
     parser.add_argument("--trajectories", type=int, default=3)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--grid", type=int, default=51)
     parser.add_argument("--snr-trajectories", type=int, default=100)
-    parser.add_argument("--snr-trajectory-length", type=int, default=500)
+    parser.add_argument("--snr-trajectory-length", type=int, default=200)
     return parser
 
 

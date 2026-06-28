@@ -35,6 +35,8 @@ DIAGNOSTIC_ENV_IDS = (
     "tbme_duffing",
     "tbme_damped_pendulum",
     "tbme_gated_duffing",
+    "tbme_gated_duffing_asymmetric",
+    "tbme_gated_duffing_observation_bottleneck_strong",
 )
 
 
@@ -243,12 +245,12 @@ def build_parser() -> argparse.ArgumentParser:
     _add_results_dir_arg(diagnostics)
     diagnostics.add_argument("--output-dir", type=str, default=None)
     diagnostics.add_argument("--figure-formats", type=str, default=".pdf")
-    diagnostics.add_argument("--steps", type=int, default=2000)
+    diagnostics.add_argument("--steps", type=int, default=500)
     diagnostics.add_argument("--trajectories", type=int, default=3)
     diagnostics.add_argument("--seed", type=int, default=0)
     diagnostics.add_argument("--grid", type=int, default=51)
     diagnostics.add_argument("--snr-trajectories", type=int, default=100)
-    diagnostics.add_argument("--snr-trajectory-length", type=int, default=500)
+    diagnostics.add_argument("--snr-trajectory-length", type=int, default=200)
 
     all_parser = subparsers.add_parser("all", help="Generate all TBME visual outputs.")
     _add_groups_arg(all_parser)
