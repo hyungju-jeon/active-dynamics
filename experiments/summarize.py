@@ -151,12 +151,66 @@ def _trace_path(record: dict[str, Any], metadata_key: str, fallback_name: str) -
     return fallback if fallback.exists() else None
 
 
+def _loop_compute_sec(row: dict[str, Any]) -> float | None:
+    direct = safe_float(row.get("loop_compute_sec"))
+    if direct is not None:
+        return direct
+    parts = [
+        safe_float(row.get("loop_plan_sec")),
+        safe_float(row.get("loop_step_sec")),
+        safe_float(row.get("loop_async_launch_sec")),
+    ]
+    if any(part is not None for part in parts):
+        return float(sum(part for part in parts if part is not None))
+    return None
+
+
+def _compute_time_by_step(
+    record: dict[str, Any],
+    cache: dict[Path, dict[int, float]] | None = None,
+) -> dict[int, float]:
+    """Return cumulative foreground compute seconds keyed by environment step."""
+    info_path = _trace_path(
+        record,
+        metadata_key="information_trace_path",
+        fallback_name="information_trace.csv",
+    )
+    if info_path is None:
+        return {}
+    if cache is not None and info_path in cache:
+        return cache[info_path]
+    out: dict[int, float] = {}
+    cumulative_sec = 0.0
+    for row in read_trace_csv(info_path):
+        step = safe_float(row.get("step"))
+        loop_sec = _loop_compute_sec(row)
+        if step is None or loop_sec is None:
+            continue
+        cumulative_sec += loop_sec
+        out[int(step)] = cumulative_sec
+    if cache is not None:
+        cache[info_path] = out
+    return out
+
+
+def _cpu_time_for_step(
+    row: dict[str, Any],
+    step: int,
+    compute_time_by_step: dict[int, float],
+) -> float | None:
+    mapped = compute_time_by_step.get(step)
+    if mapped is not None:
+        return mapped
+    return safe_float(row.get("cpu_time_sec"))
+
+
 def aggregate_custom_trace(
     records: list[dict[str, Any]],
     *,
     metadata_key: str,
     fallback_name: str,
     extract_value: Callable[[dict[str, Any]], float | None],
+    compute_time_cache: dict[Path, dict[int, float]] | None = None,
 ) -> list[dict[str, Any]]:
     out_rows: list[dict[str, Any]] = []
     for policy_id in sorted({str(r["policy_id"]) for r in records}):
@@ -166,13 +220,14 @@ def aggregate_custom_trace(
             trace_path = _trace_path(record, metadata_key=metadata_key, fallback_name=fallback_name)
             if trace_path is None:
                 continue
+            compute_time_by_step = _compute_time_by_step(record, compute_time_cache)
             for row in read_trace_csv(trace_path):
                 step = safe_float(row.get("step"))
                 value = extract_value(row)
-                cpu_sec = safe_float(row.get("cpu_time_sec"))
                 if step is None or value is None:
                     continue
                 step_i = int(step)
+                cpu_sec = _cpu_time_for_step(row, step_i, compute_time_by_step)
                 bucket = by_step.setdefault(step_i, {"value": [], "cpu": []})
                 bucket["value"].append(value)
                 if cpu_sec is not None:
@@ -200,12 +255,14 @@ def aggregate_trace(
     metadata_key: str,
     fallback_name: str,
     value_col: str,
+    compute_time_cache: dict[Path, dict[int, float]] | None = None,
 ) -> list[dict[str, Any]]:
     return aggregate_custom_trace(
         records,
         metadata_key=metadata_key,
         fallback_name=fallback_name,
         extract_value=lambda row: safe_float(row.get(value_col)),
+        compute_time_cache=compute_time_cache,
     )
 
 
@@ -233,6 +290,7 @@ def _recompute_trajectory_trace_rows(
     exp_spec: Any,
     env_preset: Any,
     interval: int = 10,
+    compute_time_cache: dict[Path, dict[int, float]] | None = None,
 ) -> list[dict[str, Any]]:
     interval = int(interval)
     if interval <= 0:
@@ -247,6 +305,7 @@ def _recompute_trajectory_trace_rows(
     embedding_rows = read_trace_csv(emb_trace_path)
     if not embedding_rows:
         return []
+    compute_time_by_step = _compute_time_by_step(record, compute_time_cache)
 
     metadata = record["metadata"]
     true_embedding = metadata.get("embedding_true")
@@ -263,12 +322,12 @@ def _recompute_trajectory_trace_rows(
     rows: list[tuple[int, float | None, np.ndarray]] = []
     for row in embedding_rows:
         step = safe_float(row.get("step"))
-        cpu_sec = safe_float(row.get("cpu_time_sec"))
         if step is None:
             continue
         step_i = int(step)
         if step_i % interval != 0:
             continue
+        cpu_sec = _cpu_time_for_step(row, step_i, compute_time_by_step)
         embedding = _extract_embedding_vector(row)
         if embedding is None or embedding.shape[0] < expected_dim:
             return []
@@ -360,12 +419,14 @@ def aggregate_trajectory_r2_trace(
     records: list[dict[str, Any]],
     *,
     exp_spec: Any,
+    compute_time_cache: dict[Path, dict[int, float]] | None = None,
 ) -> list[dict[str, Any]]:
     out_rows: list[dict[str, Any]] = []
     for policy_id in sorted({str(r["policy_id"]) for r in records}):
         subgroup = [r for r in records if str(r["policy_id"]) == policy_id]
         by_step: dict[int, dict[str, list[float]]] = {}
         for record in subgroup:
+            compute_time_by_step = _compute_time_by_step(record, compute_time_cache)
             trace_path = _trace_path(
                 record,
                 metadata_key="trajectory_r2_trace_path",
@@ -379,14 +440,15 @@ def aggregate_trajectory_r2_trace(
                     exp_spec=exp_spec,
                     env_preset=env_preset,
                     interval=_trajectory_eval_interval(record["metadata"], exp_spec),
+                    compute_time_cache=compute_time_cache,
                 )
             for row in trace_rows:
                 step = safe_float(row.get("step"))
                 value = safe_float(row.get("trajectory_r2"))
-                cpu_sec = safe_float(row.get("cpu_time_sec"))
                 if step is None or value is None:
                     continue
                 step_i = int(step)
+                cpu_sec = _cpu_time_for_step(row, step_i, compute_time_by_step)
                 bucket = by_step.setdefault(step_i, {"value": [], "cpu": []})
                 bucket["value"].append(value)
                 if cpu_sec is not None:
@@ -567,8 +629,8 @@ def _write_markdown(
             "## Trajectory R2 Thresholds",
             "",
             (
-                "First sampled environment step and mean CPU time where mean trajectory R2 "
-                "reaches each threshold."
+                "First sampled environment step and mean loop compute time where mean "
+                "trajectory R2 reaches each threshold."
             ),
             "",
         ]
@@ -648,22 +710,33 @@ def main(argv: list[str] | None = None) -> int:
     value_prefix = "parameter_error"
     value_label = "Parameter Error"
     rows = collect_track_rows(records, value_key=value_key)
+    compute_time_cache: dict[Path, dict[int, float]] = {}
     trace_rows = aggregate_trace(
-        records, metadata_key=trace_key, fallback_name=trace_name, value_col=trace_col
+        records,
+        metadata_key=trace_key,
+        fallback_name=trace_name,
+        value_col=trace_col,
+        compute_time_cache=compute_time_cache,
     )
-    traj_rows = aggregate_trajectory_r2_trace(records, exp_spec=exp_spec)
+    traj_rows = aggregate_trajectory_r2_trace(
+        records,
+        exp_spec=exp_spec,
+        compute_time_cache=compute_time_cache,
+    )
     r2_threshold_rows = summarize_trajectory_r2_thresholds(traj_rows)
     cov_rows = aggregate_custom_trace(
         records,
         metadata_key="embedding_estimate_trace_path",
         fallback_name="embedding_estimate_trace.csv",
         extract_value=_extract_parameter_covariance_trace,
+        compute_time_cache=compute_time_cache,
     )
     info_rows = aggregate_trace(
         records,
         metadata_key="information_trace_path",
         fallback_name="information_trace.csv",
         value_col="I_z_t",
+        compute_time_cache=compute_time_cache,
     )
     write_trace_csv(
         summary_dir / "metrics.csv",

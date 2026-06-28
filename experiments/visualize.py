@@ -168,7 +168,7 @@ def plot_metric_over_cpu_time(
     apply_style: Callable[[Any], None] | None = None,
     style_axis: Callable[..., None] | None = None,
 ) -> None:
-    """Plot a per-policy mean/SEM metric against CPU time."""
+    """Plot a per-policy mean/SEM metric against cumulative loop compute time."""
     if not rows:
         return
     plt_module = load_plotting(figures_dir, apply_style=apply_style)
@@ -200,7 +200,7 @@ def plot_metric_over_cpu_time(
             alpha=0.14,
             linewidth=0.0,
         )
-    ax.set_xlabel("CPU Time (sec)")
+    ax.set_xlabel("Loop Compute Time (sec)")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     if style_axis is not None:

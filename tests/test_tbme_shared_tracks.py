@@ -10,7 +10,7 @@ from experiments.experiment_io import (
     write_json,
 )
 from experiments.experiment_definitions import get_environment_preset, get_experiment_spec
-from experiments.summarize import collect_track_records, main as summarize_main
+from experiments.summarize import aggregate_trace, collect_track_records, main as summarize_main
 from experiments.tbme import tbme_figures_summary as tbme_summary
 from experiments.tbme.run_tbme_experiments import (
     _shared_tbme_data,
@@ -164,6 +164,52 @@ def test_summary_collects_records_from_tbme_tracks_layout(tmp_path: Path) -> Non
     assert records[0]["run_dir"] == run_dir
 
 
+def test_summary_cpu_time_uses_cumulative_loop_compute(tmp_path: Path) -> None:
+    run_dir = tmp_path / "tracks" / "duffing" / "adaptive_async_realtime" / "seed_0" / "repeat_01"
+    write_json(
+        run_dir / "run_metadata.json",
+        {
+            "policy_id": "adaptive_async_realtime",
+            "seed": 0,
+            "parameter_error_trace_path": str(run_dir / "parameter_error_trace.csv"),
+            "information_trace_path": str(run_dir / "information_trace.csv"),
+        },
+    )
+    write_trace_csv(
+        run_dir / "parameter_error_trace.csv",
+        [
+            {"step": 1, "cpu_time_sec": 100.0, "parameter_error": 2.0},
+            {"step": 2, "cpu_time_sec": 200.0, "parameter_error": 1.0},
+        ],
+        ["step", "cpu_time_sec", "parameter_error"],
+    )
+    write_trace_csv(
+        run_dir / "information_trace.csv",
+        [
+            {"step": 1, "cpu_time_sec": 100.0, "loop_compute_sec": 0.01},
+            {"step": 2, "cpu_time_sec": 200.0, "loop_compute_sec": 0.02},
+        ],
+        ["step", "cpu_time_sec", "loop_compute_sec"],
+    )
+    records = [
+        {
+            "policy_id": "adaptive_async_realtime",
+            "seed": 0,
+            "run_dir": run_dir,
+            "metadata": {},
+        }
+    ]
+
+    rows = aggregate_trace(
+        records,
+        metadata_key="parameter_error_trace_path",
+        fallback_name="parameter_error_trace.csv",
+        value_col="parameter_error",
+    )
+
+    assert [row["cpu_time_sec_mean"] for row in rows] == pytest.approx([0.01, 0.03])
+
+
 def test_summary_recomputes_trajectory_r2_from_embedding_trace(tmp_path: Path) -> None:
     configure_tbme_catalogs()
     exp_spec = get_experiment_spec("duffing")
@@ -192,6 +238,7 @@ def test_summary_recomputes_trajectory_r2_from_embedding_trace(tmp_path: Path) -
         "trajectory_eval_horizon": 3,
         "trajectory_eval_samples": 4,
         "embedding_estimate_trace_path": str(run_dir / "embedding_estimate_trace.csv"),
+        "information_trace_path": str(run_dir / "information_trace.csv"),
     }
     write_json(run_dir / "run_metadata.json", metadata)
     write_trace_csv(
@@ -216,6 +263,18 @@ def test_summary_recomputes_trajectory_r2_from_embedding_trace(tmp_path: Path) -
         ],
         ["step", "cpu_time_sec", "embedding_dim", "e0", "e1", "cov_diag_mean"],
     )
+    write_trace_csv(
+        run_dir / "information_trace.csv",
+        [
+            {"step": 0, "cpu_time_sec": 10.0, "loop_compute_sec": 0.01},
+            {
+                "step": exp_spec.trajectory_eval_interval,
+                "cpu_time_sec": 20.0,
+                "loop_compute_sec": 0.02,
+            },
+        ],
+        ["step", "cpu_time_sec", "loop_compute_sec"],
+    )
 
     exit_code = summarize_main(
         [
@@ -237,5 +296,10 @@ def test_summary_recomputes_trajectory_r2_from_embedding_trace(tmp_path: Path) -
     assert exit_code == 0
     traj_rows = read_trace_csv(run_dir / "trajectory_r2_trace.csv")
     assert [int(row["step"]) for row in traj_rows] == [0, exp_spec.trajectory_eval_interval]
+    assert [float(row["cpu_time_sec"]) for row in traj_rows] == pytest.approx([0.01, 0.03])
+    summary_traj_rows = read_trace_csv(tmp_path / "summary" / "trajectory_r2_over_steps.csv")
+    assert [float(row["cpu_time_sec_mean"]) for row in summary_traj_rows] == pytest.approx(
+        [0.01, 0.03]
+    )
     metrics_rows = read_trace_csv(tmp_path / "summary" / "metrics.csv")
     assert float(metrics_rows[0]["trajectory_r2_final_mean"]) >= 0.999

@@ -306,7 +306,7 @@ def make_summary_metric_figures(
             figures_dir,
             rows=trace_rows,
             ylabel=f"{value_label} (mean ± SEM)",
-            title=f"{value_label} Over CPU Time ({family_label})",
+            title=f"{value_label} Over Loop Compute Time ({family_label})",
             output_stem=f"{value_prefix}_over_cpu_time_{family_id}",
             figure_formats=figure_formats,
             policy_sort_key=_policy_sort_key,
