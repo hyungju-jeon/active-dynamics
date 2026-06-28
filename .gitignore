@@ -58,6 +58,8 @@ uv.lock
 .idea/
 .vscode/
 .debug-journal.md
+.omo/
+AGENTS.md
 *.swp
 *.swo
 .DS_Store
