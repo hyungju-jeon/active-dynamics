@@ -91,6 +91,7 @@ coverage.xml
 tests/*
 !tests/test_boundary_constraints.py
 !tests/test_eig_1d_example.py
+!tests/test_flex_safe_policy.py
 
 # Documentation
 docs/_build/

@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib.util
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import gymnasium as gym
@@ -29,12 +28,7 @@ def _load_module_from_path(module_name: str, file_path: Path):
     return module
 
 
-def _load_flex_symbols():
-    official_models = _load_module_from_path(
-        "_flex_models",
-        FLEX_ROOT / "models" / "models.py",
-    )
-
+def _load_flex_policy():
     official_root = str(FLEX_ROOT)
     inserted_root = False
     if official_root not in sys.path:
@@ -56,13 +50,39 @@ def _load_flex_symbols():
                 sys.modules[name] = module
         if inserted_root:
             sys.path.remove(official_root)
-    return official_models.Model, official_policies.Flex
+    return official_policies.Flex
 
 
-FlexBaseModel, Flex = _load_flex_symbols()
+_FLEX_POLICY_CLASS = None
 
 
-class _FlexVectorFieldModel(FlexBaseModel):
+def _flex_policy_class():
+    global _FLEX_POLICY_CLASS
+    if _FLEX_POLICY_CLASS is None:
+        _FLEX_POLICY_CLASS = _load_flex_policy()
+    return _FLEX_POLICY_CLASS
+
+
+class _FlexModelBase(nn.Module):
+    def __init__(
+        self,
+        *,
+        dt: float,
+        latent_dim: int,
+        action_dim: int,
+    ) -> None:
+        super().__init__()
+        self.t_period = 1.0 / float(dt)
+        self.period = 1.0
+        self.B_star = torch.tensor(
+            np.eye(int(latent_dim), int(action_dim), dtype=np.float64), dtype=torch.float
+        )
+        self.d = int(latent_dim)
+        self.m = int(action_dim)
+        self.evaluation = None
+
+
+class _FlexVectorFieldModel(_FlexModelBase):
     def __init__(
         self,
         *,
@@ -74,14 +94,7 @@ class _FlexVectorFieldModel(FlexBaseModel):
         fixed_tail: np.ndarray,
         lr: float | None = None,
     ):
-        env_stub = SimpleNamespace(
-            period=1.0,
-            dt=float(dt),
-            B_star=np.eye(int(latent_dim), int(action_dim), dtype=np.float64),
-            d=int(latent_dim),
-            m=int(action_dim),
-        )
-        super().__init__(env_stub, evaluation=None)
+        super().__init__(dt=dt, latent_dim=latent_dim, action_dim=action_dim)
         self.alpha = float(dynamics_alpha)
         init = np.asarray(initial_embedding, dtype=np.float32).reshape(-1)
         self.learnable = nn.ParameterList(
@@ -239,12 +252,14 @@ class FLEXPolicy(BasePolicy):
         parameter_min: float | None = -5.0,
         parameter_max: float | None = 5.0,
         lr: float | None = None,
+        rollback_unstable_update: bool = False,
         device: str = "cpu",
         **kwargs,
     ):
         super().__init__(action_space=action_space, chunk=1, device=device)
         self.model = model
         self.env_preset = env_preset
+        self.rollback_unstable_update = bool(rollback_unstable_update)
         self.use_observed_state = bool(use_observed_state)
         self.regularization = float(regularization)
         self.parameter_step_clip = (
@@ -273,6 +288,7 @@ class FLEXPolicy(BasePolicy):
             "parameter_posterior_updated": False,
             "flex_residual_norm": 0.0,
             "flex_update_norm": 0.0,
+            "flex_update_rejected": False,
             "flex_gram_trace": 0.0,
         }
         self.reset_policy_state(seed=None)
@@ -293,7 +309,8 @@ class FLEXPolicy(BasePolicy):
             initial_embedding=self._initial_parameter_mean.reshape(-1),
             lr=self.lr,
         )
-        self._flex_agent = Flex(
+        flex_cls = _flex_policy_class()
+        self._flex_agent = flex_cls(
             self._flex_model,
             int(self.env_preset.latent_dim),
             int(self.env_preset.action_dim),
@@ -311,6 +328,7 @@ class FLEXPolicy(BasePolicy):
             "parameter_posterior_updated": False,
             "flex_residual_norm": 0.0,
             "flex_update_norm": 0.0,
+            "flex_update_rejected": False,
             "flex_gram_trace": float(np.trace(self._flex_agent.M)),
         }
 
@@ -332,6 +350,12 @@ class FLEXPolicy(BasePolicy):
         return torch.as_tensor(
             self._flex_agent.M, dtype=torch.float32, device=self.device
         ).unsqueeze(0)
+
+    def _flex_parameter_vector(self) -> torch.Tensor:
+        assert self._flex_model is not None
+        return torch.as_tensor(
+            self._flex_model.parameter_vector(), dtype=torch.float32, device=self.device
+        )
 
     def _extract_last_tensor(self, rollout: Any, key: str) -> torch.Tensor | None:
         value = rollout.get(key, None)
@@ -363,7 +387,7 @@ class FLEXPolicy(BasePolicy):
 
     def update(self, rollout: Any):
         assert self._flex_agent is not None
-        prev_mean = self.get_parameter_mean().reshape(-1)
+        prev_mean = self._flex_parameter_vector()
         x_key, x_next_key = self._state_keys_for_update()
         x_t = self._extract_last_tensor(rollout, x_key)
         x_next = self._extract_last_tensor(rollout, x_next_key)
@@ -376,6 +400,7 @@ class FLEXPolicy(BasePolicy):
                 "parameter_posterior_updated": False,
                 "flex_residual_norm": 0.0,
                 "flex_update_norm": 0.0,
+                "flex_update_rejected": False,
                 "flex_gram_trace": float(np.trace(self._flex_agent.M)),
             }
             self.last_update_info = info
@@ -390,18 +415,54 @@ class FLEXPolicy(BasePolicy):
             .numpy()
             .astype(np.float64, copy=False)
         )
+        old_parameters = [param.detach().clone() for param in self._flex_model.parameters()]
+        old_m = np.asarray(self._flex_agent.M).copy()
+        old_m_inv = np.asarray(self._flex_agent.M_inv).copy()
         self._flex_agent.learning_step(x, u, dx_dt)
-        self._stabilize_parameter_update(prev_mean)
-        new_mean = self.get_parameter_mean().reshape(-1)
+        rejected = self.rollback_unstable_update and self._unstable_update(prev_mean)
+        if rejected:
+            self._restore_flex_state(old_parameters, old_m, old_m_inv)
+        else:
+            self._stabilize_parameter_update(prev_mean)
+        new_mean = self._flex_parameter_vector()
         update_norm = float(torch.linalg.norm(new_mean - prev_mean).item())
         info = {
-            "parameter_posterior_updated": True,
+            "parameter_posterior_updated": not rejected,
             "flex_residual_norm": 0.0,
             "flex_update_norm": update_norm,
+            "flex_update_rejected": rejected,
             "flex_gram_trace": float(np.trace(self._flex_agent.M)),
         }
         self.last_update_info = info
         return info
+
+    def _unstable_update(self, previous_mean: torch.Tensor) -> bool:
+        current = self._flex_parameter_vector().reshape(-1)
+        previous = previous_mean.detach().to(current.device).reshape(-1)
+        delta = current - previous
+        norm = torch.linalg.norm(delta)
+        if not torch.isfinite(norm) or not torch.all(torch.isfinite(current)):
+            return True
+        if self.parameter_step_clip is not None and float(norm.item()) > self.parameter_step_clip:
+            return True
+        if self.parameter_min is not None and bool(torch.any(current < self.parameter_min)):
+            return True
+        if self.parameter_max is not None and bool(torch.any(current > self.parameter_max)):
+            return True
+        return False
+
+    def _restore_flex_state(
+        self,
+        parameters: list[torch.Tensor],
+        gram: np.ndarray,
+        gram_inv: np.ndarray,
+    ) -> None:
+        assert self._flex_model is not None
+        assert self._flex_agent is not None
+        for param, old_value in zip(self._flex_model.parameters(), parameters):
+            param.data.copy_(old_value.to(device=param.device, dtype=param.dtype))
+        self._flex_agent.M = gram
+        self._flex_agent.M_inv = gram_inv
 
     def _stabilize_parameter_update(self, previous_mean: torch.Tensor) -> None:
         assert self._flex_model is not None

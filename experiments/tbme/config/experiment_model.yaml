@@ -40,6 +40,11 @@ models:
     flex_parameter_max: 5.0
     flex_lr: null
 
+  flex_safe:
+    extends: flex
+    policy_type: flex
+    flex_regularization: 0.1
+
   rhc:
     objective_kind: null
     update_interval: 20

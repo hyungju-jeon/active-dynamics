@@ -689,13 +689,15 @@ def _instantiate_synthetic_policy(
         initial_parameter_mean = None
         if getattr(model, "e", None) is not None and "m" in model.e:
             initial_parameter_mean = model.e["m"].detach().clone()
-        use_observed_state = str(policy_id).endswith("_true_state")
+        policy_name = str(policy_id)
+        use_observed_state = policy_name.endswith("_true_state")
         return actdyn_module.policy.FLEXPolicy(
             action_space=env.action_space,
             model=model,
             env_preset=env_preset,
             initial_parameter_mean=initial_parameter_mean,
             use_observed_state=use_observed_state,
+            rollback_unstable_update=policy_name == "flex_safe",
             regularization=(
                 1e-2
                 if policy_spec.flex_regularization is None
