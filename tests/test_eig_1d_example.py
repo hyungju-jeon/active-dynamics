@@ -12,6 +12,7 @@ def test_eig_curve_matches_closed_form_without_state_uncertainty() -> None:
     c = 1.2
     b = -0.1
 
+    dt = 0.1
     curve = compute_eig_curve(
         z,
         theta_mean=theta_mean,
@@ -20,11 +21,12 @@ def test_eig_curve_matches_closed_form_without_state_uncertainty() -> None:
         b=b,
         state_var=0.0,
         state_noise=0.0,
+        dt=dt,
     )
 
-    z_next = z + np.sin(z * theta_mean)
-    sensitivity = z * np.cos(z * theta_mean)
-    expected_state_info = c**2 * np.exp(c * z_next + b)
+    z_next = z + dt * np.sin(z * theta_mean)
+    sensitivity = dt * z * np.cos(z * theta_mean)
+    expected_state_info = c**2 * np.exp(c * z_next + b) * dt
     expected_fisher = sensitivity**2 * expected_state_info
     expected_eig = 0.5 * np.log1p(theta_var * expected_fisher)
     assert np.allclose(curve["state_information_steps"][0], expected_state_info)
@@ -40,6 +42,7 @@ def test_two_step_eig_matches_sensitivity_recursion() -> None:
     c = 1.3
     b = -0.2
 
+    dt = 0.1
     curve = compute_eig_curve(
         z0,
         theta_mean=theta_mean,
@@ -49,17 +52,18 @@ def test_two_step_eig_matches_sensitivity_recursion() -> None:
         state_var=0.0,
         horizon=2,
         state_noise=0.0,
+        dt=dt,
     )
 
-    z1 = z0 + np.sin(z0 * theta_mean)
-    s1 = z0 * np.cos(z0 * theta_mean)
-    fisher1 = s1**2 * c**2 * np.exp(c * z1 + b)
+    z1 = z0 + dt * np.sin(z0 * theta_mean)
+    s1 = dt * z0 * np.cos(z0 * theta_mean)
+    fisher1 = s1**2 * c**2 * np.exp(c * z1 + b) * dt
 
-    transition_z2 = 1.0 + theta_mean * np.cos(z1 * theta_mean)
-    residual_theta2 = z1 * np.cos(z1 * theta_mean)
-    z2 = z1 + np.sin(z1 * theta_mean)
+    transition_z2 = 1.0 + dt * theta_mean * np.cos(z1 * theta_mean)
+    residual_theta2 = dt * z1 * np.cos(z1 * theta_mean)
+    z2 = z1 + dt * np.sin(z1 * theta_mean)
     s2 = transition_z2 * s1 + residual_theta2
-    fisher2 = s2**2 * c**2 * np.exp(c * z2 + b)
+    fisher2 = s2**2 * c**2 * np.exp(c * z2 + b) * dt
 
     expected_fisher = fisher1 + fisher2
     expected_eig = 0.5 * np.log1p(theta_var * expected_fisher)
@@ -82,6 +86,7 @@ def test_state_covariance_path_uses_prior_then_posterior_update() -> None:
     state_var = 0.4
     state_noise = 0.05
 
+    dt = 0.1
     curve = compute_eig_curve(
         z0,
         theta_mean=theta_mean,
@@ -91,15 +96,16 @@ def test_state_covariance_path_uses_prior_then_posterior_update() -> None:
         state_var=state_var,
         horizon=2,
         state_noise=state_noise,
+        dt=dt,
     )
 
-    transition_z1 = 1.0 + theta_mean * np.cos(z0 * theta_mean)
-    p1_prior = transition_z1**2 * state_var + state_noise
-    z1 = z0 + np.sin(z0 * theta_mean)
-    state_info1 = c**2 * np.exp(c * z1 + b)
+    transition_z1 = 1.0 + dt * theta_mean * np.cos(z0 * theta_mean)
+    p1_prior = transition_z1**2 * state_var + state_noise * dt
+    z1 = z0 + dt * np.sin(z0 * theta_mean)
+    state_info1 = c**2 * np.exp(c * z1 + b) * dt
     p1_posterior = p1_prior / (1.0 + p1_prior * state_info1)
-    transition_z2 = 1.0 + theta_mean * np.cos(z1 * theta_mean)
-    p2_prior = transition_z2**2 * p1_posterior + state_noise
+    transition_z2 = 1.0 + dt * theta_mean * np.cos(z1 * theta_mean)
+    p2_prior = transition_z2**2 * p1_posterior + state_noise * dt
 
     assert np.allclose(curve["state_variance_path"][0], state_var)
     assert np.allclose(curve["state_variance_path"][1], p1_prior)
