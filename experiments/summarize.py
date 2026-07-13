@@ -456,12 +456,16 @@ def aggregate_trajectory_r2_trace(
         for step_i in sorted(by_step):
             values = by_step[step_i]["value"]
             cpu_vals = by_step[step_i]["cpu"]
+            values_array = np.asarray(values, dtype=np.float64)
             out_rows.append(
                 {
                     "policy_id": policy_id,
                     "step": step_i,
-                    "value_mean": float(np.mean(values)),
+                    "value_mean": float(np.mean(values_array)),
                     "value_sem": sample_sem(values),
+                    "value_median": float(np.median(values_array)),
+                    "value_q25": float(np.quantile(values_array, 0.25)),
+                    "value_q75": float(np.quantile(values_array, 0.75)),
                     "cpu_time_sec_mean": float(np.mean(cpu_vals)) if cpu_vals else None,
                     "n_points": len(values),
                 }
@@ -485,21 +489,35 @@ def _extract_parameter_covariance_trace(row: dict[str, Any]) -> float | None:
 
 
 def _write_curve_csv(path: Path, rows: list[dict[str, Any]], value_name: str) -> None:
+    include_quantiles = any("value_median" in row for row in rows)
     payloads = [
         {
             "policy_id": row["policy_id"],
             "step": row["step"],
             value_name: row["value_mean"],
             "value_sem": row["value_sem"],
+            **(
+                {
+                    "value_median": row["value_median"],
+                    "value_q25": row["value_q25"],
+                    "value_q75": row["value_q75"],
+                }
+                if include_quantiles
+                else {}
+            ),
             "cpu_time_sec_mean": row["cpu_time_sec_mean"],
             "n_points": row["n_points"],
         }
         for row in rows
     ]
+    fields = ["policy_id", "step", value_name, "value_sem"]
+    if include_quantiles:
+        fields.extend(["value_median", "value_q25", "value_q75"])
+    fields.extend(["cpu_time_sec_mean", "n_points"])
     write_trace_csv(
         path,
         payloads,
-        ["policy_id", "step", value_name, "value_sem", "cpu_time_sec_mean", "n_points"],
+        fields,
     )
 
 

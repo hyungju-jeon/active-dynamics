@@ -10,7 +10,12 @@ from experiments.experiment_io import (
     write_json,
 )
 from experiments.experiment_definitions import get_environment_preset, get_experiment_spec
-from experiments.summarize import aggregate_trace, collect_track_records, main as summarize_main
+from experiments.summarize import (
+    aggregate_trace,
+    aggregate_trajectory_r2_trace,
+    collect_track_records,
+    main as summarize_main,
+)
 from experiments.tbme import tbme_figures_summary as tbme_summary
 from experiments.tbme.run_tbme_experiments import (
     _shared_tbme_data,
@@ -210,6 +215,36 @@ def test_summary_cpu_time_uses_cumulative_loop_compute(tmp_path: Path) -> None:
     assert [row["cpu_time_sec_mean"] for row in rows] == pytest.approx([0.01, 0.03])
 
 
+def test_trajectory_r2_summary_reports_median_and_interquartile_range(
+    tmp_path: Path,
+) -> None:
+    records = []
+    for seed, value in enumerate((0.0, 1.0, 2.0, 9.0)):
+        run_dir = tmp_path / f"seed_{seed}"
+        write_trace_csv(
+            run_dir / "trajectory_r2_trace.csv",
+            [{"step": 10, "cpu_time_sec": float(seed), "trajectory_r2": value}],
+            ["step", "cpu_time_sec", "trajectory_r2"],
+        )
+        records.append(
+            {
+                "policy_id": "adaptive",
+                "seed": seed,
+                "run_dir": run_dir,
+                "metadata": {},
+            }
+        )
+
+    rows = aggregate_trajectory_r2_trace(records, exp_spec=None)
+
+    assert len(rows) == 1
+    assert rows[0]["value_mean"] == pytest.approx(3.0)
+    assert rows[0]["value_median"] == pytest.approx(1.5)
+    assert rows[0]["value_q25"] == pytest.approx(0.75)
+    assert rows[0]["value_q75"] == pytest.approx(3.75)
+    assert rows[0]["n_points"] == 4
+
+
 def test_summary_recomputes_trajectory_r2_from_embedding_trace(tmp_path: Path) -> None:
     configure_tbme_catalogs()
     exp_spec = get_experiment_spec("duffing")
@@ -301,5 +336,9 @@ def test_summary_recomputes_trajectory_r2_from_embedding_trace(tmp_path: Path) -
     assert [float(row["cpu_time_sec_mean"]) for row in summary_traj_rows] == pytest.approx(
         [0.01, 0.03]
     )
+    for row in summary_traj_rows:
+        assert float(row["value_median"]) == pytest.approx(float(row["trajectory_r2_mean"]))
+        assert float(row["value_q25"]) == pytest.approx(float(row["trajectory_r2_mean"]))
+        assert float(row["value_q75"]) == pytest.approx(float(row["trajectory_r2_mean"]))
     metrics_rows = read_trace_csv(tmp_path / "summary" / "metrics.csv")
     assert float(metrics_rows[0]["trajectory_r2_final_mean"]) >= 0.999

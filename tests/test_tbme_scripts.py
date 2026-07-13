@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -9,6 +10,8 @@ import gymnasium as gym
 import numpy as np
 import pytest
 import torch
+
+from actdyn.utils.experiment_runtime import write_trace_csv
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -80,6 +83,163 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
         "duffing",
         "gated_duffing",
     ]
+
+
+def _write_r2_ceiling_metadata(suite_dir: Path, *, state_noise: float) -> None:
+    run_dir = suite_dir / "adaptive" / "seed_0" / "repeat_01"
+    run_dir.mkdir(parents=True)
+    metadata = {
+        "dynamics_alpha": 1.0,
+        "dynamics_type": "gated_duffing",
+        "embedding_true": [-1.2, -0.8, 0.5, 1.1],
+        "env_preset_id": "tbme_gated_duffing",
+        "min_embedding_dim": 2,
+        "state_noise": state_noise,
+        "status": "completed",
+        "trajectory_eval_horizon": 4,
+        "trajectory_eval_samples": 32,
+        "true_params_full": [-1.2, -0.8, 0.5, 1.1],
+    }
+    (run_dir / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_asset_true_model_r2_ceiling_is_one_without_process_noise(tmp_path: Path):
+    from experiments.tbme import tbme_figures_assets as module
+
+    _write_r2_ceiling_metadata(tmp_path, state_noise=0.0)
+
+    assert module._asset_true_model_r2_ceiling(tmp_path) == 1.0
+
+
+def test_asset_true_model_r2_ceiling_reflects_process_noise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from experiments.tbme import tbme_figures_assets as module
+
+    monkeypatch.setattr(module, "_ASSET_R2_CEILING_REPEATS", 4)
+    _write_r2_ceiling_metadata(tmp_path, state_noise=0.8)
+
+    ceiling = module._asset_true_model_r2_ceiling(tmp_path)
+
+    assert ceiling is not None
+    assert ceiling < 1.0
+
+
+def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from experiments.tbme import tbme_figures_assets as module
+
+    summary_dir = tmp_path / "summary"
+    write_trace_csv(
+        summary_dir / "trajectory_r2_over_steps.csv",
+        [
+            {
+                "policy_id": "adaptive",
+                "step": 10,
+                "trajectory_r2_mean": 3.0,
+                "value_sem": 1.0,
+                "value_median": 1.5,
+                "value_q25": 0.75,
+                "value_q75": 3.75,
+                "cpu_time_sec_mean": 2.0,
+                "n_points": 4,
+            }
+        ],
+        [
+            "policy_id",
+            "step",
+            "trajectory_r2_mean",
+            "value_sem",
+            "value_median",
+            "value_q25",
+            "value_q75",
+            "cpu_time_sec_mean",
+            "n_points",
+        ],
+    )
+    write_trace_csv(
+        summary_dir / "metrics.csv",
+        [
+            {
+                "policy_id": "adaptive",
+                "seed": seed,
+                "status": "completed",
+                "trajectory_r2_final_mean": value,
+            }
+            for seed, value in enumerate((0.0, 1.0, 2.0, 9.0))
+        ],
+        ["policy_id", "seed", "status", "trajectory_r2_final_mean"],
+    )
+
+    mean_curve = module._asset_r2_curve_rows(tmp_path, r2_summary="mean_sem")["adaptive"][0]
+    curve = module._asset_r2_curve_rows(tmp_path, r2_summary="median_iqr")["adaptive"][0]
+    mean_final = module._asset_final_r2_summary(
+        tmp_path,
+        "adaptive",
+        r2_summary="mean_sem",
+    )
+    final = module._asset_final_r2_summary(
+        tmp_path,
+        "adaptive",
+        r2_summary="median_iqr",
+    )
+
+    assert (mean_curve["center"], mean_curve["lower"], mean_curve["upper"]) == pytest.approx(
+        (3.0, 2.0, 4.0)
+    )
+    assert mean_final[0] == pytest.approx(3.0)
+    assert mean_final[0] - mean_final[1] == pytest.approx(mean_final[2] - mean_final[0])
+    assert mean_final[3] == 4
+    assert curve["center"] == pytest.approx(1.5)
+    assert curve["lower"] == pytest.approx(0.75)
+    assert curve["upper"] == pytest.approx(3.75)
+    assert final == pytest.approx((1.5, 0.75, 3.75, 4))
+
+    monkeypatch.setattr(module, "_asset_true_model_r2_ceiling", lambda *args, **kwargs: None)
+    source = SimpleNamespace(exp_id="condition", label="Condition", suite_dir=tmp_path)
+    metric_rows = module._asset_method_metric_rows(
+        [source],
+        ["adaptive"],
+        r2_summary="median_iqr",
+    )
+    csv_path = tmp_path / "median_iqr" / "metrics.csv"
+    module._asset_write_method_csv(
+        csv_path,
+        metric_rows,
+        r2_summary="median_iqr",
+    )
+    recovery_path = tmp_path / "median_iqr" / "recovery.pdf"
+    bar_path = tmp_path / "median_iqr" / "final.pdf"
+
+    assert "_trajectory_r2_center" not in csv_path.read_text(encoding="utf-8")
+    assert module._asset_plot_recovery_curves(
+        recovery_path,
+        sources=[source],
+        policy_ids=["adaptive"],
+        r2_summary="median_iqr",
+    ) == recovery_path
+    assert module._asset_plot_final_bar(
+        bar_path,
+        sources=[source],
+        policy_ids=["adaptive"],
+        metric_rows=metric_rows,
+    ) == bar_path
+    assert recovery_path.exists()
+    assert bar_path.exists()
+
+
+def test_asset_r2_summary_selection_is_explicit() -> None:
+    from experiments.tbme import tbme_figures_assets as module
+
+    assert module._asset_parse_r2_summaries("mean_sem,median_iqr") == [
+        "mean_sem",
+        "median_iqr",
+    ]
+    with pytest.raises(ValueError, match="Unknown R2 summary"):
+        module._asset_parse_r2_summaries("median_sem")
 
 
 def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:

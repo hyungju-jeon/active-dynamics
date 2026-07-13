@@ -692,7 +692,7 @@ def _experiment_plot_bottleneck_sweep() -> list[Path]:
     sources = [
         _ExperimentSuiteSource(
             "gated_duffing",
-            "Nominal",
+            "Default",
             _suite_dir("simple_system_identification", "gated_duffing"),
         ),
         _ExperimentSuiteSource(
@@ -786,7 +786,7 @@ def _experiment_objective_sources() -> list[_ExperimentSuiteSource]:
     return [
         _ExperimentSuiteSource(
             "gated_duffing",
-            "Nominal gated Duffing",
+            "Default gated Duffing",
             _suite_dir("objective_ablation", "gated_duffing"),
         ),
         _ExperimentSuiteSource(
