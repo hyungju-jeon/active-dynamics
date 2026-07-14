@@ -84,6 +84,12 @@ _ASSET_MATCHED_POLICIES = [
 _ASSET_R2_CEILING_REPEATS = 48
 _ASSET_R2_SUMMARIES = ("mean_sem", "median_iqr")
 _ASSET_FLEX_POLICIES = ("flex", "flex_filter", "flex_true", "flex_rollback")
+_ASSET_FLEX_LABELS = {
+    "flex": "FLEX clip / filtered",
+    "flex_filter": "FLEX upstream / filtered",
+    "flex_true": "FLEX upstream / true",
+    "flex_rollback": "FLEX safe rollback / filtered",
+}
 
 
 def _asset_policy_label(policy_id: str) -> str:
@@ -1069,6 +1075,9 @@ def _asset_method_csv_fields(r2_summary: str) -> list[str]:
         "parameter_error_sem",
         "n_error",
         "n_r2",
+        "n_total",
+        "n_r2_nonfinite",
+        "r2_nonfinite_rate",
     ]
 
 
@@ -1155,6 +1164,11 @@ def _asset_method_metric_rows(
     threshold = 0.95
     metric_rows: list[dict[str, Any]] = []
     for source in sources:
+        completed_rows = [
+            row
+            for row in read_trace_csv(source.suite_dir / "summary" / "metrics.csv")
+            if row.get("status") in {None, "", "completed"}
+        ]
         for policy_id in policy_ids:
             err, err_sem, n_err = _experiment_metric_mean_sem(
                 source.suite_dir,
@@ -1172,6 +1186,8 @@ def _asset_method_metric_rows(
                 threshold,
                 r2_summary=r2_summary,
             )
+            n_total = sum(row.get("policy_id") == policy_id for row in completed_rows)
+            n_r2_nonfinite = max(0, n_total - n_r2)
             row = {
                 "experiment": source.exp_id,
                 "condition": source.label,
@@ -1187,6 +1203,11 @@ def _asset_method_metric_rows(
                 "r2_at_0p95": r2_at_threshold,
                 "n_error": n_err,
                 "n_r2": n_r2,
+                "n_total": n_total,
+                "n_r2_nonfinite": n_r2_nonfinite,
+                "r2_nonfinite_rate": (
+                    float(n_r2_nonfinite) / float(n_total) if n_total else None
+                ),
             }
             if r2_summary == "median_iqr":
                 row.update(
@@ -1502,6 +1523,8 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> Path:
         _ASSET_FLEX_POLICIES,
         r2_summary=r2_summary,
     )
+    for row in metric_rows:
+        row["policy_label"] = _ASSET_FLEX_LABELS[str(row["policy_id"])]
     _asset_write_method_csv(
         output_path.with_suffix(".csv"),
         metric_rows,
@@ -1529,7 +1552,7 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> Path:
                 center,
                 color=color,
                 linewidth=0.95,
-                label=_asset_policy_label(policy_id),
+                label=_ASSET_FLEX_LABELS[policy_id],
             )
             ax.fill_between(steps, lower, upper, color=color, alpha=0.10, linewidth=0.0)
         ax.axhline(0.0, color=_experiment_C_NEUTRAL_LIGHT, linewidth=0.55)
@@ -1554,7 +1577,16 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> Path:
         columnspacing=0.9,
         handlelength=1.4,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94), w_pad=0.75, h_pad=0.85)
+    fig.text(
+        0.995,
+        0.008,
+        "Non-finite R2 excluded from bands; rates are reported in the companion CSV.",
+        ha="right",
+        va="bottom",
+        fontsize=5.5,
+        color=_experiment_C_STROKE,
+    )
+    fig.tight_layout(rect=(0.0, 0.035, 1.0, 0.94), w_pad=0.75, h_pad=0.85)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 

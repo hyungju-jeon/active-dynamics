@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 import torch
 
-from actdyn.utils.experiment_runtime import write_trace_csv
+from actdyn.utils.experiment_runtime import read_trace_csv, write_trace_csv
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -297,7 +297,13 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
                     "policy_id": policy_id,
                     "seed": seed,
                     "status": "completed",
-                    "trajectory_r2_final_mean": 0.75 + 0.01 * seed,
+                    "trajectory_r2_final_mean": (
+                        ""
+                        if exp_id == "gated_duffing"
+                        and policy_id == "flex_filter"
+                        and seed == 1
+                        else 0.75 + 0.01 * seed
+                    ),
                     "value_final_mean": 0.1 + 0.01 * seed,
                 }
                 for policy_id in policy_ids
@@ -335,6 +341,17 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     assert mean_path.with_suffix(".csv").exists()
     assert median_path.exists()
     assert median_path.with_suffix(".csv").exists()
+    mean_rows = read_trace_csv(mean_path.with_suffix(".csv"))
+    failed_row = next(
+        row
+        for row in mean_rows
+        if row["experiment"] == "gated_duffing" and row["policy_id"] == "flex_filter"
+    )
+    assert failed_row["policy_label"] == "FLEX upstream / filtered"
+    assert failed_row["n_total"] == "2"
+    assert failed_row["n_r2"] == "1"
+    assert failed_row["n_r2_nonfinite"] == "1"
+    assert failed_row["r2_nonfinite_rate"] == "0.5"
 
 
 def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:
