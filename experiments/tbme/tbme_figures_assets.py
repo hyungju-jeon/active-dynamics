@@ -67,6 +67,9 @@ _POLICY_LABELS = {
     "active_observation_variance": "Obs. var.",
     "active_state_variance": "State var.",
     "flex": "FLEX",
+    "flex_filter": "FLEX upstream / filtered",
+    "flex_true": "FLEX upstream / true",
+    "flex_rollback": "FLEX rollback / filtered",
     "rhc": "RHC-US",
     "off_policy": "Off-policy",
 }
@@ -80,6 +83,7 @@ _ASSET_MATCHED_POLICIES = [
 ]
 _ASSET_R2_CEILING_REPEATS = 48
 _ASSET_R2_SUMMARIES = ("mean_sem", "median_iqr")
+_ASSET_FLEX_POLICIES = ("flex", "flex_filter", "flex_true", "flex_rollback")
 
 
 def _asset_policy_label(policy_id: str) -> str:
@@ -1473,6 +1477,87 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> Pat
     )
 
 
+def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> Path:
+    """Plot mean/SEM or median/IQR R2 for the FLEX update/state ablation."""
+    display_titles = {
+        "duffing": "Duffing",
+        "damped_pendulum": "Damped Pendulum",
+        "gated_duffing": "Gated Duffing",
+        "gated_duffing_asymmetric": "Asymmetric",
+        "gated_duffing_challenging": "Challenging",
+        "gated_duffing_observation_bottleneck_mild": "Obs. bottleneck (mild)",
+        "gated_duffing_observation_bottleneck_strong": "Obs. bottleneck (strong)",
+    }
+    sources = [
+        _ExperimentSuiteSource(
+            ref.suite_id,
+            display_titles.get(ref.suite_id, ref.label),
+            ref.session_root / "tracks" / ref.suite_id,
+        )
+        for ref in _figures.GROUPS["flex_comparison"]
+    ]
+    _asset_require_suite_dirs([source.suite_dir for source in sources])
+    metric_rows = _asset_method_metric_rows(
+        sources,
+        _ASSET_FLEX_POLICIES,
+        r2_summary=r2_summary,
+    )
+    _asset_write_method_csv(
+        output_path.with_suffix(".csv"),
+        metric_rows,
+        r2_summary=r2_summary,
+    )
+
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt_module.subplots(2, 4, figsize=(9.5, 4.9), squeeze=False)
+    for idx, source in enumerate(sources):
+        ax = axes.flat[idx]
+        curves = _asset_r2_curve_rows(source.suite_dir, r2_summary=r2_summary)
+        for policy_id in _ASSET_FLEX_POLICIES:
+            rows = curves.get(policy_id, [])
+            if not rows:
+                continue
+            steps = np.asarray([row["step"] for row in rows], dtype=np.float64)
+            center = np.asarray([row["center"] for row in rows], dtype=np.float64)
+            lower = np.asarray([row["lower"] for row in rows], dtype=np.float64)
+            upper = np.asarray([row["upper"] for row in rows], dtype=np.float64)
+            color = _policy_color(policy_id)
+            ax.plot(
+                steps,
+                center,
+                color=color,
+                linewidth=0.95,
+                label=_asset_policy_label(policy_id),
+            )
+            ax.fill_between(steps, lower, upper, color=color, alpha=0.10, linewidth=0.0)
+        ax.axhline(0.0, color=_experiment_C_NEUTRAL_LIGHT, linewidth=0.55)
+        ax.set_xlim(left=0.0)
+        ax.set_ylim(top=1.05)
+        ax.set_yscale("symlog", linthresh=0.25, linscale=0.6)
+        ax.set_title(chr(65 + idx), loc="left", fontweight="bold", fontsize=10.0, pad=3.0)
+        ax.set_title(source.label, loc="center", fontsize=8.0, pad=3.0)
+        ax.set_xlabel("Environment steps")
+        if idx % 4 == 0:
+            ax.set_ylabel("Predictive $R^2$")
+        _style_experiment_axis(ax)
+    axes.flat[-1].axis("off")
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=len(_ASSET_FLEX_POLICIES),
+        fontsize=_ASSET_TICK_SIZE,
+        columnspacing=0.9,
+        handlelength=1.4,
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.94), w_pad=0.75, h_pad=0.85)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
 def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]:
     bottleneck_sources = _asset_bottleneck_sources()
     figures = (
@@ -1629,6 +1714,12 @@ def assets_main(argv: list[str] | None = None) -> int:
                     r2_output_dir / "tbme_fig_objective_ablation.pdf",
                     {"objective_ablation"},
                     _asset_plot_objective_ablation,
+                    kwargs,
+                ),
+                (
+                    r2_output_dir / "tbme_fig_flex_comparison.pdf",
+                    {"flex_comparison"},
+                    _asset_plot_flex_comparison,
                     kwargs,
                 ),
             ]

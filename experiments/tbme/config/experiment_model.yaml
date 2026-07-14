@@ -45,6 +45,23 @@ models:
     policy_type: flex
     flex_regularization: 0.1
 
+  flex_filter:
+    extends: flex
+    policy_type: flex-upstream
+    use_true_state: false
+    flex_parameter_step_clip: null
+    flex_parameter_min: null
+    flex_parameter_max: null
+
+  flex_true:
+    extends: flex_filter
+    use_true_state: true
+
+  flex_rollback:
+    extends: flex_safe
+    policy_type: flex-rollback
+    use_true_state: false
+
   rhc:
     objective_kind: null
     update_interval: 20

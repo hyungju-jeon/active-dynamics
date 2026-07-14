@@ -28,6 +28,7 @@ EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
     "model_mismatch": ("mismatch_dose_response",),
     "objective_ablation": ("objective_ablation",),
     "scheduling": (),
+    "flex_comparison": (),
 }
 
 DEFAULT_GROUPS = ",".join(tbme_figures.GROUPS)

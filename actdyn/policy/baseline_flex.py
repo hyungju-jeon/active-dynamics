@@ -481,3 +481,60 @@ class FLEXPolicy(BasePolicy):
             target = torch.clamp(target, min=lo, max=hi)
         for param, value in zip(self._flex_model.learnable, target.detach().cpu().tolist()):
             param.data.fill_(float(value))
+
+
+class FLEXUpstreamPolicy(FLEXPolicy):
+    """Run the vendored FLEX learning step without local clipping or rollback.
+
+    Inputs use the same rollout tensors as :class:`FLEXPolicy`: filtered or true
+    states with shape ``(batch, time, latent_dim)`` and float dtype, plus actions
+    with shape ``(batch, time, action_dim)``. The update delegates directly to
+    ``external/FLEX/agent.py::Agent.learning_step`` and returns scalar diagnostics.
+    """
+
+    update_mode = "upstream"
+
+    def update(self, rollout: Any):
+        """Apply one unmodified upstream FLEX parameter and Gram-matrix update."""
+        assert self._flex_agent is not None
+        prev_mean = self._flex_parameter_vector()
+        x_key, x_next_key = self._state_keys_for_update()
+        x_t = self._extract_last_tensor(rollout, x_key)
+        x_next = self._extract_last_tensor(rollout, x_next_key)
+        if x_t is None or x_next is None:
+            x_t = self._extract_last_tensor(rollout, "env_state")
+            x_next = self._extract_last_tensor(rollout, "next_env_state")
+        played_action = self._extract_last_tensor(rollout, "env_action")
+        if x_t is None or x_next is None or played_action is None:
+            info = {
+                "parameter_posterior_updated": False,
+                "flex_residual_norm": 0.0,
+                "flex_update_norm": 0.0,
+                "flex_update_rejected": False,
+                "flex_gram_trace": float(np.trace(self._flex_agent.M)),
+            }
+            self.last_update_info = info
+            return info
+
+        x = x_t.reshape(-1).detach().cpu().numpy().astype(np.float64, copy=False)
+        u = played_action.reshape(-1).detach().cpu().numpy().astype(np.float64, copy=False)
+        dx_dt = (
+            ((x_next - x_t) / float(self.env_preset.dt))
+            .reshape(-1)
+            .detach()
+            .cpu()
+            .numpy()
+            .astype(np.float64, copy=False)
+        )
+        self._flex_agent.learning_step(x, u, dx_dt)
+
+        new_mean = self._flex_parameter_vector()
+        info = {
+            "parameter_posterior_updated": True,
+            "flex_residual_norm": 0.0,
+            "flex_update_norm": float(torch.linalg.norm(new_mean - prev_mean).item()),
+            "flex_update_rejected": False,
+            "flex_gram_trace": float(np.trace(self._flex_agent.M)),
+        }
+        self.last_update_info = info
+        return info

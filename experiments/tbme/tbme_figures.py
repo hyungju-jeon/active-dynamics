@@ -106,6 +106,9 @@ POLICY_LABELS = {
     "random": "Random",
     "flex": "FLEX",
     "flex_true_state": "FLEX true state",
+    "flex_filter": "FLEX upstream / filtered",
+    "flex_true": "FLEX upstream / true",
+    "flex_rollback": "FLEX rollback / filtered",
     "rhc": "RHC-US",
     "off_policy": "Off-policy",
     "active_planning_u1_r1_h40": "Planning u1/r1",
@@ -142,6 +145,9 @@ POLICY_ORDER = [
     "random",
     "flex",
     "flex_true_state",
+    "flex_filter",
+    "flex_true",
+    "flex_rollback",
     "rhc",
 ]
 
@@ -169,6 +175,9 @@ POLICY_COLORS = {
     "random": "#9EA7AD",
     "flex": "#AF7AC5",
     "flex_true_state": "#58D68D",
+    "flex_filter": "#2E86C1",
+    "flex_true": "#239B56",
+    "flex_rollback": "#CB4335",
     "active_state_variance": "#58D68D",
     "rhc": "#F06292",
 }
