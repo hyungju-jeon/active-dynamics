@@ -69,14 +69,14 @@ _POLICY_LABELS = {
     "flex": "FLEX",
     "flex_filter": "FLEX upstream / filtered",
     "flex_true": "FLEX upstream / true",
-    "flex_rollback": "FLEX rollback / filtered",
+    "flex_rollback": "FLEX",
     "rhc": "RHC-US",
     "off_policy": "Off-policy",
 }
 _ASSET_MATCHED_POLICIES = [
     "adaptive",
     "active_myopic",
-    "flex",
+    "flex_rollback",
     "rhc",
     "prbs",
     "random",
@@ -94,6 +94,11 @@ _ASSET_FLEX_LABELS = {
 
 def _asset_policy_label(policy_id: str) -> str:
     return _POLICY_LABELS.get(policy_id, _experiment_short_policy_label(policy_id))
+
+
+def _asset_baseline_policy_color(policy_id: str) -> str:
+    """Keep the rollback-stabilized baseline visually identified as FLEX."""
+    return _policy_color("flex" if policy_id == "flex_rollback" else policy_id)
 
 
 def _asset_parse_r2_summaries(raw: str) -> list[str]:
@@ -326,7 +331,7 @@ def _asset_plot_r2_curves(
         values = np.asarray([row["center"] for row in rows], dtype=np.float64)
         lower = np.asarray([row["lower"] for row in rows], dtype=np.float64)
         upper = np.asarray([row["upper"] for row in rows], dtype=np.float64)
-        color = _policy_color(policy_id)
+        color = _asset_baseline_policy_color(policy_id)
         curve_series.append(
             (steps, values, lower, upper, color, _asset_policy_label(policy_id))
         )
@@ -1329,7 +1334,7 @@ def _asset_plot_final_bar(
             values.append(value)
             lower_errors.append(0.0 if not np.isfinite(lower) else max(0.0, value - lower))
             upper_errors.append(0.0 if not np.isfinite(upper) else max(0.0, upper - value))
-            color = _policy_color(policy_id)
+            color = _asset_baseline_policy_color(policy_id)
             faces.append(mcolors.to_rgba(color, alpha=float(cond_alpha[cond_idx])))
             edges.append(color)
         ax.bar(
@@ -1355,7 +1360,7 @@ def _asset_plot_final_bar(
     _style_manuscript_axis(ax, grid_axis="y")
 
     policy_handles = [
-        Line2D([0], [0], color=_policy_color(policy_id), linewidth=1.6)
+        Line2D([0], [0], color=_asset_baseline_policy_color(policy_id), linewidth=1.6)
         for policy_id in active_policies
     ]
     fig.legend(
@@ -1629,8 +1634,8 @@ def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]
             metric_rows,
             r2_summary=r2_summary,
         )
-        # Bars follow figure06: drop FLEX (diverges) and colour by policy.
-        bar_policies = [p for p in _ASSET_MATCHED_POLICIES if p != "flex"]
+        # The rollback-stabilized FLEX variant is safe to retain in final-R2 bars.
+        bar_policies = list(_ASSET_MATCHED_POLICIES)
         written.append(
             _asset_plot_final_bar(
                 bar_path,

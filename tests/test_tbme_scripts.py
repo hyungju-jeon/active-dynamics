@@ -341,6 +341,9 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     assert mean_path.with_suffix(".csv").exists()
     assert median_path.exists()
     assert median_path.with_suffix(".csv").exists()
+    assert "flex_rollback" in module._ASSET_MATCHED_POLICIES
+    assert "flex" not in module._ASSET_MATCHED_POLICIES
+    assert module._asset_policy_label("flex_rollback") == "FLEX"
     mean_rows = read_trace_csv(mean_path.with_suffix(".csv"))
     failed_row = next(
         row
