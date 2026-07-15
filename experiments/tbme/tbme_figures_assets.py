@@ -121,6 +121,8 @@ _ASSET_PANEL_LABEL_SIZE = 10.0
 _ASSET_TITLE_SIZE = 8.0
 _ASSET_LABEL_SIZE = 8.0
 _ASSET_TICK_SIZE = 6.0
+_ASSET_PREDICTIVE_R2_LABEL = "Predictive R²"
+_ASSET_FINAL_R2_LABEL = "Final predictive R²"
 
 
 def _apply_asset_style(plt_module: Any | None = None) -> None:
@@ -388,7 +390,7 @@ def _asset_plot_r2_curves(
     ax.set_title(title, loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
     ax.set_xlabel("Environment steps")
     if ylabel:
-        ax.set_ylabel("Predictive $R^2$")
+        ax.set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
 
 
 def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Path:
@@ -1349,7 +1351,7 @@ def _asset_plot_final_bar(
             error_kw={"elinewidth": 0.6, "capthick": 0.6},
         )
 
-    ax.set_ylabel("Final predictive R2")
+    ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
     ax.set_ylim(0.0, 1.0)
     ax.set_xticks(x)
     ax.set_xticklabels(
@@ -1464,7 +1466,7 @@ def _asset_plot_method_comparison(
             capsize=1.6,
             label=source.label,
         )
-    ax_bar.set_ylabel("Final predictive R2")
+    ax_bar.set_ylabel(_ASSET_FINAL_R2_LABEL)
     ax_bar.set_ylim(0.0, 1.0)
     ax_bar.set_title(f"{chr(65 + len(sources))}. {figure_title}: final performance")
     ax_bar.set_xticks(x)
@@ -1568,7 +1570,7 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> Path:
         ax.set_title(source.label, loc="center", fontsize=8.0, pad=3.0)
         ax.set_xlabel("Environment steps")
         if idx % 4 == 0:
-            ax.set_ylabel("Predictive $R^2$")
+            ax.set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
         _style_experiment_axis(ax)
     axes.flat[-1].axis("off")
     handles, labels = axes.flat[0].get_legend_handles_labels()
@@ -1585,7 +1587,7 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> Path:
     fig.text(
         0.995,
         0.008,
-        "Non-finite R2 excluded from bands; rates are reported in the companion CSV.",
+        "Non-finite R² excluded from bands; rates are reported in the companion CSV.",
         ha="right",
         va="bottom",
         fontsize=5.5,

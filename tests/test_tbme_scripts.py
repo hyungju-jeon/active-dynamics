@@ -234,6 +234,8 @@ def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
 def test_asset_r2_summary_selection_is_explicit() -> None:
     from experiments.tbme import tbme_figures_assets as module
 
+    assert module._ASSET_PREDICTIVE_R2_LABEL == "Predictive R²"
+    assert module._ASSET_FINAL_R2_LABEL == "Final predictive R²"
     assert module._asset_parse_r2_summaries("mean_sem,median_iqr") == [
         "mean_sem",
         "median_iqr",
