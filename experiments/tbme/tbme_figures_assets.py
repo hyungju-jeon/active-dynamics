@@ -1657,10 +1657,15 @@ def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]
     return written
 
 
-def _asset_plot_eig_components(output_path: Path) -> Path:
+def _asset_plot_eig_components(output_path: Path) -> list[Path]:
+    """Write the EIG components figure at both manuscript column widths."""
     from experiments.eig_1d_example import main as _eig_1d_main
 
-    return _eig_1d_main(["--output", str(output_path)])
+    single_path = output_path.with_name(f"{output_path.stem}_single{output_path.suffix}")
+    return [
+        _eig_1d_main(["--output", str(output_path), "--column", "double"]),
+        _eig_1d_main(["--output", str(single_path), "--column", "single"]),
+    ]
 
 
 def _assets_build_parser() -> argparse.ArgumentParser:
