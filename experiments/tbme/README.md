@@ -382,12 +382,12 @@ Add mechanism-off controls, not just easier noise settings:
 - replace the two rank profiles by isotropic matrices; D- and E-optimality should coincide;
 - widen the informative gate or initialize inside it; the active/passive gap should shrink.
 
-Before any manuscript-scale run, first test objective rankings on fixed
-canonical rollouts.  Then run at least 100 paired seeds and require all of the
-following before promoting a system: PALDI improves final parameter error and
-global rollout R2, the paired confidence interval excludes zero against every
-named ablation and passive baseline, gate occupancy matches the intended
-mechanism, and every mechanism-off control removes the corresponding gap.
+Before interpreting an occupancy pattern as a distinct causal mechanism,
+first test objective rankings on fixed canonical rollouts and then run the
+mechanism-off controls above.  The finalized 100-seed comparison supports the
+objective-ordering and behavioral-cluster claims; without those online
+mechanism-off controls, it does not establish a unique causal failure for
+every individual ablation.
 
 An initial 20-paired-seed engineering audit at 500 online steps gave the
 following results.  These are validation targets for the implementation, not
