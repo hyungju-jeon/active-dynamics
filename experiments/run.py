@@ -749,6 +749,33 @@ def _instantiate_synthetic_policy(
             lr=policy_spec.flex_lr,
             device=device,
         )
+    if policy_type in {"flex-upstream", "flex-rollback"}:
+        initial_parameter_mean = None
+        if getattr(model, "e", None) is not None and "m" in model.e:
+            initial_parameter_mean = model.e["m"].detach().clone()
+        policy_class = (
+            actdyn_module.policy.FLEXUpstreamPolicy
+            if policy_type == "flex-upstream"
+            else actdyn_module.policy.FLEXPolicy
+        )
+        return policy_class(
+            action_space=env.action_space,
+            model=model,
+            env_preset=env_preset,
+            initial_parameter_mean=initial_parameter_mean,
+            use_observed_state=bool(policy_spec.use_true_state),
+            rollback_unstable_update=policy_type == "flex-rollback",
+            regularization=(
+                1e-2
+                if policy_spec.flex_regularization is None
+                else float(policy_spec.flex_regularization)
+            ),
+            parameter_step_clip=policy_spec.flex_parameter_step_clip,
+            parameter_min=policy_spec.flex_parameter_min,
+            parameter_max=policy_spec.flex_parameter_max,
+            lr=policy_spec.flex_lr,
+            device=device,
+        )
     if policy_type == "rhc":
         return actdyn_module.policy.RecedingHorizonCuriosityPolicy(
             action_space=env.action_space,
@@ -2073,6 +2100,26 @@ def _run_single_parameter_identification(
                 if policy_spec.objective_kind is None
                 else str(policy_spec.objective_kind)
             ),
+            "flex_state_source": (
+                "true"
+                if bool(getattr(policy, "use_observed_state", False))
+                else "filtered"
+                if hasattr(policy, "_flex_agent")
+                else None
+            ),
+            "flex_update_mode": (
+                str(getattr(policy, "update_mode"))
+                if hasattr(policy, "update_mode")
+                else "rollback"
+                if bool(getattr(policy, "rollback_unstable_update", False))
+                else "clip"
+                if hasattr(policy, "_flex_agent")
+                else None
+            ),
+            "flex_regularization": getattr(policy, "regularization", None),
+            "flex_parameter_step_clip": getattr(policy, "parameter_step_clip", None),
+            "flex_parameter_min": getattr(policy, "parameter_min", None),
+            "flex_parameter_max": getattr(policy, "parameter_max", None),
             "eig_freeze_covariance": bool(
                 getattr(policy_spec, "eig_freeze_covariance", False)
             ),

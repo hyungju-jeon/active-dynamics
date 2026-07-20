@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -9,6 +10,8 @@ import gymnasium as gym
 import numpy as np
 import pytest
 import torch
+
+from actdyn.utils.experiment_runtime import read_trace_csv, write_trace_csv
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -82,6 +85,280 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
         "duffing",
         "gated_duffing",
     ]
+
+
+def _write_r2_ceiling_metadata(suite_dir: Path, *, state_noise: float) -> None:
+    run_dir = suite_dir / "adaptive" / "seed_0" / "repeat_01"
+    run_dir.mkdir(parents=True)
+    metadata = {
+        "dynamics_alpha": 1.0,
+        "dynamics_type": "gated_duffing",
+        "embedding_true": [-1.2, -0.8, 0.5, 1.1],
+        "env_preset_id": "tbme_gated_duffing",
+        "min_embedding_dim": 2,
+        "state_noise": state_noise,
+        "status": "completed",
+        "trajectory_eval_horizon": 4,
+        "trajectory_eval_samples": 32,
+        "true_params_full": [-1.2, -0.8, 0.5, 1.1],
+    }
+    (run_dir / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+
+
+def test_asset_true_model_r2_ceiling_is_one_without_process_noise(tmp_path: Path):
+    from experiments.tbme import tbme_figures_assets as module
+
+    _write_r2_ceiling_metadata(tmp_path, state_noise=0.0)
+
+    assert module._asset_true_model_r2_ceiling(tmp_path) == 1.0
+
+
+def test_asset_true_model_r2_ceiling_reflects_process_noise(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from experiments.tbme import tbme_figures_assets as module
+
+    monkeypatch.setattr(module, "_ASSET_R2_CEILING_REPEATS", 4)
+    _write_r2_ceiling_metadata(tmp_path, state_noise=0.8)
+
+    ceiling = module._asset_true_model_r2_ceiling(tmp_path)
+
+    assert ceiling is not None
+    assert ceiling < 1.0
+
+
+def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from experiments.tbme import tbme_figures_assets as module
+
+    summary_dir = tmp_path / "summary"
+    write_trace_csv(
+        summary_dir / "trajectory_r2_over_steps.csv",
+        [
+            {
+                "policy_id": "adaptive",
+                "step": 10,
+                "trajectory_r2_mean": 3.0,
+                "value_sem": 1.0,
+                "value_median": 1.5,
+                "value_q25": 0.75,
+                "value_q75": 3.75,
+                "cpu_time_sec_mean": 2.0,
+                "n_points": 4,
+            }
+        ],
+        [
+            "policy_id",
+            "step",
+            "trajectory_r2_mean",
+            "value_sem",
+            "value_median",
+            "value_q25",
+            "value_q75",
+            "cpu_time_sec_mean",
+            "n_points",
+        ],
+    )
+    write_trace_csv(
+        summary_dir / "metrics.csv",
+        [
+            {
+                "policy_id": "adaptive",
+                "seed": seed,
+                "status": "completed",
+                "trajectory_r2_final_mean": value,
+            }
+            for seed, value in enumerate((0.0, 1.0, 2.0, 9.0))
+        ],
+        ["policy_id", "seed", "status", "trajectory_r2_final_mean"],
+    )
+
+    mean_curve = module._asset_r2_curve_rows(tmp_path, r2_summary="mean_sem")["adaptive"][0]
+    curve = module._asset_r2_curve_rows(tmp_path, r2_summary="median_iqr")["adaptive"][0]
+    mean_final = module._asset_final_r2_summary(
+        tmp_path,
+        "adaptive",
+        r2_summary="mean_sem",
+    )
+    final = module._asset_final_r2_summary(
+        tmp_path,
+        "adaptive",
+        r2_summary="median_iqr",
+    )
+
+    assert (mean_curve["center"], mean_curve["lower"], mean_curve["upper"]) == pytest.approx(
+        (3.0, 2.0, 4.0)
+    )
+    assert mean_final[0] == pytest.approx(3.0)
+    assert mean_final[0] - mean_final[1] == pytest.approx(mean_final[2] - mean_final[0])
+    assert mean_final[3] == 4
+    assert curve["center"] == pytest.approx(1.5)
+    assert curve["lower"] == pytest.approx(0.75)
+    assert curve["upper"] == pytest.approx(3.75)
+    assert final == pytest.approx((1.5, 0.75, 3.75, 4))
+
+    monkeypatch.setattr(module, "_asset_true_model_r2_ceiling", lambda *args, **kwargs: None)
+    source = SimpleNamespace(exp_id="condition", label="Condition", suite_dir=tmp_path)
+    metric_rows = module._asset_method_metric_rows(
+        [source],
+        ["adaptive"],
+        r2_summary="median_iqr",
+    )
+    csv_path = tmp_path / "median_iqr" / "metrics.csv"
+    module._asset_write_method_csv(
+        csv_path,
+        metric_rows,
+        r2_summary="median_iqr",
+    )
+    recovery_path = tmp_path / "median_iqr" / "recovery.pdf"
+    bar_path = tmp_path / "median_iqr" / "final.pdf"
+
+    assert "_trajectory_r2_center" not in csv_path.read_text(encoding="utf-8")
+    assert module._asset_plot_recovery_curves(
+        recovery_path,
+        sources=[source],
+        policy_ids=["adaptive"],
+        r2_summary="median_iqr",
+    ) == recovery_path
+    assert module._asset_plot_final_bar(
+        bar_path,
+        sources=[source],
+        policy_ids=["adaptive"],
+        metric_rows=metric_rows,
+    ) == bar_path
+    assert recovery_path.exists()
+    assert bar_path.exists()
+
+
+def test_asset_r2_summary_selection_is_explicit() -> None:
+    from experiments.tbme import tbme_figures_assets as module
+
+    assert module._ASSET_PREDICTIVE_R2_LABEL == "Predictive R²"
+    assert module._ASSET_FINAL_R2_LABEL == "Final predictive R²"
+    assert module._asset_parse_r2_summaries("mean_sem,median_iqr") == [
+        "mean_sem",
+        "median_iqr",
+    ]
+    with pytest.raises(ValueError, match="Unknown R2 summary"):
+        module._asset_parse_r2_summaries("median_sem")
+
+
+def test_flex_comparison_asset_writes_mean_and_median_r2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from experiments.tbme import tbme_figures_assets as module
+
+    policy_ids = ("flex", "flex_filter", "flex_true", "flex_rollback")
+    refs = []
+    for idx, exp_id in enumerate(
+        (
+            "duffing",
+            "damped_pendulum",
+            "gated_duffing",
+            "gated_duffing_asymmetric",
+            "gated_duffing_challenging",
+            "gated_duffing_observation_bottleneck_mild",
+            "gated_duffing_observation_bottleneck_strong",
+        )
+    ):
+        suite_dir = tmp_path / "tracks" / exp_id
+        summary_dir = suite_dir / "summary"
+        write_trace_csv(
+            summary_dir / "trajectory_r2_over_steps.csv",
+            [
+                {
+                    "policy_id": policy_id,
+                    "step": step,
+                    "trajectory_r2_mean": 0.2 + 0.3 * step + 0.01 * policy_idx,
+                    "value_sem": 0.02,
+                    "value_median": 0.25 + 0.3 * step + 0.01 * policy_idx,
+                    "value_q25": 0.20 + 0.3 * step + 0.01 * policy_idx,
+                    "value_q75": 0.30 + 0.3 * step + 0.01 * policy_idx,
+                    "cpu_time_sec_mean": float(step),
+                }
+                for policy_idx, policy_id in enumerate(policy_ids)
+                for step in (0, 1, 2)
+            ],
+            [
+                "policy_id",
+                "step",
+                "trajectory_r2_mean",
+                "value_sem",
+                "value_median",
+                "value_q25",
+                "value_q75",
+                "cpu_time_sec_mean",
+            ],
+        )
+        write_trace_csv(
+            summary_dir / "metrics.csv",
+            [
+                {
+                    "policy_id": policy_id,
+                    "seed": seed,
+                    "status": "completed",
+                    "trajectory_r2_final_mean": (
+                        ""
+                        if exp_id == "gated_duffing"
+                        and policy_id == "flex_filter"
+                        and seed == 1
+                        else 0.75 + 0.01 * seed
+                    ),
+                    "value_final_mean": 0.1 + 0.01 * seed,
+                }
+                for policy_id in policy_ids
+                for seed in (0, 1)
+            ],
+            [
+                "policy_id",
+                "seed",
+                "status",
+                "trajectory_r2_final_mean",
+                "value_final_mean",
+            ],
+        )
+        refs.append(
+            SimpleNamespace(
+                suite_id=exp_id,
+                label=f"Condition {idx}",
+                session_root=tmp_path,
+            )
+        )
+
+    monkeypatch.setitem(module._figures.GROUPS, "flex_comparison", refs)
+    mean_path = tmp_path / "assets" / "tbme_fig_flex_comparison.pdf"
+    median_path = tmp_path / "assets" / "median_iqr" / "tbme_fig_flex_comparison.pdf"
+
+    assert module._asset_plot_flex_comparison(
+        mean_path,
+        r2_summary="mean_sem",
+    ) == mean_path
+    assert module._asset_plot_flex_comparison(
+        median_path,
+        r2_summary="median_iqr",
+    ) == median_path
+    assert mean_path.exists()
+    assert mean_path.with_suffix(".csv").exists()
+    assert median_path.exists()
+    assert median_path.with_suffix(".csv").exists()
+    assert "flex_rollback" in module._ASSET_MATCHED_POLICIES
+    assert "flex" not in module._ASSET_MATCHED_POLICIES
+    assert module._asset_policy_label("flex_rollback") == "FLEX"
+    mean_rows = read_trace_csv(mean_path.with_suffix(".csv"))
+    failed_row = next(
+        row
+        for row in mean_rows
+        if row["experiment"] == "gated_duffing" and row["policy_id"] == "flex_filter"
+    )
+    assert failed_row["policy_label"] == "FLEX upstream / filtered"
+    assert failed_row["n_total"] == "2"
+    assert failed_row["n_r2"] == "1"
+    assert failed_row["n_r2_nonfinite"] == "1"
+    assert failed_row["r2_nonfinite_rate"] == "0.5"
 
 
 def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:
@@ -226,6 +503,16 @@ def test_tbme_catalog_define_expected_matrices():
     assert policies["compound_active_planning"].action_cost_weight == pytest.approx(0.0)
     assert policies["off_policy"].schedule_id == "u1_r1_h1"
     assert policies["flex"].policy_type == "flex"
+    assert policies["flex"].flex_regularization == pytest.approx(0.01)
+    assert policies["flex"].flex_parameter_step_clip == pytest.approx(0.25)
+    assert policies["flex_filter"].policy_type == "flex-upstream"
+    assert policies["flex_filter"].use_true_state is False
+    assert policies["flex_filter"].flex_parameter_step_clip is None
+    assert policies["flex_true"].policy_type == "flex-upstream"
+    assert policies["flex_true"].use_true_state is True
+    assert policies["flex_rollback"].policy_type == "flex-rollback"
+    assert policies["flex_rollback"].flex_regularization == pytest.approx(0.1)
+    assert policies["flex_rollback"].flex_parameter_step_clip == pytest.approx(0.25)
     assert policies["rhc"].policy_type == "rhc"
     assert "rhc_mvr" not in policies
     assert policies["active_state_variance"].objective_kind == "state_variance"
@@ -255,6 +542,9 @@ def test_tbme_catalog_define_expected_matrices():
         "flex_true_state",
         "rhc",
         "off_policy",
+        "flex_filter",
+        "flex_true",
+        "flex_rollback",
     )
     assert "baseline_prbs" not in duffing.policy_ids
     assert "active_planning_u5_r5_h40" not in duffing.policy_ids
@@ -396,6 +686,68 @@ def test_tbme_runner_instantiates_flex_policy_as_exact_flex():
     assert policy.chunk == 1
 
 
+@pytest.mark.parametrize(
+    ("policy_id", "class_name", "use_true_state", "rollback"),
+    [
+        ("flex_filter", "FLEXUpstreamPolicy", False, False),
+        ("flex_true", "FLEXUpstreamPolicy", True, False),
+        ("flex_rollback", "FLEXPolicy", False, True),
+    ],
+)
+def test_tbme_runner_instantiates_additive_flex_variants(
+    policy_id: str,
+    class_name: str,
+    use_true_state: bool,
+    rollback: bool,
+) -> None:
+    catalogs = _load_module("tbme_catalogs_runtime_flex_variants", "experiments/tbme/run_tbme_experiments.py")
+    specs = catalogs.configure_tbme_catalogs(suite_entries={})
+    runner = _load_module("experiment_runner_runtime_flex_variants", "experiments/run.py")
+    import actdyn
+
+    action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=float)
+    fake_env = SimpleNamespace(action_space=action_space)
+    fake_model = SimpleNamespace(action_encoder=SimpleNamespace(action_space=action_space))
+    env_preset = specs.environment_presets["tbme_duffing"]
+    policy_spec = specs.policy_specs[policy_id]
+    schedule_spec = specs.schedule_specs[policy_spec.schedule_id]
+
+    policy = runner._instantiate_synthetic_policy(
+        actdyn_module=actdyn,
+        env=fake_env,
+        env_preset=env_preset,
+        model=fake_model,
+        metric=None,
+        device="cpu",
+        policy_id=policy_id,
+        policy_spec=policy_spec,
+        schedule_spec=schedule_spec,
+        seed=0,
+    )
+
+    assert policy.__class__.__name__ == class_name
+    assert policy.use_observed_state is use_true_state
+    assert policy.rollback_unstable_update is rollback
+
+
+def test_flex_comparison_suite_has_requested_environments_and_models() -> None:
+    suite = _load_module("tbme_flex_comparison", "experiments/tbme/exp_flex_comparison.py")
+    assert tuple(suite.EXPERIMENT_SUITES) == (
+        "duffing",
+        "damped_pendulum",
+        "gated_duffing",
+        "gated_duffing_asymmetric",
+        "gated_duffing_challenging",
+        "gated_duffing_observation_bottleneck_mild",
+        "gated_duffing_observation_bottleneck_strong",
+    )
+    assert suite.MODEL_IDS == ["flex", "flex_filter", "flex_true", "flex_rollback"]
+    assert all(
+        spec["env_preset_id"] == f"tbme_{exp_id}"
+        for exp_id, spec in suite.EXPERIMENT_SUITES.items()
+    )
+
+
 def test_tbme_runner_instantiates_exact_rhc_policy():
     pytest.importorskip("casadi")
     catalogs = _load_module(
@@ -488,6 +840,7 @@ def test_tbme_family_scripts_define_expected_suite_sets():
         "model_mismatch",
         "objective_ablation",
         "scheduling",
+        "flex_comparison",
     }
     assert [entry["suite_id"] for entry in groups["simple_system_identification"]] == [
         "duffing",
@@ -496,6 +849,19 @@ def test_tbme_family_scripts_define_expected_suite_sets():
     ]
     assert "gated_duffing_parameter_mismatch_mild" in suites
     assert "gated_duffing_observation_bottleneck_mild" in suites
+    assert [entry["suite_id"] for entry in groups["flex_comparison"]] == [
+        "duffing",
+        "damped_pendulum",
+        "gated_duffing",
+        "gated_duffing_asymmetric",
+        "gated_duffing_challenging",
+        "gated_duffing_observation_bottleneck_mild",
+        "gated_duffing_observation_bottleneck_strong",
+    ]
+    assert all(
+        entry["policy_ids"] == ("flex_filter", "flex_true", "flex_rollback")
+        for entry in groups["flex_comparison"]
+    )
 
 
 def test_duffing_parameter_mismatch_uses_fixed_non_inferred_cubic():

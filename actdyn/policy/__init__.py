@@ -21,6 +21,7 @@ __all__ = [
     "BaselinePRBSPolicy",
     "BaselineCEMPCPolicy",
     "FLEXPolicy",
+    "FLEXUpstreamPolicy",
     "RecedingHorizonCuriosityPolicy",
     "BaselineThompsonPolicy",
     "BaselineUCBPolicy",
@@ -38,6 +39,7 @@ _policy_map = {
     "baseline-prbs": (".baseline_prbs", "BaselinePRBSPolicy"),
     "baseline-ce-mpc": (".baseline_ce_mpc", "BaselineCEMPCPolicy"),
     "flex": (".baseline_flex", "FLEXPolicy"),
+    "flex-upstream": (".baseline_flex", "FLEXUpstreamPolicy"),
     "rhc": (".baseline_rhc", "RecedingHorizonCuriosityPolicy"),
     "baseline-thompson": (".baseline_thompson", "BaselineThompsonPolicy"),
     "baseline-ucb": (".baseline_ucb", "BaselineUCBPolicy"),
@@ -56,7 +58,7 @@ def __getattr__(name: str):
     if name == "AsyncMpcICem":
         module = importlib.import_module(".mpc", __package__)
         return getattr(module, name)
-    if name == "FLEXPolicy":
+    if name in {"FLEXPolicy", "FLEXUpstreamPolicy"}:
         module = importlib.import_module(".baseline_flex", __package__)
         return getattr(module, name)
     if name == "RecedingHorizonCuriosityPolicy":

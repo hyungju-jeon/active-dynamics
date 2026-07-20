@@ -28,6 +28,7 @@ EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
     "model_mismatch": ("mismatch_dose_response",),
     "objective_ablation": ("objective_ablation",),
     "scheduling": (),
+    "flex_comparison": (),
 }
 
 DEFAULT_GROUPS = ",".join(tbme_figures.GROUPS)
@@ -67,6 +68,15 @@ def _add_results_dir_arg(
 
 def _add_max_seeds_arg(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-seeds", type=int, default=100)
+
+
+def _add_r2_summaries_arg(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--r2-summaries",
+        type=str,
+        default="mean_sem,median_iqr",
+        help="Comma-separated asset R2 summary sets: mean_sem and/or median_iqr.",
+    )
 
 
 def _add_trajectory_args(
@@ -164,7 +174,12 @@ def _experiment_args(args: argparse.Namespace) -> list[str]:
 
 
 def _assets_args(args: argparse.Namespace) -> list[str]:
-    argv = ["--groups", str(args.groups)]
+    argv = [
+        "--groups",
+        str(args.groups),
+        "--r2-summaries",
+        str(args.r2_summaries),
+    ]
     results_dir = getattr(args, "results_dir", None)
     if results_dir is not None:
         argv.extend(["--results-dir", str(results_dir)])
@@ -230,6 +245,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prepare TBME manuscript asset assembly outputs.",
     )
     _add_groups_arg(assets)
+    _add_r2_summaries_arg(assets)
     assets.add_argument(
         "--output-dir",
         type=str,
@@ -257,6 +273,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_figure_formats_arg(all_parser)
     _add_max_seeds_arg(all_parser)
     _add_trajectory_args(all_parser, max_seeds_default=None)
+    _add_r2_summaries_arg(all_parser)
     _add_results_dir_arg(all_parser)
     all_parser.add_argument(
         "--assets-output-dir",

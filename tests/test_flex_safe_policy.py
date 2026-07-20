@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from actdyn.policy import baseline_flex
-from actdyn.policy.baseline_flex import FLEXPolicy
+from actdyn.policy.baseline_flex import FLEXPolicy, FLEXUpstreamPolicy
 
 
 class _JumpingFlexAgent:
@@ -82,3 +82,68 @@ def test_flex_safe_rolls_back_unstable_update(monkeypatch: pytest.MonkeyPatch) -
     np.testing.assert_allclose(agent.M, previous_gram)
     assert info["parameter_posterior_updated"] is False
     assert info["flex_update_rejected"] is True
+
+
+def test_existing_flex_clips_parameters_but_keeps_gram_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(baseline_flex, "_FLEX_POLICY_CLASS", _JumpingFlexAgent)
+    policy = FLEXPolicy(
+        action_space=gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+        model=SimpleNamespace(e={"m": torch.zeros(1, 4)}),
+        env_preset=_env_preset(),
+        regularization=0.01,
+        parameter_step_clip=0.25,
+    )
+    agent = policy._flex_agent
+    previous_mean = policy.get_parameter_mean().detach().clone()
+    previous_gram = np.asarray(agent.M).copy()
+
+    info = policy.update(
+        {
+            "model_state": torch.zeros(1, 1, 2),
+            "next_model_state": torch.ones(1, 1, 2),
+            "env_action": torch.zeros(1, 1, 2),
+        }
+    )
+
+    update = policy.get_parameter_mean() - previous_mean
+    assert torch.linalg.norm(update).item() == pytest.approx(0.25)
+    np.testing.assert_allclose(agent.M, previous_gram + np.eye(previous_gram.shape[0]))
+    assert info["parameter_posterior_updated"] is True
+    assert info["flex_update_rejected"] is False
+
+
+def test_upstream_flex_accepts_raw_parameter_and_gram_update(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(baseline_flex, "_FLEX_POLICY_CLASS", _JumpingFlexAgent)
+    policy = FLEXUpstreamPolicy(
+        action_space=gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=np.float32),
+        model=SimpleNamespace(e={"m": torch.zeros(1, 4)}),
+        env_preset=_env_preset(),
+        regularization=0.01,
+        parameter_step_clip=None,
+        parameter_min=None,
+        parameter_max=None,
+    )
+    agent = policy._flex_agent
+    previous_mean = policy.get_parameter_mean().detach().clone()
+    previous_gram = np.asarray(agent.M).copy()
+
+    info = policy.update(
+        {
+            "model_state": torch.zeros(1, 1, 2),
+            "next_model_state": torch.ones(1, 1, 2),
+            "env_action": torch.zeros(1, 1, 2),
+        }
+    )
+
+    np.testing.assert_allclose(
+        policy.get_parameter_mean().numpy(),
+        previous_mean.numpy() + 10.0,
+    )
+    np.testing.assert_allclose(agent.M, previous_gram + np.eye(previous_gram.shape[0]))
+    assert info["flex_update_norm"] == pytest.approx(20.0)
+    assert info["parameter_posterior_updated"] is True
+    assert info["flex_update_rejected"] is False

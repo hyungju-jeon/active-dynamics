@@ -10,6 +10,11 @@ import numpy as np
 from actdyn.utils.experiment_runtime import read_trace_csv, safe_float as _safe_float
 from actdyn.utils.figure_io import load_plotting, save_figure
 
+from ..experiment_io import (
+    find_nested_metadata_paths,
+    get_environment_preset_from_metadata,
+    load_json,
+)
 from . import tbme_figures as _figures
 from .tbme_figures import (
     _REPO_ROOT,
@@ -29,10 +34,10 @@ from .tbme_figures_experiment import (
     _experiment_C_NEUTRAL_LIGHT,
     _experiment_C_STROKE,
     _experiment_OBJECTIVE_POLICIES,
-    _experiment_curve_rows,
     _experiment_load_xy_trace,
     _experiment_make_information_grid,
     _experiment_metric_mean_sem,
+    _experiment_metric_values,
     _experiment_objective_sources,
     _experiment_r2_threshold_step,
     _experiment_r2_threshold_times,
@@ -62,22 +67,83 @@ _POLICY_LABELS = {
     "active_observation_variance": "Obs. var.",
     "active_state_variance": "State var.",
     "flex": "FLEX",
+    "flex_filter": "FLEX upstream / filtered",
+    "flex_true": "FLEX upstream / true",
+    "flex_rollback": "FLEX",
     "rhc": "RHC-US",
     "off_policy": "Off-policy",
 }
 _ASSET_MATCHED_POLICIES = [
     "adaptive",
     "active_myopic",
-    "flex",
+    "flex_rollback",
     "rhc",
     "prbs",
     "random",
 ]
-_ASSET_R2_THRESHOLDS = (0.90, 0.95, 0.99)
+_ASSET_R2_CEILING_REPEATS = 48
+_ASSET_R2_SUMMARIES = ("mean_sem", "median_iqr")
+_ASSET_FLEX_POLICIES = ("flex", "flex_filter", "flex_true", "flex_rollback")
+_ASSET_FLEX_LABELS = {
+    "flex": "FLEX clip / filtered",
+    "flex_filter": "FLEX upstream / filtered",
+    "flex_true": "FLEX upstream / true",
+    "flex_rollback": "FLEX safe rollback / filtered",
+}
 
 
 def _asset_policy_label(policy_id: str) -> str:
     return _POLICY_LABELS.get(policy_id, _experiment_short_policy_label(policy_id))
+
+
+def _asset_baseline_policy_color(policy_id: str) -> str:
+    """Keep the rollback-stabilized baseline visually identified as FLEX."""
+    return _policy_color("flex" if policy_id == "flex_rollback" else policy_id)
+
+
+def _asset_parse_r2_summaries(raw: str) -> list[str]:
+    summaries = [item.strip() for item in str(raw).split(",") if item.strip()]
+    unknown = sorted(set(summaries) - set(_ASSET_R2_SUMMARIES))
+    if unknown:
+        expected = ", ".join(_ASSET_R2_SUMMARIES)
+        raise ValueError(
+            f"Unknown R2 summary set(s): {', '.join(unknown)}. Expected: {expected}"
+        )
+    if not summaries:
+        raise ValueError("At least one R2 summary set is required")
+    return list(dict.fromkeys(summaries))
+
+
+# Shared manuscript font rule for every asset figure: Helvetica, bold 10 panel
+# indices, 8 pt titles/axis labels, 6 pt tick values.
+_ASSET_FONT_STACK = ("Helvetica", "Nimbus Sans", "TeX Gyre Heros", "Arial", "DejaVu Sans")
+_ASSET_PANEL_LABEL_SIZE = 10.0
+_ASSET_TITLE_SIZE = 8.0
+_ASSET_LABEL_SIZE = 8.0
+_ASSET_TICK_SIZE = 6.0
+_ASSET_PREDICTIVE_R2_LABEL = "Predictive R²"
+_ASSET_FINAL_R2_LABEL = "Final predictive R²"
+
+
+def _apply_asset_style(plt_module: Any | None = None) -> None:
+    if plt_module is None:
+        import matplotlib
+
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt_module
+    _apply_style(plt_module)
+    plt_module.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": list(_ASSET_FONT_STACK),
+            "mathtext.fontset": "dejavusans",
+            "axes.titlesize": _ASSET_TITLE_SIZE,
+            "axes.labelsize": _ASSET_LABEL_SIZE,
+            "xtick.labelsize": _ASSET_TICK_SIZE,
+            "ytick.labelsize": _ASSET_TICK_SIZE,
+            "legend.fontsize": _ASSET_TICK_SIZE,
+        }
+    )
 
 
 def _asset_require_suite_dirs(paths: Sequence[Path]) -> None:
@@ -125,38 +191,166 @@ def _asset_rolling_mean(values: np.ndarray, window: int) -> np.ndarray:
     return out
 
 
+def _asset_first_suite_metadata(suite_dir: Path) -> dict[str, Any] | None:
+    for policy_dir in sorted(path for path in suite_dir.iterdir() if path.is_dir()):
+        if policy_dir.name == "summary":
+            continue
+        for seed_dir in sorted(policy_dir.glob("seed_*")):
+            for metadata_path in find_nested_metadata_paths(seed_dir):
+                metadata = load_json(metadata_path)
+                if metadata.get("status") in {None, "", "completed"}:
+                    return metadata
+    return None
+
+
+def _asset_true_model_r2_ceiling(
+    suite_dir: Path,
+    *,
+    r2_summary: str = "mean_sem",
+) -> float | None:
+    _asset_parse_r2_summaries(r2_summary)
+    metadata = _asset_first_suite_metadata(suite_dir)
+    if metadata is None:
+        return None
+    env_preset = get_environment_preset_from_metadata(metadata)
+    true_embedding_raw = (
+        metadata.get("embedding_true")
+        or metadata.get("true_embedding")
+        or env_preset.true_embedding_vector()
+    )
+    true_embedding = np.asarray(true_embedding_raw, dtype=np.float32).reshape(-1)
+    if true_embedding.size == 0:
+        return None
+    state_noise = _safe_float(metadata.get("state_noise"))
+    if state_noise is None:
+        state_noise = float(env_preset.state_noise)
+    if state_noise <= 0.0:
+        return 1.0
+
+    import torch
+    from actdyn.utils.validation import trajectory_r2_vectorfield_many
+
+    repeats = int(_ASSET_R2_CEILING_REPEATS)
+    r2_values = trajectory_r2_vectorfield_many(
+        e_estimates=torch.as_tensor(
+            np.repeat(true_embedding.reshape(1, -1), repeats, axis=0),
+            dtype=torch.float32,
+        ),
+        e_true=torch.as_tensor(true_embedding, dtype=torch.float32),
+        true_dynamics_type=str(
+            metadata.get("dynamics_type") or env_preset.resolved_dynamics_type()
+        ),
+        true_full_params=np.asarray(
+            metadata.get("true_params_full") or env_preset.resolved_true_params(),
+            dtype=np.float32,
+        ),
+        estimator_dynamics_type=str(
+            metadata.get("dynamics_type") or env_preset.resolved_dynamics_type()
+        ),
+        estimator_full_params=np.asarray(
+            metadata.get("true_params_full") or env_preset.resolved_true_params(),
+            dtype=np.float32,
+        ),
+        true_min_embedding_dim=int(
+            metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
+        ),
+        estimator_min_embedding_dim=int(
+            metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
+        ),
+        dt=float(env_preset.dt),
+        dynamics_alpha=float(metadata.get("dynamics_alpha") or env_preset.dynamics_alpha),
+        horizon=int(metadata.get("trajectory_eval_horizon") or 200),
+        n_starts=int(metadata.get("trajectory_eval_samples") or 100),
+        rng=np.random.default_rng(104729),
+        device="cpu",
+        state_noise=state_noise,
+    )
+    finite = r2_values[np.isfinite(r2_values)]
+    if finite.size == 0:
+        return None
+    if r2_summary == "median_iqr":
+        return float(np.median(finite))
+    return float(np.mean(finite))
+
+
+def _asset_r2_curve_rows(
+    suite_dir: Path,
+    *,
+    r2_summary: str,
+) -> dict[str, list[dict[str, float]]]:
+    """Read one explicit R2 center-and-band summary from the suite CSV."""
+    _asset_parse_r2_summaries(r2_summary)
+    grouped: dict[str, list[dict[str, float]]] = {}
+    for row in read_trace_csv(suite_dir / "summary" / "trajectory_r2_over_steps.csv"):
+        policy_id = str(row.get("policy_id", ""))
+        step = _safe_float(row.get("step"))
+        cpu_time_sec = _safe_float(row.get("cpu_time_sec_mean"))
+        if r2_summary == "median_iqr":
+            center = _safe_float(row.get("value_median"))
+            lower = _safe_float(row.get("value_q25"))
+            upper = _safe_float(row.get("value_q75"))
+        else:
+            center = _safe_float(row.get("trajectory_r2_mean"))
+            sem = _safe_float(row.get("value_sem"))
+            lower = None if center is None else center - (0.0 if sem is None else sem)
+            upper = None if center is None else center + (0.0 if sem is None else sem)
+        if not policy_id or step is None or center is None:
+            continue
+        grouped.setdefault(policy_id, []).append(
+            {
+                "step": step,
+                "center": center,
+                "lower": center if lower is None else lower,
+                "upper": center if upper is None else upper,
+                "cpu_time_sec": np.nan if cpu_time_sec is None else cpu_time_sec,
+            }
+        )
+    for policy_rows in grouped.values():
+        policy_rows.sort(key=lambda row: row["step"])
+    return grouped
+
+
 def _asset_plot_r2_curves(
     ax: Any,
     suite_dir: Path,
     policy_ids: Sequence[str],
     *,
     title: str,
+    panel_label: str,
     ylabel: bool,
+    r2_summary: str,
+    show_inset: bool = False,
 ) -> None:
-    from matplotlib.ticker import FixedLocator, LogFormatterMathtext, NullFormatter
+    from matplotlib.ticker import FixedLocator, FormatStrFormatter, NullFormatter
 
-    curves = _experiment_curve_rows(
-        suite_dir,
-        "trajectory_r2_over_steps.csv",
-        "trajectory_r2_mean",
-    )
+    curves = _asset_r2_curve_rows(suite_dir, r2_summary=r2_summary)
     curve_series = []
     for policy_id in policy_ids:
         rows = curves.get(policy_id, [])
         if not rows:
             continue
         steps = np.asarray([row["step"] for row in rows], dtype=np.float64)
-        values = np.asarray([row["value"] for row in rows], dtype=np.float64)
-        sem = np.asarray([row["sem"] for row in rows], dtype=np.float64)
-        color = _policy_color(policy_id)
-        curve_series.append((steps, values, sem, color, _asset_policy_label(policy_id)))
+        values = np.asarray([row["center"] for row in rows], dtype=np.float64)
+        lower = np.asarray([row["lower"] for row in rows], dtype=np.float64)
+        upper = np.asarray([row["upper"] for row in rows], dtype=np.float64)
+        color = _asset_baseline_policy_color(policy_id)
+        curve_series.append(
+            (steps, values, lower, upper, color, _asset_policy_label(policy_id))
+        )
 
-    inset = ax.inset_axes([0.55, 0.13, 0.40, 0.40])
-    for curve_ax, linewidth, alpha, labels in (
-        (ax, 0.95, 0.10, True),
-        (inset, 0.65, 0.08, False),
-    ):
-        for steps, values, sem, color, label in curve_series:
+    if not curve_series:
+        raise RuntimeError(
+            f"No trajectory R2 curves available for {r2_summary} in {suite_dir / 'summary'}"
+        )
+
+    r2_ceiling = _asset_true_model_r2_ceiling(suite_dir, r2_summary=r2_summary)
+    curve_axes = [(ax, 0.95, 0.10, True)]
+    inset = None
+    if show_inset:
+        inset = ax.inset_axes([0.55, 0.13, 0.40, 0.40])
+        curve_axes.append((inset, 0.65, 0.08, False))
+    for curve_ax, linewidth, alpha, labels in curve_axes:
+        for steps, values, lower, upper, color, label in curve_series:
             curve_ax.plot(
                 steps,
                 values,
@@ -166,53 +360,64 @@ def _asset_plot_r2_curves(
             )
             curve_ax.fill_between(
                 steps,
-                values - sem,
-                values + sem,
+                lower,
+                upper,
                 color=color,
                 alpha=alpha,
                 linewidth=0.0,
             )
-        for threshold in _ASSET_R2_THRESHOLDS:
+        if r2_ceiling is not None:
             curve_ax.axhline(
-                threshold,
+                r2_ceiling,
                 color=_experiment_C_NEUTRAL_LIGHT,
                 linestyle="--",
-                linewidth=0.55,
-        )
+                linewidth=0.65,
+                label="true-model max" if ylabel and labels else None,
+            )
         curve_ax.set_xlim(left=0.0)
         curve_ax.set_yscale("log", nonpositive="clip")
-        curve_ax.set_ylim(0.1, 1.0)
-        curve_ax.yaxis.set_major_locator(FixedLocator([0.1, 1.0]))
-        curve_ax.yaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
+        curve_ax.set_ylim(0.25, 1.05)
+        curve_ax.yaxis.set_major_locator(FixedLocator([0.25, 1.0]))
+        curve_ax.yaxis.set_major_formatter(FormatStrFormatter("%g"))
         curve_ax.yaxis.set_minor_formatter(NullFormatter())
         _style_experiment_axis(curve_ax)
-    inset.set_xlim(0.0, 500.0)
-    inset.tick_params(axis="both", labelsize=5.2, pad=1.0)
-    ax.set_title(title, pad=3.0, fontsize=9.5)
-    ax.set_xlabel("Environment step")
+    if inset is not None:
+        inset.set_xlim(0.0, 250.0)
+        inset.tick_params(axis="both", labelsize=5.2, pad=1.0)
+    ax.set_title(
+        panel_label, loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+    )
+    ax.set_title(title, loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+    ax.set_xlabel("Environment steps")
     if ylabel:
-        ax.set_ylabel("Predictive R2")
+        ax.set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
 
 
-def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
+def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Path:
     sources = [
         _ExperimentSuiteSource(ref.suite_id, ref.label, ref.session_root / "tracks" / ref.suite_id)
         for ref in _figures.GROUPS["simple_system_identification"]
     ]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
-    plt_module = load_plotting(output_path, apply_style=_apply_style, path_is_file=True)
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
     fig, axes = plt_module.subplots(1, len(sources), figsize=(7.25, 2.35), squeeze=False)
-    short_labels = {"Damped pendulum": "Pendulum", "Gated Duffing": "Gated"}
+    display_titles = {
+        "duffing oscillator": "Duffing",
+        "damped pendulum": "Damped Pendulum",
+        "Gated Duffing": "Gated Duffing",
+    }
     for idx, source in enumerate(sources):
-        label = short_labels.get(source.label, source.label)
+        title = display_titles.get(source.label, source.label)
         _asset_plot_r2_curves(
             axes[0, idx],
             source.suite_dir,
             _ASSET_MATCHED_POLICIES,
-            title=f"{chr(65 + idx)}. {label}: recovery",
+            title=title,
+            panel_label=chr(65 + idx),
             ylabel=idx == 0,
+            r2_summary=r2_summary,
         )
     handles, labels = axes[0, 0].get_legend_handles_labels()
     fig.legend(
@@ -220,8 +425,8 @@ def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
         labels,
         loc="upper center",
         bbox_to_anchor=(0.5, 1.01),
-        ncol=len(_ASSET_MATCHED_POLICIES),
-        fontsize=6.4,
+        ncol=len(_ASSET_MATCHED_POLICIES) + 1,
+        fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
         handlelength=1.5,
     )
@@ -229,11 +434,355 @@ def _asset_plot_active_vs_baselines(output_path: Path) -> Path:
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
+def _asset_nice_ceiling(value: float) -> float:
+    import math
+
+    v = float(value)
+    if not np.isfinite(v) or v <= 0.0:
+        return 10.0
+    return float(math.ceil(v / 10.0) * 10.0)
+
+
+# Environment groupings for the composite dynamics/observation figure.
+_DYNAMICS_FULL_PHASE_ENVS = (
+    ("tbme_duffing", "Duffing"),
+    ("tbme_damped_pendulum", "Damped Pendulum"),
+    ("tbme_gated_duffing", "Gated Duffing"),
+)
+_DYNAMICS_FULL_FISHER_ENVS = (
+    "tbme_gated_duffing",
+    "tbme_gated_duffing_asymmetric",
+)
+_DYNAMICS_FULL_SNR_ENVS = (
+    "tbme_gated_duffing",
+    "tbme_gated_duffing_observation_bottleneck_strong",
+)
+_DYNAMICS_FULL_TRAJ_COLORS = ("#E8963A", "#D1382C", "#2E6FB0")
+
+
+def _asset_plot_dynamics_full(output_path: Path) -> Path:
+    """Composite dynamics/observation diagnostics figure (manuscript figure 2)."""
+    from actdyn.utils.plotting import plot_vector_field
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
+
+    from .tbme_figures_diagnostics import (
+        _finite_limits,
+        _loading_model,
+        _parameter_sensitivity_grid,
+        _rate_hz,
+        _simulate_trajectories,
+        _state_information_grid,
+        _true_dynamics,
+    )
+
+    configure_tbme_catalogs(suite_entries={})
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+
+    n_grid_field = 41
+    n_grid_map = 81
+    steps = 500
+    n_trajectories = 3
+    seed = 0
+    snr_trajectories = 100
+    snr_trajectory_length = 200
+
+    phase_presets = [get_environment_preset(env_id) for env_id, _ in _DYNAMICS_FULL_PHASE_ENVS]
+
+    fig = plt_module.figure(figsize=(7.52, 2.56))
+    outer = fig.add_gridspec(
+        2, 1, height_ratios=[1.0, 1.0], hspace=0.32, left=0.045, right=0.985, top=0.91, bottom=0.11
+    )
+    # Top row as one grid so the A and B maps share an identical cell size and
+    # inter-panel gap (3 A cells | spacer | 3 B cells | colorbar).
+    top = outer[0].subgridspec(
+        1,
+        8,
+        width_ratios=[1.0, 1.0, 1.0, 0.55, 1.0, 1.0, 1.0, 0.08],
+        wspace=0.16,
+    )
+    a_cols = (0, 1, 2)
+    b_cols = (4, 5, 6)
+    b_cbar_col = 7
+    # Keep C compact (left) and let D run wider across the bottom row.
+    bottom = outer[1].subgridspec(1, 2, width_ratios=[0.9, 1.62], wspace=0.13)
+
+    # Panel A: phase portraits with executed trajectories.
+    a_axes = []
+    for col, preset in enumerate(phase_presets):
+        ax = fig.add_subplot(top[0, a_cols[col]])
+        plot_lim = float(preset.resolved_plot_limit())
+        dynamics = _true_dynamics(preset)
+        plot_vector_field(
+            dynamics,
+            ax=ax,
+            x_range=plot_lim,
+            n_grid=n_grid_field,
+            is_residual=True,
+            device="cpu",
+            streamplot_kwargs={"arrowsize": 0.35, "linewidth": 0.22},
+        )
+        trajectories = _simulate_trajectories(
+            preset,
+            n_trajectories=n_trajectories,
+            steps=steps,
+            seed=seed,
+        )
+        for idx, traj in enumerate(trajectories):
+            color = _DYNAMICS_FULL_TRAJ_COLORS[idx % len(_DYNAMICS_FULL_TRAJ_COLORS)]
+            ax.plot(
+                traj[:, 0],
+                traj[:, 1],
+                color=color,
+                linewidth=1.15,
+                alpha=0.92,
+                solid_capstyle="round",
+                zorder=3,
+            )
+            ax.scatter(
+                traj[0, 0],
+                traj[0, 1],
+                s=11,
+                color=color,
+                edgecolor="white",
+                linewidth=0.3,
+                zorder=4,
+            )
+        ax.set_xlim(-plot_lim, plot_lim)
+        ax.set_ylim(-plot_lim, plot_lim)
+        ax.set_aspect("equal", adjustable="box")
+        ax.set_xticks([])
+        ax.set_yticks([])
+        ax.set_title(_DYNAMICS_FULL_PHASE_ENVS[col][1], fontsize=8.0, pad=2.5)
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.5)
+        a_axes.append(ax)
+
+    # Panel B: parameter-sensitivity heatmaps sharing one colorbar.
+    sens_maps = []
+    for preset in phase_presets:
+        plot_lim = float(preset.resolved_plot_limit())
+        _sx, _sy, sens = _parameter_sensitivity_grid(preset, plot_lim=plot_lim, n_grid=n_grid_map)
+        sens_maps.append((sens, plot_lim))
+    svmin, svmax = _finite_limits(np.concatenate([s.reshape(-1) for s, _ in sens_maps]))
+    b_axes = []
+    im_sens = None
+    for col, (sens, plot_lim) in enumerate(sens_maps):
+        ax = fig.add_subplot(top[0, b_cols[col]])
+        im_sens = ax.imshow(
+            sens,
+            origin="lower",
+            extent=[-plot_lim, plot_lim, -plot_lim, plot_lim],
+            cmap="magma",
+            vmin=svmin,
+            vmax=svmax,
+            interpolation="bilinear",
+            aspect="equal",
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.5)
+        b_axes.append(ax)
+    cbar_ax = fig.add_subplot(top[0, b_cbar_col])
+    cbar = fig.colorbar(im_sens, cax=cbar_ax)
+    cbar.ax.tick_params(labelsize=6.0, width=0.4, length=2.0)
+    cbar.outline.set_linewidth(0.4)
+
+    # Panel C: state Fisher information (per-map log scale) with loading-vector insets.
+    from matplotlib.colors import LogNorm
+
+    c_gs = bottom[0].subgridspec(1, 5, width_ratios=[1.0, 0.05, 0.16, 1.0, 0.05], wspace=0.10)
+    c_map_cols = (0, 3)
+    c_axes = []
+    for idx, env_id in enumerate(_DYNAMICS_FULL_FISHER_ENVS):
+        preset = get_environment_preset(env_id)
+        plot_lim = float(preset.resolved_plot_limit())
+        weights, bias, dt = _loading_model(
+            preset,
+            snr_trajectories=snr_trajectories,
+            snr_trajectory_length=snr_trajectory_length,
+        )
+        _ix, _iy, info = _state_information_grid(
+            weights,
+            bias,
+            dt=dt,
+            plot_lim=plot_lim,
+            n_grid=n_grid_map,
+        )
+        # `_state_information_grid` returns log-det; exponentiate for a log-scale colorbar.
+        det = np.exp(np.clip(info, -50.0, 50.0))
+        finite_det = det[np.isfinite(det) & (det > 0.0)]
+        vmin = float(np.percentile(finite_det, 1.0))
+        vmax = float(np.percentile(finite_det, 99.0))
+        if vmax <= vmin:
+            vmax = vmin * 10.0 + 1e-12
+        ax = fig.add_subplot(c_gs[0, c_map_cols[idx]])
+        im_info = ax.imshow(
+            det,
+            origin="lower",
+            extent=[-plot_lim, plot_lim, -plot_lim, plot_lim],
+            cmap="plasma",
+            norm=LogNorm(vmin=vmin, vmax=vmax),
+            interpolation="bilinear",
+            aspect="equal",
+        )
+        ax.set_xticks([])
+        ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.5)
+        inset = ax.inset_axes([0.62, 0.05, 0.34, 0.34])
+        inset.axhline(0.0, color="#8A8A8A", linewidth=0.4, zorder=1)
+        inset.axvline(0.0, color="#8A8A8A", linewidth=0.4, zorder=1)
+        for row in weights:
+            inset.plot(
+                [0.0, row[0]],
+                [0.0, row[1]],
+                color="#606060",
+                alpha=0.30,
+                linewidth=0.3,
+                zorder=2,
+            )
+        inset.scatter(
+            weights[:, 0],
+            weights[:, 1],
+            c=np.linspace(0.15, 0.95, weights.shape[0]),
+            cmap="magma",
+            s=6,
+            alpha=0.95,
+            linewidths=0.0,
+            zorder=3,
+        )
+        span = 1.12 * float(np.max(np.abs(weights))) if weights.size else 1.0
+        inset.set_xlim(-span, span)
+        inset.set_ylim(-span, span)
+        inset.set_xticks([])
+        inset.set_yticks([])
+        inset.set_facecolor("white")
+        for spine in inset.spines.values():
+            spine.set_linewidth(0.4)
+        cbar_ax = fig.add_subplot(c_gs[0, c_map_cols[idx] + 1])
+        cbar = fig.colorbar(im_info, cax=cbar_ax)
+        cbar.ax.tick_params(labelsize=6.0, width=0.4, length=2.0)
+        cbar.outline.set_linewidth(0.4)
+        c_axes.append(ax)
+
+    # Panel D: observation rates + spike rasters at two SNR levels.
+    d_gs = bottom[1].subgridspec(1, 2, wspace=0.24)
+    d_rate_axes = []
+    for col, env_id in enumerate(_DYNAMICS_FULL_SNR_ENVS):
+        preset = get_environment_preset(env_id)
+        weights, bias, dt = _loading_model(
+            preset,
+            snr_trajectories=snr_trajectories,
+            snr_trajectory_length=snr_trajectory_length,
+        )
+        traj = _simulate_trajectories(preset, n_trajectories=1, steps=steps, seed=seed)[0]
+        rate_hz = _rate_hz(traj, weights=weights, bias=bias)
+        mean_counts = np.clip(rate_hz * dt, 1e-8, 1e8)
+        observations = np.random.default_rng(int(seed)).poisson(mean_counts).astype(np.float32)
+
+        stack = d_gs[0, col].subgridspec(2, 1, height_ratios=[1.0, 3.0], hspace=0.10)
+        ax_rate = fig.add_subplot(stack[0, 0])
+        ax_rast = fig.add_subplot(stack[1, 0], sharex=ax_rate)
+        time = np.arange(rate_hz.shape[0])
+        for neuron_idx in range(rate_hz.shape[1]):
+            ax_rate.plot(time, rate_hz[:, neuron_idx], linewidth=0.4, alpha=0.7)
+        ymax = _asset_nice_ceiling(float(np.nanmax(rate_hz)))
+        ax_rate.set_xlim(0.0, float(steps))
+        ax_rate.set_ylim(0.0, ymax)
+        ax_rate.set_yticks([0.0, ymax])
+        ax_rate.set_yticklabels(["0", f"{int(ymax)} Hz"], fontsize=6.0)
+        ax_rate.tick_params(axis="x", labelbottom=False)
+        target_snr = getattr(preset, "loading_target_snr_db", None)
+        snr_title = "SNR" if target_snr is None else f"SNR : {int(round(float(target_snr)))} dB"
+        ax_rate.set_title(snr_title, fontsize=8.0, pad=3.0)
+        for spine in ax_rate.spines.values():
+            spine.set_linewidth(0.5)
+
+        spike_steps, spike_neurons = np.nonzero(observations > 0)
+        if spike_steps.size:
+            ax_rast.vlines(
+                spike_steps.astype(np.float32),
+                spike_neurons.astype(np.float32) - 0.4,
+                spike_neurons.astype(np.float32) + 0.4,
+                color="#222222",
+                linewidth=0.3,
+            )
+        ax_rast.set_xlim(0.0, float(steps))
+        ax_rast.set_ylim(-0.5, observations.shape[1] - 0.5)
+        ax_rast.set_xticks([0.0, float(steps)])
+        ax_rast.set_xticklabels(["0", str(int(steps))], fontsize=6.0)
+        ax_rast.set_xlabel("step", fontsize=8.0)
+        ax_rast.set_yticks([])
+        if col == 0:
+            ax_rast.set_ylabel("neuron", fontsize=8.0)
+        for spine in ax_rast.spines.values():
+            spine.set_linewidth(0.5)
+        d_rate_axes.append(ax_rate)
+
+    # `aspect="equal"` squares (and centers) the image axes only at draw time, so
+    # render once before reading positions to place titles/letters on the real boxes.
+    try:
+        fig.draw_without_rendering()
+    except AttributeError:
+        fig.canvas.draw()
+
+    # Group titles and bold panel letters, positioned from axis geometry.
+    def _block_span(axes: Sequence[Any]) -> tuple[float, float, float]:
+        positions = [ax.get_position() for ax in axes]
+        left = min(pos.x0 for pos in positions)
+        right = max(pos.x1 for pos in positions)
+        top_edge = max(pos.y1 for pos in positions)
+        return left, right, top_edge
+
+    a_left, a_right, a_top = _block_span(a_axes)
+    b_left, b_right, b_top = _block_span(b_axes)
+    c_left, c_right, c_top = _block_span(c_axes)
+    d_left, d_right, d_top = _block_span(d_rate_axes)
+
+    fig.text(
+        0.5 * (b_left + b_right),
+        b_top + 0.045,
+        r"$\|df/d\theta\|_F$",
+        ha="center",
+        va="bottom",
+        fontsize=8.0,
+    )
+    fig.text(
+        0.5 * (c_left + c_right),
+        c_top + 0.045,
+        "State Fisher Information",
+        ha="center",
+        va="bottom",
+        fontsize=8.0,
+    )
+    for letter, left, top_edge in (
+        ("A", a_left, a_top),
+        ("B", b_left, b_top),
+        ("C", c_left, c_top),
+        ("D", d_left, d_top),
+    ):
+        fig.text(
+            left - 0.028,
+            top_edge + 0.04,
+            letter,
+            ha="left",
+            va="bottom",
+            fontsize=10.0,
+            fontweight="bold",
+        )
+
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
 def _asset_bottleneck_sources() -> list[_ExperimentSuiteSource]:
     return [
         _ExperimentSuiteSource(
             "gated_duffing",
-            "Nominal",
+            "Default",
             _suite_dir("simple_system_identification", "gated_duffing"),
         ),
         _ExperimentSuiteSource(
@@ -281,7 +830,7 @@ def _asset_trace_abs(record: _ExperimentRunRecord, traj: np.ndarray) -> float:
 
 def _asset_plot_mechanism(output_path: Path) -> Path:
     policy_id = "adaptive"
-    nominal = _asset_first_record("exp02_hard", "exp02_hard_gated_duffing", policy_id)
+    Default = _asset_first_record("exp02_hard", "exp02_hard_gated_duffing", policy_id)
     obs_mismatch = _asset_first_record(
         "exp07_mismatch_stress",
         "exp07_gated_duffing_observation_mismatch_strong",
@@ -293,10 +842,10 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
         policy_id,
     )
 
-    nominal_traj = _experiment_load_xy_trace(nominal)
-    panel_abs = _asset_trace_abs(nominal, nominal_traj)
+    Default_traj = _experiment_load_xy_trace(Default)
+    panel_abs = _asset_trace_abs(Default, Default_traj)
     x_axis, y_axis, logdet_grid = _experiment_make_information_grid(
-        nominal.metadata,
+        Default.metadata,
         n_grid=101,
         axis_min=-panel_abs,
         axis_max=panel_abs,
@@ -308,7 +857,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
         info_vmax = info_vmin + 1e-6
 
     info_rows = {
-        "Nominal": _asset_read_information(nominal),
+        "Default": _asset_read_information(Default),
         "Obs. mismatch": _asset_read_information(obs_mismatch),
         "Param. mismatch": _asset_read_information(param_mismatch),
     }
@@ -331,22 +880,22 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     )
     plot_neutral_vector_field(
         ax,
-        true_dynamics_from_metadata(nominal.metadata),
+        true_dynamics_from_metadata(Default.metadata),
         grid_lim=panel_abs,
         n_grid=24,
         arrowsize=0.58,
         stroke_color=_experiment_C_STROKE,
     )
     ax.plot(
-        nominal_traj[:, 0],
-        nominal_traj[:, 1],
+        Default_traj[:, 0],
+        Default_traj[:, 1],
         color=_experiment_C_STROKE,
         linewidth=0.75,
         alpha=0.72,
         label="executed",
         zorder=4,
     )
-    planned_trace = load_planned_trace(nominal.run_dir, nominal.metadata)
+    planned_trace = load_planned_trace(Default.run_dir, Default.metadata)
     planned_paths: list[np.ndarray] = []
     for step, color, label in (
         (40, _policy_color("adaptive"), "early plan"),
@@ -365,7 +914,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
                 label=label,
                 zorder=5,
             )
-    zoom_points = [nominal_traj[:, :2], *planned_paths]
+    zoom_points = [Default_traj[:, :2], *planned_paths]
     finite_points = np.concatenate(
         [arr[np.isfinite(arr).all(axis=1), :2] for arr in zoom_points if arr.size]
     )
@@ -421,7 +970,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
         event_steps.append(
             [
                 float(step)
-                for row in info_rows["Nominal"]
+                for row in info_rows["Default"]
                 if (step := _safe_float(row.get("step"))) is not None
                 and str(row.get(field, "")) == value
             ]
@@ -445,7 +994,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     _style_manuscript_axis(ax, grid_axis="x")
 
     mismatch_specs = [
-        ("Nominal", _policy_color("adaptive")),
+        ("Default", _policy_color("adaptive")),
         ("Obs. mismatch", _policy_color("active_myopic")),
         ("Param. mismatch", _policy_color("active_state_variance")),
     ]
@@ -513,70 +1062,361 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
-def _asset_plot_method_comparison(
-    output_path: Path,
+def _asset_method_csv_fields(r2_summary: str) -> list[str]:
+    _asset_parse_r2_summaries(r2_summary)
+    r2_fields = (
+        ["trajectory_r2_median", "trajectory_r2_q25", "trajectory_r2_q75"]
+        if r2_summary == "median_iqr"
+        else ["trajectory_r2_mean", "trajectory_r2_sem"]
+    )
+    return [
+        "experiment",
+        "condition",
+        "policy_id",
+        "policy_label",
+        *r2_fields,
+        "step_to_r2_0p95",
+        "cpu_time_sec_to_r2_0p95",
+        "r2_at_0p95",
+        "parameter_error_mean",
+        "parameter_error_sem",
+        "n_error",
+        "n_r2",
+        "n_total",
+        "n_r2_nonfinite",
+        "r2_nonfinite_rate",
+    ]
+
+
+def _asset_write_method_csv(
+    path: Path,
+    rows: Sequence[Mapping[str, Any]],
     *,
-    figure_title: str,
+    r2_summary: str,
+) -> None:
+    """Write public method metrics without plotting-only R2 band fields."""
+    fields = _asset_method_csv_fields(r2_summary)
+    _write_csv(
+        path,
+        ({field: row.get(field) for field in fields} for row in rows),
+        fields,
+    )
+
+
+def _asset_final_r2_summary(
+    suite_dir: Path,
+    policy_id: str,
+    *,
+    r2_summary: str,
+) -> tuple[float | None, float | None, float | None, int]:
+    """Return the final R2 center, lower band, upper band, and sample count."""
+    _asset_parse_r2_summaries(r2_summary)
+    if r2_summary == "mean_sem":
+        center, sem, count = _experiment_metric_mean_sem(
+            suite_dir,
+            policy_id,
+            "trajectory_r2_final_mean",
+        )
+        if center is None:
+            return None, None, None, count
+        return center, center - sem, center + sem, count
+
+    values = np.asarray(
+        _experiment_metric_values(suite_dir, policy_id, "trajectory_r2_final_mean"),
+        dtype=np.float64,
+    )
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return None, None, None, 0
+    return (
+        float(np.median(values)),
+        float(np.quantile(values, 0.25)),
+        float(np.quantile(values, 0.75)),
+        int(values.size),
+    )
+
+
+def _asset_r2_threshold_times(
+    suite_dir: Path,
+    policy_id: str,
+    threshold: float,
+    *,
+    r2_summary: str,
+) -> tuple[float | None, float | None, float | None]:
+    if r2_summary == "mean_sem":
+        return _experiment_r2_threshold_times(suite_dir, policy_id, threshold)
+    curves = _asset_r2_curve_rows(suite_dir, r2_summary=r2_summary)
+    if not curves:
+        raise RuntimeError(
+            f"No trajectory R2 curves available for {r2_summary} in {suite_dir / 'summary'}"
+        )
+    for row in curves.get(policy_id, []):
+        if row["center"] < threshold:
+            continue
+        cpu_time_sec = row["cpu_time_sec"]
+        return (
+            row["step"],
+            None if not np.isfinite(cpu_time_sec) else cpu_time_sec,
+            row["center"],
+        )
+    return None, None, None
+
+
+def _asset_method_metric_rows(
     sources: Sequence[_ExperimentSuiteSource],
     policy_ids: Sequence[str],
-) -> Path:
-    _asset_require_suite_dirs([source.suite_dir for source in sources])
+    *,
+    r2_summary: str,
+) -> list[dict[str, Any]]:
     threshold = 0.95
     metric_rows: list[dict[str, Any]] = []
     for source in sources:
+        completed_rows = [
+            row
+            for row in read_trace_csv(source.suite_dir / "summary" / "metrics.csv")
+            if row.get("status") in {None, "", "completed"}
+        ]
         for policy_id in policy_ids:
             err, err_sem, n_err = _experiment_metric_mean_sem(
                 source.suite_dir,
                 policy_id,
                 "value_final_mean",
             )
-            r2, r2_sem, n_r2 = _experiment_metric_mean_sem(
+            r2, r2_lower, r2_upper, n_r2 = _asset_final_r2_summary(
                 source.suite_dir,
                 policy_id,
-                "trajectory_r2_final_mean",
+                r2_summary=r2_summary,
             )
-            step_to_r2, cpu_time_to_r2, r2_at_threshold = _experiment_r2_threshold_times(
+            step_to_r2, cpu_time_to_r2, r2_at_threshold = _asset_r2_threshold_times(
                 source.suite_dir,
                 policy_id,
                 threshold,
+                r2_summary=r2_summary,
             )
-            metric_rows.append(
-                {
-                    "experiment": source.exp_id,
-                    "condition": source.label,
-                    "policy_id": policy_id,
-                    "policy_label": _asset_policy_label(policy_id),
-                    "parameter_error_mean": err,
-                    "parameter_error_sem": err_sem,
-                    "trajectory_r2_mean": r2,
-                    "trajectory_r2_sem": r2_sem,
-                    "step_to_r2_0p95": step_to_r2,
-                    "cpu_time_sec_to_r2_0p95": cpu_time_to_r2,
-                    "r2_at_0p95": r2_at_threshold,
-                    "n_error": n_err,
-                    "n_r2": n_r2,
-                }
+            n_total = sum(row.get("policy_id") == policy_id for row in completed_rows)
+            n_r2_nonfinite = max(0, n_total - n_r2)
+            row = {
+                "experiment": source.exp_id,
+                "condition": source.label,
+                "policy_id": policy_id,
+                "policy_label": _asset_policy_label(policy_id),
+                "parameter_error_mean": err,
+                "parameter_error_sem": err_sem,
+                "_trajectory_r2_center": r2,
+                "_trajectory_r2_lower": r2_lower,
+                "_trajectory_r2_upper": r2_upper,
+                "step_to_r2_0p95": step_to_r2,
+                "cpu_time_sec_to_r2_0p95": cpu_time_to_r2,
+                "r2_at_0p95": r2_at_threshold,
+                "n_error": n_err,
+                "n_r2": n_r2,
+                "n_total": n_total,
+                "n_r2_nonfinite": n_r2_nonfinite,
+                "r2_nonfinite_rate": (
+                    float(n_r2_nonfinite) / float(n_total) if n_total else None
+                ),
+            }
+            if r2_summary == "median_iqr":
+                row.update(
+                    {
+                        "trajectory_r2_median": r2,
+                        "trajectory_r2_q25": r2_lower,
+                        "trajectory_r2_q75": r2_upper,
+                    }
+                )
+            else:
+                row.update(
+                    {
+                        "trajectory_r2_mean": r2,
+                        "trajectory_r2_sem": (
+                            None if r2 is None or r2_lower is None else r2 - r2_lower
+                        ),
+                    }
+                )
+            metric_rows.append(row)
+    return metric_rows
+
+
+def _asset_method_final_r2(
+    metric_rows: Sequence[Mapping[str, Any]],
+    exp_id: str,
+    policy_id: str,
+) -> tuple[float, float, float]:
+    for row in metric_rows:
+        if row["experiment"] == exp_id and str(row["policy_id"]) == policy_id:
+            value = row["_trajectory_r2_center"]
+            lower = row["_trajectory_r2_lower"]
+            upper = row["_trajectory_r2_upper"]
+            return (
+                np.nan if value is None else float(value),
+                np.nan if lower is None else float(lower),
+                np.nan if upper is None else float(upper),
             )
-    _write_csv(
+    return np.nan, np.nan, np.nan
+
+
+def _asset_plot_recovery_curves(
+    output_path: Path,
+    *,
+    sources: Sequence[_ExperimentSuiteSource],
+    policy_ids: Sequence[str],
+    r2_summary: str,
+) -> Path:
+    """Standalone R^2 recovery-curve panels (one per condition)."""
+    _asset_require_suite_dirs([source.suite_dir for source in sources])
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt_module.subplots(
+        1, len(sources), figsize=(2.42 * len(sources), 2.35), squeeze=False
+    )
+    for idx, source in enumerate(sources):
+        _asset_plot_r2_curves(
+            axes[0, idx],
+            source.suite_dir,
+            policy_ids,
+            title=f"{source.label}: recovery",
+            panel_label=chr(65 + idx),
+            ylabel=idx == 0,
+            r2_summary=r2_summary,
+        )
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=len(policy_ids) + 1,
+        fontsize=_ASSET_TICK_SIZE,
+        columnspacing=0.9,
+        handlelength=1.4,
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90), w_pad=0.75)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _asset_plot_final_bar(
+    output_path: Path,
+    *,
+    sources: Sequence[_ExperimentSuiteSource],
+    policy_ids: Sequence[str],
+    metric_rows: Sequence[Mapping[str, Any]],
+) -> Path:
+    """Standalone final-performance bars, colored by policy with per-condition shade."""
+    import matplotlib.colors as mcolors
+    from matplotlib.lines import Line2D
+    from matplotlib.patches import Patch
+
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+
+    active_policies = [
+        policy_id
+        for policy_id in policy_ids
+        if any(
+            np.isfinite(_asset_method_final_r2(metric_rows, source.exp_id, policy_id)[0])
+            for source in sources
+        )
+    ]
+    n_cond = len(sources)
+    n_policy = len(active_policies)
+    cond_alpha = np.linspace(1.0, 0.32, n_cond) if n_cond > 1 else np.array([1.0], dtype=np.float64)
+
+    fig, ax = plt_module.subplots(figsize=(1.6 + 0.5 * max(n_policy, 1), 2.35))
+    x = np.arange(n_policy, dtype=np.float64)
+    bar_width = 0.8 / max(n_cond, 1)
+    for cond_idx, source in enumerate(sources):
+        offset = (cond_idx - (n_cond - 1) / 2.0) * bar_width
+        values, lower_errors, upper_errors, faces, edges = [], [], [], [], []
+        for policy_id in active_policies:
+            value, lower, upper = _asset_method_final_r2(
+                metric_rows, source.exp_id, policy_id
+            )
+            values.append(value)
+            lower_errors.append(0.0 if not np.isfinite(lower) else max(0.0, value - lower))
+            upper_errors.append(0.0 if not np.isfinite(upper) else max(0.0, upper - value))
+            color = _asset_baseline_policy_color(policy_id)
+            faces.append(mcolors.to_rgba(color, alpha=float(cond_alpha[cond_idx])))
+            edges.append(color)
+        ax.bar(
+            x + offset,
+            values,
+            width=bar_width * 0.92,
+            yerr=np.asarray([lower_errors, upper_errors], dtype=np.float64),
+            color=faces,
+            edgecolor=edges,
+            linewidth=0.6,
+            capsize=1.6,
+            error_kw={"elinewidth": 0.6, "capthick": 0.6},
+        )
+
+    ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
+    ax.set_ylim(0.0, 1.0)
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [_asset_policy_label(policy_id) for policy_id in active_policies],
+        rotation=30,
+        ha="right",
+    )
+    _style_manuscript_axis(ax, grid_axis="y")
+
+    policy_handles = [
+        Line2D([0], [0], color=_asset_baseline_policy_color(policy_id), linewidth=1.6)
+        for policy_id in active_policies
+    ]
+    fig.legend(
+        policy_handles,
+        [_asset_policy_label(policy_id) for policy_id in active_policies],
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.02),
+        ncol=n_policy,
+        fontsize=_ASSET_TICK_SIZE,
+        columnspacing=1.0,
+        handlelength=1.4,
+    )
+    cond_handles = [
+        Patch(
+            facecolor=mcolors.to_rgba(_experiment_C_STROKE, alpha=float(cond_alpha[cond_idx])),
+            edgecolor=_experiment_C_STROKE,
+            linewidth=0.5,
+        )
+        for cond_idx in range(n_cond)
+    ]
+    ax.legend(
+        cond_handles,
+        [source.label for source in sources],
+        loc="upper left",
+        fontsize=_ASSET_TICK_SIZE,
+        ncol=min(n_cond, 3),
+        handlelength=1.2,
+        borderpad=0.3,
+        columnspacing=1.0,
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _asset_plot_method_comparison(
+    output_path: Path,
+    *,
+    figure_title: str,
+    sources: Sequence[_ExperimentSuiteSource],
+    policy_ids: Sequence[str],
+    r2_summary: str,
+) -> Path:
+    _asset_require_suite_dirs([source.suite_dir for source in sources])
+    metric_rows = _asset_method_metric_rows(
+        sources,
+        policy_ids,
+        r2_summary=r2_summary,
+    )
+    _asset_write_method_csv(
         output_path.with_suffix(".csv"),
         metric_rows,
-        [
-            "experiment",
-            "condition",
-            "policy_id",
-            "policy_label",
-            "trajectory_r2_mean",
-            "trajectory_r2_sem",
-            "step_to_r2_0p95",
-            "cpu_time_sec_to_r2_0p95",
-            "r2_at_0p95",
-            "parameter_error_mean",
-            "parameter_error_sem",
-            "n_error",
-            "n_r2",
-        ],
+        r2_summary=r2_summary,
     )
-    plt_module = load_plotting(output_path, apply_style=_apply_style, path_is_file=True)
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
     fig = plt_module.figure(figsize=(7.25, 4.55))
@@ -588,8 +1428,10 @@ def _asset_plot_method_comparison(
             curve_axes[source_idx],
             source.suite_dir,
             policy_ids,
-            title=f"{chr(65 + source_idx)}. {source.label}: recovery",
+            title=f"{source.label}: recovery",
+            panel_label=chr(65 + source_idx),
             ylabel=source_idx == 0,
+            r2_summary=r2_summary,
         )
 
     x = np.arange(len(policy_ids), dtype=np.float64) * 1.24
@@ -599,22 +1441,24 @@ def _asset_plot_method_comparison(
     bar_colors = (_experiment_C_STROKE, "#6F6A62", _experiment_C_NEUTRAL_LIGHT)
     for source_idx, source in enumerate(sources):
         source_rows = [row for row in metric_rows if row["experiment"] == source.exp_id]
-        row_by_policy = {str(row["policy_id"]): row for row in source_rows}
         final_r2 = []
-        final_sem = []
+        lower_errors = []
+        upper_errors = []
         for policy_id in policy_ids:
-            row = row_by_policy[policy_id]
-            value = row["trajectory_r2_mean"]
-            final_r2.append(np.nan if value is None else float(value))
-            final_sem.append(
-                0.0 if row["trajectory_r2_sem"] is None else float(row["trajectory_r2_sem"])
+            value, lower, upper = _asset_method_final_r2(
+                source_rows,
+                source.exp_id,
+                policy_id,
             )
+            final_r2.append(value)
+            lower_errors.append(0.0 if not np.isfinite(lower) else max(0.0, value - lower))
+            upper_errors.append(0.0 if not np.isfinite(upper) else max(0.0, upper - value))
         color = bar_colors[source_idx % len(bar_colors)]
         ax_bar.bar(
             x + offsets[source_idx],
             final_r2,
             width=width,
-            yerr=final_sem,
+            yerr=np.asarray([lower_errors, upper_errors], dtype=np.float64),
             color=color,
             edgecolor=_experiment_C_STROKE,
             linewidth=0.4,
@@ -622,7 +1466,7 @@ def _asset_plot_method_comparison(
             capsize=1.6,
             label=source.label,
         )
-    ax_bar.set_ylabel("Final predictive R2")
+    ax_bar.set_ylabel(_ASSET_FINAL_R2_LABEL)
     ax_bar.set_ylim(0.0, 1.0)
     ax_bar.set_title(f"{chr(65 + len(sources))}. {figure_title}: final performance")
     ax_bar.set_xticks(x)
@@ -636,7 +1480,7 @@ def _asset_plot_method_comparison(
         loc="upper center",
         bbox_to_anchor=(0.5, 1.01),
         ncol=min(4, len(policy_ids)),
-        fontsize=6.2,
+        fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
         handlelength=1.4,
     )
@@ -644,12 +1488,12 @@ def _asset_plot_method_comparison(
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
-def _asset_plot_objective_ablation(output_path: Path) -> Path:
+def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> Path:
     sources = [
         _ExperimentSuiteSource(source.exp_id, label, source.suite_dir)
         for source, label in zip(
             _experiment_objective_sources(),
-            ("Nominal", "Asymmetric", "Challenging"),
+            ("Default", "Asymmetric", "Challenging"),
         )
     ]
     return _asset_plot_method_comparison(
@@ -657,10 +1501,103 @@ def _asset_plot_objective_ablation(output_path: Path) -> Path:
         figure_title="Objective ablation",
         sources=sources,
         policy_ids=_experiment_OBJECTIVE_POLICIES,
+        r2_summary=r2_summary,
     )
 
 
-def _asset_plot_constraints(output_path: Path) -> list[Path]:
+def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> Path:
+    """Plot mean/SEM or median/IQR R2 for the FLEX update/state ablation."""
+    display_titles = {
+        "duffing": "Duffing",
+        "damped_pendulum": "Damped Pendulum",
+        "gated_duffing": "Gated Duffing",
+        "gated_duffing_asymmetric": "Asymmetric",
+        "gated_duffing_challenging": "Challenging",
+        "gated_duffing_observation_bottleneck_mild": "Obs. bottleneck (mild)",
+        "gated_duffing_observation_bottleneck_strong": "Obs. bottleneck (strong)",
+    }
+    sources = [
+        _ExperimentSuiteSource(
+            ref.suite_id,
+            display_titles.get(ref.suite_id, ref.label),
+            ref.session_root / "tracks" / ref.suite_id,
+        )
+        for ref in _figures.GROUPS["flex_comparison"]
+    ]
+    _asset_require_suite_dirs([source.suite_dir for source in sources])
+    metric_rows = _asset_method_metric_rows(
+        sources,
+        _ASSET_FLEX_POLICIES,
+        r2_summary=r2_summary,
+    )
+    for row in metric_rows:
+        row["policy_label"] = _ASSET_FLEX_LABELS[str(row["policy_id"])]
+    _asset_write_method_csv(
+        output_path.with_suffix(".csv"),
+        metric_rows,
+        r2_summary=r2_summary,
+    )
+
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt_module.subplots(2, 4, figsize=(9.5, 4.9), squeeze=False)
+    for idx, source in enumerate(sources):
+        ax = axes.flat[idx]
+        curves = _asset_r2_curve_rows(source.suite_dir, r2_summary=r2_summary)
+        for policy_id in _ASSET_FLEX_POLICIES:
+            rows = curves.get(policy_id, [])
+            if not rows:
+                continue
+            steps = np.asarray([row["step"] for row in rows], dtype=np.float64)
+            center = np.asarray([row["center"] for row in rows], dtype=np.float64)
+            lower = np.asarray([row["lower"] for row in rows], dtype=np.float64)
+            upper = np.asarray([row["upper"] for row in rows], dtype=np.float64)
+            color = _policy_color(policy_id)
+            ax.plot(
+                steps,
+                center,
+                color=color,
+                linewidth=0.95,
+                label=_ASSET_FLEX_LABELS[policy_id],
+            )
+            ax.fill_between(steps, lower, upper, color=color, alpha=0.10, linewidth=0.0)
+        ax.axhline(0.0, color=_experiment_C_NEUTRAL_LIGHT, linewidth=0.55)
+        ax.set_xlim(left=0.0)
+        ax.set_ylim(top=1.05)
+        ax.set_yscale("symlog", linthresh=0.25, linscale=0.6)
+        ax.set_title(chr(65 + idx), loc="left", fontweight="bold", fontsize=10.0, pad=3.0)
+        ax.set_title(source.label, loc="center", fontsize=8.0, pad=3.0)
+        ax.set_xlabel("Environment steps")
+        if idx % 4 == 0:
+            ax.set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
+        _style_experiment_axis(ax)
+    axes.flat[-1].axis("off")
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.01),
+        ncol=len(_ASSET_FLEX_POLICIES),
+        fontsize=_ASSET_TICK_SIZE,
+        columnspacing=0.9,
+        handlelength=1.4,
+    )
+    fig.text(
+        0.995,
+        0.008,
+        "Non-finite R² excluded from bands; rates are reported in the companion CSV.",
+        ha="right",
+        va="bottom",
+        fontsize=5.5,
+        color=_experiment_C_STROKE,
+    )
+    fig.tight_layout(rect=(0.0, 0.035, 1.0, 0.94), w_pad=0.75, h_pad=0.85)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]:
     bottleneck_sources = _asset_bottleneck_sources()
     figures = (
         ("snr", "Observation SNR", tuple(bottleneck_sources[:3])),
@@ -670,7 +1607,7 @@ def _asset_plot_constraints(output_path: Path) -> list[Path]:
             (
                 _ExperimentSuiteSource(
                     "gated_duffing",
-                    "Nominal",
+                    "Default",
                     _suite_dir("simple_system_identification", "gated_duffing"),
                 ),
                 _ExperimentSuiteSource(
@@ -683,25 +1620,52 @@ def _asset_plot_constraints(output_path: Path) -> list[Path]:
         ("action", "Action budget", (bottleneck_sources[0], *bottleneck_sources[3:])),
     )
     written: list[Path] = []
-    for suffix, figure_title, sources in figures:
-        figure_path = output_path.with_name(
-            f"{output_path.stem}_{suffix}{output_path.suffix}"
+    for suffix, _figure_title, sources in figures:
+        _asset_require_suite_dirs([source.suite_dir for source in sources])
+        metric_rows = _asset_method_metric_rows(
+            sources,
+            _ASSET_MATCHED_POLICIES,
+            r2_summary=r2_summary,
+        )
+        bar_path = output_path.with_name(f"{output_path.stem}_{suffix}{output_path.suffix}")
+        curves_path = output_path.with_name(
+            f"{output_path.stem}_{suffix}_recovery{output_path.suffix}"
+        )
+        _asset_write_method_csv(
+            bar_path.with_suffix(".csv"),
+            metric_rows,
+            r2_summary=r2_summary,
+        )
+        # The rollback-stabilized FLEX variant is safe to retain in final-R2 bars.
+        bar_policies = list(_ASSET_MATCHED_POLICIES)
+        written.append(
+            _asset_plot_final_bar(
+                bar_path,
+                sources=sources,
+                policy_ids=bar_policies,
+                metric_rows=metric_rows,
+            )
         )
         written.append(
-            _asset_plot_method_comparison(
-                figure_path,
-                figure_title=figure_title,
+            _asset_plot_recovery_curves(
+                curves_path,
                 sources=sources,
                 policy_ids=_ASSET_MATCHED_POLICIES,
+                r2_summary=r2_summary,
             )
         )
     return written
 
 
-def _asset_plot_eig_components(output_path: Path) -> Path:
+def _asset_plot_eig_components(output_path: Path) -> list[Path]:
+    """Write the EIG components figure at both manuscript column widths."""
     from experiments.eig_1d_example import main as _eig_1d_main
 
-    return _eig_1d_main(["--output", str(output_path)])
+    single_path = output_path.with_name(f"{output_path.stem}_single{output_path.suffix}")
+    return [
+        _eig_1d_main(["--output", str(output_path), "--column", "double"]),
+        _eig_1d_main(["--output", str(single_path), "--column", "single"]),
+    ]
 
 
 def _assets_build_parser() -> argparse.ArgumentParser:
@@ -727,6 +1691,15 @@ def _assets_build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Directory for assembled manuscript assets.",
     )
+    parser.add_argument(
+        "--r2-summaries",
+        type=str,
+        default=",".join(_ASSET_R2_SUMMARIES),
+        help=(
+            "Comma-separated R2 summary sets to generate: mean_sem and/or "
+            "median_iqr. Median/IQR variants are written under median_iqr/."
+        ),
+    )
     return parser
 
 
@@ -741,6 +1714,7 @@ def assets_main(argv: list[str] | None = None) -> int:
         raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
     if not group_ids:
         raise ValueError("At least one TBME group is required")
+    r2_summaries = _asset_parse_r2_summaries(args.r2_summaries)
 
     output_dir = (
         Path(args.output_dir)
@@ -749,37 +1723,62 @@ def assets_main(argv: list[str] | None = None) -> int:
     ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_groups = set(group_ids)
-    asset_specs = [
+    asset_specs: list[tuple[Path, set[str], Any, dict[str, str]]] = [
         (
-            "tbme_eig_planning_components.pdf",
+            output_dir / "tbme_fig_mechanistic.pdf",
             set(),
             _asset_plot_eig_components,
+            {},
         ),
         (
-            "tbme_fig03_active_vs_baselines.pdf",
-            {"simple_system_identification"},
-            _asset_plot_active_vs_baselines,
-        ),
-        (
-            "tbme_fig04_constraints.pdf",
-            {"simple_system_identification", "observation_action_bottleneck"},
-            _asset_plot_constraints,
-        ),
-        (
-            "tbme_fig06_objective_ablation.pdf",
-            {"objective_ablation"},
-            _asset_plot_objective_ablation,
+            output_dir / "tbme_fig_dynamics_full.pdf",
+            set(),
+            _asset_plot_dynamics_full,
+            {},
         ),
     ]
+    for r2_summary in r2_summaries:
+        r2_output_dir = output_dir if r2_summary == "mean_sem" else output_dir / "median_iqr"
+        kwargs = {"r2_summary": r2_summary}
+        asset_specs.extend(
+            [
+                (
+                    r2_output_dir / "tbme_fig_active_vs_baselines.pdf",
+                    {"simple_system_identification"},
+                    _asset_plot_active_vs_baselines,
+                    kwargs,
+                ),
+                (
+                    r2_output_dir / "tbme_fig_constraints.pdf",
+                    {"simple_system_identification", "observation_action_bottleneck"},
+                    _asset_plot_constraints,
+                    kwargs,
+                ),
+                (
+                    r2_output_dir / "tbme_fig_objective_ablation.pdf",
+                    {"objective_ablation"},
+                    _asset_plot_objective_ablation,
+                    kwargs,
+                ),
+                (
+                    r2_output_dir / "tbme_fig_flex_comparison.pdf",
+                    {"flex_comparison"},
+                    _asset_plot_flex_comparison,
+                    kwargs,
+                ),
+            ]
+        )
     written: list[Path] = []
     skipped: list[tuple[str, str]] = []
-    for filename, required_groups, plotter in asset_specs:
+    for output_path, required_groups, plotter, kwargs in asset_specs:
         if not required_groups.issubset(selected_groups):
             missing = required_groups - selected_groups
-            skipped.append((filename, "missing groups " + ", ".join(sorted(missing))))
+            skipped.append(
+                (_asset_display_path(output_path), "missing groups " + ", ".join(sorted(missing)))
+            )
             continue
         try:
-            result = plotter(output_dir / filename)
+            result = plotter(output_path, **kwargs)
             if isinstance(result, Path):
                 written.append(result)
             else:
@@ -787,7 +1786,7 @@ def assets_main(argv: list[str] | None = None) -> int:
         except RuntimeError as exc:
             if "No trajectory R2 curves available" not in str(exc):
                 raise
-            skipped.append((filename, str(exc)))
+            skipped.append((_asset_display_path(output_path), str(exc)))
 
     lines = [
         "TBME manuscript asset assembly",

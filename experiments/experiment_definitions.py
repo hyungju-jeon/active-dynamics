@@ -336,6 +336,7 @@ class PolicySpec:
     flex_parameter_min: float | None = None
     flex_parameter_max: float | None = None
     flex_lr: float | None = None
+    use_true_state: bool = False
     coarse_dt_factor: int = 1
     coarse_action_mapping: str = "hold"
     coarse_mapping_opt_steps: int = 25
@@ -920,6 +921,7 @@ def load_catalog_bundle(
             flex_lr=(
                 None if spec.get("flex_lr") is None else float(spec.get("flex_lr"))
             ),
+            use_true_state=bool(spec.get("use_true_state", False)),
             coarse_dt_factor=int(spec.get("coarse_dt_factor", 1)),
             coarse_action_mapping=str(spec.get("coarse_action_mapping", "hold")),
             coarse_mapping_opt_steps=int(spec.get("coarse_mapping_opt_steps", 25)),

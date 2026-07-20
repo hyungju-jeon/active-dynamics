@@ -511,6 +511,12 @@ Use `generate_figures.py` as the single figure entrypoint:
 ./.venv/bin/python -m experiments.tbme.tbme_figures_assets --help
 ```
 
+Asset generation writes the existing mean/SEM R2 figures in `assets/` and the
+parallel median/IQR R2 figures in `assets/median_iqr/`. Use
+`--r2-summaries mean_sem` or `--r2-summaries median_iqr` to generate only one
+set. Regenerate suite summaries once after upgrading so
+`trajectory_r2_over_steps.csv` contains the median and quartile columns.
+
 The figure code keeps TBME result-group definitions in `tbme_figures.py`. If result roots are renamed, update the `GROUPS` table there before relying on the figure commands.
 The diagnostics command does not require completed runs. The top-level `generate_figures diagnostics` entrypoint uses the fixed core environment list in `generate_figures.py`.
 
