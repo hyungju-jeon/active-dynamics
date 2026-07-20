@@ -633,6 +633,7 @@ class FilteringEmbedding(BaseModel):
         k_theta: int = 10,
         e_clip: float = 5.0,
         state_init_uncertainty: float = 1.0,
+        state_initial_mean: torch.Tensor | list[float] | None = None,
         q_theta_meas_coeff: float = 0.0,
         q_theta_max_scale: float = 10.0,
         adaptive_update: bool = False,
@@ -649,8 +650,23 @@ class FilteringEmbedding(BaseModel):
         self._normalize_embedding_belief()
         self.state_init_uncertainty = max(float(state_init_uncertainty), 1e-9)
         initial_batch = self.e["m"].shape[0]
+        self.state_initial_mean = None
+        if state_initial_mean is not None:
+            state_mean = torch.as_tensor(
+                state_initial_mean, dtype=torch.float32, device=self.device
+            ).reshape(-1)
+            if state_mean.numel() != self.latent_dim:
+                raise ValueError(
+                    f"state_initial_mean must have {self.latent_dim} values, "
+                    f"got {state_mean.numel()}."
+                )
+            self.state_initial_mean = state_mean.reshape(1, 1, self.latent_dim)
         self.z: Belief = {
-            "m": torch.zeros(1, 1, self.latent_dim, device=self.device),
+            "m": (
+                torch.zeros(1, 1, self.latent_dim, device=self.device)
+                if self.state_initial_mean is None
+                else self.state_initial_mean.clone()
+            ),
             "P": self._initial_state_covariance(batch_size=initial_batch),
         }
         self.Fe = Fe
@@ -922,6 +938,9 @@ class FilteringEmbedding(BaseModel):
         observation, info = super().reset(observation)
         d_embed = self.e["m"].shape[-1]
         batch = self.e["m"].shape[0]
+        if self.state_initial_mean is not None:
+            self._state = self.state_initial_mean.expand(batch, -1, -1).clone()
+            info["latent_state"] = self._state
         eye_embed = (
             torch.eye(d_embed, device=self.device).unsqueeze(0).expand(batch, -1, -1).clone()
         )

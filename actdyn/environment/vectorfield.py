@@ -20,6 +20,10 @@ from actdyn.utils.vectorfields_eqn import (
     MultiStable,
     SnowMan,
     AsymmetricBasin,
+    ConfoundedGate,
+    RankImbalancedGate,
+    CompoundTriGate,
+    SimpleTriGate,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence, Callable
 from actdyn.utils.plotting import plot_vector_field
@@ -34,6 +38,10 @@ vf_from_string = {
     "van_der_pol": VanDerPol,
     "duffing": Duffing,
     "gated_duffing": AsymmetricBasin,
+    "confounded_gate": ConfoundedGate,
+    "rank_imbalanced_gate": RankImbalancedGate,
+    "compound_tri_gate": CompoundTriGate,
+    "simple_tri_gate": SimpleTriGate,
     "multi_stable": MultiStable,
     "damped_pendulum": DampedPendulum,
     "double_integrator": DoubleIntegrator,
@@ -364,6 +372,7 @@ class VectorFieldEnv(gym.Env):
         self,
         dynamics_type: str = "limit_cycle",
         d_state: int = 2,
+        d_action: int | None = None,
         Q: float = 0.1,
         dt: float = 0.1,
         device: str = "cpu",
@@ -384,6 +393,7 @@ class VectorFieldEnv(gym.Env):
     ):
         super().__init__()
         self.d_state = d_state
+        self.d_action = d_state if d_action is None else int(d_action)
         self.Q = Q
         self.dt = dt
         self.device = torch.device(device)
@@ -409,7 +419,7 @@ class VectorFieldEnv(gym.Env):
             self.initial_state = init
 
         # Initialize spaces with configurable bounds
-        self.action_space = self._set_space_bounds(action_bounds, d_state)
+        self.action_space = self._set_space_bounds(action_bounds, self.d_action)
 
         if state_bounds is None:
             state_bounds = (-np.inf, np.inf)
@@ -440,8 +450,20 @@ class VectorFieldEnv(gym.Env):
         """Set space bounds for action and observation spaces."""
         if not (isinstance(bounds, (tuple, list)) and len(bounds) == 2):
             raise ValueError(f"bounds must be a tuple or list of (low, high), got {bounds}")
-        low = np.full((dim,), bounds[0], dtype=np.float16)
-        high = np.full((dim,), bounds[1], dtype=np.float16)
+        low = np.asarray(bounds[0], dtype=np.float16)
+        high = np.asarray(bounds[1], dtype=np.float16)
+        if low.ndim == 0:
+            low = np.full((dim,), low.item(), dtype=np.float16)
+        else:
+            low = low.reshape(-1)
+        if high.ndim == 0:
+            high = np.full((dim,), high.item(), dtype=np.float16)
+        else:
+            high = high.reshape(-1)
+        if low.shape != (dim,) or high.shape != (dim,):
+            raise ValueError(
+                f"bounds must be scalar or have shape ({dim},), got {low.shape} and {high.shape}"
+            )
         return spaces.Box(low=low, high=high, dtype=np.float16)
 
     def get_params(self) -> torch.Tensor:
@@ -452,16 +474,7 @@ class VectorFieldEnv(gym.Env):
         if not dyn_params or dyn_params[0] is None:
             return  # Do nothing if no params provided
         if hasattr(self.dynamics, "set_params"):
-            value: torch.Tensor | Dict[str, float]
-            if len(dyn_params) > 1:
-                self.dynamics.set_params(*dyn_params)
-                return
-            raw_params = dyn_params[0]
-            if isinstance(raw_params, dict):
-                value = raw_params
-            else:
-                value = torch.as_tensor(raw_params, device=self.device, dtype=torch.float32)
-            self.dynamics.set_params(value)
+            self.dynamics.set_params(*dyn_params)
 
     def compute_dynamics(self, state: torch.Tensor) -> torch.Tensor:
         """Compute vector field at given state."""

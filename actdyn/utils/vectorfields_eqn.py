@@ -37,7 +37,9 @@ class VectorField:
         """Set model parameters from a tensor, list, dict, or expanded arguments."""
 
         def _format_param_args(params_tensor: torch.Tensor) -> tuple[torch.Tensor, ...]:
-            return tuple(params_tensor[..., idx] for idx in range(params_tensor.shape[-1]))
+            return tuple(
+                params_tensor[..., idx] for idx in range(params_tensor.shape[-1])
+            )
 
         if len(dyn_params) == 1 and isinstance(dyn_params[0], dict):
             self._set_params(**dyn_params[0])
@@ -46,7 +48,9 @@ class VectorField:
         if len(dyn_params) == 1:
             raw_params = dyn_params[0]
             if isinstance(raw_params, list):
-                params_tensor = torch.tensor(raw_params, device=self.device, dtype=torch.float32)
+                params_tensor = torch.tensor(
+                    raw_params, device=self.device, dtype=torch.float32
+                )
             else:
                 params_tensor = raw_params.to(self.device, dtype=torch.float32)
 
@@ -61,7 +65,9 @@ class VectorField:
             if isinstance(param, torch.Tensor):
                 param_tensor = param.to(self.device, dtype=torch.float32)
             else:
-                param_tensor = torch.as_tensor(param, device=self.device, dtype=torch.float32)
+                param_tensor = torch.as_tensor(
+                    param, device=self.device, dtype=torch.float32
+                )
             params_list.append(param_tensor)
 
         params_tensor = torch.stack(params_list, dim=-1)
@@ -71,7 +77,9 @@ class VectorField:
         self._set_params(*_format_param_args(params_tensor))
 
     def _set_params(self, *args, **kwargs):
-        raise NotImplementedError("_set_params method must be implemented in subclasses.")
+        raise NotImplementedError(
+            "_set_params method must be implemented in subclasses."
+        )
 
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         # Handle single vector input
@@ -81,7 +89,9 @@ class VectorField:
             return result.squeeze(0)
         return self.compute(x)
 
-    def _broadcast_param(self, param: torch.Tensor | float, x: torch.Tensor) -> torch.Tensor:
+    def _broadcast_param(
+        self, param: torch.Tensor | float, x: torch.Tensor
+    ) -> torch.Tensor:
         value = torch.as_tensor(param, dtype=x.dtype, device=x.device)
         target = x[..., 0]
         while value.ndim < target.ndim:
@@ -266,8 +276,12 @@ class MultiAttractor(VectorField):
         V = self.alpha * V / magnitude
 
         if self.w_attractor > 0:
-            U_attract = -self.xy[:, 0] * torch.sqrt(torch.sum(self.xy**2, 1)) * self.w_attractor
-            V_attract = -self.xy[:, 1] * torch.sqrt(torch.sum(self.xy**2, 1)) * self.w_attractor
+            U_attract = (
+                -self.xy[:, 0] * torch.sqrt(torch.sum(self.xy**2, 1)) * self.w_attractor
+            )
+            V_attract = (
+                -self.xy[:, 1] * torch.sqrt(torch.sum(self.xy**2, 1)) * self.w_attractor
+            )
             U += U_attract.reshape(grid_size, grid_size)
             V += V_attract.reshape(grid_size, grid_size)
 
@@ -437,6 +451,327 @@ class AsymmetricBasin(VectorField):
         return torch.stack([U, V], dim=-1)
 
 
+class ConfoundedGate(VectorField):
+    r"""Three-state gate with parameter/nuisance confounding.
+
+    For state ``z=(r,s,h)`` and learned scalar ``theta``, define
+    ``g_c(r)=exp(-0.5((r-c)/w)^2)`` and
+
+    .. math::
+
+        \dot r &= -(r-c_A), \\
+        \dot s &= -2s + 10g_I(r)\theta + 20g_A(r)(\theta+h), \\
+        \dot h &= 0.
+
+    The initial gate ``A`` has larger raw parameter sensitivity, but ``theta``
+    and the persistent nuisance state ``h`` produce the same response.  At gate
+    ``I``, ``theta`` acts without ``h``.  Actions control ``r`` and ``s`` only;
+    ``h`` remains an uncontrolled latent nuisance.
+
+    Inputs and outputs have shape ``(..., 3)`` and inherit the input dtype.
+    This implements the confounded-gate stress design in the TBME README.
+    """
+
+    AMBIGUITY_CENTER = -0.5
+    INFORMATIVE_CENTER = -0.32
+    GATE_WIDTH = 0.04
+    SELECTOR_CONTRACTION = 1.0
+    RESPONSE_CONTRACTION = 2.0
+    AMBIGUITY_SCALE = 20.0
+    INFORMATIVE_SCALE = 10.0
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        if dyn_param is None:
+            self.set_params([0.5])
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, theta=0.5):
+        self.theta = theta
+
+    @classmethod
+    def _gate(cls, selector: torch.Tensor, center: float) -> torch.Tensor:
+        return torch.exp(-0.5 * ((selector - float(center)) / cls.GATE_WIDTH) ** 2)
+
+    def compute(self, state: torch.Tensor) -> torch.Tensor:
+        selector = state[..., 0]
+        response = state[..., 1]
+        nuisance = state[..., 2]
+        theta = self._broadcast_param(self.theta, state)
+        ambiguity_gate = self._gate(selector, self.AMBIGUITY_CENTER)
+        informative_gate = self._gate(selector, self.INFORMATIVE_CENTER)
+
+        d_selector = -self.SELECTOR_CONTRACTION * (selector - self.AMBIGUITY_CENTER)
+        d_response = -self.RESPONSE_CONTRACTION * response
+        d_response = d_response + self.INFORMATIVE_SCALE * informative_gate * theta
+        d_response = d_response + self.AMBIGUITY_SCALE * ambiguity_gate * (
+            theta + nuisance
+        )
+        d_nuisance = torch.zeros_like(nuisance)
+        return self.alpha * torch.stack((d_selector, d_response, d_nuisance), dim=-1)
+
+
+class RankImbalancedGate(VectorField):
+    r"""Four-state gate with rank-imbalanced parameter information.
+
+    .. math::
+
+        \dot r &= -(r-c_B), \\
+        \dot s_j &= -2s_j + [g_M(r)a_{Mj} + g_B(r)a_{Bj}]\theta_j.
+
+    At the main gate, ``a_M = (4, 2, 0.2)`` gives the diagonal
+    information profile ``(16, 4, 0.04)``. At the balanced gate,
+    ``a_B = (0.4, 0.4, 0.4)`` gives ``(0.16, 0.16, 0.16)``. A log-det
+    objective therefore prefers the main gate, whereas E-optimality prefers
+    the balanced gate's larger minimum eigenvalue.
+
+    State and output tensors have shape ``(..., 4)``; the learned parameter
+    has shape ``(..., 3)``. Actions control only the selector coordinate.
+    """
+
+    BALANCED_CENTER = -0.5
+    MAIN_CENTER = 0.0
+    GATE_WIDTH = 0.12
+    SELECTOR_CONTRACTION = 1.0
+    RESPONSE_CONTRACTION = 2.0
+    MAIN_SENSITIVITY = (4.0, 2.0, 0.2)
+    BALANCED_SENSITIVITY = (0.4, 0.4, 0.4)
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.set_params([1.0, 0.5, 0.0] if dyn_param is None else dyn_param)
+
+    def _set_params(self, theta_1=1.0, theta_2=0.5, theta_3=0.0):
+        self.theta_1 = theta_1
+        self.theta_2 = theta_2
+        self.theta_3 = theta_3
+
+    @classmethod
+    def _gate(cls, selector: torch.Tensor, center: float) -> torch.Tensor:
+        return torch.exp(-0.5 * ((selector - float(center)) / cls.GATE_WIDTH) ** 2)
+
+    def compute(self, state: torch.Tensor) -> torch.Tensor:
+        selector = state[..., 0]
+        response = state[..., 1:]
+        main_gate = self._gate(selector, self.MAIN_CENTER).unsqueeze(-1)
+        balanced_gate = self._gate(selector, self.BALANCED_CENTER).unsqueeze(-1)
+        main_scale = state.new_tensor(self.MAIN_SENSITIVITY)
+        balanced_scale = state.new_tensor(self.BALANCED_SENSITIVITY)
+        theta = torch.stack(
+            tuple(
+                self._broadcast_param(param, state)
+                for param in (self.theta_1, self.theta_2, self.theta_3)
+            ),
+            dim=-1,
+        )
+
+        d_selector = -self.SELECTOR_CONTRACTION * (selector - self.BALANCED_CENTER)
+        sensitivity = main_gate * main_scale + balanced_gate * balanced_scale
+        d_response = -self.RESPONSE_CONTRACTION * response + sensitivity * theta
+        return self.alpha * torch.cat((d_selector.unsqueeze(-1), d_response), dim=-1)
+
+
+class CompoundTriGate(VectorField):
+    r"""Five-state selector system combining three objective-ablation traps.
+
+    For state ``z=(r,s_1,s_2,s_3,h)`` and learned parameter
+    ``theta=(theta_1,theta_2,theta_3)``, let
+    ``g_c(r)=exp(-0.5((r-c)/w)^2)`` and define
+
+    .. math::
+
+        \dot r &= -(r-c_A), \\
+        \dot s &= -4s
+          + g_A(r)(20\theta_1+200h,0,0)^\top \\
+          &\quad + g_B(r)\operatorname{diag}(0.02,0.02,0.02)\theta \\
+          &\quad + g_M(r)\operatorname{diag}(4,2,0)\theta, \\
+        \dot h &= 0.
+
+    Gate ``A`` has the largest scalar parameter sensitivity but aliases
+    ``theta_1`` with a strongly amplified nuisance state ``h``. Gate ``B`` is
+    a balanced but uniformly weak E-optimal decoy. Gate ``M`` has the largest
+    initial log-determinant but no third-parameter sensitivity. PALDI should
+    therefore prioritize ``M`` and use ``B`` only as the third posterior
+    direction becomes limiting, while individual ablations are attracted to
+    one of the decoy gates.
+
+    States and outputs have shape ``(..., 5)`` and inherit the input dtype.
+    The learned parameter has shape ``(..., 3)``. The single action enters the
+    selector coordinate through ``PaddedIdentityActionEncoder``.
+    """
+
+    AMBIGUITY_CENTER = -0.5
+    BALANCED_CENTER = -0.32
+    MAIN_CENTER = 0.0
+    GATE_WIDTH = 0.04
+    SELECTOR_CONTRACTION = 1.0
+    RESPONSE_CONTRACTION = 4.0
+    NUISANCE_CONTRACTION = 0.0
+    AMBIGUITY_SCALE = 20.0
+    AMBIGUITY_NUISANCE_SCALE = 200.0
+    BALANCED_SENSITIVITY = (0.02, 0.02, 0.02)
+    MAIN_SENSITIVITY = (4.0, 2.0, 0.0)
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.set_params([1.0, 1.0, 0.0] if dyn_param is None else dyn_param)
+
+    def _set_params(self, theta_1=1.0, theta_2=1.0, theta_3=0.0):
+        self.theta_1 = theta_1
+        self.theta_2 = theta_2
+        self.theta_3 = theta_3
+
+    @classmethod
+    def _gate(cls, selector: torch.Tensor, center: float) -> torch.Tensor:
+        return torch.exp(-0.5 * ((selector - float(center)) / cls.GATE_WIDTH) ** 2)
+
+    def compute(self, state: torch.Tensor) -> torch.Tensor:
+        selector = state[..., 0]
+        response = state[..., 1:4]
+        nuisance = state[..., 4]
+        ambiguity_gate = self._gate(selector, self.AMBIGUITY_CENTER)
+        balanced_gate = self._gate(selector, self.BALANCED_CENTER).unsqueeze(-1)
+        main_gate = self._gate(selector, self.MAIN_CENTER).unsqueeze(-1)
+        theta = torch.stack(
+            tuple(
+                self._broadcast_param(param, state)
+                for param in (self.theta_1, self.theta_2, self.theta_3)
+            ),
+            dim=-1,
+        )
+
+        d_selector = -self.SELECTOR_CONTRACTION * (selector - self.AMBIGUITY_CENTER)
+        balanced_scale = state.new_tensor(self.BALANCED_SENSITIVITY)
+        main_scale = state.new_tensor(self.MAIN_SENSITIVITY)
+        d_response = -self.RESPONSE_CONTRACTION * response
+        d_response = d_response + balanced_gate * balanced_scale * theta
+        d_response = d_response + main_gate * main_scale * theta
+        d_response_first = d_response[..., 0] + ambiguity_gate * (
+            self.AMBIGUITY_SCALE * theta[..., 0]
+            + self.AMBIGUITY_NUISANCE_SCALE * nuisance
+        )
+        d_response = torch.cat(
+            (d_response_first.unsqueeze(-1), d_response[..., 1:]), dim=-1
+        )
+        d_nuisance = -self.NUISANCE_CONTRACTION * nuisance
+        return self.alpha * torch.cat(
+            (d_selector.unsqueeze(-1), d_response, d_nuisance.unsqueeze(-1)), dim=-1
+        )
+
+
+class SimpleTriGate(VectorField):
+    r"""Five-state, three-parameter system exposing three acquisition traps.
+
+    For ``z=(r,s_1,s_2,s_3,h)``, ``theta=(theta_1,theta_2,theta_3)``, and Gaussian gates
+    ``g_c(r)=exp(-0.5((r-c)/0.1)^2)``, this implements
+
+    .. math::
+
+        \dot r &= -(r+1), \\
+        \dot s &= -4s + 20g_A(r)(\theta_1+5h,0,0)^\top \\
+        &\quad + g_B(r)\operatorname{diag}(1,1,1)\theta
+          + g_M(r)\operatorname{diag}(5,5,0.75)\theta, \\
+        \dot h &= 0,
+
+    with gate centers ``c_A=-0.5``, ``c_B=-0.1``, and ``c_M=0.3``. The single
+    action is added to the selector equation by ``PaddedIdentityActionEncoder``.
+
+    The passive equilibrium ``r=-1`` lies outside all gates. Gate ``A`` is a
+    high-sensitivity but state-confounded decoy. Gate ``B`` has the largest
+    weakest parameter direction and is therefore the E-optimal decoy. Gate
+    ``M`` is full rank and has nonzero sensitivity to every unknown parameter;
+    in particular, ``theta_3`` must be learned because its truth is one and its
+    initial estimate is zero.
+
+    States and outputs have shape ``(..., 5)`` and inherit the input dtype.
+    The learned parameter has shape ``(..., 3)``.
+    """
+
+    REST_CENTER = -1.0
+    AMBIGUITY_CENTER = -0.5
+    BALANCED_CENTER = -0.1
+    MAIN_CENTER = 0.3
+    GATE_WIDTH = 0.1
+    SELECTOR_CONTRACTION = 1.0
+    RESPONSE_CONTRACTION = 4.0
+    AMBIGUITY_SCALE = 20.0
+    AMBIGUITY_NUISANCE_RATIO = 5.0
+    BALANCED_SENSITIVITY = (1.0, 1.0, 1.0)
+    MAIN_SENSITIVITY = (5.0, 5.0, 0.75)
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.set_params([1.0, 1.0, 1.0] if dyn_param is None else dyn_param)
+
+    def _set_params(self, theta_1=1.0, theta_2=1.0, theta_3=1.0):
+        self.theta_1 = theta_1
+        self.theta_2 = theta_2
+        self.theta_3 = theta_3
+
+    @classmethod
+    def _gate(cls, selector: torch.Tensor, center: float) -> torch.Tensor:
+        return torch.exp(-0.5 * ((selector - float(center)) / cls.GATE_WIDTH) ** 2)
+
+    def compute(self, state: torch.Tensor) -> torch.Tensor:
+        selector = state[..., 0]
+        response = state[..., 1:4]
+        nuisance = state[..., 4]
+        ambiguity_gate = self._gate(selector, self.AMBIGUITY_CENTER)
+        balanced_gate = self._gate(selector, self.BALANCED_CENTER).unsqueeze(-1)
+        main_gate = self._gate(selector, self.MAIN_CENTER).unsqueeze(-1)
+        theta = torch.stack(
+            tuple(
+                self._broadcast_param(param, state)
+                for param in (self.theta_1, self.theta_2, self.theta_3)
+            ),
+            dim=-1,
+        )
+
+        d_selector = -self.SELECTOR_CONTRACTION * (selector - self.REST_CENTER)
+        d_response = -self.RESPONSE_CONTRACTION * response
+        d_response = (
+            d_response
+            + balanced_gate * state.new_tensor(self.BALANCED_SENSITIVITY) * theta
+            + main_gate * state.new_tensor(self.MAIN_SENSITIVITY) * theta
+        )
+        d_response_first = d_response[..., 0] + ambiguity_gate * (
+            self.AMBIGUITY_SCALE * theta[..., 0]
+            + self.AMBIGUITY_SCALE * self.AMBIGUITY_NUISANCE_RATIO * nuisance
+        )
+        d_response = torch.cat(
+            (d_response_first.unsqueeze(-1), d_response[..., 1:]), dim=-1
+        )
+        return self.alpha * torch.cat(
+            (
+                d_selector.unsqueeze(-1),
+                d_response,
+                torch.zeros_like(nuisance).unsqueeze(-1),
+            ),
+            dim=-1,
+        )
+
+
 class MultiStable(VectorField):
     """Gaussian-well multistable dynamics with local contraction and swirl.
 
@@ -520,7 +855,9 @@ class MultiStable(VectorField):
             dim=-1,
         )
         tangent = torch.stack((-disp[..., 1], disp[..., 0]), dim=-1)
-        local_field = -amplitudes.unsqueeze(-1) * disp + rotations.unsqueeze(-1) * tangent
+        local_field = (
+            -amplitudes.unsqueeze(-1) * disp + rotations.unsqueeze(-1) * tangent
+        )
         field = torch.sum(envelope.unsqueeze(-1) * local_field, dim=-2)
         return self.alpha * field
 

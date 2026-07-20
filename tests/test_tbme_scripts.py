@@ -29,7 +29,9 @@ def _load_module(name: str, rel_path: str):
 
 
 def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatch):
-    module = _load_module("tbme_run_current", "experiments/tbme/run_tbme_experiments.py")
+    module = _load_module(
+        "tbme_run_current", "experiments/tbme/run_tbme_experiments.py"
+    )
     captured: dict[str, object] = {}
 
     def _fake_main(argv, *, suite_entries=None):
@@ -129,18 +131,87 @@ def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:
 
 
 def test_tbme_catalog_define_expected_matrices():
-    module = _load_module("tbme_catalogs_current", "experiments/tbme/run_tbme_experiments.py")
+    module = _load_module(
+        "tbme_catalogs_current", "experiments/tbme/run_tbme_experiments.py"
+    )
     bundle = module.configure_tbme_catalogs()
     paths = module.tbme_catalog_paths()
 
-    assert bundle.environment_catalog_paths == tuple(path.resolve() for path in paths["env_catalog_paths"])
-    assert bundle.model_catalog_paths == tuple(path.resolve() for path in paths["model_catalog_paths"])
+    assert bundle.environment_catalog_paths == tuple(
+        path.resolve() for path in paths["env_catalog_paths"]
+    )
+    assert bundle.model_catalog_paths == tuple(
+        path.resolve() for path in paths["model_catalog_paths"]
+    )
     assert bundle.suite_catalog_paths == ()
-    assert bundle.environment_presets["tbme_damped_pendulum"].system_id == "damped_pendulum"
+    assert (
+        bundle.environment_presets["tbme_damped_pendulum"].system_id
+        == "damped_pendulum"
+    )
     assert bundle.environment_presets["tbme_gated_duffing"].system_id == "gated_duffing"
     assert bundle.environment_presets["tbme_gated_duffing"].embedding_dim == 4
+    confounded = bundle.environment_presets["tbme_confounded_gate"]
+    assert confounded.resolved_dynamics_type() == "confounded_gate"
+    assert confounded.latent_dim == 3
+    assert confounded.action_dim == 2
+    assert confounded.resolved_state_bounds()[0].shape == (3,)
     assert np.allclose(
-        bundle.environment_presets["tbme_duffing_parameter_mismatch"].resolved_true_params(estimator=True),
+        confounded.filter_initial_state_mean_vector(),
+        np.asarray([-0.5, 0.0, 0.0], dtype=np.float32),
+    )
+    assert confounded.observation_nuisance_scale == pytest.approx(0.02)
+    rank_imbalanced = bundle.environment_presets["tbme_rank_imbalanced_gate"]
+    assert rank_imbalanced.resolved_dynamics_type() == "rank_imbalanced_gate"
+    assert rank_imbalanced.latent_dim == 4
+    assert rank_imbalanced.action_dim == 1
+    assert rank_imbalanced.embedding_dim == 3
+    compound = bundle.environment_presets["tbme_compound_tri_gate"]
+    assert compound.resolved_dynamics_type() == "compound_tri_gate"
+    assert compound.latent_dim == 5
+    assert compound.action_dim == 1
+    assert compound.embedding_dim == 3
+    assert compound.observation_model == "linear"
+    assert compound.observation_noise_type == "gaussian"
+    assert compound.observation_information_diag == pytest.approx((1, 1, 1, 1, 0.01))
+    assert compound.trajectory_eval_state_noise == pytest.approx(0.0)
+    assert compound.trajectory_eval_state_low[-1] == pytest.approx(0.0)
+    assert compound.trajectory_eval_state_high[-1] == pytest.approx(0.0)
+    compound_poisson = bundle.environment_presets["tbme_compound_tri_gate_poisson"]
+    assert compound_poisson.resolved_dynamics_type() == "compound_tri_gate"
+    assert compound_poisson.observation_model == "log_linear"
+    assert compound_poisson.observation_noise_type == "poisson"
+    assert compound_poisson.observation_dim == 160
+    assert compound_poisson.observation_loading_design == "paired_diagonal"
+    assert compound_poisson.observation_loading_gains == pytest.approx(
+        (0.35, 0.35, 0.35, 0.35, 0.035)
+    )
+    assert compound_poisson.observation_loading_repeats_per_sign == 16
+    simple = bundle.environment_presets["tbme_simple_tri_gate_poisson"]
+    assert simple.resolved_dynamics_type() == "simple_tri_gate"
+    assert simple.latent_dim == 5
+    assert simple.action_dim == 1
+    assert simple.embedding_dim == 3
+    assert simple.resolved_true_params() == pytest.approx((1.0, 1.0, 1.0))
+    assert simple.initial_parameter_mean == pytest.approx((0.0, 0.0, 0.0))
+    assert np.all(
+        simple.initial_parameter_mean_vector() != simple.resolved_true_params()
+    )
+    assert simple.filter_initial_state_mean_vector() == pytest.approx(
+        (-1.0, 0.0, 0.0, 0.0, 0.0)
+    )
+    assert simple.action_max == pytest.approx(1.5)
+    assert simple.observation_model == "log_linear"
+    assert simple.observation_noise_type == "poisson"
+    assert simple.observation_dim == 10
+    assert simple.observation_loading_gains == pytest.approx((0.3, 0.3, 0.3, 0.3, 0.05))
+    assert simple.observation_loading_repeats_per_sign == 1
+    assert simple.state_init_uncertainty == pytest.approx(1.0)
+    assert simple.trajectory_eval_state_indices == (1, 2, 3)
+    assert simple.trajectory_eval_coordinate_balanced is True
+    assert np.allclose(
+        bundle.environment_presets[
+            "tbme_duffing_parameter_mismatch"
+        ].resolved_true_params(estimator=True),
         np.asarray([-0.5, -0.75, 0.2], dtype=np.float32),
     )
 
@@ -152,18 +223,23 @@ def test_tbme_catalog_define_expected_matrices():
     assert policies["random"].policy_type == "random"
     assert policies["random"].schedule_id == "u1_r1_h1"
     assert policies["off_policy"].policy_type == "off-policy"
+    assert policies["compound_active_planning"].action_cost_weight == pytest.approx(0.0)
     assert policies["off_policy"].schedule_id == "u1_r1_h1"
     assert policies["flex"].policy_type == "flex"
     assert policies["rhc"].policy_type == "rhc"
     assert "rhc_mvr" not in policies
     assert policies["active_state_variance"].objective_kind == "state_variance"
-    assert policies["active_observation_variance"].objective_kind == "observation_variance"
+    assert (
+        policies["active_observation_variance"].objective_kind == "observation_variance"
+    )
     assert policies["active_e_optimality"].objective_kind == "e_optimality"
     assert policies["active_fully_observable"].objective_kind == (
         "fully_observable_parameter_eig"
     )
     assert bundle.schedule_specs["active_planning_u1_r1_h40"].planning_horizon == 40
-    assert policies["active_planning_u5_r5_h40"].schedule_id == "active_planning_u5_r5_h40"
+    assert (
+        policies["active_planning_u5_r5_h40"].schedule_id == "active_planning_u5_r5_h40"
+    )
 
     duffing = bundle.experiment_specs["duffing"]
     assert duffing.env_preset_id == "tbme_duffing"
@@ -186,10 +262,54 @@ def test_tbme_catalog_define_expected_matrices():
     objective_ablation = bundle.experiment_specs["gated_duffing_asymmetric"]
     assert "active_observation_variance" in objective_ablation.policy_ids
     assert "active_state_variance" in objective_ablation.policy_ids
+    confounded_suite = _load_module(
+        "tbme_confounded_gate_suite",
+        "experiments/tbme/exp_objective_ablation.py",
+    ).EXPERIMENT_SUITES["confounded_gate"]
+    assert confounded_suite["env_preset_id"] == "tbme_confounded_gate"
+    assert "active_planning" in confounded_suite["model_ids"]
+    assert "random" in confounded_suite["model_ids"]
+    rank_suite = _load_module(
+        "tbme_rank_imbalanced_gate_suite",
+        "experiments/tbme/exp_objective_ablation.py",
+    ).EXPERIMENT_SUITES["rank_imbalanced_gate"]
+    assert rank_suite["env_preset_id"] == "tbme_rank_imbalanced_gate"
+    assert rank_suite["model_ids"] == [
+        "active_planning",
+        "active_e_optimality",
+        "prbs",
+        "random",
+    ]
+    compound_suite = _load_module(
+        "tbme_compound_tri_gate_suite",
+        "experiments/tbme/exp_objective_ablation.py",
+    ).EXPERIMENT_SUITES["compound_tri_gate"]
+    assert compound_suite["env_preset_id"] == "tbme_compound_tri_gate"
+    assert compound_suite["total_steps"] == 2000
+    assert compound_suite["model_ids"] == [
+        "compound_active_planning",
+        "compound_active_fully_observable",
+        "compound_active_e_optimality",
+        "compound_active_state_information",
+        "compound_active_dynamics",
+        "compound_active_observation_variance",
+        "compound_active_state_variance",
+        "prbs",
+        "random",
+    ]
+    simple_suite = _load_module(
+        "tbme_simple_tri_gate_suite",
+        "experiments/tbme/exp_objective_ablation.py",
+    ).EXPERIMENT_SUITES["simple_tri_gate_poisson"]
+    assert simple_suite["env_preset_id"] == "tbme_simple_tri_gate_poisson"
+    assert simple_suite["total_steps"] == 2000
+    assert simple_suite["model_ids"] == compound_suite["model_ids"]
 
 
 def test_tbme_runtime_config_respects_catalog_policy_type_for_prbs(tmp_path: Path):
-    catalogs = _load_module("tbme_catalogs_runtime_prbs", "experiments/tbme/run_tbme_experiments.py")
+    catalogs = _load_module(
+        "tbme_catalogs_runtime_prbs", "experiments/tbme/run_tbme_experiments.py"
+    )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     runner = _load_module("experiment_runner_runtime_prbs", "experiments/run.py")
     env_preset = specs.environment_presets["tbme_duffing"]
@@ -208,15 +328,53 @@ def test_tbme_runtime_config_respects_catalog_policy_type_for_prbs(tmp_path: Pat
     assert cfg.policy.policy_type == "baseline-prbs"
 
 
+def test_tbme_runner_seeds_sync_icem_action_sampling():
+    catalogs = _load_module(
+        "tbme_catalogs_runtime_icem",
+        "experiments/tbme/run_tbme_experiments.py",
+    )
+    specs = catalogs.configure_tbme_catalogs(suite_entries={})
+    runner = _load_module("experiment_runner_runtime_icem", "experiments/run.py")
+    import actdyn
+
+    action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=float)
+    fake_env = SimpleNamespace(action_space=action_space)
+    fake_model = SimpleNamespace(
+        action_encoder=SimpleNamespace(action_space=action_space)
+    )
+    env_preset = specs.environment_presets["tbme_duffing"]
+    policy_spec = specs.policy_specs["active_planning"]
+    schedule_spec = specs.schedule_specs[policy_spec.schedule_id]
+
+    policy = runner._instantiate_synthetic_policy(
+        actdyn_module=actdyn,
+        env=fake_env,
+        env_preset=env_preset,
+        model=fake_model,
+        metric=None,
+        device="cpu",
+        policy_id="active_planning",
+        policy_spec=policy_spec,
+        schedule_spec=schedule_spec,
+        seed=29,
+    )
+
+    assert policy._action_rng_seed == 29
+
+
 def test_tbme_runner_instantiates_flex_policy_as_exact_flex():
-    catalogs = _load_module("tbme_catalogs_runtime_flex", "experiments/tbme/run_tbme_experiments.py")
+    catalogs = _load_module(
+        "tbme_catalogs_runtime_flex", "experiments/tbme/run_tbme_experiments.py"
+    )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     runner = _load_module("experiment_runner_runtime_flex", "experiments/run.py")
     import actdyn
 
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=float)
     fake_env = SimpleNamespace(action_space=action_space)
-    fake_model = SimpleNamespace(action_encoder=SimpleNamespace(action_space=action_space))
+    fake_model = SimpleNamespace(
+        action_encoder=SimpleNamespace(action_space=action_space)
+    )
     env_preset = specs.environment_presets["tbme_duffing"]
     policy_spec = specs.policy_specs["flex"]
     schedule_spec = specs.schedule_specs[policy_spec.schedule_id]
@@ -240,7 +398,9 @@ def test_tbme_runner_instantiates_flex_policy_as_exact_flex():
 
 def test_tbme_runner_instantiates_exact_rhc_policy():
     pytest.importorskip("casadi")
-    catalogs = _load_module("tbme_catalogs_runtime_rhc", "experiments/tbme/run_tbme_experiments.py")
+    catalogs = _load_module(
+        "tbme_catalogs_runtime_rhc", "experiments/tbme/run_tbme_experiments.py"
+    )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     runner = _load_module("experiment_runner_runtime_rhc", "experiments/run.py")
     import actdyn
@@ -289,7 +449,9 @@ def test_exact_rhc_core_plans_and_updates_one_episode():
         seed=0,
     )
 
-    action_seq, cost = policy.get_action(torch.zeros(1, 1), observed_state=torch.zeros(1, 1))
+    action_seq, cost = policy.get_action(
+        torch.zeros(1, 1), observed_state=torch.zeros(1, 1)
+    )
     assert action_seq.shape == (1, 2, 1)
     assert torch.isfinite(cost)
 
@@ -316,7 +478,9 @@ def test_exact_rhc_core_plans_and_updates_one_episode():
 
 
 def test_tbme_family_scripts_define_expected_suite_sets():
-    module = _load_module("tbme_run_family_current", "experiments/tbme/run_tbme_experiments.py")
+    module = _load_module(
+        "tbme_run_family_current", "experiments/tbme/run_tbme_experiments.py"
+    )
     suites, groups = module._shared_tbme_data()
     assert set(groups) == {
         "simple_system_identification",
@@ -335,26 +499,39 @@ def test_tbme_family_scripts_define_expected_suite_sets():
 
 
 def test_duffing_parameter_mismatch_uses_fixed_non_inferred_cubic():
-    catalogs = _load_module("tbme_catalogs_param_mismatch", "experiments/tbme/run_tbme_experiments.py")
+    catalogs = _load_module(
+        "tbme_catalogs_param_mismatch", "experiments/tbme/run_tbme_experiments.py"
+    )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     preset = specs.environment_presets["tbme_duffing_parameter_mismatch"]
-    params = preset.params_from_embedding(np.asarray([-0.5, -0.75], dtype=np.float32), estimator=True)
+    params = preset.params_from_embedding(
+        np.asarray([-0.5, -0.75], dtype=np.float32), estimator=True
+    )
     assert np.allclose(params, np.asarray([-0.5, -0.75, 0.2], dtype=np.float32))
 
 
 def test_trajectory_r2_accounts_for_estimator_system_mismatch():
-    catalogs = _load_module("tbme_catalogs_traj_r2_param_mismatch", "experiments/tbme/run_tbme_experiments.py")
+    catalogs = _load_module(
+        "tbme_catalogs_traj_r2_param_mismatch",
+        "experiments/tbme/run_tbme_experiments.py",
+    )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     true_preset = specs.environment_presets["tbme_duffing"]
     mismatch_preset = specs.environment_presets["tbme_duffing_parameter_mismatch"]
     from actdyn.utils.validation import trajectory_r2_vectorfield
 
     r2 = trajectory_r2_vectorfield(
-        e_est=torch.as_tensor(mismatch_preset.true_embedding_vector(estimator=True), dtype=torch.float32),
-        e_true=torch.as_tensor(true_preset.true_embedding_vector(), dtype=torch.float32),
+        e_est=torch.as_tensor(
+            mismatch_preset.true_embedding_vector(estimator=True), dtype=torch.float32
+        ),
+        e_true=torch.as_tensor(
+            true_preset.true_embedding_vector(), dtype=torch.float32
+        ),
         true_dynamics_type=str(true_preset.resolved_dynamics_type()),
         true_full_params=true_preset.resolved_true_params(),
-        estimator_dynamics_type=str(mismatch_preset.resolved_dynamics_type(estimator=True)),
+        estimator_dynamics_type=str(
+            mismatch_preset.resolved_dynamics_type(estimator=True)
+        ),
         estimator_full_params=mismatch_preset.resolved_true_params(estimator=True),
         true_min_embedding_dim=int(true_preset.resolved_min_embedding_dim()),
         estimator_min_embedding_dim=int(mismatch_preset.resolved_min_embedding_dim()),
@@ -369,7 +546,10 @@ def test_trajectory_r2_accounts_for_estimator_system_mismatch():
 
 
 def test_trajectory_r2_many_matches_repeated_single_call():
-    from actdyn.utils.validation import trajectory_r2_vectorfield, trajectory_r2_vectorfield_many
+    from actdyn.utils.validation import (
+        trajectory_r2_vectorfield,
+        trajectory_r2_vectorfield_many,
+    )
 
     e_true = torch.tensor([-0.55, 1.0], dtype=torch.float32)
     estimates = torch.tensor(
@@ -418,11 +598,133 @@ def test_trajectory_r2_many_matches_repeated_single_call():
     np.testing.assert_allclose(observed, expected, rtol=1e-6, atol=1e-6)
 
 
+def test_trajectory_r2_many_supports_three_state_vectorfields():
+    from actdyn.utils.validation import trajectory_r2_vectorfield_many
+
+    observed = trajectory_r2_vectorfield_many(
+        e_estimates=torch.tensor([[0.5], [0.0]], dtype=torch.float32),
+        e_true=torch.tensor([0.5], dtype=torch.float32),
+        true_dynamics_type="confounded_gate",
+        true_full_params=np.asarray([0.5], dtype=np.float32),
+        estimator_dynamics_type="confounded_gate",
+        estimator_full_params=np.asarray([0.5], dtype=np.float32),
+        true_min_embedding_dim=1,
+        estimator_min_embedding_dim=1,
+        dt=0.2,
+        dynamics_alpha=1.0,
+        horizon=40,
+        n_starts=5,
+        rng=np.random.default_rng(123),
+        device="cpu",
+        state_dim=3,
+    )
+
+    assert observed.shape == (2,)
+    assert observed[0] == pytest.approx(1.0, abs=1e-6)
+    assert observed[1] < observed[0]
+
+
+def test_trajectory_r2_many_supports_targeted_compound_gate_starts():
+    from actdyn.utils.validation import trajectory_r2_vectorfield_many
+
+    observed = trajectory_r2_vectorfield_many(
+        e_estimates=torch.tensor(
+            [[1.0, 1.0, 0.0], [0.0, 0.0, 0.0]], dtype=torch.float32
+        ),
+        e_true=torch.tensor([1.0, 1.0, 0.0], dtype=torch.float32),
+        true_dynamics_type="compound_tri_gate",
+        true_full_params=np.asarray([1.0, 1.0, 0.0], dtype=np.float32),
+        estimator_dynamics_type="compound_tri_gate",
+        estimator_full_params=np.asarray([1.0, 1.0, 0.0], dtype=np.float32),
+        true_min_embedding_dim=3,
+        estimator_min_embedding_dim=3,
+        dt=0.01,
+        dynamics_alpha=1.0,
+        horizon=100,
+        n_starts=8,
+        rng=np.random.default_rng(123),
+        device="cpu",
+        state_dim=5,
+        state_noise=0.0,
+        state_low=np.asarray([-0.55, -0.25, -0.25, -0.25, 0.0]),
+        state_high=np.asarray([0.05, 0.25, 0.25, 0.25, 0.0]),
+    )
+
+    assert observed.shape == (2,)
+    assert observed[0] == pytest.approx(1.0, abs=1e-6)
+    assert observed[1] < 0.9
+
+
+def test_trajectory_r2_many_scores_all_simple_tri_gate_parameters():
+    """The fixed validation metric must expose errors in theta_1, theta_2, and theta_3."""
+    from actdyn.utils.validation import trajectory_r2_vectorfield_many
+
+    observed = trajectory_r2_vectorfield_many(
+        e_estimates=torch.tensor(
+            [
+                [1.0, 1.0, 1.0],
+                [0.0, 1.0, 1.0],
+                [1.0, 0.0, 1.0],
+                [1.0, 1.0, 0.0],
+            ],
+            dtype=torch.float32,
+        ),
+        e_true=torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32),
+        true_dynamics_type="simple_tri_gate",
+        true_full_params=np.asarray([1.0, 1.0, 1.0], dtype=np.float32),
+        estimator_dynamics_type="simple_tri_gate",
+        estimator_full_params=np.asarray([1.0, 1.0, 1.0], dtype=np.float32),
+        true_min_embedding_dim=3,
+        estimator_min_embedding_dim=3,
+        dt=0.01,
+        dynamics_alpha=1.0,
+        horizon=100,
+        n_starts=8,
+        rng=np.random.default_rng(123),
+        device="cpu",
+        state_dim=5,
+        state_noise=0.0,
+        state_low=np.asarray([-1.05, -0.25, -0.25, -0.25, 0.0]),
+        state_high=np.asarray([0.35, 0.25, 0.25, 0.25, 0.0]),
+        state_indices=(1, 2, 3),
+        coordinate_balanced=True,
+    )
+
+    assert observed.shape == (4,)
+    assert observed[0] == pytest.approx(1.0, abs=1e-6)
+    assert np.all(observed[1:] < 0.99)
+
+
+def test_simple_tri_gate_reach_hold_baseline_separates_transit_from_dwell():
+    from experiments.tbme.tbme_figures_experiment import (
+        _reach_hold_selector_occupancy,
+    )
+
+    occupancy = _reach_hold_selector_occupancy(
+        rest_center=-1.0,
+        target_center=0.3,
+        gate_centers=(-0.5, -0.1, 0.3),
+        rest_cutoff=-0.75,
+        selector_contraction=1.0,
+        dt=0.01,
+        total_steps=2000,
+    )
+
+    np.testing.assert_allclose(
+        occupancy,
+        np.asarray([0.011, 0.0275, 0.055, 0.9065]),
+        rtol=0.0,
+        atol=1e-8,
+    )
+
+
 def test_tbme_all_runner_parser_accepts_expected_args(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    module = _load_module("tbme_run_all_current", "experiments/tbme/run_tbme_experiments.py")
+    module = _load_module(
+        "tbme_run_all_current", "experiments/tbme/run_tbme_experiments.py"
+    )
     captured: dict[str, object] = {}
 
     def _fake_main(argv, *, suite_entries=None):
@@ -497,7 +799,9 @@ def test_root_runner_catalog_preparse_does_not_treat_mode_as_model_catalog():
         "experiments/experiment_model.yaml",
         "experiments/tbme/config/experiment_model.yaml",
     ]
-    assert captured["suite_catalog_paths"] == ["experiments/tbme/config/experiment_suite.yaml"]
+    assert captured["suite_catalog_paths"] == [
+        "experiments/tbme/config/experiment_suite.yaml"
+    ]
     assert captured["suite_entries"] is None
 
 

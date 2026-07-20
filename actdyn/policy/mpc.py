@@ -238,6 +238,7 @@ class MpcICem(BaseMPC):
         adaptive_replanning: bool = False,
         adaptive_replan_min_interval: int = 1,
         adaptive_replan_state_error_threshold: float | None = None,
+        seed: int | None = None,
         **kwargs,
     ):
 
@@ -294,6 +295,17 @@ class MpcICem(BaseMPC):
         }
         self._foreground_active = None
         self._yield_to_foreground = False
+        action_seed = int(torch.initial_seed()) if seed is None else int(seed)
+        self._set_action_rng_seed(action_seed)
+
+    def _set_action_rng_seed(self, seed: int) -> None:
+        """Seed iCEM action sampling without mutating process-global RNGs."""
+        seed = int(seed)
+        self._action_rng_seed = seed
+        self._action_np_rng = np.random.default_rng(seed)
+        generator = torch.Generator(device=torch.device(self.device))
+        generator.manual_seed(seed)
+        self._action_torch_generator = generator
 
     def beginning_of_rollout(self, state: torch.Tensor):
         super().beginning_of_rollout(state=state)

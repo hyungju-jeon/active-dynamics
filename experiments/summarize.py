@@ -49,6 +49,8 @@ TRAJECTORY_R2_TRACE_FIELDS = [
     "traj_eval_horizon",
     "traj_eval_samples",
     "traj_eval_state_noise",
+    "traj_eval_state_indices",
+    "traj_eval_coordinate_balanced",
 ]
 
 
@@ -93,14 +95,20 @@ def collect_track_records(
                         "metadata": load_json(path),
                     }
                 )
-    records.sort(key=lambda rec: (str(rec["policy_id"]), int(rec["seed"]), str(rec["run_dir"])))
+    records.sort(
+        key=lambda rec: (str(rec["policy_id"]), int(rec["seed"]), str(rec["run_dir"]))
+    )
     return records, missing
 
 
-def collect_track_rows(records: list[dict[str, Any]], value_key: str) -> list[dict[str, Any]]:
+def collect_track_rows(
+    records: list[dict[str, Any]], value_key: str
+) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, int], list[dict[str, Any]]] = {}
     for record in records:
-        grouped.setdefault((str(record["policy_id"]), int(record["seed"])), []).append(record)
+        grouped.setdefault((str(record["policy_id"]), int(record["seed"])), []).append(
+            record
+        )
     rows: list[dict[str, Any]] = []
     for (policy_id, seed), runs in grouped.items():
         finals = [safe_float(run["metadata"].get(value_key)) for run in runs]
@@ -133,17 +141,26 @@ def collect_track_rows(records: list[dict[str, Any]], value_key: str) -> list[di
                     else "partial"
                 ),
                 "value_final_mean": float(np.mean(finals_num)) if finals_num else None,
-                "trajectory_r2_final_mean": float(np.mean(traj_r2_num)) if traj_r2_num else None,
-                "runtime_sec_mean": float(np.mean(runtimes_num)) if runtimes_num else None,
+                "trajectory_r2_final_mean": float(np.mean(traj_r2_num))
+                if traj_r2_num
+                else None,
+                "runtime_sec_mean": float(np.mean(runtimes_num))
+                if runtimes_num
+                else None,
             }
         )
     rows.sort(key=lambda row: (str(row["policy_id"]), int(row["seed"])))
     return rows
 
 
-def _trace_path(record: dict[str, Any], metadata_key: str, fallback_name: str) -> Path | None:
+def _trace_path(
+    record: dict[str, Any], metadata_key: str, fallback_name: str
+) -> Path | None:
     path = resolve_artifact_path(
-        record["run_dir"], record["metadata"], key=metadata_key, fallback_name=fallback_name
+        record["run_dir"],
+        record["metadata"],
+        key=metadata_key,
+        fallback_name=fallback_name,
     )
     if path.exists():
         return path
@@ -217,7 +234,9 @@ def aggregate_custom_trace(
         subgroup = [r for r in records if str(r["policy_id"]) == policy_id]
         by_step: dict[int, dict[str, list[float]]] = {}
         for record in subgroup:
-            trace_path = _trace_path(record, metadata_key=metadata_key, fallback_name=fallback_name)
+            trace_path = _trace_path(
+                record, metadata_key=metadata_key, fallback_name=fallback_name
+            )
             if trace_path is None:
                 continue
             compute_time_by_step = _compute_time_by_step(record, compute_time_cache)
@@ -335,16 +354,49 @@ def _recompute_trajectory_trace_rows(
     if not rows:
         return []
 
-    state_noise = safe_float(metadata.get("state_noise"))
+    state_noise = safe_float(metadata.get("trajectory_eval_state_noise"))
+    if state_noise is None:
+        state_noise = getattr(env_preset, "trajectory_eval_state_noise", None)
+    if state_noise is None:
+        state_noise = safe_float(metadata.get("state_noise"))
     if state_noise is None:
         state_noise = float(env_preset.state_noise)
-    horizon = int(metadata.get("trajectory_eval_horizon") or exp_spec.trajectory_eval_horizon)
-    n_starts = int(metadata.get("trajectory_eval_samples") or exp_spec.trajectory_eval_samples)
+    eval_state_low = metadata.get("trajectory_eval_state_low")
+    if not isinstance(eval_state_low, list):
+        eval_state_low = getattr(env_preset, "trajectory_eval_state_low", None)
+    eval_state_high = metadata.get("trajectory_eval_state_high")
+    if not isinstance(eval_state_high, list):
+        eval_state_high = getattr(env_preset, "trajectory_eval_state_high", None)
+    eval_state_indices = metadata.get("trajectory_eval_state_indices")
+    if not isinstance(eval_state_indices, list):
+        eval_state_indices = getattr(env_preset, "trajectory_eval_state_indices", None)
+    coordinate_balanced = bool(
+        metadata.get(
+            "trajectory_eval_coordinate_balanced",
+            getattr(env_preset, "trajectory_eval_coordinate_balanced", False),
+        )
+    )
+    horizon = int(
+        metadata.get("trajectory_eval_horizon") or exp_spec.trajectory_eval_horizon
+    )
+    n_starts = int(
+        metadata.get("trajectory_eval_samples") or exp_spec.trajectory_eval_samples
+    )
     rng = np.random.default_rng(int(record["seed"]) + 137)
+    state_low = metadata.get("state_low")
+    state_dim = (
+        len(state_low)
+        if isinstance(state_low, list) and state_low
+        else int(env_preset.latent_dim)
+    )
     r2_values = trajectory_r2_vectorfield_many(
-        e_estimates=torch.as_tensor(np.stack([row[2] for row in rows]), dtype=torch.float32),
+        e_estimates=torch.as_tensor(
+            np.stack([row[2] for row in rows]), dtype=torch.float32
+        ),
         e_true=torch.as_tensor(true_embedding[:expected_dim], dtype=torch.float32),
-        true_dynamics_type=str(metadata.get("dynamics_type") or env_preset.resolved_dynamics_type()),
+        true_dynamics_type=str(
+            metadata.get("dynamics_type") or env_preset.resolved_dynamics_type()
+        ),
         true_full_params=np.asarray(
             metadata.get("true_params_full") or env_preset.resolved_true_params(),
             dtype=np.float32,
@@ -371,6 +423,11 @@ def _recompute_trajectory_trace_rows(
         rng=rng,
         device="cpu",
         state_noise=state_noise,
+        state_dim=state_dim,
+        state_low=eval_state_low,
+        state_high=eval_state_high,
+        state_indices=eval_state_indices,
+        coordinate_balanced=coordinate_balanced,
     )
 
     out_rows: list[dict[str, Any]] = []
@@ -383,6 +440,8 @@ def _recompute_trajectory_trace_rows(
                 "traj_eval_horizon": horizon,
                 "traj_eval_samples": n_starts,
                 "traj_eval_state_noise": state_noise,
+                "traj_eval_state_indices": eval_state_indices,
+                "traj_eval_coordinate_balanced": coordinate_balanced,
             }
         )
     return out_rows
@@ -397,7 +456,9 @@ def _trajectory_eval_interval(metadata: dict[str, Any], exp_spec: Any) -> int:
     return int(raw)
 
 
-def recompute_trajectory_r2_traces(records: list[dict[str, Any]], *, exp_spec: Any) -> int:
+def recompute_trajectory_r2_traces(
+    records: list[dict[str, Any]], *, exp_spec: Any
+) -> int:
     count = 0
     for record in records:
         env_preset = get_environment_preset_from_metadata(record["metadata"])
@@ -607,7 +668,9 @@ def _write_markdown(
             str(row["policy_id"]), {"value": [], "trajectory_r2": []}
         )
         policy_bucket["value"].append(
-            float(row["value_final_mean"]) if row["value_final_mean"] is not None else np.nan
+            float(row["value_final_mean"])
+            if row["value_final_mean"] is not None
+            else np.nan
         )
         policy_bucket["trajectory_r2"].append(
             float(row["trajectory_r2_final_mean"])
@@ -650,7 +713,9 @@ def _write_markdown(
             row_cells.extend(
                 [
                     _format_markdown_cell(row.get(f"step_to_r2_{suffix}")),
-                    _format_markdown_cell(row.get(f"cpu_time_sec_to_r2_{suffix}"), digits=2),
+                    _format_markdown_cell(
+                        row.get(f"cpu_time_sec_to_r2_{suffix}"), digits=2
+                    ),
                 ]
             )
         lines.append("| " + " | ".join(row_cells) + " |")
@@ -665,7 +730,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--summary-dir", type=str, default=None)
     parser.add_argument("--policy-ids", type=str, default=None)
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
-    parser.add_argument("--path-layout", choices=["legacy", "tbme_tracks"], default="legacy")
+    parser.add_argument(
+        "--path-layout", choices=["legacy", "tbme_tracks"], default="legacy"
+    )
     parser.add_argument("--fail-on-missing", action="store_true")
     parser.add_argument(
         "--recompute-trajectory-r2",
@@ -679,7 +746,9 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     exp_spec = get_experiment_spec(str(args.exp_id))
-    base_dir = resolve_session_root(Path(args.base_dir), create=False, exp_ids=[exp_spec.exp_id])
+    base_dir = resolve_session_root(
+        Path(args.base_dir), create=False, exp_ids=[exp_spec.exp_id]
+    )
     summary_dir = (
         Path(args.summary_dir)
         if args.summary_dir
@@ -752,9 +821,13 @@ def main(argv: list[str] | None = None) -> int:
         ],
     )
     _write_curve_csv(
-        summary_dir / f"{value_prefix}_over_steps.csv", trace_rows, f"{value_prefix}_mean"
+        summary_dir / f"{value_prefix}_over_steps.csv",
+        trace_rows,
+        f"{value_prefix}_mean",
     )
-    _write_curve_csv(summary_dir / "trajectory_r2_over_steps.csv", traj_rows, "trajectory_r2_mean")
+    _write_curve_csv(
+        summary_dir / "trajectory_r2_over_steps.csv", traj_rows, "trajectory_r2_mean"
+    )
     _write_trajectory_r2_threshold_csv(
         summary_dir / "trajectory_r2_thresholds.csv", r2_threshold_rows
     )

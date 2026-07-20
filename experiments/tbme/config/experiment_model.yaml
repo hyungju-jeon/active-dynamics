@@ -153,6 +153,34 @@ models:
     extends: active_planning
     objective_kind: state_variance
 
+  compound_active_planning:
+    extends: active_planning
+    coarse_dt_factor: 10
+
+  compound_active_fully_observable:
+    extends: active_fully_observable
+    coarse_dt_factor: 10
+
+  compound_active_e_optimality:
+    extends: active_e_optimality
+    coarse_dt_factor: 10
+
+  compound_active_state_information:
+    extends: active_state_information
+    coarse_dt_factor: 10
+
+  compound_active_dynamics:
+    extends: active_dynamics
+    coarse_dt_factor: 10
+
+  compound_active_observation_variance:
+    extends: active_observation_variance
+    coarse_dt_factor: 10
+
+  compound_active_state_variance:
+    extends: active_state_variance
+    coarse_dt_factor: 10
+
   active_laplace_corrected_observation_variance:
     objective_kind: corrected_observation_variance
     update_interval: 1

@@ -37,6 +37,41 @@ def test_configure_runtime_returns_valid_device():
     assert device in {"cpu", "cuda", "mps"}
 
 
+def test_filtering_embedding_uses_explicit_initial_state_mean():
+    from actdyn.models.model import FilteringEmbedding
+
+    class _Dynamics:
+        state_dim = 3
+        dt = 0.01
+
+        def set_params(self, params):
+            self.params = params
+
+    class _Decoder:
+        obs_dim = 2
+        latent_dim = 3
+
+    model = FilteringEmbedding(
+        e={
+            "m": torch.zeros(1, 1),
+            "P": torch.eye(1).unsqueeze(0),
+            "L": torch.eye(1).unsqueeze(0),
+        },
+        dynamics=_Dynamics(),
+        decoder=_Decoder(),
+        state_initial_mean=[-0.5, 0.0, 0.0],
+        state_init_uncertainty=4.0,
+        device="cpu",
+    )
+
+    _, info = model.reset(torch.zeros(1, 1, 2))
+
+    assert torch.allclose(
+        info["latent_state"], torch.tensor([[[-0.5, 0.0, 0.0]]])
+    )
+    assert torch.allclose(model.z["P"], 4.0 * torch.eye(3).reshape(1, 1, 3, 3))
+
+
 def test_worker_result_tensor_uses_shared_cpu_storage() -> None:
     tensor = torch.ones(2, 3)
     result = mpc_module._worker_result_tensor(tensor)
@@ -499,7 +534,12 @@ class _CountingMetric:
 
 
 def _make_coarse_policy(
-    *, chunk: int, horizon: int, factor: int, mapping: str = "hold"
+    *,
+    chunk: int,
+    horizon: int,
+    factor: int,
+    mapping: str = "hold",
+    seed: int | None = None,
 ) -> MpcICem:
     action_space = gym.spaces.Box(low=-1.0, high=1.0, shape=(2,), dtype=float)
     return MpcICem(
@@ -516,6 +556,7 @@ def _make_coarse_policy(
         coarse_action_mapping=mapping,
         coarse_mapping_opt_steps=2,
         coarse_mapping_opt_lr=0.01,
+        seed=seed,
     )
 
 
@@ -1779,6 +1820,22 @@ def test_async_snapshot_sampling_uses_local_rngs() -> None:
         planner_b.sample_action_sequences(2),
     )
     policy.close()
+
+
+def test_sync_sampling_uses_explicit_local_rng() -> None:
+    planner_a = _make_coarse_policy(chunk=2, horizon=4, factor=1, seed=17)
+    planner_b = _make_coarse_policy(chunk=2, horizon=4, factor=1, seed=17)
+    planner_a.noise_beta = 1.0
+    planner_b.noise_beta = 1.0
+    planner_a.beginning_of_rollout(torch.zeros(1, 1, 2))
+    planner_b.beginning_of_rollout(torch.zeros(1, 1, 2))
+
+    np.random.seed(123)
+    expected_np = np.random.random(3)
+    np.random.seed(123)
+    samples_a = planner_a.sample_action_sequences(2)
+    assert np.allclose(np.random.random(3), expected_np)
+    assert torch.allclose(samples_a, planner_b.sample_action_sequences(2))
 
 
 def test_async_worker_anchor_refreshes_parameter_belief() -> None:

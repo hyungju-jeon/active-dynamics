@@ -113,6 +113,9 @@ def apply_loglinear_loading_asymmetry(weight: Any, env_preset: Any):
     import torch
 
     c = weight.detach().clone()
+    nuisance_scale = float(getattr(env_preset, "observation_nuisance_scale", 1.0))
+    if c.shape[1] >= 3:
+        c[:, 2:] = c[:, 2:] * nuisance_scale
     if not bool(getattr(env_preset, "asymmetric_loading", False)):
         if c.shape[1] >= 2 and c.shape[0] > 0:
             row_norm = torch.linalg.norm(c[:, :2], dim=1).clamp_min(1e-12)
@@ -135,6 +138,92 @@ def apply_loglinear_loading_asymmetry(weight: Any, env_preset: Any):
             c[:, 0] = c[:, 0] * primary_gain
             c[:, 1] = c[:, 1] * secondary_gain
     return c
+
+
+def paired_diagonal_loglinear_loading(
+    env_preset: Any,
+    *,
+    device: str = "cpu",
+    dtype: Any = None,
+    mean_firing_rate: float | None = None,
+    max_firing_rate: float | None = None,
+):
+    r"""Construct the configured axis-aligned paired Poisson population.
+
+    For each latent coordinate ``i``, the population contains ``n`` rows with
+    loading ``+a_i`` and ``n`` rows with loading ``-a_i``.  With baseline rate
+    ``rho`` and bin width ``dt``, its state Fisher information is diagonal:
+
+    ``I_z,ii(z_i) = 2 n dt rho a_i^2 cosh(a_i z_i)``.
+
+    Returns ``C`` with shape ``(observation_dim, latent_dim)`` and log-rate
+    bias ``b`` with shape ``(observation_dim,)``.  Both use the requested dtype
+    and device.  The configured maximum rate is checked over the environment's
+    radial boundary (or ``x_range`` when no radius is provided).
+    """
+    import torch
+
+    gains = getattr(env_preset, "observation_loading_gains", None)
+    if gains is None:
+        raise ValueError(
+            "paired_diagonal observations require observation_loading_gains."
+        )
+    latent_dim = int(getattr(env_preset, "latent_dim"))
+    if len(gains) != latent_dim or any(float(gain) <= 0.0 for gain in gains):
+        raise ValueError(
+            "observation_loading_gains must contain one positive gain per latent "
+            f"coordinate; got {gains} for latent_dim={latent_dim}."
+        )
+    repeats = int(getattr(env_preset, "observation_loading_repeats_per_sign", 1))
+    if repeats <= 0:
+        raise ValueError("observation_loading_repeats_per_sign must be positive.")
+    observation_dim = int(getattr(env_preset, "observation_dim"))
+    expected_dim = 2 * repeats * latent_dim
+    if observation_dim != expected_dim:
+        raise ValueError(
+            "paired_diagonal observation_dim must equal "
+            f"2 * repeats * latent_dim = {expected_dim}, got {observation_dim}."
+        )
+
+    baseline_rate = (
+        float(getattr(env_preset, "mean_firing_rate_target"))
+        if mean_firing_rate is None
+        else float(mean_firing_rate)
+    )
+    rate_cap = (
+        float(getattr(env_preset, "max_firing_rate_target"))
+        if max_firing_rate is None
+        else float(max_firing_rate)
+    )
+    if baseline_rate <= 0.0 or rate_cap <= 0.0:
+        raise ValueError("Poisson baseline and maximum firing rates must be positive.")
+    state_radius = getattr(env_preset, "boundary_radius", None)
+    if state_radius is None:
+        state_radius = float(getattr(env_preset, "x_range", 5.0))
+    peak_rate = baseline_rate * math.exp(
+        max(abs(float(gain)) for gain in gains) * float(state_radius)
+    )
+    if peak_rate > rate_cap * (1.0 + 1e-6):
+        raise ValueError(
+            "paired_diagonal loading exceeds max_firing_rate_target over the "
+            f"configured state radius: {peak_rate:.6g} > {rate_cap:.6g} Hz."
+        )
+
+    out_dtype = torch.float32 if dtype is None else dtype
+    c = torch.zeros(observation_dim, latent_dim, dtype=out_dtype, device=device)
+    row = 0
+    for coordinate, gain in enumerate(gains):
+        for sign in (1.0, -1.0):
+            for _ in range(repeats):
+                c[row, coordinate] = sign * float(gain)
+                row += 1
+    bias = torch.full(
+        (observation_dim,),
+        math.log(baseline_rate),
+        dtype=out_dtype,
+        device=device,
+    )
+    return c, bias
 
 
 
@@ -208,6 +297,29 @@ def shared_loglinear_loading(
         ``b`` has shape ``(observation_dim,)`` for ``lambda(z)=exp(C z + b)``.
     """
     import torch
+
+    loading_design = str(
+        getattr(env_preset, "observation_loading_design", "calibrated_random")
+    ).strip().lower()
+    if loading_design == "paired_diagonal":
+        configured_target_snr = getattr(env_preset, "loading_target_snr_db", None)
+        if target_snr is not None or configured_target_snr is not None:
+            raise ValueError(
+                "paired_diagonal observations use explicit gains and cannot also "
+                "request loading_target_snr_db."
+            )
+        return paired_diagonal_loglinear_loading(
+            env_preset,
+            device=device,
+            dtype=dtype,
+            mean_firing_rate=mean_firing_rate,
+            max_firing_rate=max_firing_rate,
+        )
+    if loading_design != "calibrated_random":
+        raise ValueError(
+            f"Unsupported observation_loading_design={loading_design!r}; expected "
+            "'calibrated_random' or 'paired_diagonal'."
+        )
 
     resolved_target_snr = (
         getattr(env_preset, "loading_target_snr_db", None)

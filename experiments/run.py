@@ -37,7 +37,11 @@ if __package__ in {None, ""}:
         get_schedule_spec,
         list_experiment_ids,
     )
-    from actdyn.environment import jacobian_embedding_torch, jacobian_state_torch, residual_np, step_np
+    from actdyn.environment import (
+        jacobian_embedding_torch,
+        jacobian_state_torch,
+        step_np,
+    )
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
     from actdyn.utils.experiment_runtime import (
         DEFAULT_LOG_LINEAR_LOADING_SEED,
@@ -70,7 +74,11 @@ else:
         get_schedule_spec,
         list_experiment_ids,
     )
-    from actdyn.environment import jacobian_embedding_torch, jacobian_state_torch, residual_np, step_np
+    from actdyn.environment import (
+        jacobian_embedding_torch,
+        jacobian_state_torch,
+        step_np,
+    )
     from actdyn.utils.runtime import current_commit, ensure_dir, repo_root, utc_now
     from actdyn.utils.experiment_runtime import (
         DEFAULT_LOG_LINEAR_LOADING_SEED,
@@ -183,7 +191,9 @@ class _EnvJacobianState:
 class _EnvParameterFormatter:
     """Pickle-safe embedding-to-dynamics-parameter formatter."""
 
-    def __init__(self, *, full_params: tuple[float, ...], min_embedding_dim: int) -> None:
+    def __init__(
+        self, *, full_params: tuple[float, ...], min_embedding_dim: int
+    ) -> None:
         self.full_params = tuple(float(x) for x in full_params)
         self.min_embedding_dim = int(min_embedding_dim)
 
@@ -196,7 +206,9 @@ class _EnvParameterFormatter:
 
 
 def _resolved_policy_type(policy_id: str, policy_spec: Any | None) -> str:
-    configured = None if policy_spec is None else getattr(policy_spec, "policy_type", None)
+    configured = (
+        None if policy_spec is None else getattr(policy_spec, "policy_type", None)
+    )
     if isinstance(configured, str) and configured.strip():
         return configured.strip()
     if bool(getattr(policy_spec, "async_planning", False)):
@@ -264,17 +276,23 @@ def _environment_summary(env_preset: Any) -> dict[str, Any]:
             "dynamics_type": str(env_preset.resolved_dynamics_type()),
             "estimator_system_id": estimator_system_id,
             "estimator_system_label": estimator_label,
-            "estimator_dynamics_type": str(env_preset.resolved_dynamics_type(estimator=True)),
+            "estimator_dynamics_type": str(
+                env_preset.resolved_dynamics_type(estimator=True)
+            ),
             "true_embedding": [
                 float(x)
-                for x in env_preset.true_embedding_vector(embedding_dim=embedding_dim).tolist()
+                for x in env_preset.true_embedding_vector(
+                    embedding_dim=embedding_dim
+                ).tolist()
             ],
         }
     return {
         "system_id": system_id,
         "system_label": str(getattr(env_preset, "system_label", None) or system_id),
         "dynamics_type": (
-            "replay_dataset" if bool(getattr(env_preset, "real_data", False)) else "unknown"
+            "replay_dataset"
+            if bool(getattr(env_preset, "real_data", False))
+            else "unknown"
         ),
         "estimator_system_id": estimator_system_id,
         "estimator_system_label": None,
@@ -315,7 +333,9 @@ def _build_runtime_experiment_config(
     ]
     exp_config.environment.env_x_range = float(env_preset.resolved_plot_limit())
     exp_config.environment.env_alpha = float(env_preset.dynamics_alpha)
-    exp_config.environment.observation_type = "log-linear"
+    exp_config.environment.observation_type = str(env_preset.observation_model).replace(
+        "_", "-"
+    )
     exp_config.environment.obs_noise_type = str(env_preset.observation_noise_type)
     exp_config.environment.obs_noise_scale = float(env_preset.observation_noise_scale)
     exp_config.environment.action_type = "identity"
@@ -323,9 +343,13 @@ def _build_runtime_experiment_config(
     exp_config.model.is_residual = True
     exp_config.model.dyn_dt = float(env_preset.dt)
     exp_config.model.dyn_alpha = float(env_preset.dynamics_alpha)
-    exp_config.model.dynamics_type = "rbf" if str(experiment_kind) == "rbf" else "linear"
+    exp_config.model.dynamics_type = (
+        "rbf" if str(experiment_kind) == "rbf" else "linear"
+    )
     exp_config.model.emb_k_theta = int(schedule_spec.update_interval)
-    exp_config.model.emb_state_init_uncertainty = float(env_preset.state_init_uncertainty)
+    exp_config.model.emb_state_init_uncertainty = float(
+        env_preset.state_init_uncertainty
+    )
 
     policy_type = _resolved_policy_type(policy_id, policy_spec)
     exp_config.policy.policy_type = policy_type
@@ -413,7 +437,9 @@ def _policy_owns_parameter_estimate(policy: Any) -> bool:
 
 
 def _resolve_parameter_mean(*, model: Any, policy: Any):
-    if _policy_owns_parameter_estimate(policy) and hasattr(policy, "get_parameter_mean"):
+    if _policy_owns_parameter_estimate(policy) and hasattr(
+        policy, "get_parameter_mean"
+    ):
         return policy.get_parameter_mean()
     model_e = getattr(model, "e", None)
     if isinstance(model_e, dict) and "m" in model_e:
@@ -422,7 +448,9 @@ def _resolve_parameter_mean(*, model: Any, policy: Any):
 
 
 def _resolve_parameter_covariance(*, model: Any, policy: Any):
-    if _policy_owns_parameter_estimate(policy) and hasattr(policy, "get_parameter_covariance"):
+    if _policy_owns_parameter_estimate(policy) and hasattr(
+        policy, "get_parameter_covariance"
+    ):
         return policy.get_parameter_covariance()
     model_e = getattr(model, "e", None)
     if isinstance(model_e, dict):
@@ -431,7 +459,9 @@ def _resolve_parameter_covariance(*, model: Any, policy: Any):
 
 
 def _resolve_parameter_precision(*, model: Any, policy: Any):
-    if _policy_owns_parameter_estimate(policy) and hasattr(policy, "get_parameter_precision"):
+    if _policy_owns_parameter_estimate(policy) and hasattr(
+        policy, "get_parameter_precision"
+    ):
         return policy.get_parameter_precision()
     model_e = getattr(model, "e", None)
     if not isinstance(model_e, dict):
@@ -444,7 +474,9 @@ def _resolve_parameter_precision(*, model: Any, policy: Any):
         return None
     import torch
 
-    eye = torch.eye(covariance.shape[-1], dtype=covariance.dtype, device=covariance.device)
+    eye = torch.eye(
+        covariance.shape[-1], dtype=covariance.dtype, device=covariance.device
+    )
     while eye.ndim < covariance.ndim:
         eye = eye.unsqueeze(0)
     return torch.linalg.pinv(covariance + 1e-8 * eye)
@@ -609,7 +641,9 @@ def _boundary_env_kwargs(env_preset: Any) -> dict[str, Any]:
         "boundary_projection_enabled": bool(
             getattr(env_preset, "boundary_projection_enabled", False)
         ),
-        "boundary_barrier_width": float(getattr(env_preset, "boundary_barrier_width", 0.5)),
+        "boundary_barrier_width": float(
+            getattr(env_preset, "boundary_barrier_width", 0.5)
+        ),
         "boundary_barrier_strength": float(
             getattr(env_preset, "boundary_barrier_strength", 5.0)
         ),
@@ -627,7 +661,9 @@ def _apply_boundary_visibility_to_metric(metric: Any, env_preset: Any) -> None:
     )
     metric.boundary_type = str(getattr(env_preset, "boundary_type", "none"))
     metric.boundary_radius = getattr(env_preset, "boundary_radius", None)
-    metric.boundary_margin = float(getattr(env_preset, "information_boundary_margin", 1.0))
+    metric.boundary_margin = float(
+        getattr(env_preset, "information_boundary_margin", 1.0)
+    )
     metric.boundary_temperature = float(
         getattr(env_preset, "information_boundary_temperature", 0.15)
     )
@@ -645,7 +681,9 @@ def _boundary_visibility_mean(states: Any, env_preset: Any) -> float | None:
             boundary_type=str(getattr(env_preset, "boundary_type", "none")),
             radius=getattr(env_preset, "boundary_radius", None),
             margin=float(getattr(env_preset, "information_boundary_margin", 1.0)),
-            temperature=float(getattr(env_preset, "information_boundary_temperature", 0.15)),
+            temperature=float(
+                getattr(env_preset, "information_boundary_temperature", 0.15)
+            ),
         )
         return float(visibility.mean().item())
     except Exception:
@@ -670,7 +708,9 @@ def _instantiate_synthetic_policy(
 ) -> Any:
     policy_type = _resolved_policy_type(policy_id, policy_spec)
     if policy_type == "random":
-        return actdyn_module.policy.RandomPolicy(action_space=env.action_space, device=device)
+        return actdyn_module.policy.RandomPolicy(
+            action_space=env.action_space, device=device
+        )
     if policy_type == "baseline-random":
         return actdyn_module.policy.BaselineRandomPolicy(
             action_space=env.action_space,
@@ -725,27 +765,42 @@ def _instantiate_synthetic_policy(
             seed=int(seed),
         )
     if policy_type == "off-policy":
-        return actdyn_module.policy.OffPolicy(action_space=env.action_space, device=device)
+        return actdyn_module.policy.OffPolicy(
+            action_space=env.action_space, device=device
+        )
     if policy_type not in {"mpc-icem", "async-mpc-icem"}:
-        raise ValueError(f"Unsupported policy_type={policy_type!r} for synthetic experiments")
+        raise ValueError(
+            f"Unsupported policy_type={policy_type!r} for synthetic experiments"
+        )
     mpc_cls = (
         actdyn_module.policy.mpc.AsyncMpcICem
-        if policy_type == "async-mpc-icem" or bool(getattr(policy_spec, "async_planning", False))
+        if policy_type == "async-mpc-icem"
+        or bool(getattr(policy_spec, "async_planning", False))
         else actdyn_module.policy.mpc.MpcICem
     )
     kwargs = {}
     if mpc_cls is actdyn_module.policy.mpc.AsyncMpcICem:
         kwargs.update(
             async_stale_tolerance=getattr(policy_spec, "async_stale_tolerance", 0.5),
-            async_worker_iterations=getattr(policy_spec, "async_worker_iterations", None),
-            async_worker_full_interval=getattr(policy_spec, "async_worker_full_interval", None),
+            async_worker_iterations=getattr(
+                policy_spec, "async_worker_iterations", None
+            ),
+            async_worker_full_interval=getattr(
+                policy_spec, "async_worker_full_interval", None
+            ),
             async_worker_device=getattr(policy_spec, "async_worker_device", None),
             async_start_after_first_plan=getattr(
                 policy_spec, "async_start_after_first_plan", True
             ),
-            async_realtime_prefix_steps=getattr(policy_spec, "async_realtime_prefix_steps", 10),
-            async_anytime_prefix_steps=getattr(policy_spec, "async_anytime_prefix_steps", 0),
-            async_anytime_min_iteration=getattr(policy_spec, "async_anytime_min_iteration", 1),
+            async_realtime_prefix_steps=getattr(
+                policy_spec, "async_realtime_prefix_steps", 10
+            ),
+            async_anytime_prefix_steps=getattr(
+                policy_spec, "async_anytime_prefix_steps", 0
+            ),
+            async_anytime_min_iteration=getattr(
+                policy_spec, "async_anytime_min_iteration", 1
+            ),
             async_anytime_std_tolerance=getattr(
                 policy_spec, "async_anytime_std_tolerance", 0.5
             ),
@@ -772,6 +827,7 @@ def _instantiate_synthetic_policy(
         adaptive_replan_state_error_threshold=getattr(
             schedule_spec, "adaptive_replan_state_error_threshold", None
         ),
+        seed=int(seed),
         verbose=False,
         **kwargs,
     )
@@ -824,7 +880,9 @@ def _run_single_parameter_identification(
     dz = int(env_preset.latent_dim)
     de = int(env_preset.embedding_dim)
     e_true = torch.as_tensor(
-        env_preset.true_embedding_vector(embedding_dim=de), dtype=torch.float32, device=device
+        env_preset.true_embedding_vector(embedding_dim=de),
+        dtype=torch.float32,
+        device=device,
     ).unsqueeze(0)
     du = int(env_preset.action_dim)
     dy = int(env_preset.observation_dim)
@@ -840,7 +898,12 @@ def _run_single_parameter_identification(
     mean_firing = float(env_preset.mean_firing_rate_target)
     max_firing_rate = float(env_preset.max_firing_rate_target)
 
-    action_model = actdyn.environment.action.IdentityActionEncoder(
+    action_encoder_cls = (
+        actdyn.environment.action.IdentityActionEncoder
+        if du == dz
+        else actdyn.environment.action.PaddedIdentityActionEncoder
+    )
+    action_model = action_encoder_cls(
         d_action=du,
         d_latent=dz,
         action_dim=du,
@@ -848,31 +911,85 @@ def _run_single_parameter_identification(
         action_bounds=[-action_max, action_max],
         device=device,
     )
-    obs_model = actdyn.environment.observation.LogLinearObservation(
-        d_obs=dy,
-        d_latent=dz,
-        obs_dim=dy,
-        latent_dim=dz,
-        noise_scale=float(env_preset.observation_noise_scale),
-        noise_type=str(env_preset.observation_noise_type),
-        dt=dt,
-        device=device,
+    observation_model = (
+        str(env_preset.observation_model).strip().lower().replace("-", "_")
     )
     loading_seed = DEFAULT_LOG_LINEAR_LOADING_SEED
     loading_snr_seed = DEFAULT_LOG_LINEAR_SNR_SEED
-    c, bias = shared_loglinear_loading(
-        env_preset,
-        device=device,
-        dtype=obs_model.network[0].weight.dtype,
-        loading_seed=loading_seed,
-        snr_seed=loading_snr_seed,
-        target_snr=_loading_target_snr_db(env_preset),
-    )
-    obs_model.network[0].bias = nn.Parameter(bias)
-    obs_model.network[0].weight = nn.Parameter(c)
+    if observation_model == "linear":
+        if str(env_preset.observation_noise_type).lower() != "gaussian":
+            raise ValueError(
+                "Linear observations require observation_noise_type='gaussian'."
+            )
+        if dy != dz:
+            raise ValueError(
+                "Fixed diagonal linear observations require observation_dim == latent_dim, "
+                f"got {dy} and {dz}."
+            )
+        variance = float(env_preset.observation_noise_scale)
+        if variance <= 0.0:
+            raise ValueError(
+                "Linear observation_noise_scale is the Gaussian variance and must be positive."
+            )
+        information_diag = env_preset.observation_information_diag
+        if information_diag is None:
+            information_diag = tuple(1.0 for _ in range(dz))
+        if len(information_diag) != dz or any(
+            value < 0.0 for value in information_diag
+        ):
+            raise ValueError(
+                "observation_information_diag must contain one nonnegative value per latent "
+                f"dimension; got {information_diag} for latent_dim={dz}."
+            )
+        c = torch.diag(
+            torch.sqrt(
+                torch.as_tensor(information_diag, dtype=torch.float32, device=device)
+                * variance
+            )
+        )
+        bias = torch.zeros(dy, dtype=c.dtype, device=device)
+        obs_model = actdyn.environment.observation.LinearObservation(
+            d_obs=dy,
+            d_latent=dz,
+            obs_dim=dy,
+            latent_dim=dz,
+            R=float(np.sqrt(variance)),
+            noise_type="gaussian",
+            device=device,
+        )
+        obs_model.network.bias = nn.Parameter(bias)
+        obs_model.network.weight = nn.Parameter(c)
+    elif observation_model == "log_linear":
+        obs_model = actdyn.environment.observation.LogLinearObservation(
+            d_obs=dy,
+            d_latent=dz,
+            obs_dim=dy,
+            latent_dim=dz,
+            noise_scale=float(env_preset.observation_noise_scale),
+            noise_type=str(env_preset.observation_noise_type),
+            dt=dt,
+            device=device,
+        )
+        c, bias = shared_loglinear_loading(
+            env_preset,
+            device=device,
+            dtype=obs_model.network[0].weight.dtype,
+            loading_seed=loading_seed,
+            snr_seed=loading_snr_seed,
+            target_snr=_loading_target_snr_db(env_preset),
+        )
+        obs_model.network[0].bias = nn.Parameter(bias)
+        obs_model.network[0].weight = nn.Parameter(c)
+    else:
+        raise ValueError(
+            f"Unsupported observation_model={env_preset.observation_model!r}; "
+            "expected 'log_linear' or 'linear'."
+        )
 
     true_vec_env = actdyn.VectorFieldEnv(
         env_preset.resolved_dynamics_type(),
+        d_state=dz,
+        d_action=du,
         x_range=5,
         dyn_params=None,
         dt=dt,
@@ -890,12 +1007,27 @@ def _run_single_parameter_identification(
             device=device,
         ),
     )
-    env = actdyn.environment.EnvWrapper(true_vec_env, obs_model, action_model, dt=dt, device=device)
-
-    mapping = actdyn.models.decoder.LogLinearMapping(
-        latent_dim=dz, obs_dim=dy, dt=dt, device=device
+    env = actdyn.environment.EnvWrapper(
+        true_vec_env, obs_model, action_model, dt=dt, device=device
     )
-    noise = actdyn.models.decoder.PoissonNoise(obs_dim=dy, sigma=0.01, device=device)
+
+    if observation_model == "linear":
+        variance = float(env_preset.observation_noise_scale)
+        mapping = actdyn.models.decoder.LinearMapping(
+            latent_dim=dz, obs_dim=dy, device=device
+        )
+        noise = actdyn.models.decoder.GaussianNoise(
+            obs_dim=dy,
+            sigma=float(np.expm1(variance)),
+            device=device,
+        )
+    else:
+        mapping = actdyn.models.decoder.LogLinearMapping(
+            latent_dim=dz, obs_dim=dy, dt=dt, device=device
+        )
+        noise = actdyn.models.decoder.PoissonNoise(
+            obs_dim=dy, sigma=0.01, device=device
+        )
     decoder = actdyn.models.Decoder(mapping=mapping, noise=noise, device=device)
     decoder.set_params(obs_model)
     loading_mismatch_variance = float(
@@ -923,11 +1055,18 @@ def _run_single_parameter_identification(
             f"got {loading_gain_mismatch_max_factor}."
         )
     has_tuning_mismatch = (
-        loading_direction_mismatch_max_deg > 0.0 or loading_gain_mismatch_max_factor > 1.0
+        loading_direction_mismatch_max_deg > 0.0
+        or loading_gain_mismatch_max_factor > 1.0
     )
     if loading_mismatch_variance > 0.0 and has_tuning_mismatch:
         raise ValueError(
             "Use either observation_loading_mismatch_variance or row-wise tuning mismatch, not both."
+        )
+    if observation_model == "linear" and (
+        loading_mismatch_variance > 0.0 or has_tuning_mismatch
+    ):
+        raise ValueError(
+            "Observation-loading mismatch is defined only for log-linear observations."
         )
     if loading_mismatch_variance > 0.0:
         decoder.mapping.set_weights(
@@ -949,6 +1088,8 @@ def _run_single_parameter_identification(
 
     sim_vec_env = actdyn.VectorFieldEnv(
         env_preset.resolved_dynamics_type(estimator=True),
+        d_state=dz,
+        d_action=du,
         x_range=5,
         dyn_params=None,
         dt=dt,
@@ -959,7 +1100,9 @@ def _run_single_parameter_identification(
     )
     sim_vec_env.set_params(
         torch.as_tensor(
-            env_preset.params_from_embedding(torch.zeros(de, device=device), estimator=True),
+            env_preset.params_from_embedding(
+                torch.zeros(de, device=device), estimator=True
+            ),
             device=device,
         ),
     )
@@ -973,7 +1116,9 @@ def _run_single_parameter_identification(
         ),
         device=device,
     )
-    dynamics.logvar = nn.Parameter(torch.log(torch.ones(1, dz, device=device) * noise_scale))
+    dynamics.logvar = nn.Parameter(
+        torch.log(torch.ones(1, dz, device=device) * noise_scale)
+    )
 
     sigma_0 = max(float(parameter_prior_covariance), 1e-12)
     initial_parameter_mean = torch.as_tensor(
@@ -997,7 +1142,9 @@ def _run_single_parameter_identification(
             generator=initial_parameter_generator,
             dtype=torch.float32,
         ).to(device)
-        initial_parameter = initial_parameter_mean + initial_parameter_std * initial_parameter_noise
+        initial_parameter = (
+            initial_parameter_mean + initial_parameter_std * initial_parameter_noise
+        )
     else:
         initial_parameter = initial_parameter_mean
     e_bel = {
@@ -1020,7 +1167,9 @@ def _run_single_parameter_identification(
     if "k_theta" in fe_init.parameters:
         model_kwargs["k_theta"] = int(schedule_spec.update_interval)
     if "adaptive_update" in fe_init.parameters:
-        model_kwargs["adaptive_update"] = bool(getattr(schedule_spec, "adaptive_cadence", False))
+        model_kwargs["adaptive_update"] = bool(
+            getattr(schedule_spec, "adaptive_cadence", False)
+        )
     if "adaptive_update_min_interval" in fe_init.parameters:
         model_kwargs["adaptive_update_min_interval"] = int(
             getattr(schedule_spec, "adaptive_update_min_interval", 1)
@@ -1034,7 +1183,17 @@ def _run_single_parameter_identification(
     if "q_theta_max_scale" in fe_init.parameters:
         model_kwargs["q_theta_max_scale"] = q_theta_max_scale
     if "state_init_uncertainty" in fe_init.parameters:
-        model_kwargs["state_init_uncertainty"] = float(env_preset.state_init_uncertainty)
+        model_kwargs["state_init_uncertainty"] = float(
+            env_preset.state_init_uncertainty
+        )
+    filter_initial_state_mean = env_preset.filter_initial_state_mean_vector()
+    if (
+        "state_initial_mean" in fe_init.parameters
+        and filter_initial_state_mean is not None
+    ):
+        model_kwargs["state_initial_mean"] = torch.as_tensor(
+            filter_initial_state_mean, dtype=torch.float32, device=device
+        )
     shrinkage_map = _make_shrinkage_map(
         shrinkage_kind=getattr(policy_spec, "shrinkage_kind", None),
         shrinkage_min=getattr(policy_spec, "shrinkage_min", None),
@@ -1062,8 +1221,12 @@ def _run_single_parameter_identification(
             observation_variance_seed=int(seed),
             ambiguity_temperature=getattr(policy_spec, "ambiguity_temperature", None),
             ensemble_kind=getattr(policy_spec, "ensemble_kind", None),
-            eig_freeze_covariance=bool(getattr(policy_spec, "eig_freeze_covariance", False)),
-            eig_diagonal_covariance=bool(getattr(policy_spec, "eig_diagonal_covariance", False)),
+            eig_freeze_covariance=bool(
+                getattr(policy_spec, "eig_freeze_covariance", False)
+            ),
+            eig_diagonal_covariance=bool(
+                getattr(policy_spec, "eig_diagonal_covariance", False)
+            ),
         )
         _apply_boundary_visibility_to_metric(base_metric, env_preset)
         action_cost_weight = float(getattr(policy_spec, "action_cost_weight", 0.01))
@@ -1178,7 +1341,9 @@ def _run_single_parameter_identification(
         )
         loop_plan_sec = float(transition.get("loop_plan_sec", 0.0) or 0.0)
         loop_step_sec = float(transition.get("loop_step_sec", 0.0) or 0.0)
-        loop_async_launch_sec = float(transition.get("loop_async_launch_sec", 0.0) or 0.0)
+        loop_async_launch_sec = float(
+            transition.get("loop_async_launch_sec", 0.0) or 0.0
+        )
         loop_compute_sec = float(
             transition.get(
                 "loop_compute_sec",
@@ -1212,7 +1377,9 @@ def _run_single_parameter_identification(
                     if getattr(model, "_last_parameter_shrinkage", None) is not None
                     else None
                 ),
-                "state_posterior_updated": as_bool(transition.get("state_posterior_updated", True)),
+                "state_posterior_updated": as_bool(
+                    transition.get("state_posterior_updated", True)
+                ),
                 "parameter_posterior_updated": as_bool(
                     transition.get("parameter_posterior_updated", True)
                 ),
@@ -1223,7 +1390,9 @@ def _run_single_parameter_identification(
                     transition.get("adaptive_replan_reason", "none")
                 ),
                 "adaptive_replan_interval": int(
-                    transition.get("adaptive_replan_interval", schedule_spec.replan_interval)
+                    transition.get(
+                        "adaptive_replan_interval", schedule_spec.replan_interval
+                    )
                 ),
                 "adaptive_state_tracking_error": transition.get(
                     "adaptive_state_tracking_error"
@@ -1308,144 +1477,172 @@ def _run_single_parameter_identification(
                 "trace_callback_sec": 0.0,
             }
         )
-        env_x, env_v = to_xy_pair(transition.get("env_state", torch.zeros(2, device=device)))
-        model_x, model_v = to_xy_pair(transition.get("model_state", torch.zeros(2, device=device)))
-        next_model_x, next_model_v = to_xy_pair(
-            transition.get("next_model_state", torch.zeros(2, device=device))
+        env_state = transition.get("env_state", torch.zeros(dz, device=device))
+        model_state = transition.get("model_state", torch.zeros(dz, device=device))
+        next_model_state = transition.get(
+            "next_model_state", torch.zeros(dz, device=device)
         )
-        action_x, action_v = to_xy_pair(transition.get("action", torch.zeros(2, device=device)))
+        env_x, env_v = to_xy_pair(env_state)
+        model_x, model_v = to_xy_pair(model_state)
+        next_model_x, next_model_v = to_xy_pair(next_model_state)
+        action_x, action_v = to_xy_pair(
+            transition.get("action", torch.zeros(2, device=device))
+        )
         policy_x, policy_v = to_xy_pair(
-            transition.get("policy_action", transition.get("action", torch.zeros(2, device=device)))
+            transition.get(
+                "policy_action", transition.get("action", torch.zeros(2, device=device))
+            )
         )
         env_action_x, env_action_v = to_xy_pair(
             transition.get(
-                "env_action", transition.get("policy_action", torch.zeros(2, device=device))
+                "env_action",
+                transition.get("policy_action", torch.zeros(2, device=device)),
             )
         )
-        state_action_rows.append(
-            {
-                "step": step,
-                "cpu_time_sec": cpu_time_sec,
-                "true_x": env_x,
-                "true_v": env_v,
-                "model_x": model_x,
-                "model_v": model_v,
-                "next_model_x": next_model_x,
-                "next_model_v": next_model_v,
-                "action_x": action_x,
-                "action_v": action_v,
-                "action_norm": float(np.hypot(action_x, action_v)),
-                "policy_action_x": policy_x,
-                "policy_action_v": policy_v,
-                "policy_action_norm": float(np.hypot(policy_x, policy_v)),
-                "env_action_x": env_action_x,
-                "env_action_v": env_action_v,
-                "env_action_norm": float(np.hypot(env_action_x, env_action_v)),
-                "policy_action_delta_norm": float(
-                    np.hypot(policy_x - action_x, policy_v - action_v)
-                ),
-                "execution_delta_norm": float(
-                    np.hypot(env_action_x - policy_x, env_action_v - policy_v)
-                ),
-                "action_total_delta_norm": float(
-                    np.hypot(env_action_x - action_x, env_action_v - action_v)
-                ),
-                "action_clipped": as_bool(transition.get("action_clipped", False)),
-                "env_action_clipped": as_bool(transition.get("env_action_clipped", False)),
-                "planned_at_bound": bool(max(abs(action_x), abs(action_v)) >= action_max - 1e-6),
-                "policy_at_bound": bool(max(abs(policy_x), abs(policy_v)) >= action_max - 1e-6),
-                "env_action_at_bound": bool(
-                    max(abs(env_action_x), abs(env_action_v)) >= action_max - 1e-6
-                ),
-                "policy_cost": (
-                    float(getattr(policy, "cost", np.nan))
-                    if getattr(policy, "cost", None) is not None
-                    else None
-                ),
-                "state_posterior_updated": as_bool(transition.get("state_posterior_updated", True)),
-                "parameter_posterior_updated": as_bool(
-                    transition.get("parameter_posterior_updated", True)
-                ),
-                "adaptive_replan_triggered": as_bool(
-                    transition.get("adaptive_replan_triggered", False)
-                ),
-                "adaptive_replan_reason": str(
-                    transition.get("adaptive_replan_reason", "none")
-                ),
-                "adaptive_replan_interval": int(
-                    transition.get("adaptive_replan_interval", schedule_spec.replan_interval)
-                ),
-                "window_buffer_length": int(transition.get("window_buffer_length", 0)),
-                "async_plan_used": as_bool(transition.get("async_plan_used", False)),
-                "async_plan_stale": as_bool(transition.get("async_plan_stale", False)),
-                "async_blocking_fallback": as_bool(
-                    transition.get("async_blocking_fallback", False)
-                ),
-                "async_model_version_mismatch": as_bool(
-                    transition.get("async_model_version_mismatch", False)
-                ),
-                "async_boundary_mismatch": transition.get("async_boundary_mismatch"),
-                "async_plan_runtime_sec": float(
-                    transition.get("async_plan_runtime_sec", 0.0) or 0.0
-                ),
-                "async_plan_status": str(transition.get("async_plan_status", "idle")),
-                "async_realtime_fallback": as_bool(
-                    transition.get("async_realtime_fallback", False)
-                ),
-                "async_realtime_fallback_runtime_sec": float(
-                    transition.get("async_realtime_fallback_runtime_sec", 0.0) or 0.0
-                ),
-                "async_realtime_fallback_steps": int(
-                    transition.get("async_realtime_fallback_steps", 0)
-                ),
-                "async_realtime_zero_prefix": as_bool(
-                    transition.get("async_realtime_zero_prefix", False)
-                ),
-                "async_anytime_plan_ready": as_bool(
-                    transition.get("async_anytime_plan_ready", False)
-                ),
-                "async_anytime_plan_used": as_bool(
-                    transition.get("async_anytime_plan_used", False)
-                ),
-                "async_anytime_plan_stale": as_bool(
-                    transition.get("async_anytime_plan_stale", False)
-                ),
-                "async_anytime_iteration": int(
-                    transition.get("async_anytime_iteration", 0) or 0
-                ),
-                "async_anytime_std_max": float(
-                    transition.get("async_anytime_std_max", 0.0) or 0.0
-                ),
-                "async_anytime_cost": float(
-                    transition.get("async_anytime_cost", 0.0) or 0.0
-                ),
-                "async_launch_started": as_bool(
-                    transition.get("async_launch_started", False)
-                ),
-                "async_launch_boundary_sec": float(
-                    transition.get("async_launch_boundary_sec", 0.0) or 0.0
-                ),
-                "async_launch_clone_sec": float(
-                    transition.get("async_launch_clone_sec", 0.0) or 0.0
-                ),
-                "async_launch_snapshot_sec": float(
-                    transition.get("async_launch_snapshot_sec", 0.0) or 0.0
-                ),
-                "async_launch_submit_sec": float(
-                    transition.get("async_launch_submit_sec", 0.0) or 0.0
-                ),
-                "model_update_version": int(transition.get("model_update_version", 0)),
-                "parameter_update_version": int(
-                    transition.get("parameter_update_version", 0)
-                ),
-                "loop_compute_sec": loop_compute_sec,
-                "loop_plan_sec": loop_plan_sec,
-                "loop_step_sec": loop_step_sec,
-                "loop_async_launch_sec": loop_async_launch_sec,
-                "loop_plan_executed": loop_plan_executed,
-                "loop_plan_reason": loop_plan_reason,
-            }
-        )
+        state_action_row = {
+            "step": step,
+            "cpu_time_sec": cpu_time_sec,
+            "true_x": env_x,
+            "true_v": env_v,
+            "model_x": model_x,
+            "model_v": model_v,
+            "next_model_x": next_model_x,
+            "next_model_v": next_model_v,
+            "action_x": action_x,
+            "action_v": action_v,
+            "action_norm": float(np.hypot(action_x, action_v)),
+            "policy_action_x": policy_x,
+            "policy_action_v": policy_v,
+            "policy_action_norm": float(np.hypot(policy_x, policy_v)),
+            "env_action_x": env_action_x,
+            "env_action_v": env_action_v,
+            "env_action_norm": float(np.hypot(env_action_x, env_action_v)),
+            "policy_action_delta_norm": float(
+                np.hypot(policy_x - action_x, policy_v - action_v)
+            ),
+            "execution_delta_norm": float(
+                np.hypot(env_action_x - policy_x, env_action_v - policy_v)
+            ),
+            "action_total_delta_norm": float(
+                np.hypot(env_action_x - action_x, env_action_v - action_v)
+            ),
+            "action_clipped": as_bool(transition.get("action_clipped", False)),
+            "env_action_clipped": as_bool(transition.get("env_action_clipped", False)),
+            "planned_at_bound": bool(
+                max(abs(action_x), abs(action_v)) >= action_max - 1e-6
+            ),
+            "policy_at_bound": bool(
+                max(abs(policy_x), abs(policy_v)) >= action_max - 1e-6
+            ),
+            "env_action_at_bound": bool(
+                max(abs(env_action_x), abs(env_action_v)) >= action_max - 1e-6
+            ),
+            "policy_cost": (
+                float(getattr(policy, "cost", np.nan))
+                if getattr(policy, "cost", None) is not None
+                else None
+            ),
+            "state_posterior_updated": as_bool(
+                transition.get("state_posterior_updated", True)
+            ),
+            "parameter_posterior_updated": as_bool(
+                transition.get("parameter_posterior_updated", True)
+            ),
+            "adaptive_replan_triggered": as_bool(
+                transition.get("adaptive_replan_triggered", False)
+            ),
+            "adaptive_replan_reason": str(
+                transition.get("adaptive_replan_reason", "none")
+            ),
+            "adaptive_replan_interval": int(
+                transition.get(
+                    "adaptive_replan_interval", schedule_spec.replan_interval
+                )
+            ),
+            "window_buffer_length": int(transition.get("window_buffer_length", 0)),
+            "async_plan_used": as_bool(transition.get("async_plan_used", False)),
+            "async_plan_stale": as_bool(transition.get("async_plan_stale", False)),
+            "async_blocking_fallback": as_bool(
+                transition.get("async_blocking_fallback", False)
+            ),
+            "async_model_version_mismatch": as_bool(
+                transition.get("async_model_version_mismatch", False)
+            ),
+            "async_boundary_mismatch": transition.get("async_boundary_mismatch"),
+            "async_plan_runtime_sec": float(
+                transition.get("async_plan_runtime_sec", 0.0) or 0.0
+            ),
+            "async_plan_status": str(transition.get("async_plan_status", "idle")),
+            "async_realtime_fallback": as_bool(
+                transition.get("async_realtime_fallback", False)
+            ),
+            "async_realtime_fallback_runtime_sec": float(
+                transition.get("async_realtime_fallback_runtime_sec", 0.0) or 0.0
+            ),
+            "async_realtime_fallback_steps": int(
+                transition.get("async_realtime_fallback_steps", 0)
+            ),
+            "async_realtime_zero_prefix": as_bool(
+                transition.get("async_realtime_zero_prefix", False)
+            ),
+            "async_anytime_plan_ready": as_bool(
+                transition.get("async_anytime_plan_ready", False)
+            ),
+            "async_anytime_plan_used": as_bool(
+                transition.get("async_anytime_plan_used", False)
+            ),
+            "async_anytime_plan_stale": as_bool(
+                transition.get("async_anytime_plan_stale", False)
+            ),
+            "async_anytime_iteration": int(
+                transition.get("async_anytime_iteration", 0) or 0
+            ),
+            "async_anytime_std_max": float(
+                transition.get("async_anytime_std_max", 0.0) or 0.0
+            ),
+            "async_anytime_cost": float(
+                transition.get("async_anytime_cost", 0.0) or 0.0
+            ),
+            "async_launch_started": as_bool(
+                transition.get("async_launch_started", False)
+            ),
+            "async_launch_boundary_sec": float(
+                transition.get("async_launch_boundary_sec", 0.0) or 0.0
+            ),
+            "async_launch_clone_sec": float(
+                transition.get("async_launch_clone_sec", 0.0) or 0.0
+            ),
+            "async_launch_snapshot_sec": float(
+                transition.get("async_launch_snapshot_sec", 0.0) or 0.0
+            ),
+            "async_launch_submit_sec": float(
+                transition.get("async_launch_submit_sec", 0.0) or 0.0
+            ),
+            "model_update_version": int(transition.get("model_update_version", 0)),
+            "parameter_update_version": int(
+                transition.get("parameter_update_version", 0)
+            ),
+            "loop_compute_sec": loop_compute_sec,
+            "loop_plan_sec": loop_plan_sec,
+            "loop_step_sec": loop_step_sec,
+            "loop_async_launch_sec": loop_async_launch_sec,
+            "loop_plan_executed": loop_plan_executed,
+            "loop_plan_reason": loop_plan_reason,
+        }
+        for prefix, value in (
+            ("true_z", env_state),
+            ("model_z", model_state),
+            ("next_model_z", next_model_state),
+        ):
+            state_values = torch.as_tensor(value).detach().cpu().reshape(-1)
+            if state_values.numel() != dz:
+                raise ValueError(
+                    f"Expected {dz} state coordinates for {prefix}, "
+                    f"got {state_values.numel()}"
+                )
+            for index, coordinate in enumerate(state_values.tolist()):
+                state_action_row[f"{prefix}{index}"] = float(coordinate)
+        state_action_rows.append(state_action_row)
         if capture_planned_trajectory and sample_diagnostics:
             planned = predict_planned_xy_trajectory(
                 model=model, policy=policy, transition=transition
@@ -1453,7 +1650,9 @@ def _run_single_parameter_identification(
             if planned is not None and planned.shape[0] >= 2:
                 planned_traj_steps.append(step)
                 planned_traj_frames.append(planned)
-        info_rows[-1]["trace_callback_sec"] = float(time.perf_counter() - callback_start)
+        info_rows[-1]["trace_callback_sec"] = float(
+            time.perf_counter() - callback_start
+        )
 
     experiment._run_online_loop(
         train_cfg=exp_config.training,
@@ -1485,9 +1684,16 @@ def _run_single_parameter_identification(
     info_trace_path = run_dir / "information_trace.csv"
     state_action_trace_path = run_dir / "state_action_trace.csv"
     planned_trace_path = run_dir / "planned_trajectory_trace.npz"
-    write_trace_csv(param_trace_path, param_rows, ["step", "cpu_time_sec", "parameter_error"])
+    write_trace_csv(
+        param_trace_path, param_rows, ["step", "cpu_time_sec", "parameter_error"]
+    )
     emb_value_fields = sorted(
-        {key for row in emb_rows for key in row if key.startswith("e") and key[1:].isdigit()},
+        {
+            key
+            for row in emb_rows
+            for key in row
+            if key.startswith("e") and key[1:].isdigit()
+        },
         key=lambda key: int(key[1:]),
     )
     emb_cov_fields = sorted(
@@ -1607,6 +1813,9 @@ def _run_single_parameter_identification(
             "model_v",
             "next_model_x",
             "next_model_v",
+            *(f"true_z{index}" for index in range(dz)),
+            *(f"model_z{index}" for index in range(dz)),
+            *(f"next_model_z{index}" for index in range(dz)),
             "action_x",
             "action_v",
             "action_norm",
@@ -1665,7 +1874,9 @@ def _run_single_parameter_identification(
     )
     if planned_traj_frames:
         max_points = max(frame.shape[0] for frame in planned_traj_frames)
-        paths = np.full((len(planned_traj_frames), max_points, 2), np.nan, dtype=np.float32)
+        paths = np.full(
+            (len(planned_traj_frames), max_points, 2), np.nan, dtype=np.float32
+        )
         lengths = np.zeros((len(planned_traj_frames),), dtype=np.int64)
         for idx, frame in enumerate(planned_traj_frames):
             n_points = int(frame.shape[0])
@@ -1693,7 +1904,9 @@ def _run_single_parameter_identification(
         if info_rows
         else None
     )
-    planning_rows = [row for row in info_rows if as_bool(row.get("loop_plan_executed", False))]
+    planning_rows = [
+        row for row in info_rows if as_bool(row.get("loop_plan_executed", False))
+    ]
     planning_compute_sec_values = np.asarray(
         [float(row.get("loop_compute_sec", 0.0) or 0.0) for row in planning_rows],
         dtype=np.float64,
@@ -1723,7 +1936,9 @@ def _run_single_parameter_identification(
                 float(plan_sec_values.max()) if plan_sec_values.size else None
             ),
             "compute_sec_worst_step": (
-                int(worst_compute_row["step"]) if worst_compute_row is not None else None
+                int(worst_compute_row["step"])
+                if worst_compute_row is not None
+                else None
             ),
             "compute_sec_worst_plan_executed": (
                 as_bool(worst_compute_row.get("loop_plan_executed", False))
@@ -1749,20 +1964,28 @@ def _run_single_parameter_identification(
             "env_preset_id": str(env_preset.preset_id),
             "env_slug": experiment_env_slug(str(env_preset.preset_id)),
             "system_id": str(env_preset.system_id),
-            "system_label": str(getattr(env_preset, "system_label", None) or env_preset.system_id),
+            "system_label": str(
+                getattr(env_preset, "system_label", None) or env_preset.system_id
+            ),
             "dynamics_type": str(env_preset.resolved_dynamics_type()),
             "estimator_system_id": str(_resolved_estimator_system_id(env_preset)),
             "estimator_system_label": str(
                 getattr(env_preset, "estimator_system_id", None)
                 or _resolved_estimator_system_id(env_preset)
             ),
-            "estimator_dynamics_type": str(env_preset.resolved_dynamics_type(estimator=True)),
+            "estimator_dynamics_type": str(
+                env_preset.resolved_dynamics_type(estimator=True)
+            ),
             "true_params_full": [float(x) for x in env_preset.resolved_true_params()],
             "estimator_true_params_full": [
                 float(x) for x in env_preset.resolved_true_params(estimator=True)
             ],
-            "state_low": [float(x) for x in env_preset.resolved_state_bounds()[0].tolist()],
-            "state_high": [float(x) for x in env_preset.resolved_state_bounds()[1].tolist()],
+            "state_low": [
+                float(x) for x in env_preset.resolved_state_bounds()[0].tolist()
+            ],
+            "state_high": [
+                float(x) for x in env_preset.resolved_state_bounds()[1].tolist()
+            ],
             "min_embedding_dim": int(env_preset.resolved_min_embedding_dim()),
             "boundary_enabled": bool(getattr(env_preset, "boundary_enabled", False)),
             "boundary_type": str(getattr(env_preset, "boundary_type", "none")),
@@ -1773,7 +1996,9 @@ def _run_single_parameter_identification(
             "boundary_projection_enabled": bool(
                 getattr(env_preset, "boundary_projection_enabled", False)
             ),
-            "boundary_barrier_width": float(getattr(env_preset, "boundary_barrier_width", 0.5)),
+            "boundary_barrier_width": float(
+                getattr(env_preset, "boundary_barrier_width", 0.5)
+            ),
             "boundary_barrier_strength": float(
                 getattr(env_preset, "boundary_barrier_strength", 5.0)
             ),
@@ -1782,6 +2007,21 @@ def _run_single_parameter_identification(
             ),
             "loading_fisher_snr_db": _loading_fisher_snr_db(env_preset),
             "loading_target_snr_db": _loading_target_snr_db(env_preset),
+            "observation_model": str(env_preset.observation_model),
+            "observation_information_diag": (
+                None
+                if env_preset.observation_information_diag is None
+                else [float(x) for x in env_preset.observation_information_diag]
+            ),
+            "observation_loading_design": str(env_preset.observation_loading_design),
+            "observation_loading_gains": (
+                None
+                if env_preset.observation_loading_gains is None
+                else [float(x) for x in env_preset.observation_loading_gains]
+            ),
+            "observation_loading_repeats_per_sign": int(
+                env_preset.observation_loading_repeats_per_sign
+            ),
             "observation_loading_seed": int(loading_seed),
             "loading_snr_trajectory_seed": int(loading_snr_seed),
             "observation_loading_shared_across_seeds": True,
@@ -1791,7 +2031,9 @@ def _run_single_parameter_identification(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),
             "observation_loading_direction_mismatch_max_deg": float(
-                getattr(env_preset, "observation_loading_direction_mismatch_max_deg", 0.0)
+                getattr(
+                    env_preset, "observation_loading_direction_mismatch_max_deg", 0.0
+                )
             ),
             "observation_loading_gain_mismatch_max_factor": float(
                 getattr(env_preset, "observation_loading_gain_mismatch_max_factor", 1.0)
@@ -1809,7 +2051,9 @@ def _run_single_parameter_identification(
             "embedding_true": [float(x) for x in e_true_flat.tolist()],
             "embedding_estimate": [
                 float(x)
-                for x in _resolve_parameter_mean(model=model, policy=policy).reshape(-1).tolist()
+                for x in _resolve_parameter_mean(model=model, policy=policy)
+                .reshape(-1)
+                .tolist()
             ],
             "embedding_error_final": (
                 float(param_rows[-1]["parameter_error"]) if param_rows else None
@@ -1825,7 +2069,9 @@ def _run_single_parameter_identification(
             "trajectory_eval_horizon": int(traj_eval_horizon),
             "trajectory_eval_samples": int(traj_eval_samples),
             "objective_variant": (
-                None if policy_spec.objective_kind is None else str(policy_spec.objective_kind)
+                None
+                if policy_spec.objective_kind is None
+                else str(policy_spec.objective_kind)
             ),
             "eig_freeze_covariance": bool(
                 getattr(policy_spec, "eig_freeze_covariance", False)
@@ -1838,12 +2084,22 @@ def _run_single_parameter_identification(
             "replan_interval": int(schedule_spec.replan_interval),
             "planning_horizon": int(schedule_spec.planning_horizon),
             "coarse_dt_factor": int(getattr(policy_spec, "coarse_dt_factor", 1)),
-            "coarse_action_mapping": str(getattr(policy_spec, "coarse_action_mapping", "hold")),
-            "coarse_mapping_opt_steps": int(getattr(policy_spec, "coarse_mapping_opt_steps", 25)),
-            "coarse_mapping_opt_lr": float(getattr(policy_spec, "coarse_mapping_opt_lr", 0.05)),
+            "coarse_action_mapping": str(
+                getattr(policy_spec, "coarse_action_mapping", "hold")
+            ),
+            "coarse_mapping_opt_steps": int(
+                getattr(policy_spec, "coarse_mapping_opt_steps", 25)
+            ),
+            "coarse_mapping_opt_lr": float(
+                getattr(policy_spec, "coarse_mapping_opt_lr", 0.05)
+            ),
             "async_planning": bool(getattr(policy_spec, "async_planning", False)),
-            "async_stale_tolerance": float(getattr(policy_spec, "async_stale_tolerance", 0.5)),
-            "async_worker_iterations": getattr(policy_spec, "async_worker_iterations", None),
+            "async_stale_tolerance": float(
+                getattr(policy_spec, "async_stale_tolerance", 0.5)
+            ),
+            "async_worker_iterations": getattr(
+                policy_spec, "async_worker_iterations", None
+            ),
             "async_worker_full_interval": getattr(
                 policy_spec, "async_worker_full_interval", None
             ),
@@ -1883,19 +2139,48 @@ def _run_single_parameter_identification(
                 float(x) for x in initial_parameter_mean.reshape(-1).tolist()
             ],
             "initial_parameter_variance": float(initial_parameter_variance),
-            "initial_parameter": [float(x) for x in initial_parameter.reshape(-1).tolist()],
+            "initial_parameter": [
+                float(x) for x in initial_parameter.reshape(-1).tolist()
+            ],
             "initial_parameter_seed": (
                 int(seed) if initial_parameter_variance > 0.0 else None
             ),
             "q_theta_meas_coeff": float(q_theta_meas_coeff),
             "q_theta_max_scale": float(q_theta_max_scale),
             "eig_gamma": float(eig_gamma),
-            "action_cost_weight": float(getattr(policy_spec, "action_cost_weight", 0.01)),
+            "action_cost_weight": float(
+                getattr(policy_spec, "action_cost_weight", 0.01)
+            ),
             "observation_variance_samples": int(observation_variance_samples),
             "state_noise": float(noise_scale),
+            "dt": float(dt),
             "action_max": float(action_max),
             "dynamics_alpha": float(alpha),
             "state_init_uncertainty": float(env_preset.state_init_uncertainty),
+            "trajectory_eval_state_noise": env_preset.trajectory_eval_state_noise,
+            "trajectory_eval_state_low": (
+                None
+                if env_preset.trajectory_eval_state_low is None
+                else [float(x) for x in env_preset.trajectory_eval_state_low]
+            ),
+            "trajectory_eval_state_high": (
+                None
+                if env_preset.trajectory_eval_state_high is None
+                else [float(x) for x in env_preset.trajectory_eval_state_high]
+            ),
+            "trajectory_eval_state_indices": (
+                None
+                if env_preset.trajectory_eval_state_indices is None
+                else [int(x) for x in env_preset.trajectory_eval_state_indices]
+            ),
+            "trajectory_eval_coordinate_balanced": bool(
+                env_preset.trajectory_eval_coordinate_balanced
+            ),
+            "filter_initial_state_mean": (
+                None
+                if filter_initial_state_mean is None
+                else [float(x) for x in filter_initial_state_mean.tolist()]
+            ),
             "firing_rate_scale": float(env_preset.firing_rate_scale),
             "mean_firing_rate_target": float(mean_firing),
             "max_firing_rate_target": float(max_firing_rate),
@@ -1918,7 +2203,13 @@ def _run_single_parameter_identification(
 
 
 def _run_one(
-    *, exp_id: str, policy_id: str, seed: int, repeat: int, base_dir: Path, args: argparse.Namespace
+    *,
+    exp_id: str,
+    policy_id: str,
+    seed: int,
+    repeat: int,
+    base_dir: Path,
+    args: argparse.Namespace,
 ) -> dict[str, Any]:
     exp_spec = get_experiment_spec(exp_id)
     total_steps = int(args.total_steps or exp_spec.total_steps)
@@ -1998,7 +2289,12 @@ def _run_one(
 
 
 def run_matrix(
-    *, exp_ids: list[str], seeds: list[int], repeats: int, base_dir: Path, args: argparse.Namespace
+    *,
+    exp_ids: list[str],
+    seeds: list[int],
+    repeats: int,
+    base_dir: Path,
+    args: argparse.Namespace,
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     policy_filter = set(parse_csv_list(getattr(args, "policy_ids", None))) or None
@@ -2075,14 +2371,22 @@ def _build_session_experiment_entry(
                     "update_interval": int(schedule_spec.update_interval),
                     "replan_interval": int(schedule_spec.replan_interval),
                     "planning_horizon": int(schedule_spec.planning_horizon),
-                    "predictive_only_window": bool(schedule_spec.predictive_only_window),
+                    "predictive_only_window": bool(
+                        schedule_spec.predictive_only_window
+                    ),
                 },
                 "coarse_dt_factor": int(getattr(policy_spec, "coarse_dt_factor", 1)),
-                "coarse_action_mapping": str(getattr(policy_spec, "coarse_action_mapping", "hold")),
+                "coarse_action_mapping": str(
+                    getattr(policy_spec, "coarse_action_mapping", "hold")
+                ),
                 "async_planning": bool(getattr(policy_spec, "async_planning", False)),
-                "async_stale_tolerance": float(getattr(policy_spec, "async_stale_tolerance", 0.5)),
+                "async_stale_tolerance": float(
+                    getattr(policy_spec, "async_stale_tolerance", 0.5)
+                ),
                 "async_worker_backend": "process",
-                "async_worker_device": getattr(policy_spec, "async_worker_device", None),
+                "async_worker_device": getattr(
+                    policy_spec, "async_worker_device", None
+                ),
                 "async_realtime_prefix_steps": int(
                     getattr(policy_spec, "async_realtime_prefix_steps", 10)
                 ),
@@ -2128,6 +2432,25 @@ def _build_session_experiment_entry(
             "dynamics_alpha": float(env_preset.dynamics_alpha),
             "state_noise": float(env_preset.state_noise),
             "state_init_uncertainty": float(env_preset.state_init_uncertainty),
+            "trajectory_eval_state_noise": env_preset.trajectory_eval_state_noise,
+            "trajectory_eval_state_low": (
+                None
+                if env_preset.trajectory_eval_state_low is None
+                else [float(x) for x in env_preset.trajectory_eval_state_low]
+            ),
+            "trajectory_eval_state_high": (
+                None
+                if env_preset.trajectory_eval_state_high is None
+                else [float(x) for x in env_preset.trajectory_eval_state_high]
+            ),
+            "trajectory_eval_state_indices": (
+                None
+                if env_preset.trajectory_eval_state_indices is None
+                else [int(x) for x in env_preset.trajectory_eval_state_indices]
+            ),
+            "trajectory_eval_coordinate_balanced": bool(
+                env_preset.trajectory_eval_coordinate_balanced
+            ),
             "initial_parameter_mean": [
                 float(x)
                 for x in env_preset.initial_parameter_mean_vector(
@@ -2138,6 +2461,21 @@ def _build_session_experiment_entry(
             "firing_rate_scale": float(env_preset.firing_rate_scale),
             "observation_noise_scale": float(env_preset.observation_noise_scale),
             "observation_noise_type": str(env_preset.observation_noise_type),
+            "observation_model": str(env_preset.observation_model),
+            "observation_information_diag": (
+                None
+                if env_preset.observation_information_diag is None
+                else [float(x) for x in env_preset.observation_information_diag]
+            ),
+            "observation_loading_design": str(env_preset.observation_loading_design),
+            "observation_loading_gains": (
+                None
+                if env_preset.observation_loading_gains is None
+                else [float(x) for x in env_preset.observation_loading_gains]
+            ),
+            "observation_loading_repeats_per_sign": int(
+                env_preset.observation_loading_repeats_per_sign
+            ),
             "mean_firing_rate_target": float(env_preset.mean_firing_rate_target),
             "max_firing_rate_target": float(env_preset.max_firing_rate_target),
             "asymmetric_loading": bool(env_preset.asymmetric_loading),
@@ -2150,7 +2488,9 @@ def _build_session_experiment_entry(
                 getattr(env_preset, "observation_loading_mismatch_variance", 0.0)
             ),
             "observation_loading_direction_mismatch_max_deg": float(
-                getattr(env_preset, "observation_loading_direction_mismatch_max_deg", 0.0)
+                getattr(
+                    env_preset, "observation_loading_direction_mismatch_max_deg", 0.0
+                )
             ),
             "observation_loading_gain_mismatch_max_factor": float(
                 getattr(env_preset, "observation_loading_gain_mismatch_max_factor", 1.0)
@@ -2252,7 +2592,12 @@ def _build_session_metadata(
             exp_id = str(record.get("exp_id"))
             bucket = by_exp.setdefault(
                 exp_id,
-                {"exp_id": exp_id, "total_runs": 0, "completed_runs": 0, "failed_runs": 0},
+                {
+                    "exp_id": exp_id,
+                    "total_runs": 0,
+                    "completed_runs": 0,
+                    "failed_runs": 0,
+                },
             )
             bucket["total_runs"] += 1
             if str(record.get("status")) == "completed":
@@ -2290,7 +2635,9 @@ def _write_session_metadata(
             created_at = load_json(metadata_path).get("created_at")
         except Exception:
             try:
-                created_at = json.loads(metadata_path.read_text(encoding="utf-8")).get("created_at")
+                created_at = json.loads(metadata_path.read_text(encoding="utf-8")).get(
+                    "created_at"
+                )
             except Exception:
                 created_at = None
     payload = _build_session_metadata(
@@ -2316,14 +2663,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--env-catalog", action="append", dest="env_catalogs")
     parser.add_argument("--model-catalog", action="append", dest="model_catalogs")
     parser.add_argument("--suite-catalog", action="append", dest="suite_catalogs")
-    parser.add_argument("--exp-id", choices=[*list_experiment_ids(), "all"], default="all")
+    parser.add_argument(
+        "--exp-id", choices=[*list_experiment_ids(), "all"], default="all"
+    )
     parser.add_argument("--exp-ids", type=str, default=None)
     parser.add_argument("--policy-ids", type=str, default=None)
     parser.add_argument("--mode", choices=["run", "summary", "all"], default="run")
     parser.add_argument("--seeds", type=str, default="0,10,20,30")
     parser.add_argument("--repeats", type=int, default=1)
     parser.add_argument("--base-dir", type=str, default="results/experiments")
-    parser.add_argument("--path-layout", choices=["legacy", "tbme_tracks"], default="legacy")
+    parser.add_argument(
+        "--path-layout", choices=["legacy", "tbme_tracks"], default="legacy"
+    )
     parser.add_argument("--skip-existing", action="store_true")
     parser.add_argument("--total-steps", type=int, default=None)
     parser.add_argument("--q-theta", type=float, default=1e-4)
@@ -2336,12 +2687,18 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None, *, suite_entries: Mapping[str, Any] | None = None) -> int:
+def main(
+    argv: list[str] | None = None, *, suite_entries: Mapping[str, Any] | None = None
+) -> int:
     argv_list = list(sys.argv[1:] if argv is None else argv)
     catalog_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
     catalog_parser.add_argument("--env-catalog", action="append", dest="env_catalogs")
-    catalog_parser.add_argument("--model-catalog", action="append", dest="model_catalogs")
-    catalog_parser.add_argument("--suite-catalog", action="append", dest="suite_catalogs")
+    catalog_parser.add_argument(
+        "--model-catalog", action="append", dest="model_catalogs"
+    )
+    catalog_parser.add_argument(
+        "--suite-catalog", action="append", dest="suite_catalogs"
+    )
     catalog_args, _unknown = catalog_parser.parse_known_args(argv_list)
     configure_catalogs(
         env_catalog_paths=catalog_args.env_catalogs,
@@ -2373,7 +2730,9 @@ def main(argv: list[str] | None = None, *, suite_entries: Mapping[str, Any] | No
     args = parser.parse_args(argv_list)
     if args.exp_ids is not None and str(args.exp_ids).strip():
         exp_ids = parse_csv_list(args.exp_ids)
-        unknown = [exp_id for exp_id in exp_ids if exp_id not in set(list_experiment_ids())]
+        unknown = [
+            exp_id for exp_id in exp_ids if exp_id not in set(list_experiment_ids())
+        ]
         if unknown:
             parser.error(f"Unknown experiment ids: {', '.join(unknown)}")
     else:
@@ -2381,7 +2740,9 @@ def main(argv: list[str] | None = None, *, suite_entries: Mapping[str, Any] | No
     policy_filter = set(parse_csv_list(args.policy_ids)) or None
     if policy_filter is not None:
         available_policy_ids = {
-            policy_id for exp_id in exp_ids for policy_id in get_experiment_spec(exp_id).policy_ids
+            policy_id
+            for exp_id in exp_ids
+            for policy_id in get_experiment_spec(exp_id).policy_ids
         }
         unknown_policy_ids = sorted(policy_filter - available_policy_ids)
         if unknown_policy_ids:
@@ -2410,13 +2771,19 @@ def main(argv: list[str] | None = None, *, suite_entries: Mapping[str, Any] | No
     redirect_output = not sys.stdout.isatty() or not sys.stderr.isatty()
     log_path = log_dir / "experiment_driver.log"
     with (
-        log_path.open("a", encoding="utf-8") if redirect_output else contextlib.nullcontext()
+        log_path.open("a", encoding="utf-8")
+        if redirect_output
+        else contextlib.nullcontext()
     ) as log_stream:
         stdout_cm = (
-            contextlib.redirect_stdout(log_stream) if redirect_output else contextlib.nullcontext()
+            contextlib.redirect_stdout(log_stream)
+            if redirect_output
+            else contextlib.nullcontext()
         )
         stderr_cm = (
-            contextlib.redirect_stderr(log_stream) if redirect_output else contextlib.nullcontext()
+            contextlib.redirect_stderr(log_stream)
+            if redirect_output
+            else contextlib.nullcontext()
         )
         with stdout_cm, stderr_cm:
             records: list[dict[str, Any]] = []

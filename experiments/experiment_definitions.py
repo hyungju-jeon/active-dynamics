@@ -33,6 +33,7 @@ class EnvironmentPreset:
     asymmetric_loading: bool
     observation_primary_scale: float
     observation_secondary_scale: float
+    observation_nuisance_scale: float
     observation_row_skew: float
     observation_loading_mismatch_variance: float
     firing_rate_scale: float
@@ -49,18 +50,29 @@ class EnvironmentPreset:
     estimator_true_params: tuple[float, ...] | None = None
     initial_parameter_mean: float | tuple[float, ...] = 1.0
     initial_parameter_variance: float = 0.0
-    state_low: tuple[float, float] | None = None
-    state_high: tuple[float, float] | None = None
+    state_low: tuple[float, ...] | None = None
+    state_high: tuple[float, ...] | None = None
     min_embedding_dim: int | None = None
     dynamics_alpha: float = 1.0
     state_noise: float = 0.2
     state_init_uncertainty: float = 25.0
+    filter_initial_state_mean: tuple[float, ...] | None = None
+    trajectory_eval_state_noise: float | None = None
+    trajectory_eval_state_low: tuple[float, ...] | None = None
+    trajectory_eval_state_high: tuple[float, ...] | None = None
+    trajectory_eval_state_indices: tuple[int, ...] | None = None
+    trajectory_eval_coordinate_balanced: bool = False
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
     latent_dim: int = 2
     embedding_dim: int = 2
     observation_dim: int = 50
+    observation_model: str = "log_linear"
+    observation_information_diag: tuple[float, ...] | None = None
+    observation_loading_design: str = "calibrated_random"
+    observation_loading_gains: tuple[float, ...] | None = None
+    observation_loading_repeats_per_sign: int = 1
     observation_noise_scale: float = 0.1
     observation_noise_type: str = "poisson"
     mean_firing_rate_target: float = 25.0
@@ -132,7 +144,9 @@ class EnvironmentPreset:
     def true_embedding_vector(
         self, *, embedding_dim: int | None = None, estimator: bool = False
     ) -> np.ndarray:
-        full = np.asarray(self.resolved_true_params(estimator=estimator), dtype=np.float32)
+        full = np.asarray(
+            self.resolved_true_params(estimator=estimator), dtype=np.float32
+        )
         dim = int(self.embedding_dim) if embedding_dim is None else int(embedding_dim)
         min_dim = self.resolved_min_embedding_dim()
         if dim < min_dim or dim > full.shape[0]:
@@ -142,7 +156,9 @@ class EnvironmentPreset:
         return full[:dim]
 
     def params_from_embedding(self, embedding: Any, *, estimator: bool = False) -> Any:
-        full = np.asarray(self.resolved_true_params(estimator=estimator), dtype=np.float32)
+        full = np.asarray(
+            self.resolved_true_params(estimator=estimator), dtype=np.float32
+        )
         min_dim = self.resolved_min_embedding_dim()
         if torch.is_tensor(embedding):
             e = embedding.to(dtype=torch.float32)
@@ -173,7 +189,9 @@ class EnvironmentPreset:
         )
         return np.concatenate((e_np, tail.astype(np.float32, copy=False)), axis=-1)
 
-    def initial_parameter_mean_vector(self, *, embedding_dim: int | None = None) -> np.ndarray:
+    def initial_parameter_mean_vector(
+        self, *, embedding_dim: int | None = None
+    ) -> np.ndarray:
         """Return the configured initial parameter mean with shape ``(embedding_dim,)``."""
         dim = int(self.embedding_dim) if embedding_dim is None else int(embedding_dim)
         configured = self.initial_parameter_mean
@@ -185,6 +203,18 @@ class EnvironmentPreset:
                 )
             return np.asarray(configured, dtype=np.float32)
         return np.full((dim,), float(configured), dtype=np.float32)
+
+    def filter_initial_state_mean_vector(self) -> np.ndarray | None:
+        """Return the configured latent-state prior mean with shape ``(latent_dim,)``."""
+        if self.filter_initial_state_mean is None:
+            return None
+        mean = np.asarray(self.filter_initial_state_mean, dtype=np.float32)
+        if mean.shape != (int(self.latent_dim),):
+            raise ValueError(
+                f"filter_initial_state_mean for {self.preset_id} has shape {mean.shape}, "
+                f"expected ({self.latent_dim},)."
+            )
+        return mean
 
     def sample_initial_state(self, seed: int) -> np.ndarray:
         low, high = self.resolved_state_bounds()
@@ -422,7 +452,9 @@ def _resolve_schedule_replan_interval(schedule_id: str, spec: Mapping[str, Any])
             "(planning_interval is accepted as an alias)."
         )
     first_key, first_value = next(iter(aliases.items()))
-    mismatched = {key: value for key, value in aliases.items() if int(value) != int(first_value)}
+    mismatched = {
+        key: value for key, value in aliases.items() if int(value) != int(first_value)
+    }
     if mismatched:
         parts = ", ".join(f"{key}={value}" for key, value in aliases.items())
         raise ValueError(
@@ -450,7 +482,17 @@ def _as_float_tuple(values: Any, *, label: str) -> tuple[float, ...] | None:
     return tuple(float(value) for value in values)
 
 
-def _as_float_or_tuple(values: Any, *, label: str, default: float) -> float | tuple[float, ...]:
+def _as_int_tuple(values: Any, *, label: str) -> tuple[int, ...] | None:
+    if values is None:
+        return None
+    if not isinstance(values, (list, tuple)):
+        raise TypeError(f"{label} must be a list or tuple, got {type(values).__name__}")
+    return tuple(int(value) for value in values)
+
+
+def _as_float_or_tuple(
+    values: Any, *, label: str, default: float
+) -> float | tuple[float, ...]:
     if values is None:
         return float(default)
     if isinstance(values, (list, tuple)):
@@ -461,13 +503,13 @@ def _as_float_or_tuple(values: Any, *, label: str, default: float) -> float | tu
         raise ValueError(f"Expected scalar or list/tuple for {label}") from exc
 
 
-def _as_pair(values: Any, *, label: str) -> tuple[float, float] | None:
+def _as_state_vector(values: Any, *, label: str) -> tuple[float, ...] | None:
     parsed = _as_float_tuple(values, label=label)
     if parsed is None:
         return None
-    if len(parsed) != 2:
-        raise ValueError(f"Expected 2 values for {label}, got {len(parsed)}")
-    return (float(parsed[0]), float(parsed[1]))
+    if len(parsed) == 0:
+        raise ValueError(f"Expected at least 1 value for {label}")
+    return tuple(float(value) for value in parsed)
 
 
 def _coerce_catalog_paths(
@@ -505,7 +547,9 @@ def _merge_section_entries(
     merged: dict[str, Any] = {}
     for path in catalog_paths:
         payload = _load_yaml_mapping(path)
-        section = _require_mapping(payload.get(section_name, {}), label=f"{path}:{section_name}")
+        section = _require_mapping(
+            payload.get(section_name, {}), label=f"{path}:{section_name}"
+        )
         merged.update(dict(section))
     return merged
 
@@ -555,7 +599,9 @@ def load_catalog_bundle(
             preset_id=str(spec.get("preset_id", preset_id)),
             system_id=str(spec["system_id"]),
             system_label=(
-                None if spec.get("system_label") is None else str(spec.get("system_label"))
+                None
+                if spec.get("system_label") is None
+                else str(spec.get("system_label"))
             ),
             estimator_system_id=(
                 None
@@ -563,7 +609,9 @@ def load_catalog_bundle(
                 else str(spec.get("estimator_system_id"))
             ),
             dynamics_type=(
-                None if spec.get("dynamics_type") is None else str(spec.get("dynamics_type"))
+                None
+                if spec.get("dynamics_type") is None
+                else str(spec.get("dynamics_type"))
             ),
             estimator_dynamics_type=(
                 None
@@ -582,9 +630,13 @@ def load_catalog_bundle(
                 label=f"environments.{preset_id}.initial_parameter_mean",
                 default=1.0,
             ),
-            initial_parameter_variance=float(spec.get("initial_parameter_variance", 0.0)),
-            state_low=_as_pair(spec.get("state_low"), label=f"environments.{preset_id}.state_low"),
-            state_high=_as_pair(
+            initial_parameter_variance=float(
+                spec.get("initial_parameter_variance", 0.0)
+            ),
+            state_low=_as_state_vector(
+                spec.get("state_low"), label=f"environments.{preset_id}.state_low"
+            ),
+            state_high=_as_state_vector(
                 spec.get("state_high"), label=f"environments.{preset_id}.state_high"
             ),
             min_embedding_dim=(
@@ -594,7 +646,12 @@ def load_catalog_bundle(
             ),
             asymmetric_loading=bool(spec.get("asymmetric_loading", False)),
             observation_primary_scale=float(spec.get("observation_primary_scale", 1.0)),
-            observation_secondary_scale=float(spec.get("observation_secondary_scale", 2.0)),
+            observation_secondary_scale=float(
+                spec.get("observation_secondary_scale", 2.0)
+            ),
+            observation_nuisance_scale=float(
+                spec.get("observation_nuisance_scale", 1.0)
+            ),
             observation_row_skew=float(spec.get("observation_row_skew", 0.0)),
             observation_loading_mismatch_variance=float(
                 spec.get("observation_loading_mismatch_variance", 0.0)
@@ -620,20 +677,63 @@ def load_catalog_bundle(
             dynamics_alpha=float(spec.get("dynamics_alpha", 1.0)),
             state_noise=float(spec.get("state_noise", 0.2)),
             state_init_uncertainty=float(spec.get("state_init_uncertainty", 25.0)),
+            filter_initial_state_mean=_as_state_vector(
+                spec.get("filter_initial_state_mean"),
+                label=f"environments.{preset_id}.filter_initial_state_mean",
+            ),
+            trajectory_eval_state_noise=(
+                None
+                if spec.get("trajectory_eval_state_noise") is None
+                else float(spec.get("trajectory_eval_state_noise"))
+            ),
+            trajectory_eval_state_low=_as_state_vector(
+                spec.get("trajectory_eval_state_low"),
+                label=f"environments.{preset_id}.trajectory_eval_state_low",
+            ),
+            trajectory_eval_state_high=_as_state_vector(
+                spec.get("trajectory_eval_state_high"),
+                label=f"environments.{preset_id}.trajectory_eval_state_high",
+            ),
+            trajectory_eval_state_indices=_as_int_tuple(
+                spec.get("trajectory_eval_state_indices"),
+                label=f"environments.{preset_id}.trajectory_eval_state_indices",
+            ),
+            trajectory_eval_coordinate_balanced=bool(
+                spec.get("trajectory_eval_coordinate_balanced", False)
+            ),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
             action_dim=int(spec.get("action_dim", 2)),
             latent_dim=int(spec.get("latent_dim", 2)),
             embedding_dim=int(spec.get("embedding_dim", 2)),
             observation_dim=int(spec.get("observation_dim", 50)),
+            observation_model=str(spec.get("observation_model", "log_linear")),
+            observation_information_diag=_as_float_tuple(
+                spec.get("observation_information_diag"),
+                label=f"environments.{preset_id}.observation_information_diag",
+            ),
+            observation_loading_design=str(
+                spec.get("observation_loading_design", "calibrated_random")
+            ),
+            observation_loading_gains=_as_float_tuple(
+                spec.get("observation_loading_gains"),
+                label=f"environments.{preset_id}.observation_loading_gains",
+            ),
+            observation_loading_repeats_per_sign=int(
+                spec.get("observation_loading_repeats_per_sign", 1)
+            ),
             observation_noise_scale=float(spec.get("observation_noise_scale", 0.1)),
             observation_noise_type=str(spec.get("observation_noise_type", "poisson")),
             mean_firing_rate_target=float(spec.get("mean_firing_rate_target", 25.0)),
             max_firing_rate_target=float(spec.get("max_firing_rate_target", 100.0)),
             real_data=bool(spec.get("real_data", False)),
-            dataset_id=(None if spec.get("dataset_id") is None else str(spec.get("dataset_id"))),
+            dataset_id=(
+                None if spec.get("dataset_id") is None else str(spec.get("dataset_id"))
+            ),
             dataset_path=(
-                None if spec.get("dataset_path") is None else str(spec.get("dataset_path"))
+                None
+                if spec.get("dataset_path") is None
+                else str(spec.get("dataset_path"))
             ),
             state_key=str(spec.get("state_key", "behavior")),
             observation_key=str(spec.get("observation_key", "spikes")),
@@ -647,17 +747,25 @@ def load_catalog_bundle(
             boundary_enabled=bool(spec.get("boundary_enabled", False)),
             boundary_type=str(spec.get("boundary_type", "none")),
             boundary_radius=(
-                None if spec.get("boundary_radius") is None else float(spec.get("boundary_radius"))
+                None
+                if spec.get("boundary_radius") is None
+                else float(spec.get("boundary_radius"))
             ),
             boundary_barrier_enabled=bool(spec.get("boundary_barrier_enabled", False)),
-            boundary_projection_enabled=bool(spec.get("boundary_projection_enabled", False)),
+            boundary_projection_enabled=bool(
+                spec.get("boundary_projection_enabled", False)
+            ),
             boundary_barrier_width=float(spec.get("boundary_barrier_width", 0.5)),
             boundary_barrier_strength=float(spec.get("boundary_barrier_strength", 5.0)),
-            boundary_barrier_temperature=float(spec.get("boundary_barrier_temperature", 0.1)),
+            boundary_barrier_temperature=float(
+                spec.get("boundary_barrier_temperature", 0.1)
+            ),
             information_boundary_visibility_enabled=bool(
                 spec.get("information_boundary_visibility_enabled", False)
             ),
-            information_boundary_margin=float(spec.get("information_boundary_margin", 1.0)),
+            information_boundary_margin=float(
+                spec.get("information_boundary_margin", 1.0)
+            ),
             information_boundary_temperature=float(
                 spec.get("information_boundary_temperature", 0.15)
             ),
@@ -673,13 +781,17 @@ def load_catalog_bundle(
             planning_horizon=int(spec["planning_horizon"]),
             predictive_only_window=bool(spec.get("predictive_only_window", False)),
             adaptive_cadence=bool(spec.get("adaptive_cadence", False)),
-            adaptive_update_min_interval=int(spec.get("adaptive_update_min_interval", 1)),
+            adaptive_update_min_interval=int(
+                spec.get("adaptive_update_min_interval", 1)
+            ),
             adaptive_update_eig_threshold=(
                 None
                 if spec.get("adaptive_update_eig_threshold") is None
                 else float(spec.get("adaptive_update_eig_threshold"))
             ),
-            adaptive_replan_min_interval=int(spec.get("adaptive_replan_min_interval", 1)),
+            adaptive_replan_min_interval=int(
+                spec.get("adaptive_replan_min_interval", 1)
+            ),
             adaptive_replan_state_error_threshold=(
                 None
                 if spec.get("adaptive_replan_state_error_threshold") is None
@@ -713,13 +825,17 @@ def load_catalog_bundle(
             planning_horizon=int(spec["planning_horizon"]),
             predictive_only_window=bool(spec.get("predictive_only_window", False)),
             adaptive_cadence=bool(spec.get("adaptive_cadence", False)),
-            adaptive_update_min_interval=int(spec.get("adaptive_update_min_interval", 1)),
+            adaptive_update_min_interval=int(
+                spec.get("adaptive_update_min_interval", 1)
+            ),
             adaptive_update_eig_threshold=(
                 None
                 if spec.get("adaptive_update_eig_threshold") is None
                 else float(spec.get("adaptive_update_eig_threshold"))
             ),
-            adaptive_replan_min_interval=int(spec.get("adaptive_replan_min_interval", 1)),
+            adaptive_replan_min_interval=int(
+                spec.get("adaptive_replan_min_interval", 1)
+            ),
             adaptive_replan_state_error_threshold=(
                 None
                 if spec.get("adaptive_replan_state_error_threshold") is None
@@ -732,16 +848,26 @@ def load_catalog_bundle(
         policy_id: PolicySpec(
             policy_id=str(spec.get("policy_id", policy_id)),
             objective_kind=(
-                None if spec.get("objective_kind") is None else str(spec.get("objective_kind"))
+                None
+                if spec.get("objective_kind") is None
+                else str(spec.get("objective_kind"))
             ),
             schedule_id=str(spec["schedule_id"]),
-            policy_type=(None if spec.get("policy_type") is None else str(spec.get("policy_type"))),
+            policy_type=(
+                None
+                if spec.get("policy_type") is None
+                else str(spec.get("policy_type"))
+            ),
             passive=bool(spec.get("passive", False)),
             shrinkage_kind=(
-                None if spec.get("shrinkage_kind") is None else str(spec.get("shrinkage_kind"))
+                None
+                if spec.get("shrinkage_kind") is None
+                else str(spec.get("shrinkage_kind"))
             ),
             shrinkage_min=(
-                None if spec.get("shrinkage_min") is None else float(spec.get("shrinkage_min"))
+                None
+                if spec.get("shrinkage_min") is None
+                else float(spec.get("shrinkage_min"))
             ),
             ambiguity_temperature=(
                 None
@@ -749,7 +875,9 @@ def load_catalog_bundle(
                 else float(spec.get("ambiguity_temperature"))
             ),
             ensemble_kind=(
-                None if spec.get("ensemble_kind") is None else str(spec.get("ensemble_kind"))
+                None
+                if spec.get("ensemble_kind") is None
+                else str(spec.get("ensemble_kind"))
             ),
             eig_freeze_covariance=bool(spec.get("eig_freeze_covariance", False)),
             eig_diagonal_covariance=bool(spec.get("eig_diagonal_covariance", False)),
@@ -759,7 +887,9 @@ def load_catalog_bundle(
                 else str(spec.get("action_constraint"))
             ),
             action_radius=(
-                None if spec.get("action_radius") is None else float(spec.get("action_radius"))
+                None
+                if spec.get("action_radius") is None
+                else float(spec.get("action_radius"))
             ),
             action_cost_weight=float(
                 spec.get(
@@ -787,7 +917,9 @@ def load_catalog_bundle(
                 if spec.get("flex_parameter_max") is None
                 else float(spec.get("flex_parameter_max"))
             ),
-            flex_lr=(None if spec.get("flex_lr") is None else float(spec.get("flex_lr"))),
+            flex_lr=(
+                None if spec.get("flex_lr") is None else float(spec.get("flex_lr"))
+            ),
             coarse_dt_factor=int(spec.get("coarse_dt_factor", 1)),
             coarse_action_mapping=str(spec.get("coarse_action_mapping", "hold")),
             coarse_mapping_opt_steps=int(spec.get("coarse_mapping_opt_steps", 25)),
@@ -809,15 +941,21 @@ def load_catalog_bundle(
                 if spec.get("async_worker_device") is None
                 else str(spec.get("async_worker_device"))
             ),
-            async_start_after_first_plan=bool(spec.get("async_start_after_first_plan", True)),
-            async_realtime_prefix_steps=int(spec.get("async_realtime_prefix_steps", 10)),
+            async_start_after_first_plan=bool(
+                spec.get("async_start_after_first_plan", True)
+            ),
+            async_realtime_prefix_steps=int(
+                spec.get("async_realtime_prefix_steps", 10)
+            ),
             async_anytime_prefix_steps=(
                 None
                 if spec.get("async_anytime_prefix_steps", 0) is None
                 else int(spec.get("async_anytime_prefix_steps", 0))
             ),
             async_anytime_min_iteration=int(spec.get("async_anytime_min_iteration", 1)),
-            async_anytime_std_tolerance=float(spec.get("async_anytime_std_tolerance", 0.5)),
+            async_anytime_std_tolerance=float(
+                spec.get("async_anytime_std_tolerance", 0.5)
+            ),
         )
         for policy_id, spec in model_raw.items()
     }
@@ -852,12 +990,30 @@ def load_catalog_bundle(
 
 def configure_catalogs(
     *,
-    env_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...] | None = None,
-    model_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...] | None = None,
-    suite_catalog_paths: Path | str | list[Path | str] | tuple[Path | str, ...] | None = None,
+    env_catalog_paths: Path
+    | str
+    | list[Path | str]
+    | tuple[Path | str, ...]
+    | None = None,
+    model_catalog_paths: Path
+    | str
+    | list[Path | str]
+    | tuple[Path | str, ...]
+    | None = None,
+    suite_catalog_paths: Path
+    | str
+    | list[Path | str]
+    | tuple[Path | str, ...]
+    | None = None,
     suite_entries: Mapping[str, Any] | None = None,
 ) -> ExperimentCatalogBundle:
-    global _CATALOGS, ENVIRONMENT_PRESETS, SCHEDULE_SPECS, POLICY_SPECS, MODEL_SPECS, EXPERIMENT_SPECS
+    global \
+        _CATALOGS, \
+        ENVIRONMENT_PRESETS, \
+        SCHEDULE_SPECS, \
+        POLICY_SPECS, \
+        MODEL_SPECS, \
+        EXPERIMENT_SPECS
 
     resolved_env_paths = (
         _catalog_paths_from_env(ENV_CATALOGS_ENVVAR, DEFAULT_ENV_CATALOG_PATHS)

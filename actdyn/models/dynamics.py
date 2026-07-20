@@ -108,7 +108,7 @@ class FunctionDynamics(BaseDynamics):
         if isinstance(backend_params, dict):
             self.dynamics_fn.set_params(backend_params)
             return
-        self.dynamics_fn.set_params(*backend_params.mT.to(self.device))
+        self.dynamics_fn.set_params(backend_params.to(self.device))
 
     @staticmethod
     def _supports_embedding_arg(dynamics_fn) -> bool:

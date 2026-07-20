@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from actdyn.environment.boundary import boundary_visibility, project_to_boundary
 from actdyn.environment.vectorfield import VectorFieldEnv
 from actdyn.metrics.information import EmbeddingFisherMetric
+from actdyn.models.dynamics import FunctionDynamics
 
 
 def test_radial_boundary_visibility_decays_near_boundary():
@@ -56,6 +58,41 @@ def test_vectorfield_env_step_cannot_leave_radial_boundary():
     state, *_ = env.step(torch.tensor([100.0, 100.0]))
 
     assert torch.linalg.norm(state.float()).item() <= 1.0 + 1e-5
+
+
+def test_vectorfield_env_separates_action_and_state_space_dimensions():
+    env = VectorFieldEnv(
+        "confounded_gate",
+        d_state=3,
+        d_action=2,
+        Q=0.0,
+        dyn_params=[0.5],
+        action_bounds=[[-1.0, -0.5], [1.0, 0.5]],
+        initial_state=[-0.5, 0.0, 0.25],
+    )
+
+    assert env.action_space.shape == (2,)
+    assert env.observation_space.shape == (3,)
+
+    state, *_ = env.step(torch.tensor([0.0, 0.0, 0.0]))
+    assert state.shape == (3,)
+
+
+def test_vectorfield_env_accepts_batched_single_parameter_values():
+    env = VectorFieldEnv("confounded_gate", d_state=3, dyn_params=[0.5])
+    dynamics = FunctionDynamics(
+        state_dim=3,
+        dynamics_fn=env,
+        param_formatter=lambda params: params,
+    )
+    dynamics.set_params(torch.tensor([[0.25], [0.75]]))
+
+    states = torch.tensor([[-0.5, 0.0, 0.0], [-0.5, 0.0, 0.0]])
+    drift = env.compute_dynamics(states)
+
+    assert drift.shape == (2, 3)
+    assert drift[0, 1] == pytest.approx(5.0, abs=1e-3)
+    assert drift[1, 1] == pytest.approx(15.0, abs=1e-3)
 
 
 class _LinearDecoder:
