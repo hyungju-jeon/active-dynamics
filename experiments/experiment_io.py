@@ -179,14 +179,17 @@ def find_nested_metadata_paths(
 
 
 def get_environment_preset_from_metadata(metadata: Mapping[str, Any]) -> Any:
-    try:
-        from experiment_definitions import get_environment_preset, get_experiment_spec
-    except ImportError:
-        if __package__ in {None, ""}:
+    # Prefer the package module: an ambient top-level "experiment_definitions"
+    # (left importable by a standalone script's sys.path bootstrap) is a
+    # duplicate instance whose catalog registry does not track this one.
+    if __package__ in {None, ""}:
+        try:
+            from experiment_definitions import get_environment_preset, get_experiment_spec
+        except ImportError:
             sys.path.insert(0, str(Path(__file__).resolve().parent))
             from experiment_definitions import get_environment_preset, get_experiment_spec
-        else:
-            from .experiment_definitions import get_environment_preset, get_experiment_spec
+    else:
+        from .experiment_definitions import get_environment_preset, get_experiment_spec
 
     preset_id = str(metadata.get("env_preset_id", "")).strip()
     if preset_id:
