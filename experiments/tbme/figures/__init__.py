@@ -27,7 +27,14 @@ def _bottleneck_sweep() -> list[Path]:
     return bottleneck.generate()
 
 
+def _mismatch_dose_response() -> list[Path]:
+    from experiments.tbme.figures import mismatch
+
+    return mismatch.generate()
+
+
 FIGURES: dict[str, Callable[[], list[Path]]] = {
     "objective_ablation": _objective_ablation,
     "bottleneck_sweep": _bottleneck_sweep,
+    "mismatch_dose_response": _mismatch_dose_response,
 }

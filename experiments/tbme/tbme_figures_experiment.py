@@ -21,6 +21,7 @@ from ..experiment_io import (
 )
 from .figures import ablation as _ablation
 from .figures import bottleneck as _bottleneck
+from .figures import mismatch as _mismatch
 from .figures import artifacts as _fig_artifacts
 from .figures import data as _fig_data
 from .figures import theme as _fig_theme
@@ -51,13 +52,7 @@ _experiment_C_GRID = _fig_theme.GRID_COLOR
 _experiment_BOTTLENECK_POLICIES = _bottleneck.BOTTLENECK_POLICIES
 _experiment_OBJECTIVE_POLICIES = _ablation.OBJECTIVE_POLICIES
 _experiment_OBJECTIVE_DEFINITIONS = _ablation.OBJECTIVE_DEFINITIONS
-_experiment_DOSE_POLICIES = [
-    "adaptive",
-    "active_planning",
-    "active_myopic",
-    "active_state_variance",
-    "prbs",
-]
+_experiment_DOSE_POLICIES = _mismatch.DOSE_POLICIES
 
 
 _ExperimentSuiteSource = SuiteSource
@@ -84,16 +79,7 @@ _experiment_OBJECTIVE_DEFINITION_PLOTS = {"objective_ablation"}
 _experiment_REQUIRED_SUITES_BY_PLOT = {
     "bottleneck_sweep": _bottleneck.REQUIRED_SUITES,
     "objective_ablation": _ablation.REQUIRED_SUITES,
-    "mismatch_dose_response": (
-        ("simple_system_identification", "duffing"),
-        ("simple_system_identification", "gated_duffing"),
-        ("model_mismatch", "duffing_parameter_mismatch"),
-        ("model_mismatch", "gated_duffing_parameter_mismatch"),
-        ("model_mismatch", "duffing_parameter_mismatch_mild"),
-        ("model_mismatch", "duffing_parameter_mismatch_strong"),
-        ("model_mismatch", "gated_duffing_parameter_mismatch_mild"),
-        ("model_mismatch", "gated_duffing_parameter_mismatch_strong"),
-    ),
+    "mismatch_dose_response": _mismatch.REQUIRED_SUITES,
 }
 
 
@@ -112,67 +98,7 @@ plot_bottleneck_sweep = _bottleneck.plot_bottleneck_sweep
 plot_objective_ablation = _ablation.plot_objective_ablation
 
 
-def plot_mismatch_dose_response(
-    output_path: Path,
-    *,
-    rows: list[dict[str, Any]],
-    policy_ids: Sequence[str],
-    policy_label: Callable[[str], str],
-    policy_color: Callable[[str], str],
-    apply_style: Callable[[Any], None] | None,
-    style_axis: Callable[..., None],
-) -> Path:
-    """Plot final prediction R2 as a function of model-mismatch dose."""
-    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    dose_order = ["none", "mild", "medium", "strong"]
-    dose_labels = ["None", "Mild", "Medium", "Strong"]
-    x = np.arange(len(dose_order), dtype=np.float64)
-    fig, axes = plt_module.subplots(1, 2, figsize=(7.1, 2.9), sharey=False)
-    for ax, family in zip(axes, ["Duffing", "Gated Duffing"], strict=True):
-        family_rows = [row for row in rows if row["family"] == family]
-        for policy_id in policy_ids:
-            y = []
-            yerr = []
-            for dose in dose_order:
-                match = [
-                    row
-                    for row in family_rows
-                    if row["dose"] == dose and row["policy_id"] == policy_id
-                ]
-                if not match or match[0]["trajectory_r2_mean"] is None:
-                    y.append(np.nan)
-                    yerr.append(0.0)
-                else:
-                    y.append(float(match[0]["trajectory_r2_mean"]))
-                    yerr.append(float(match[0]["trajectory_r2_sem"]))
-            ax.errorbar(
-                x,
-                y,
-                yerr=yerr,
-                marker="o",
-                linewidth=1.0,
-                markersize=3.4,
-                capsize=2.0,
-                color=policy_color(policy_id),
-                label=policy_label(policy_id),
-            )
-        ax.set_xticks(x)
-        ax.set_xticklabels(dose_labels)
-        ax.set_ylabel("Final prediction R2")
-        finite_family_r2 = [
-            float(row["trajectory_r2_mean"])
-            for row in family_rows
-            if row.get("trajectory_r2_mean") is not None
-            and np.isfinite(float(row["trajectory_r2_mean"]))
-        ]
-        ax.set_ylim(min(-0.1, min(finite_family_r2) - 0.05) if finite_family_r2 else -0.1, 1.05)
-        ax.set_title(f"{family} mismatch dose-response")
-        style_axis(ax)
-    axes[1].legend(loc="upper left", fontsize=6.4)
-    fig.tight_layout(w_pad=1.0)
-    return save_figure(fig, output_path, plt_module=plt_module)
+plot_mismatch_dose_response = _mismatch.plot_mismatch_dose_response
 
 
 def plot_neutral_vector_field(
@@ -327,130 +253,8 @@ _experiment_write_objective_definition_tables = _ablation.write_definition_table
 _experiment_plot_objective_ablation = _ablation.generate
 
 
-def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
-    return [
-        _ExperimentSuiteSource(
-            "duffing",
-            "None",
-            _suite_dir("simple_system_identification", "duffing"),
-            dose="none",
-            family="Duffing",
-        ),
-        _ExperimentSuiteSource(
-            "duffing_parameter_mismatch_mild",
-            "Mild",
-            _suite_dir("model_mismatch", "duffing_parameter_mismatch_mild"),
-            dose="mild",
-            family="Duffing",
-        ),
-        _ExperimentSuiteSource(
-            "duffing_parameter_mismatch",
-            "Medium",
-            _suite_dir("model_mismatch", "duffing_parameter_mismatch"),
-            dose="medium",
-            family="Duffing",
-        ),
-        _ExperimentSuiteSource(
-            "duffing_parameter_mismatch_strong",
-            "Strong",
-            _suite_dir("model_mismatch", "duffing_parameter_mismatch_strong"),
-            dose="strong",
-            family="Duffing",
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing",
-            "None",
-            _suite_dir("simple_system_identification", "gated_duffing"),
-            dose="none",
-            family="Gated Duffing",
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_parameter_mismatch_mild",
-            "Mild",
-            _suite_dir("model_mismatch", "gated_duffing_parameter_mismatch_mild"),
-            dose="mild",
-            family="Gated Duffing",
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_parameter_mismatch",
-            "Medium",
-            _suite_dir("model_mismatch", "gated_duffing_parameter_mismatch"),
-            dose="medium",
-            family="Gated Duffing",
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_parameter_mismatch_strong",
-            "Strong",
-            _suite_dir("model_mismatch", "gated_duffing_parameter_mismatch_strong"),
-            dose="strong",
-            family="Gated Duffing",
-        ),
-    ]
-
-
-def _experiment_plot_mismatch_dose_response() -> list[Path]:
-    sources = _experiment_dose_sources()
-    rows: list[dict[str, Any]] = []
-    for source in sources:
-        for policy_id in _experiment_DOSE_POLICIES:
-            err, err_sem, n_err = _experiment_metric_mean_sem(
-                source.suite_dir, policy_id, "value_final_mean"
-            )
-            r2, r2_sem, n_r2 = _experiment_metric_mean_sem(
-                source.suite_dir, policy_id, "trajectory_r2_final_mean"
-            )
-            rows.append(
-                {
-                    "family": source.family,
-                    "dose": source.dose,
-                    "dose_label": source.label,
-                    "experiment": source.exp_id,
-                    "policy_id": policy_id,
-                    "policy_label": _experiment_policy_label(policy_id),
-                    "parameter_error_mean": err,
-                    "parameter_error_sem": err_sem,
-                    "trajectory_r2_mean": r2,
-                    "trajectory_r2_sem": r2_sem,
-                    "n_error": n_err,
-                    "n_r2": n_r2,
-                }
-            )
-
-    suite_dirs = [source.suite_dir for source in sources]
-    csv_paths = _experiment_write_csv_artifacts(
-        suite_dirs,
-        filename="tbme_experiment_mismatch_dose_response.csv",
-        rows=rows,
-        fields=[
-            "family",
-            "dose",
-            "dose_label",
-            "experiment",
-            "policy_id",
-            "policy_label",
-            "trajectory_r2_mean",
-            "trajectory_r2_sem",
-            "parameter_error_mean",
-            "parameter_error_sem",
-            "n_error",
-            "n_r2",
-        ],
-    )
-    figure_paths = _experiment_artifact_paths(
-        suite_dirs,
-        subdir="figures",
-        filename="tbme_experiment_mismatch_dose_response.pdf",
-    )
-    figure_path = plot_mismatch_dose_response(
-        figure_paths[0],
-        rows=rows,
-        policy_ids=_experiment_DOSE_POLICIES,
-        policy_label=_experiment_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        style_axis=_style_experiment_axis,
-    )
-    return [*_experiment_copy_artifact(figure_path, figure_paths), *csv_paths]
+_experiment_dose_sources = _mismatch.dose_sources
+_experiment_plot_mismatch_dose_response = _mismatch.generate
 
 
 def _experiment_collect_records(
