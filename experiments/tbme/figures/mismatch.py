@@ -15,7 +15,7 @@ import numpy as np
 from actdyn.utils.figure_io import load_plotting, save_figure
 
 from . import artifacts, data, theme
-from .groups import SuiteSource, suite_dir
+from .groups import SuiteSource, groups, suite_dir
 
 DOSE_POLICIES = [
     "adaptive",
@@ -25,77 +25,58 @@ DOSE_POLICIES = [
     "prbs",
 ]
 
-REQUIRED_SUITES = (
-    ("simple_system_identification", "duffing"),
-    ("simple_system_identification", "gated_duffing"),
-    ("model_mismatch", "duffing_parameter_mismatch"),
-    ("model_mismatch", "gated_duffing_parameter_mismatch"),
-    ("model_mismatch", "duffing_parameter_mismatch_mild"),
-    ("model_mismatch", "duffing_parameter_mismatch_strong"),
-    ("model_mismatch", "gated_duffing_parameter_mismatch_mild"),
-    ("model_mismatch", "gated_duffing_parameter_mismatch_strong"),
-)
+# Dose grid the figure understands; suites are matched against the catalog so
+# retired doses/families simply drop out instead of failing suite resolution.
+_DOSES = (("mild", "Mild"), ("", "Medium"), ("strong", "Strong"))
+_FAMILIES = (("duffing", "Duffing"), ("gated_duffing", "Gated Duffing"))
+
+
+def _catalog_suite_ids(group_name: str) -> set[str]:
+    return {ref.suite_id for ref in groups().get(group_name, [])}
+
+
+def _dose_suite_keys() -> list[tuple[str, str, str, str, str]]:
+    """Return (group, suite_id, family_label, dose, dose_label) for suites in the catalog."""
+    baseline_ids = _catalog_suite_ids("simple_system_identification")
+    mismatch_ids = _catalog_suite_ids("model_mismatch")
+    keys: list[tuple[str, str, str, str, str]] = []
+    for family_id, family_label in _FAMILIES:
+        if family_id in baseline_ids:
+            keys.append(
+                ("simple_system_identification", family_id, family_label, "none", "None")
+            )
+        for dose_suffix, dose_label in _DOSES:
+            suite_id = f"{family_id}_parameter_mismatch"
+            if dose_suffix:
+                suite_id = f"{suite_id}_{dose_suffix}"
+            if suite_id in mismatch_ids:
+                keys.append(
+                    ("model_mismatch", suite_id, family_label, dose_suffix or "medium", dose_label)
+                )
+    return keys
+
+
+def required_suites() -> tuple[tuple[str, str], ...]:
+    return tuple((group, suite_id) for group, suite_id, *_rest in _dose_suite_keys())
 
 
 def dose_sources() -> list[SuiteSource]:
-    return [
+    sources = [
         SuiteSource(
-            "duffing",
-            "None",
-            suite_dir("simple_system_identification", "duffing"),
-            dose="none",
-            family="Duffing",
-        ),
-        SuiteSource(
-            "duffing_parameter_mismatch_mild",
-            "Mild",
-            suite_dir("model_mismatch", "duffing_parameter_mismatch_mild"),
-            dose="mild",
-            family="Duffing",
-        ),
-        SuiteSource(
-            "duffing_parameter_mismatch",
-            "Medium",
-            suite_dir("model_mismatch", "duffing_parameter_mismatch"),
-            dose="medium",
-            family="Duffing",
-        ),
-        SuiteSource(
-            "duffing_parameter_mismatch_strong",
-            "Strong",
-            suite_dir("model_mismatch", "duffing_parameter_mismatch_strong"),
-            dose="strong",
-            family="Duffing",
-        ),
-        SuiteSource(
-            "gated_duffing",
-            "None",
-            suite_dir("simple_system_identification", "gated_duffing"),
-            dose="none",
-            family="Gated Duffing",
-        ),
-        SuiteSource(
-            "gated_duffing_parameter_mismatch_mild",
-            "Mild",
-            suite_dir("model_mismatch", "gated_duffing_parameter_mismatch_mild"),
-            dose="mild",
-            family="Gated Duffing",
-        ),
-        SuiteSource(
-            "gated_duffing_parameter_mismatch",
-            "Medium",
-            suite_dir("model_mismatch", "gated_duffing_parameter_mismatch"),
-            dose="medium",
-            family="Gated Duffing",
-        ),
-        SuiteSource(
-            "gated_duffing_parameter_mismatch_strong",
-            "Strong",
-            suite_dir("model_mismatch", "gated_duffing_parameter_mismatch_strong"),
-            dose="strong",
-            family="Gated Duffing",
-        ),
+            suite_id,
+            dose_label,
+            suite_dir(group, suite_id),
+            dose=dose,
+            family=family_label,
+        )
+        for group, suite_id, family_label, dose, dose_label in _dose_suite_keys()
     ]
+    if not sources:
+        raise RuntimeError(
+            "No mismatch dose-response suites found in the catalog "
+            "(simple_system_identification / model_mismatch groups)"
+        )
+    return sources
 
 
 @dataclass(frozen=True)
@@ -151,11 +132,21 @@ def plot_mismatch_dose_response(
     plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    dose_order = ["none", "mild", "medium", "strong"]
-    dose_labels = ["None", "Mild", "Medium", "Strong"]
+    canonical = [("none", "None"), ("mild", "Mild"), ("medium", "Medium"), ("strong", "Strong")]
+    doses_present = {str(row["dose"]) for row in rows}
+    dose_order = [dose for dose, _label in canonical if dose in doses_present]
+    dose_labels = [label for dose, label in canonical if dose in doses_present]
+    families: list[str] = []
+    for row in rows:
+        family = str(row["family"])
+        if family not in families:
+            families.append(family)
     x = np.arange(len(dose_order), dtype=np.float64)
-    fig, axes = plt_module.subplots(1, 2, figsize=(7.1, 2.9), sharey=False)
-    for ax, family in zip(axes, ["Duffing", "Gated Duffing"], strict=True):
+    fig, axes = plt_module.subplots(
+        1, len(families), figsize=(3.55 * len(families), 2.9), sharey=False, squeeze=False
+    )
+    axes = axes.ravel()
+    for ax, family in zip(axes, families, strict=True):
         family_rows = [row for row in rows if row["family"] == family]
         for policy_id in policy_ids:
             y = []
@@ -195,7 +186,7 @@ def plot_mismatch_dose_response(
         ax.set_ylim(min(-0.1, min(finite_family_r2) - 0.05) if finite_family_r2 else -0.1, 1.05)
         ax.set_title(f"{family} mismatch dose-response")
         style_axis(ax)
-    axes[1].legend(loc="upper left", fontsize=6.4)
+    axes[-1].legend(loc="upper left", fontsize=6.4)
     fig.tight_layout(w_pad=1.0)
     return save_figure(fig, output_path, plt_module=plt_module)
 

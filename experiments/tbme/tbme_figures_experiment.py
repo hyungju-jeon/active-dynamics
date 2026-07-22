@@ -55,7 +55,7 @@ _experiment_OBJECTIVE_DEFINITION_PLOTS = {"objective_ablation"}
 _experiment_REQUIRED_SUITES_BY_PLOT = {
     "bottleneck_sweep": _bottleneck.REQUIRED_SUITES,
     "objective_ablation": _ablation.REQUIRED_SUITES,
-    "mismatch_dose_response": _mismatch.REQUIRED_SUITES,
+    "mismatch_dose_response": _mismatch.required_suites(),
 }
 
 
