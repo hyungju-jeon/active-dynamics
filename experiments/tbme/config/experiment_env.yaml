@@ -325,11 +325,13 @@ environments:
     max_firing_rate_target: 210.0
     loading_target_snr_db: null
 
-  tbme_simple_tri_gate_poisson:
+  # Formerly tbme_simple_tri_gate_poisson; nuisance ratio h/theta1=5, M gate
+  # theta3 loading 0.75, compact paired-Poisson observations.
+  tbme_three_gate_diagnostic:
     extends: tbme_compound_tri_gate
-    system_id: simple_tri_gate_poisson
-    system_label: Simple three-gate diagnostic (h/theta1=5, M3=0.75) / compact Poisson observations
-    dynamics_type: simple_tri_gate
+    system_id: three_gate_diagnostic
+    system_label: Three-gate diagnostic / compact Poisson observations
+    dynamics_type: three_gate_diagnostic
     latent_dim: 5
     action_dim: 1
     embedding_dim: 3

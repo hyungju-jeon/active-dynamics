@@ -494,7 +494,7 @@ def test_compound_tri_gate_canonical_fixed_gate_rankings():
     assert torch.linalg.svdvals(ambiguity_param)[1] < 0.01
 
 
-def test_simple_tri_gate_fixed_gate_rankings_and_full_rank_main_gate():
+def test_three_gate_diagnostic_fixed_gate_rankings_and_full_rank_main_gate():
     """Every nonzero true parameter remains identifiable at the full-rank M gate."""
     from actdyn.environment.vectorfield import (
         jacobian_param_torch,
@@ -518,10 +518,10 @@ def test_simple_tri_gate_fixed_gate_rankings_and_full_rank_main_gate():
 
     for gate, state in state_by_gate.items():
         f_theta = jacobian_param_torch(
-            "simple_tri_gate", state, params, dynamics_alpha=1.0
+            "three_gate_diagnostic", state, params, dynamics_alpha=1.0
         )[0].detach()
         f_state = jacobian_state_torch(
-            "simple_tri_gate", state, params, dynamics_alpha=1.0
+            "three_gate_diagnostic", state, params, dynamics_alpha=1.0
         )[0].detach()
         sensitivity = torch.zeros(5, 3)
         covariance = eye_state.clone()
@@ -564,13 +564,13 @@ def test_simple_tri_gate_fixed_gate_rankings_and_full_rank_main_gate():
         assert scores["ambiguity"][objective] > scores["main"][objective]
 
     ambiguity_param = jacobian_param_torch(
-        "simple_tri_gate", state_by_gate["ambiguity"], params, dynamics_alpha=1.0
+        "three_gate_diagnostic", state_by_gate["ambiguity"], params, dynamics_alpha=1.0
     )[0]
     ambiguity_state = jacobian_state_torch(
-        "simple_tri_gate", state_by_gate["ambiguity"], params, dynamics_alpha=1.0
+        "three_gate_diagnostic", state_by_gate["ambiguity"], params, dynamics_alpha=1.0
     )[0]
     main_param = jacobian_param_torch(
-        "simple_tri_gate", state_by_gate["main"], params, dynamics_alpha=1.0
+        "three_gate_diagnostic", state_by_gate["main"], params, dynamics_alpha=1.0
     )[0]
     assert float(ambiguity_state[1, 4].detach()) == pytest.approx(100.0, abs=1e-4)
     nuisance_ratio = float(ambiguity_state[1, 4].detach()) / float(

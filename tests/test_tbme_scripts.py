@@ -332,33 +332,147 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     monkeypatch.setitem(module._figures.GROUPS, "flex_comparison", refs)
     mean_path = tmp_path / "assets" / "tbme_fig_flex_comparison.pdf"
     median_path = tmp_path / "assets" / "median_iqr" / "tbme_fig_flex_comparison.pdf"
+    # One bar figure plus one recovery figure for each of the three condition groups.
+    expected_stems = [
+        f"tbme_fig_flex_comparison_{suffix}{recovery}"
+        for suffix in ("baseline", "hard", "snr")
+        for recovery in ("", "_recovery")
+    ]
 
-    assert module._asset_plot_flex_comparison(
-        mean_path,
-        r2_summary="mean_sem",
-    ) == mean_path
-    assert module._asset_plot_flex_comparison(
+    mean_written = module._asset_plot_flex_comparison(mean_path, r2_summary="mean_sem")
+    median_written = module._asset_plot_flex_comparison(
         median_path,
         r2_summary="median_iqr",
-    ) == median_path
-    assert mean_path.exists()
-    assert mean_path.with_suffix(".csv").exists()
-    assert median_path.exists()
-    assert median_path.with_suffix(".csv").exists()
+    )
+    assert [path.stem for path in mean_written] == expected_stems
+    assert [path.stem for path in median_written] == expected_stems
+    assert all(path.exists() for path in mean_written + median_written)
+    for suffix in ("baseline", "hard", "snr"):
+        for base in (mean_path, median_path):
+            bar_path = base.with_name(f"{base.stem}_{suffix}{base.suffix}")
+            assert bar_path.with_suffix(".csv").exists()
+    assert module._ASSET_FLEX_POLICIES == ("flex_true", "flex_filter", "flex_rollback")
     assert "flex_rollback" in module._ASSET_MATCHED_POLICIES
     assert "flex" not in module._ASSET_MATCHED_POLICIES
+    # The variant labels are local to this figure; elsewhere flex_rollback is FLEX.
     assert module._asset_policy_label("flex_rollback") == "FLEX"
-    mean_rows = read_trace_csv(mean_path.with_suffix(".csv"))
+    assert (
+        module._asset_policy_label("flex_rollback", module._ASSET_FLEX_LABELS)
+        == "FLEX (EKF+stable)"
+    )
+    mean_rows = read_trace_csv(
+        mean_path.with_name(f"{mean_path.stem}_baseline.csv")
+    )
     failed_row = next(
         row
         for row in mean_rows
         if row["experiment"] == "gated_duffing" and row["policy_id"] == "flex_filter"
     )
-    assert failed_row["policy_label"] == "FLEX upstream / filtered"
+    assert failed_row["policy_label"] == "FLEX (EKF)"
     assert failed_row["n_total"] == "2"
     assert failed_row["n_r2"] == "1"
     assert failed_row["n_r2_nonfinite"] == "1"
     assert failed_row["r2_nonfinite_rate"] == "0.5"
+
+
+def _write_tri_gate_run(
+    root: Path, *, policy_id: str, seed: int, final_error: float, final_r2: float
+) -> None:
+    run_dir = root / policy_id / f"seed_{seed}" / "repeat_01"
+    run_dir.mkdir(parents=True)
+    metadata = {
+        "exp_id": "three_gate_diagnostic",
+        "policy_id": policy_id,
+        "seed": seed,
+        "embedding_error_final": final_error,
+        "dt": 0.01,
+        "total_steps": 40,
+    }
+    (run_dir / "run_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    write_trace_csv(
+        run_dir / "trajectory_r2_trace.csv",
+        [
+            {"step": 0, "trajectory_r2": 0.0},
+            {"step": 20, "trajectory_r2": final_r2 / 2.0},
+            {"step": 40, "trajectory_r2": final_r2},
+        ],
+        ["step", "trajectory_r2"],
+    )
+    # Selector dwells at rest, then gate A, then gate M.
+    selector = [-1.0] * 10 + [-0.5] * 10 + [0.3] * 20
+    write_trace_csv(
+        run_dir / "state_action_trace.csv",
+        [{"step": idx, "true_x": value} for idx, value in enumerate(selector)],
+        ["step", "true_x"],
+    )
+
+
+def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None:
+    pytest.importorskip("matplotlib")
+    from experiments.tbme import tbme_figures_assets as module
+
+    for seed in (0, 1):
+        _write_tri_gate_run(
+            tmp_path,
+            policy_id="compound_active_planning",
+            seed=seed,
+            final_error=0.5 + 0.1 * seed,
+            final_r2=0.9,
+        )
+        _write_tri_gate_run(
+            tmp_path,
+            policy_id="random",
+            seed=seed,
+            final_error=1.7,
+            final_r2=0.2,
+        )
+    output_path = tmp_path / "assets" / "tbme_fig_gate_diagnostic.pdf"
+
+    written = module._asset_plot_gate_diagnostic(
+        output_path,
+        r2_summary="median_iqr",
+        result_roots=(tmp_path,),
+    )
+
+    assert written == output_path
+    assert output_path.exists()
+    # The suite ships with the objective_ablation group, so the assets CLI can
+    # resolve its session tracks directory as the default result root.
+    assert any(
+        ref.suite_id == module._ASSET_TRI_GATE_EXP_ID
+        for ref in module._figures.GROUPS["objective_ablation"]
+    )
+    rows = read_trace_csv(output_path.with_suffix(".csv"))
+    assert [row["policy_id"] for row in rows] == [
+        "compound_active_planning",
+        "random",
+    ]
+    paldi_row = rows[0]
+    assert paldi_row["label"] == "PALDI"
+    assert paldi_row["n_seeds"] == "2"
+    occupancy = [
+        float(paldi_row[key])
+        for key in ("rest_fraction", "gate_A_fraction", "gate_B_fraction", "gate_M_fraction")
+    ]
+    assert occupancy == pytest.approx([0.25, 0.25, 0.0, 0.5])
+
+    trajectories_path = tmp_path / "assets" / "tbme_fig_gate_diagnostic_trajectories.pdf"
+    assert (
+        module._asset_plot_gate_diagnostic_trajectories(
+            trajectories_path,
+            result_roots=(tmp_path,),
+            exemplar_seed=0,
+        )
+        == trajectories_path
+    )
+    assert trajectories_path.exists()
+
+    with pytest.raises(RuntimeError, match="No trajectory R2 curves available"):
+        module._asset_plot_gate_diagnostic(
+            tmp_path / "assets" / "missing.pdf",
+            r2_summary="median_iqr",
+            result_roots=(tmp_path / "does_not_exist",),
+        )
 
 
 def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:
@@ -463,8 +577,8 @@ def test_tbme_catalog_define_expected_matrices():
         (0.35, 0.35, 0.35, 0.35, 0.035)
     )
     assert compound_poisson.observation_loading_repeats_per_sign == 16
-    simple = bundle.environment_presets["tbme_simple_tri_gate_poisson"]
-    assert simple.resolved_dynamics_type() == "simple_tri_gate"
+    simple = bundle.environment_presets["tbme_three_gate_diagnostic"]
+    assert simple.resolved_dynamics_type() == "three_gate_diagnostic"
     assert simple.latent_dim == 5
     assert simple.action_dim == 1
     assert simple.embedding_dim == 3
@@ -588,10 +702,10 @@ def test_tbme_catalog_define_expected_matrices():
         "random",
     ]
     simple_suite = _load_module(
-        "tbme_simple_tri_gate_suite",
+        "tbme_three_gate_diagnostic_suite",
         "experiments/tbme/exp_objective_ablation.py",
-    ).EXPERIMENT_SUITES["simple_tri_gate_poisson"]
-    assert simple_suite["env_preset_id"] == "tbme_simple_tri_gate_poisson"
+    ).EXPERIMENT_SUITES["three_gate_diagnostic"]
+    assert simple_suite["env_preset_id"] == "tbme_three_gate_diagnostic"
     assert simple_suite["total_steps"] == 2000
     assert simple_suite["model_ids"] == compound_suite["model_ids"]
 
@@ -1021,7 +1135,7 @@ def test_trajectory_r2_many_supports_targeted_compound_gate_starts():
     assert observed[1] < 0.9
 
 
-def test_trajectory_r2_many_scores_all_simple_tri_gate_parameters():
+def test_trajectory_r2_many_scores_all_three_gate_diagnostic_parameters():
     """The fixed validation metric must expose errors in theta_1, theta_2, and theta_3."""
     from actdyn.utils.validation import trajectory_r2_vectorfield_many
 
@@ -1036,9 +1150,9 @@ def test_trajectory_r2_many_scores_all_simple_tri_gate_parameters():
             dtype=torch.float32,
         ),
         e_true=torch.tensor([1.0, 1.0, 1.0], dtype=torch.float32),
-        true_dynamics_type="simple_tri_gate",
+        true_dynamics_type="three_gate_diagnostic",
         true_full_params=np.asarray([1.0, 1.0, 1.0], dtype=np.float32),
-        estimator_dynamics_type="simple_tri_gate",
+        estimator_dynamics_type="three_gate_diagnostic",
         estimator_full_params=np.asarray([1.0, 1.0, 1.0], dtype=np.float32),
         true_min_embedding_dim=3,
         estimator_min_embedding_dim=3,
@@ -1061,7 +1175,7 @@ def test_trajectory_r2_many_scores_all_simple_tri_gate_parameters():
     assert np.all(observed[1:] < 0.99)
 
 
-def test_simple_tri_gate_reach_hold_baseline_separates_transit_from_dwell():
+def test_three_gate_diagnostic_reach_hold_baseline_separates_transit_from_dwell():
     from experiments.tbme.tbme_figures_experiment import (
         _reach_hold_selector_occupancy,
     )

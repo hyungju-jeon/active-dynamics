@@ -675,7 +675,7 @@ class CompoundTriGate(VectorField):
         )
 
 
-class SimpleTriGate(VectorField):
+class ThreeGateDiagnostic(VectorField):
     r"""Five-state, three-parameter system exposing three acquisition traps.
 
     For ``z=(r,s_1,s_2,s_3,h)``, ``theta=(theta_1,theta_2,theta_3)``, and Gaussian gates

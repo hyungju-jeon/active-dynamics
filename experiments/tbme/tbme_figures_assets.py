@@ -28,8 +28,12 @@ from .tbme_figures import (
     _write_text,
 )
 from .tbme_figures_experiment import (
+    _COMPOUND_POLICY_ORDER,
     _ExperimentRunRecord,
     _ExperimentSuiteSource,
+    _compound_curve,
+    _compound_summary_rows,
+    _compound_trace_records,
     _experiment_C_NEUTRAL_FILL,
     _experiment_C_NEUTRAL_LIGHT,
     _experiment_C_STROKE,
@@ -42,6 +46,7 @@ from .tbme_figures_experiment import (
     _experiment_r2_threshold_step,
     _experiment_r2_threshold_times,
     _experiment_short_policy_label,
+    _reach_hold_selector_occupancy,
     _style_experiment_axis,
     plot_neutral_vector_field,
 )
@@ -83,22 +88,39 @@ _ASSET_MATCHED_POLICIES = [
 ]
 _ASSET_R2_CEILING_REPEATS = 48
 _ASSET_R2_SUMMARIES = ("mean_sem", "median_iqr")
-_ASSET_FLEX_POLICIES = ("flex", "flex_filter", "flex_true", "flex_rollback")
+# The appendix variant figure separates the two FLEX adaptations: the state fed to
+# the parameter update, and whether the acceptance test guards it.
+_ASSET_FLEX_POLICIES = ("flex_true", "flex_filter", "flex_rollback")
 _ASSET_FLEX_LABELS = {
-    "flex": "FLEX clip / filtered",
-    "flex_filter": "FLEX upstream / filtered",
-    "flex_true": "FLEX upstream / true",
-    "flex_rollback": "FLEX safe rollback / filtered",
+    "flex_true": "FLEX (true)",
+    "flex_filter": "FLEX (EKF)",
+    "flex_rollback": "FLEX (EKF+stable)",
 }
+# FLEX variants lose whole seeds to the unguarded update, so their bars need room
+# below zero; whiskers past this floor are drawn as clipped.
+_ASSET_FLEX_BAR_YLIM = (-1.0, 1.0)
 
 
-def _asset_policy_label(policy_id: str) -> str:
+def _asset_policy_label(
+    policy_id: str, policy_labels: Mapping[str, str] | None = None
+) -> str:
+    if policy_labels is not None and policy_id in policy_labels:
+        return policy_labels[policy_id]
     return _POLICY_LABELS.get(policy_id, _experiment_short_policy_label(policy_id))
 
 
+# Aliases that keep a policy visually identified with its counterpart elsewhere in
+# the manuscript. Safe because no asset figure draws both members of a pair.
+_ASSET_COLOR_ALIASES = {
+    # The rollback-stabilized baseline still reads as FLEX.
+    "flex_rollback": "flex",
+    # The full p-EIG objective carries the PALDI color of the other figures.
+    "active_planning": "adaptive",
+}
+
+
 def _asset_baseline_policy_color(policy_id: str) -> str:
-    """Keep the rollback-stabilized baseline visually identified as FLEX."""
-    return _policy_color("flex" if policy_id == "flex_rollback" else policy_id)
+    return _policy_color(_ASSET_COLOR_ALIASES.get(policy_id, policy_id))
 
 
 def _asset_parse_r2_summaries(raw: str) -> list[str]:
@@ -123,6 +145,7 @@ _ASSET_LABEL_SIZE = 8.0
 _ASSET_TICK_SIZE = 6.0
 _ASSET_PREDICTIVE_R2_LABEL = "Predictive R²"
 _ASSET_FINAL_R2_LABEL = "Final predictive R²"
+_ASSET_SINGLE_COLUMN_WIDTH = 3.5
 
 
 def _apply_asset_style(plt_module: Any | None = None) -> None:
@@ -320,6 +343,8 @@ def _asset_plot_r2_curves(
     ylabel: bool,
     r2_summary: str,
     show_inset: bool = False,
+    xlabel: bool = True,
+    policy_labels: Mapping[str, str] | None = None,
 ) -> None:
     from matplotlib.ticker import FixedLocator, FormatStrFormatter, NullFormatter
 
@@ -335,7 +360,7 @@ def _asset_plot_r2_curves(
         upper = np.asarray([row["upper"] for row in rows], dtype=np.float64)
         color = _asset_baseline_policy_color(policy_id)
         curve_series.append(
-            (steps, values, lower, upper, color, _asset_policy_label(policy_id))
+            (steps, values, lower, upper, color, _asset_policy_label(policy_id, policy_labels))
         )
 
     if not curve_series:
@@ -388,7 +413,8 @@ def _asset_plot_r2_curves(
         panel_label, loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
     ax.set_title(title, loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
-    ax.set_xlabel("Environment steps")
+    if xlabel:
+        ax.set_xlabel("Environment steps")
     if ylabel:
         ax.set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
 
@@ -1261,37 +1287,64 @@ def _asset_plot_recovery_curves(
     sources: Sequence[_ExperimentSuiteSource],
     policy_ids: Sequence[str],
     r2_summary: str,
+    single_column: bool = False,
+    policy_labels: Mapping[str, str] | None = None,
 ) -> Path:
-    """Standalone R^2 recovery-curve panels (one per condition)."""
+    """Standalone R^2 recovery-curve panels (one per condition).
+
+    Conditions run across a double-column row by default; ``single_column``
+    stacks them down a 3.5 in column instead, sharing one x axis.
+    """
     _asset_require_suite_dirs([source.suite_dir for source in sources])
     plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(
-        1, len(sources), figsize=(2.42 * len(sources), 2.35), squeeze=False
-    )
+    n_source = len(sources)
+    if single_column:
+        legend_ncol = 3
+        legend_rows = int(np.ceil((len(policy_ids) + 1) / legend_ncol))
+        legend_height = 0.16 * legend_rows + 0.08
+        fig_height = 1.45 * n_source + 0.45 + legend_height
+        fig, axes = plt_module.subplots(
+            n_source,
+            1,
+            figsize=(_ASSET_SINGLE_COLUMN_WIDTH, fig_height),
+            squeeze=False,
+            sharex=True,
+        )
+        panel_axes = [axes[idx, 0] for idx in range(n_source)]
+    else:
+        legend_ncol = len(policy_ids) + 1
+        fig_height = 2.35
+        fig, axes = plt_module.subplots(
+            1, n_source, figsize=(2.42 * n_source, fig_height), squeeze=False
+        )
+        panel_axes = [axes[0, idx] for idx in range(n_source)]
     for idx, source in enumerate(sources):
         _asset_plot_r2_curves(
-            axes[0, idx],
+            panel_axes[idx],
             source.suite_dir,
             policy_ids,
             title=f"{source.label}: recovery",
             panel_label=chr(65 + idx),
-            ylabel=idx == 0,
+            ylabel=single_column or idx == 0,
+            xlabel=idx == n_source - 1 if single_column else True,
             r2_summary=r2_summary,
+            policy_labels=policy_labels,
         )
-    handles, labels = axes[0, 0].get_legend_handles_labels()
+    handles, labels = panel_axes[0].get_legend_handles_labels()
     fig.legend(
         handles,
         labels,
         loc="upper center",
         bbox_to_anchor=(0.5, 1.01),
-        ncol=len(policy_ids) + 1,
+        ncol=legend_ncol,
         fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
         handlelength=1.4,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90), w_pad=0.75)
+    top = 1.0 - (legend_height / fig_height) if single_column else 0.90
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, top), w_pad=0.75, h_pad=0.7)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
@@ -1301,8 +1354,19 @@ def _asset_plot_final_bar(
     sources: Sequence[_ExperimentSuiteSource],
     policy_ids: Sequence[str],
     metric_rows: Sequence[Mapping[str, Any]],
+    single_column: bool = False,
+    short: bool = False,
+    ylim: tuple[float, float] = (0.0, 1.0),
+    policy_labels: Mapping[str, str] | None = None,
+    policy_legend: bool = True,
 ) -> Path:
-    """Standalone final-performance bars, colored by policy with per-condition shade."""
+    """Standalone final-performance bars, colored by policy with per-condition shade.
+
+    Width tracks the policy count by default; ``single_column`` pins it to the
+    3.5 in manuscript column instead, and ``short`` trims the axes to the flatter
+    manuscript proportion. Bars and whiskers past ``ylim`` are drawn clipped, with
+    a caret at the floor marking the ones that run off the bottom.
+    """
     import matplotlib.colors as mcolors
     from matplotlib.lines import Line2D
     from matplotlib.patches import Patch
@@ -1323,13 +1387,25 @@ def _asset_plot_final_bar(
     n_policy = len(active_policies)
     cond_alpha = np.linspace(1.0, 0.32, n_cond) if n_cond > 1 else np.array([1.0], dtype=np.float64)
 
-    fig, ax = plt_module.subplots(figsize=(1.6 + 0.5 * max(n_policy, 1), 2.35))
+    # Without the policy legend the x tick labels carry the policy names, so the
+    # condition legend takes the strip above the axes instead of sitting inside it.
+    n_legend = n_policy if policy_legend else n_cond
+    legend_ncol = min(n_legend, 4) if single_column else n_legend
+    legend_rows = int(np.ceil(n_legend / max(legend_ncol, 1)))
+    fig_width = _ASSET_SINGLE_COLUMN_WIDTH if single_column else 1.6 + 0.5 * max(n_policy, 1)
+    # A wrapped policy legend needs its own strip above the axes, not axes height.
+    # One row reserves 8% of the default figure, matching the unwrapped layout.
+    legend_height = 0.188 + 0.16 * (legend_rows - 1)
+    fig_height = (1.55 if short else 2.35) + 0.16 * (legend_rows - 1)
+    fig, ax = plt_module.subplots(figsize=(fig_width, fig_height))
+    y_floor, y_top = float(ylim[0]), float(ylim[1])
     x = np.arange(n_policy, dtype=np.float64)
     bar_width = 0.8 / max(n_cond, 1)
+    clipped_x: list[float] = []
     for cond_idx, source in enumerate(sources):
         offset = (cond_idx - (n_cond - 1) / 2.0) * bar_width
         values, lower_errors, upper_errors, faces, edges = [], [], [], [], []
-        for policy_id in active_policies:
+        for policy_idx, policy_id in enumerate(active_policies):
             value, lower, upper = _asset_method_final_r2(
                 metric_rows, source.exp_id, policy_id
             )
@@ -1339,6 +1415,8 @@ def _asset_plot_final_bar(
             color = _asset_baseline_policy_color(policy_id)
             faces.append(mcolors.to_rgba(color, alpha=float(cond_alpha[cond_idx])))
             edges.append(color)
+            if min(value, lower if np.isfinite(lower) else value) < y_floor:
+                clipped_x.append(float(x[policy_idx] + offset))
         ax.bar(
             x + offset,
             values,
@@ -1352,29 +1430,29 @@ def _asset_plot_final_bar(
         )
 
     ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
-    ax.set_ylim(0.0, 1.0)
+    ax.set_ylim(y_floor, y_top)
+    if y_floor < 0.0:
+        ax.set_yticks(np.arange(y_floor, y_top + 1e-9, 0.5))
+        ax.axhline(0.0, color=_experiment_C_STROKE, linewidth=0.5)
+        # Carets mark bars whose value or lower band runs past the axis floor;
+        # the exact numbers stay in the companion CSV.
+        ax.plot(
+            clipped_x,
+            np.full(len(clipped_x), y_floor),
+            marker="v",
+            linestyle="none",
+            markersize=2.2,
+            color=_experiment_C_STROKE,
+            clip_on=False,
+        )
     ax.set_xticks(x)
     ax.set_xticklabels(
-        [_asset_policy_label(policy_id) for policy_id in active_policies],
+        [_asset_policy_label(policy_id, policy_labels) for policy_id in active_policies],
         rotation=30,
         ha="right",
     )
     _style_manuscript_axis(ax, grid_axis="y")
 
-    policy_handles = [
-        Line2D([0], [0], color=_asset_baseline_policy_color(policy_id), linewidth=1.6)
-        for policy_id in active_policies
-    ]
-    fig.legend(
-        policy_handles,
-        [_asset_policy_label(policy_id) for policy_id in active_policies],
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.02),
-        ncol=n_policy,
-        fontsize=_ASSET_TICK_SIZE,
-        columnspacing=1.0,
-        handlelength=1.4,
-    )
     cond_handles = [
         Patch(
             facecolor=mcolors.to_rgba(_experiment_C_STROKE, alpha=float(cond_alpha[cond_idx])),
@@ -1383,112 +1461,49 @@ def _asset_plot_final_bar(
         )
         for cond_idx in range(n_cond)
     ]
-    ax.legend(
-        cond_handles,
-        [source.label for source in sources],
-        loc="upper left",
-        fontsize=_ASSET_TICK_SIZE,
-        ncol=min(n_cond, 3),
-        handlelength=1.2,
-        borderpad=0.3,
-        columnspacing=1.0,
-    )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92))
+    cond_labels = [source.label for source in sources]
+    if policy_legend:
+        policy_handles = [
+            Line2D([0], [0], color=_asset_baseline_policy_color(policy_id), linewidth=1.6)
+            for policy_id in active_policies
+        ]
+        fig.legend(
+            policy_handles,
+            [_asset_policy_label(policy_id, policy_labels) for policy_id in active_policies],
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.02),
+            ncol=legend_ncol,
+            fontsize=_ASSET_TICK_SIZE,
+            columnspacing=1.0,
+            handlelength=1.4,
+        )
+        ax.legend(
+            cond_handles,
+            cond_labels,
+            loc="upper left",
+            fontsize=_ASSET_TICK_SIZE,
+            ncol=min(n_cond, 3),
+            handlelength=1.2,
+            borderpad=0.3,
+            columnspacing=1.0,
+        )
+    else:
+        fig.legend(
+            cond_handles,
+            cond_labels,
+            loc="upper center",
+            bbox_to_anchor=(0.5, 1.02),
+            ncol=legend_ncol,
+            fontsize=_ASSET_TICK_SIZE,
+            columnspacing=1.0,
+            handlelength=1.2,
+        )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 1.0 - legend_height / fig_height))
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
-def _asset_plot_method_comparison(
-    output_path: Path,
-    *,
-    figure_title: str,
-    sources: Sequence[_ExperimentSuiteSource],
-    policy_ids: Sequence[str],
-    r2_summary: str,
-) -> Path:
-    _asset_require_suite_dirs([source.suite_dir for source in sources])
-    metric_rows = _asset_method_metric_rows(
-        sources,
-        policy_ids,
-        r2_summary=r2_summary,
-    )
-    _asset_write_method_csv(
-        output_path.with_suffix(".csv"),
-        metric_rows,
-        r2_summary=r2_summary,
-    )
-    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    fig = plt_module.figure(figsize=(7.25, 4.55))
-    gs = fig.add_gridspec(2, len(sources), height_ratios=[1.18, 1.0])
-    curve_axes = [fig.add_subplot(gs[0, idx]) for idx in range(len(sources))]
-    ax_bar = fig.add_subplot(gs[1, :])
-    for source_idx, source in enumerate(sources):
-        _asset_plot_r2_curves(
-            curve_axes[source_idx],
-            source.suite_dir,
-            policy_ids,
-            title=f"{source.label}: recovery",
-            panel_label=chr(65 + source_idx),
-            ylabel=source_idx == 0,
-            r2_summary=r2_summary,
-        )
-
-    x = np.arange(len(policy_ids), dtype=np.float64) * 1.24
-    width = 0.15
-    offsets = (np.arange(len(sources), dtype=np.float64) - (len(sources) - 1) / 2.0) * 0.18
-    x_labels = [_asset_policy_label(policy_id) for policy_id in policy_ids]
-    bar_colors = (_experiment_C_STROKE, "#6F6A62", _experiment_C_NEUTRAL_LIGHT)
-    for source_idx, source in enumerate(sources):
-        source_rows = [row for row in metric_rows if row["experiment"] == source.exp_id]
-        final_r2 = []
-        lower_errors = []
-        upper_errors = []
-        for policy_id in policy_ids:
-            value, lower, upper = _asset_method_final_r2(
-                source_rows,
-                source.exp_id,
-                policy_id,
-            )
-            final_r2.append(value)
-            lower_errors.append(0.0 if not np.isfinite(lower) else max(0.0, value - lower))
-            upper_errors.append(0.0 if not np.isfinite(upper) else max(0.0, upper - value))
-        color = bar_colors[source_idx % len(bar_colors)]
-        ax_bar.bar(
-            x + offsets[source_idx],
-            final_r2,
-            width=width,
-            yerr=np.asarray([lower_errors, upper_errors], dtype=np.float64),
-            color=color,
-            edgecolor=_experiment_C_STROKE,
-            linewidth=0.4,
-            alpha=0.78,
-            capsize=1.6,
-            label=source.label,
-        )
-    ax_bar.set_ylabel(_ASSET_FINAL_R2_LABEL)
-    ax_bar.set_ylim(0.0, 1.0)
-    ax_bar.set_title(f"{chr(65 + len(sources))}. {figure_title}: final performance")
-    ax_bar.set_xticks(x)
-    ax_bar.set_xticklabels(x_labels, rotation=34, ha="right", fontsize=6.0)
-    ax_bar.legend(loc="upper left", fontsize=6.0, ncol=len(sources))
-    _style_manuscript_axis(ax_bar, grid_axis="y")
-    handles, labels = curve_axes[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.01),
-        ncol=min(4, len(policy_ids)),
-        fontsize=_ASSET_TICK_SIZE,
-        columnspacing=0.9,
-        handlelength=1.4,
-    )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.92), w_pad=0.75, h_pad=1.0)
-    return save_figure(fig, output_path, plt_module=plt_module)
-
-
-def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> Path:
+def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> list[Path]:
+    """Single-column ablation assets: final-R2 bars plus a stacked recovery figure."""
     sources = [
         _ExperimentSuiteSource(source.exp_id, label, source.suite_dir)
         for source, label in zip(
@@ -1496,105 +1511,649 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> Pat
             ("Default", "Asymmetric", "Challenging"),
         )
     ]
-    return _asset_plot_method_comparison(
-        output_path,
-        figure_title="Objective ablation",
-        sources=sources,
-        policy_ids=_experiment_OBJECTIVE_POLICIES,
+    _asset_require_suite_dirs([source.suite_dir for source in sources])
+    metric_rows = _asset_method_metric_rows(
+        sources,
+        _experiment_OBJECTIVE_POLICIES,
         r2_summary=r2_summary,
+    )
+    _asset_write_method_csv(
+        output_path.with_suffix(".csv"),
+        metric_rows,
+        r2_summary=r2_summary,
+    )
+    recovery_path = output_path.with_name(f"{output_path.stem}_recovery{output_path.suffix}")
+    return [
+        _asset_plot_final_bar(
+            output_path,
+            sources=sources,
+            policy_ids=_experiment_OBJECTIVE_POLICIES,
+            metric_rows=metric_rows,
+            single_column=True,
+        ),
+        _asset_plot_recovery_curves(
+            recovery_path,
+            sources=sources,
+            policy_ids=_experiment_OBJECTIVE_POLICIES,
+            r2_summary=r2_summary,
+            single_column=True,
+        ),
+    ]
+
+
+# Designed three-gate objective diagnostic (compact Poisson observations).
+# The suite lives in the shared session tracks (objective_ablation group); the
+# asset reads the raw run traces because its panels need per-seed occupancy and
+# final-value quantiles that the suite summary does not carry.
+_ASSET_TRI_GATE_EXP_ID = "three_gate_diagnostic"
+_ASSET_TRI_GATE_LABELS = {
+    "compound_active_planning": "PALDI",
+    "compound_active_fully_observable": "Full obs.",
+    "compound_active_e_optimality": "E-opt.",
+    "compound_active_state_information": "State info",
+    "compound_active_dynamics": "Dyn. sens.",
+    "compound_active_observation_variance": "Obs. var.",
+    "compound_active_state_variance": "State var.",
+    "prbs": "PRBS",
+    "random": "Random",
+}
+_ASSET_TRI_GATE_CENTERS = (-0.5, -0.1, 0.3)
+_ASSET_TRI_GATE_WIDTH = 0.1
+# Exemplar seed for the trajectory panels, chosen by ranking matched seeds on
+# occupancy contrast: PALDI holds gate M while the fully observed objective
+# abandons M for gate A, with every panel showing its policy's modal behavior.
+# Population occupancy statistics live in the main diagnostic figure.
+_ASSET_TRI_GATE_EXEMPLAR_SEED = 90
+_ASSET_TRI_GATE_REST_CENTER = -1.0
+_ASSET_TRI_GATE_REST_CUTOFF = -0.75
+_ASSET_TRI_GATE_R2_YLIM = (-0.2, 1.0)
+# Gate identity colors couple the schematic (panel A) to the occupancy stacks
+# (panel D); they are deliberately darker than the pastel policy palette.
+_ASSET_TRI_GATE_GATE_COLORS = (
+    ("rest_fraction", "Rest", "#C8CDD1"),
+    ("gate_A_fraction", "A: confounded", "#C4564E"),
+    ("gate_B_fraction", "B: weak, balanced", "#6C5FB8"),
+    ("gate_M_fraction", "M: full rank", "#2F7D5B"),
+)
+
+
+def _asset_tri_gate_fixed_gate_scores() -> tuple[list[str], np.ndarray]:
+    """Each closed-form objective's own score with the state clamped at each gate.
+
+    Mirrors the fixed-gate ranking test: 40 coarse steps of the planner's
+    linearized propagation from the gate center with the true parameters and
+    identity initial covariances. This is a controlled gate-preference assay,
+    not a closed-loop occupancy prediction. The sample-based variance
+    objectives have no closed-form fixed-gate score and are deliberately
+    absent rather than proxied.
+    """
+    import torch
+
+    from actdyn.environment.vectorfield import (
+        jacobian_param_torch,
+        jacobian_state_torch,
+    )
+    from actdyn.utils.torch_utils import attenuated_state_information
+
+    params = torch.ones(3)
+    dt, horizon = 0.1, 40
+    eye_state, eye_parameter = torch.eye(5), torch.eye(3)
+    state_information = torch.diag(torch.tensor([0.09, 0.09, 0.09, 0.09, 0.0025]))
+    row_labels = ["PALDI", "Full obs.", "E-opt.", "State info", "Dyn. sens."]
+    matrix = np.zeros((len(row_labels), len(_ASSET_TRI_GATE_CENTERS)))
+    for gate_idx, center in enumerate(_ASSET_TRI_GATE_CENTERS):
+        state = torch.tensor([[center, 0.0, 0.0, 0.0, 0.0]])
+        f_theta = jacobian_param_torch(
+            "three_gate_diagnostic", state, params, dynamics_alpha=1.0
+        )[0].detach()
+        f_state = jacobian_state_torch(
+            "three_gate_diagnostic", state, params, dynamics_alpha=1.0
+        )[0].detach()
+        sensitivity = torch.zeros(5, 3)
+        covariance = eye_state.clone()
+        information = torch.zeros(3, 3)
+        full_information = torch.zeros(3, 3)
+        dynamics_score = 0.0
+        state_info_score = 0.0
+        for _ in range(horizon):
+            transition = eye_state + f_state * dt
+            sensitivity = transition @ sensitivity + f_theta * dt
+            attenuated = attenuated_state_information(covariance, state_information)
+            information += sensitivity.T @ attenuated @ sensitivity
+            full_information += sensitivity.T @ state_information @ sensitivity
+            dynamics_score += float(torch.trace(sensitivity.T @ covariance @ sensitivity))
+            state_info_score += float(
+                0.5 * torch.logdet(eye_state + covariance @ state_information)
+            )
+            covariance = transition @ covariance @ transition.T + 0.01 * eye_state
+        matrix[:, gate_idx] = (
+            float(0.5 * torch.logdet(eye_parameter + information)),
+            float(0.5 * torch.logdet(eye_parameter + full_information)),
+            float(torch.linalg.eigvalsh(information)[0]),
+            state_info_score,
+            dynamics_score,
+        )
+    return row_labels, matrix
+
+
+_ASSET_TRI_GATE_SCORE_POLICY_IDS = (
+    "compound_active_planning",
+    "compound_active_fully_observable",
+    "compound_active_e_optimality",
+    "compound_active_state_information",
+    "compound_active_dynamics",
+)
+
+
+def _asset_tri_gate_assignment_bands(top: float) -> list[tuple[float, float, str]]:
+    """Gate assignment regions (midpoint boundaries), tiling the axis gap-free.
+
+    These are the occupancy-classification regions, not the Gaussian gate
+    support; the gate width stays w = 0.1 in the dynamics.
+    """
+    gate_a, gate_b, gate_m = _ASSET_TRI_GATE_CENTERS
+    mid_ab = 0.5 * (gate_a + gate_b)
+    mid_bm = 0.5 * (gate_b + gate_m)
+    colors = [color for _key, _label, color in _ASSET_TRI_GATE_GATE_COLORS[1:]]
+    return [
+        (_ASSET_TRI_GATE_REST_CUTOFF, mid_ab, colors[0]),
+        (mid_ab, mid_bm, colors[1]),
+        (mid_bm, float(top), colors[2]),
+    ]
+
+
+def _asset_tri_gate_policy_color(policy_id: str) -> str:
+    """Color each objective as its counterpart in the other manuscript figures."""
+    base = policy_id.removeprefix("compound_")
+    return _asset_baseline_policy_color(
+        "adaptive" if base == "active_planning" else base
     )
 
 
-def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> Path:
-    """Plot mean/SEM or median/IQR R2 for the FLEX update/state ablation."""
+def _asset_plot_gate_diagnostic(
+    output_path: Path,
+    *,
+    r2_summary: str,
+    result_roots: Sequence[Path],
+) -> Path:
+    """Manuscript figure for the designed three-gate objective diagnostic.
+
+    (A) selector-axis schematic of the three gates, (B) response-balanced
+    rollout R2 curves, (C) final parameter error, (D) selector occupancy with
+    the deterministic reach-and-hold-M transit reference.
+    """
+    _asset_parse_r2_summaries(r2_summary)
+    records = _compound_trace_records(result_roots, exp_id=_ASSET_TRI_GATE_EXP_ID)
+    if not records:
+        roots_text = ", ".join(str(root) for root in result_roots)
+        raise RuntimeError(
+            f"No trajectory R2 curves available for {_ASSET_TRI_GATE_EXP_ID} in {roots_text}"
+        )
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+
+    summary_rows = _compound_summary_rows(
+        records,
+        gate_centers=_ASSET_TRI_GATE_CENTERS,
+        rest_cutoff=_ASSET_TRI_GATE_REST_CUTOFF,
+    )
+    _write_csv(
+        output_path.with_suffix(".csv"),
+        summary_rows,
+        (
+            "policy_id",
+            "label",
+            "n_seeds",
+            "parameter_error_mean",
+            "parameter_error_sem",
+            "parameter_error_median",
+            "parameter_error_q25",
+            "parameter_error_q75",
+            "trajectory_r2_mean",
+            "trajectory_r2_sem",
+            "trajectory_r2_median",
+            "trajectory_r2_q25",
+            "trajectory_r2_q75",
+            "rest_fraction",
+            "gate_A_fraction",
+            "gate_B_fraction",
+            "gate_M_fraction",
+        ),
+    )
+    r2_curves = _compound_curve(
+        records,
+        filename="trajectory_r2_trace.csv",
+        value_key="trajectory_r2",
+        stride=20,
+    )
+    transit_occupancy = _reach_hold_selector_occupancy(
+        rest_center=_ASSET_TRI_GATE_REST_CENTER,
+        target_center=_ASSET_TRI_GATE_CENTERS[-1],
+        gate_centers=_ASSET_TRI_GATE_CENTERS,
+        rest_cutoff=_ASSET_TRI_GATE_REST_CUTOFF,
+        selector_contraction=1.0,
+        dt=float(records[0].metadata.get("dt", 0.01)),
+        total_steps=int(records[0].metadata.get("total_steps", 2000)),
+    )
+
+    fig, axis_grid = plt_module.subplots(2, 2, figsize=(7.25, 4.4))
+    axes = list(axis_grid.ravel())
+
+    # A: fixed-gate objective-preference assay. Each row is one closed-form
+    # objective's own score with the state clamped at each gate, shaded relative
+    # to its row maximum (colors are comparable only within a row); the ring
+    # marks each objective's preferred gate. Sample-based variance objectives
+    # have no closed-form fixed-gate score and are omitted.
+    from matplotlib.patches import Rectangle
+
+    ax = axes[0]
+    score_rows, score_matrix = _asset_tri_gate_fixed_gate_scores()
+    row_max = score_matrix.max(axis=1, keepdims=True)
+    normalized = score_matrix / np.where(row_max > 0.0, row_max, 1.0)
+    ax.imshow(
+        normalized,
+        cmap="Blues",
+        vmin=0.0,
+        vmax=1.35,
+        aspect="auto",
+        interpolation="nearest",
+    )
+    gate_short = ("A: confounded", "B: balanced", "M: full rank")
+    gate_colors = [color for _key, _label, color in _ASSET_TRI_GATE_GATE_COLORS[1:]]
+    for row_idx in range(score_matrix.shape[0]):
+        best = int(np.argmax(score_matrix[row_idx]))
+        ax.add_patch(
+            Rectangle(
+                (best - 0.5, row_idx - 0.5),
+                1.0,
+                1.0,
+                fill=False,
+                edgecolor=gate_colors[best],
+                linewidth=1.4,
+            )
+        )
+        for col_idx in range(score_matrix.shape[1]):
+            value = normalized[row_idx, col_idx]
+            ax.text(
+                col_idx,
+                row_idx,
+                f"{value:.2f}" if value >= 0.005 else "0",
+                ha="center",
+                va="center",
+                fontsize=5.2,
+                color="#1F3044" if value < 0.6 else "white",
+            )
+    ax.set_xticks(range(len(gate_short)))
+    ax.set_xticklabels(gate_short)
+    for tick, color in zip(ax.get_xticklabels(), gate_colors, strict=True):
+        tick.set_color(color)
+        tick.set_fontweight("bold")
+    ax.set_yticks(range(len(score_rows)))
+    ax.set_yticklabels(score_rows)
+    for tick, policy_id in zip(
+        ax.get_yticklabels(), _ASSET_TRI_GATE_SCORE_POLICY_IDS, strict=True
+    ):
+        tick.set_color(_asset_tri_gate_policy_color(policy_id))
+    ax.tick_params(axis="both", length=0.0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.set_title(
+        "A", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+    )
+    ax.set_title(
+        "Fixed-gate objective preference", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0
+    )
+
+    # B: response-balanced rollout R2 over environment steps.
+    ax = axes[1]
+    for policy_id in _COMPOUND_POLICY_ORDER:
+        curve = r2_curves.get(policy_id, [])
+        if not curve:
+            continue
+        step = np.asarray([row["step"] for row in curve], dtype=np.float64)
+        if r2_summary == "median_iqr":
+            center = np.asarray([row["median"] for row in curve], dtype=np.float64)
+            lower = np.asarray([row["q25"] for row in curve], dtype=np.float64)
+            upper = np.asarray([row["q75"] for row in curve], dtype=np.float64)
+        else:
+            center = np.asarray([row["mean"] for row in curve], dtype=np.float64)
+            sem = np.asarray([row["sem"] for row in curve], dtype=np.float64)
+            lower, upper = center - sem, center + sem
+        is_paldi = policy_id == "compound_active_planning"
+        color = _asset_tri_gate_policy_color(policy_id)
+        ax.plot(
+            step,
+            center,
+            color=color,
+            linewidth=1.3 if is_paldi else 0.7,
+            alpha=1.0 if is_paldi else 0.85,
+            zorder=3 if is_paldi else 2,
+            label=_ASSET_TRI_GATE_LABELS[policy_id],
+        )
+        if is_paldi:
+            ax.fill_between(step, lower, upper, color=color, alpha=0.18, linewidth=0.0)
+    ax.set_xlim(left=0.0)
+    ax.set_ylim(*_ASSET_TRI_GATE_R2_YLIM)
+    ax.set_xlabel("Environment steps")
+    ax.set_ylabel("Rollout $R^2$")
+    _style_experiment_axis(ax)
+    ax.set_title(
+        "B", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+    )
+    ax.set_title("Rollout recovery", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+
+    # C: final parameter error, one bar per objective.
+    ax = axes[2]
+    x = np.arange(len(summary_rows), dtype=np.float64)
+    if r2_summary == "median_iqr":
+        error_center = np.asarray(
+            [row["parameter_error_median"] for row in summary_rows], dtype=np.float64
+        )
+        error_yerr = np.vstack(
+            (
+                error_center
+                - np.asarray(
+                    [row["parameter_error_q25"] for row in summary_rows],
+                    dtype=np.float64,
+                ),
+                np.asarray(
+                    [row["parameter_error_q75"] for row in summary_rows],
+                    dtype=np.float64,
+                )
+                - error_center,
+            )
+        )
+    else:
+        error_center = np.asarray(
+            [row["parameter_error_mean"] for row in summary_rows], dtype=np.float64
+        )
+        error_yerr = np.asarray(
+            [row["parameter_error_sem"] for row in summary_rows], dtype=np.float64
+        )
+    bar_colors = [
+        _asset_tri_gate_policy_color(str(row["policy_id"])) for row in summary_rows
+    ]
+    ax.bar(
+        x,
+        error_center,
+        yerr=error_yerr,
+        color=bar_colors,
+        edgecolor=bar_colors,
+        linewidth=0.6,
+        capsize=1.6,
+        error_kw={"elinewidth": 0.6, "capthick": 0.6},
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels(
+        [_ASSET_TRI_GATE_LABELS[str(row["policy_id"])] for row in summary_rows],
+        rotation=30,
+        ha="right",
+    )
+    ax.set_ylabel(r"Final $\|\hat{\theta}-\theta^{*}\|_2$")
+    _style_experiment_axis(ax)
+    ax.set_title(
+        "C", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+    )
+    ax.set_title("Parameter error", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+
+    # D: selector occupancy stacks plus the deterministic transit reference; the
+    # reference bar shows that B occupancy at PALDI's level is pure transit.
+    ax = axes[3]
+    transit_x = float(len(summary_rows)) + 0.9
+    bottom = np.zeros(len(summary_rows), dtype=np.float64)
+    transit_bottom = 0.0
+    for (key, _label, color), transit_value in zip(
+        _ASSET_TRI_GATE_GATE_COLORS, transit_occupancy, strict=True
+    ):
+        value = np.asarray([row[key] for row in summary_rows], dtype=np.float64)
+        ax.bar(x, value, bottom=bottom, width=0.72, color=color)
+        bottom += value
+        ax.bar(
+            (transit_x,),
+            (transit_value,),
+            bottom=(transit_bottom,),
+            width=0.72,
+            color=color,
+            alpha=0.55,
+        )
+        transit_bottom += float(transit_value)
+    ax.set_xticks(np.append(x, transit_x))
+    ax.set_xticklabels(
+        [_ASSET_TRI_GATE_LABELS[str(row["policy_id"])] for row in summary_rows]
+        + ["Hold M"],
+        rotation=30,
+        ha="right",
+    )
+    ax.get_xticklabels()[-1].set_fontstyle("italic")
+    ax.set_ylim(0.0, 1.0)
+    ax.set_ylabel("Fraction of steps")
+    _style_experiment_axis(ax)
+    ax.set_title(
+        "D", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+    )
+    ax.set_title("Selector occupancy", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+
+    from matplotlib.lines import Line2D
+
+    legend_policies = [str(row["policy_id"]) for row in summary_rows]
+    fig.legend(
+        [
+            Line2D([0], [0], color=_asset_tri_gate_policy_color(policy_id), linewidth=1.6)
+            for policy_id in legend_policies
+        ],
+        [_ASSET_TRI_GATE_LABELS[policy_id] for policy_id in legend_policies],
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.005),
+        ncol=len(legend_policies),
+        fontsize=_ASSET_TICK_SIZE,
+        columnspacing=0.9,
+        handlelength=1.4,
+    )
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95), w_pad=0.9, h_pad=1.3)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _asset_plot_gate_diagnostic_trajectories(
+    output_path: Path,
+    *,
+    result_roots: Sequence[Path],
+    exemplar_seed: int = _ASSET_TRI_GATE_EXEMPLAR_SEED,
+) -> Path:
+    """Appendix companion: one exemplar selector trace per acquisition objective.
+
+    Gate bands (center +/- one gate width) and the rest line reuse the gate
+    identity colors of the main diagnostic figure, so dwell-at-A, dwell-at-B,
+    and reach-and-hold-M behaviors are visible directly.
+    """
+    records = [
+        record
+        for record in _compound_trace_records(result_roots, exp_id=_ASSET_TRI_GATE_EXP_ID)
+        if record.seed == int(exemplar_seed)
+    ]
+    if not records:
+        roots_text = ", ".join(str(root) for root in result_roots)
+        raise RuntimeError(
+            f"No trajectory R2 curves available for {_ASSET_TRI_GATE_EXP_ID} "
+            f"seed {exemplar_seed} in {roots_text}"
+        )
+    by_policy = {record.policy_id: record for record in records}
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+
+    policy_ids = [
+        policy_id for policy_id in _COMPOUND_POLICY_ORDER if policy_id in by_policy
+    ]
+    n_col = 3
+    n_row = int(np.ceil(len(policy_ids) / n_col))
+    fig, axes = plt_module.subplots(
+        n_row,
+        n_col,
+        figsize=(_ASSET_SINGLE_COLUMN_WIDTH, 1.05 * n_row + 0.4),
+        sharex=True,
+        sharey=True,
+        squeeze=False,
+    )
+    rest_color = _ASSET_TRI_GATE_GATE_COLORS[0][2]
+    y_bottom, y_top = -1.2, 0.62
+    for idx, policy_id in enumerate(policy_ids):
+        ax = axes[idx // n_col, idx % n_col]
+        ax.axhspan(
+            y_bottom,
+            _ASSET_TRI_GATE_REST_CUTOFF,
+            color=rest_color,
+            alpha=0.22,
+            linewidth=0.0,
+        )
+        for low, high, color in _asset_tri_gate_assignment_bands(y_top):
+            ax.axhspan(low, high, color=color, alpha=0.14, linewidth=0.0)
+        ax.axhline(
+            _ASSET_TRI_GATE_REST_CENTER, color=rest_color, linestyle="--", linewidth=0.6
+        )
+        rows = read_trace_csv(by_policy[policy_id].run_dir / "state_action_trace.csv")
+        selector = np.asarray([float(row["true_x"]) for row in rows], dtype=np.float64)
+        ax.plot(
+            np.arange(selector.size, dtype=np.float64),
+            selector,
+            color=_asset_tri_gate_policy_color(policy_id),
+            linewidth=0.55,
+        )
+        ax.set_ylim(y_bottom, y_top)
+        ax.set_xlim(0.0, float(max(selector.size, 1)))
+        ax.set_title(
+            _ASSET_TRI_GATE_LABELS[policy_id], fontsize=_ASSET_TITLE_SIZE, pad=2.0
+        )
+        _style_experiment_axis(ax)
+        ax.tick_params(axis="both", labelsize=5.2, pad=1.0)
+    for idx in range(len(policy_ids), n_row * n_col):
+        axes[idx // n_col, idx % n_col].set_visible(False)
+    # Gate letters ride the right edge of the last column, keyed by band color.
+    right_ax = axes[0, n_col - 1]
+    for (_key, label, color), center in zip(
+        _ASSET_TRI_GATE_GATE_COLORS[1:], _ASSET_TRI_GATE_CENTERS, strict=True
+    ):
+        right_ax.text(
+            1.03,
+            center,
+            label.split(":")[0],
+            transform=right_ax.get_yaxis_transform(),
+            ha="left",
+            va="center",
+            fontsize=_ASSET_TICK_SIZE,
+            fontweight="bold",
+            color=color,
+        )
+    right_ax.text(
+        1.03,
+        _ASSET_TRI_GATE_REST_CENTER,
+        "rest",
+        transform=right_ax.get_yaxis_transform(),
+        ha="left",
+        va="center",
+        fontsize=5.2,
+        color=_experiment_C_STROKE,
+    )
+    axes[n_row - 1, n_col // 2].set_xlabel("Environment steps")
+    axes[n_row // 2, 0].set_ylabel("Selector $r$")
+    fig.tight_layout(w_pad=0.5, h_pad=0.7)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _asset_flex_groups() -> tuple[tuple[str, tuple[_ExperimentSuiteSource, ...]], ...]:
+    """Group the FLEX-variant suites into the three manuscript panels."""
     display_titles = {
         "duffing": "Duffing",
         "damped_pendulum": "Damped Pendulum",
         "gated_duffing": "Gated Duffing",
         "gated_duffing_asymmetric": "Asymmetric",
         "gated_duffing_challenging": "Challenging",
-        "gated_duffing_observation_bottleneck_mild": "Obs. bottleneck (mild)",
-        "gated_duffing_observation_bottleneck_strong": "Obs. bottleneck (strong)",
+        "gated_duffing_observation_bottleneck_mild": "SNR -10 dB",
+        "gated_duffing_observation_bottleneck_strong": "SNR -15 dB",
     }
-    sources = [
-        _ExperimentSuiteSource(
+    sources = {
+        ref.suite_id: _ExperimentSuiteSource(
             ref.suite_id,
             display_titles.get(ref.suite_id, ref.label),
             ref.session_root / "tracks" / ref.suite_id,
         )
         for ref in _figures.GROUPS["flex_comparison"]
-    ]
-    _asset_require_suite_dirs([source.suite_dir for source in sources])
-    metric_rows = _asset_method_metric_rows(
-        sources,
-        _ASSET_FLEX_POLICIES,
-        r2_summary=r2_summary,
+    }
+    grouped = (
+        ("baseline", ("duffing", "damped_pendulum", "gated_duffing")),
+        ("hard", ("gated_duffing_asymmetric", "gated_duffing_challenging")),
+        (
+            "snr",
+            (
+                "gated_duffing_observation_bottleneck_mild",
+                "gated_duffing_observation_bottleneck_strong",
+            ),
+        ),
     )
-    for row in metric_rows:
-        row["policy_label"] = _ASSET_FLEX_LABELS[str(row["policy_id"])]
-    _asset_write_method_csv(
-        output_path.with_suffix(".csv"),
-        metric_rows,
-        r2_summary=r2_summary,
+    missing = sorted(
+        suite_id
+        for _suffix, suite_ids in grouped
+        for suite_id in suite_ids
+        if suite_id not in sources
+    )
+    if missing:
+        raise RuntimeError(
+            "flex_comparison group is missing suite(s): " + ", ".join(missing)
+        )
+    return tuple(
+        (suffix, tuple(sources[suite_id] for suite_id in suite_ids))
+        for suffix, suite_ids in grouped
     )
 
-    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(2, 4, figsize=(9.5, 4.9), squeeze=False)
-    for idx, source in enumerate(sources):
-        ax = axes.flat[idx]
-        curves = _asset_r2_curve_rows(source.suite_dir, r2_summary=r2_summary)
-        for policy_id in _ASSET_FLEX_POLICIES:
-            rows = curves.get(policy_id, [])
-            if not rows:
-                continue
-            steps = np.asarray([row["step"] for row in rows], dtype=np.float64)
-            center = np.asarray([row["center"] for row in rows], dtype=np.float64)
-            lower = np.asarray([row["lower"] for row in rows], dtype=np.float64)
-            upper = np.asarray([row["upper"] for row in rows], dtype=np.float64)
-            color = _policy_color(policy_id)
-            ax.plot(
-                steps,
-                center,
-                color=color,
-                linewidth=0.95,
-                label=_ASSET_FLEX_LABELS[policy_id],
+
+def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> list[Path]:
+    """FLEX state-source/update variants: short final-R2 bars plus recovery curves.
+
+    One bar figure and one recovery figure per condition group, matching how the
+    constraints panels are assembled for the manuscript.
+    """
+    written: list[Path] = []
+    for suffix, sources in _asset_flex_groups():
+        _asset_require_suite_dirs([source.suite_dir for source in sources])
+        metric_rows = _asset_method_metric_rows(
+            sources,
+            _ASSET_FLEX_POLICIES,
+            r2_summary=r2_summary,
+        )
+        for row in metric_rows:
+            row["policy_label"] = _ASSET_FLEX_LABELS[str(row["policy_id"])]
+        bar_path = output_path.with_name(f"{output_path.stem}_{suffix}{output_path.suffix}")
+        curves_path = output_path.with_name(
+            f"{output_path.stem}_{suffix}_recovery{output_path.suffix}"
+        )
+        _asset_write_method_csv(
+            bar_path.with_suffix(".csv"),
+            metric_rows,
+            r2_summary=r2_summary,
+        )
+        written.append(
+            _asset_plot_final_bar(
+                bar_path,
+                sources=sources,
+                policy_ids=_ASSET_FLEX_POLICIES,
+                metric_rows=metric_rows,
+                single_column=True,
+                short=True,
+                ylim=_ASSET_FLEX_BAR_YLIM,
+                policy_labels=_ASSET_FLEX_LABELS,
+                policy_legend=False,
             )
-            ax.fill_between(steps, lower, upper, color=color, alpha=0.10, linewidth=0.0)
-        ax.axhline(0.0, color=_experiment_C_NEUTRAL_LIGHT, linewidth=0.55)
-        ax.set_xlim(left=0.0)
-        ax.set_ylim(top=1.05)
-        ax.set_yscale("symlog", linthresh=0.25, linscale=0.6)
-        ax.set_title(chr(65 + idx), loc="left", fontweight="bold", fontsize=10.0, pad=3.0)
-        ax.set_title(source.label, loc="center", fontsize=8.0, pad=3.0)
-        ax.set_xlabel("Environment steps")
-        if idx % 4 == 0:
-            ax.set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
-        _style_experiment_axis(ax)
-    axes.flat[-1].axis("off")
-    handles, labels = axes.flat[0].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.01),
-        ncol=len(_ASSET_FLEX_POLICIES),
-        fontsize=_ASSET_TICK_SIZE,
-        columnspacing=0.9,
-        handlelength=1.4,
-    )
-    fig.text(
-        0.995,
-        0.008,
-        "Non-finite R² excluded from bands; rates are reported in the companion CSV.",
-        ha="right",
-        va="bottom",
-        fontsize=5.5,
-        color=_experiment_C_STROKE,
-    )
-    fig.tight_layout(rect=(0.0, 0.035, 1.0, 0.94), w_pad=0.75, h_pad=0.85)
-    return save_figure(fig, output_path, plt_module=plt_module)
+        )
+        written.append(
+            _asset_plot_recovery_curves(
+                curves_path,
+                sources=sources,
+                policy_ids=_ASSET_FLEX_POLICIES,
+                r2_summary=r2_summary,
+                policy_labels=_ASSET_FLEX_LABELS,
+            )
+        )
+    return written
 
 
 def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]:
@@ -1700,6 +2259,16 @@ def _assets_build_parser() -> argparse.ArgumentParser:
             "median_iqr. Median/IQR variants are written under median_iqr/."
         ),
     )
+    parser.add_argument(
+        "--tri-gate-root",
+        type=Path,
+        default=None,
+        help=(
+            "Root holding the SimpleTriGate diagnostic runs (searched "
+            f"recursively). Defaults to the {_ASSET_TRI_GATE_EXP_ID} suite in "
+            "the session tracks."
+        ),
+    )
     return parser
 
 
@@ -1715,6 +2284,11 @@ def assets_main(argv: list[str] | None = None) -> int:
     if not group_ids:
         raise ValueError("At least one TBME group is required")
     r2_summaries = _asset_parse_r2_summaries(args.r2_summaries)
+    tri_gate_root = (
+        Path(args.tri_gate_root)
+        if args.tri_gate_root is not None
+        else _suite_dir("objective_ablation", _ASSET_TRI_GATE_EXP_ID)
+    )
 
     output_dir = (
         Path(args.output_dir)
@@ -1735,6 +2309,12 @@ def assets_main(argv: list[str] | None = None) -> int:
             set(),
             _asset_plot_dynamics_full,
             {},
+        ),
+        (
+            output_dir / "tbme_fig_gate_diagnostic_trajectories.pdf",
+            {"objective_ablation"},
+            _asset_plot_gate_diagnostic_trajectories,
+            {"result_roots": (tri_gate_root,)},
         ),
     ]
     for r2_summary in r2_summaries:
@@ -1765,6 +2345,12 @@ def assets_main(argv: list[str] | None = None) -> int:
                     {"flex_comparison"},
                     _asset_plot_flex_comparison,
                     kwargs,
+                ),
+                (
+                    r2_output_dir / "tbme_fig_gate_diagnostic.pdf",
+                    {"objective_ablation"},
+                    _asset_plot_gate_diagnostic,
+                    {**kwargs, "result_roots": (tri_gate_root,)},
                 ),
             ]
         )

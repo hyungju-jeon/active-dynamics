@@ -160,7 +160,7 @@ This original construction is retained for provenance, but it is not valid
 evidence of complete parameter recovery: gate `M` has zero sensitivity to
 `theta3`, while both the true value and initial estimate of `theta3` are zero.
 Its aggregate error and R2 can therefore look favorable without learning that
-coordinate.  Use `simple_tri_gate_poisson` below for the corrected comparison.
+coordinate.  Use `three_gate_diagnostic` below for the corrected comparison.
 
 The observation model is deliberately explicit and linear Gaussian.  Its
 state Fisher matrix is
@@ -260,7 +260,7 @@ so the separation is not caused by violating the observation-rate cap.
 
 ### SimpleTriGate: corrected wide-gate Poisson benchmark
 
-`simple_tri_gate_poisson` corrects the favorable-`theta3` initialization and
+`three_gate_diagnostic` corrects the favorable-`theta3` initialization and
 removes the free trap at the passive equilibrium.  Its state is
 `z=(r,s1,s2,s3,h)`, all three learned parameters have truth one and initial
 posterior mean zero, and only `r` is actuated:
@@ -363,15 +363,15 @@ Reproduce the audit with:
 ```bash
 ./.venv/bin/python -m experiments.tbme.exp_objective_ablation \
   --mode run \
-  --exp-ids simple_tri_gate_poisson \
+  --exp-ids three_gate_diagnostic \
   --seeds 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99 \
   --total-steps 2000 \
-  --base-dir results/tbme/simple_tri_gate_poisson_h100 \
+  --base-dir results/tbme/session_4 \
   --skip-existing
 ./.venv/bin/python -m experiments.tbme.exp_objective_ablation \
   --mode summary \
-  --exp-ids simple_tri_gate_poisson \
-  --base-dir results/tbme/simple_tri_gate_poisson_h100
+  --exp-ids three_gate_diagnostic \
+  --base-dir results/tbme/session_4
 ```
 
 Add mechanism-off controls, not just easier noise settings:

@@ -5,6 +5,9 @@ DEFAULT_EXP_IDS = (
     "gated_duffing",
     "gated_duffing_asymmetric",
     "gated_duffing_challenging",
+    # Designed three-gate diagnostic; lives in the shared session tracks like
+    # the gated-Duffing suites and backs the manuscript gate-diagnostic figure.
+    "three_gate_diagnostic",
 )
 
 MODEL_IDS = [
@@ -85,9 +88,9 @@ EXPERIMENT_SUITES = {
         ],
         "total_steps": 2000,
     },
-    "simple_tri_gate_poisson": {
+    "three_gate_diagnostic": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_simple_tri_gate_poisson",
+        "env_preset_id": "tbme_three_gate_diagnostic",
         "model_ids": [
             "compound_active_planning",
             "compound_active_fully_observable",
