@@ -2,10 +2,9 @@
 from __future__ import annotations
 
 import argparse
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import numpy as np
 
@@ -20,19 +19,21 @@ from ..experiment_io import (
     load_json,
     reconstruct_loglinear_rate_model,
 )
+from .figures import ablation as _ablation
+from .figures import artifacts as _fig_artifacts
+from .figures import data as _fig_data
+from .figures import theme as _fig_theme
+from .figures.groups import SuiteSource
 from .tbme_figures import (
     GROUPS,
-    POLICY_LABELS,
     _apply_style,
     _policy_color,
     _policy_label,
     _policy_sort_key,
-    _r2_threshold_suffix,
     _style_manuscript_axis,
     _suite_dir,
     _unique_paths,
     _write_csv,
-    _write_text,
 )
 from .tbme_io import (
     read_embedding_trace,
@@ -41,10 +42,10 @@ from .tbme_io import (
 )
 
 # Experiment manuscript output
-_experiment_C_STROKE = "#3A3A3A"
-_experiment_C_NEUTRAL_LIGHT = "#C8C1B8"
-_experiment_C_NEUTRAL_FILL = "#F4F1EC"
-_experiment_C_GRID = "#DDD7CE"
+_experiment_C_STROKE = _fig_theme.STROKE_COLOR
+_experiment_C_NEUTRAL_LIGHT = _fig_theme.NEUTRAL_LIGHT
+_experiment_C_NEUTRAL_FILL = _fig_theme.NEUTRAL_FILL
+_experiment_C_GRID = _fig_theme.GRID_COLOR
 
 _experiment_BOTTLENECK_POLICIES = [
     "adaptive",
@@ -53,89 +54,8 @@ _experiment_BOTTLENECK_POLICIES = [
     "active_state_variance",
     "prbs",
 ]
-_experiment_OBJECTIVE_POLICIES = [
-    "active_planning",
-    "active_fully_observable",
-    "active_state_information",
-    "active_dynamics",
-    "active_observation_variance",
-    "active_e_optimality",
-    "active_state_variance",
-    "prbs",
-]
-_experiment_OBJECTIVE_DEFINITIONS = [
-    {
-        "policy_id": "active_planning",
-        "objective_name": "Parameter EIG",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\frac{1}{2}\log\det(I+P_\theta "
-            r"\sum_{i=0}^{H-1}\gamma^i \Delta\Lambda_i)$, "
-            r"$\Delta\Lambda_i=S_i^\top(I+P_i^- I_{z,i})^{-1}I_{z,i}S_i$"
-        ),
-        "objective_notes": "Main objective; partial-observation attenuation uses the predicted latent covariance.",
-    },
-    {
-        "policy_id": "active_fully_observable",
-        "objective_name": "Full-observable EIG",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\frac{1}{2}\log\det(I+P_\theta "
-            r"\sum_{i=0}^{H-1}\gamma^i S_i^\top I_{z,i}S_i)$"
-        ),
-        "objective_notes": "Ablation that removes partial-observation attenuation.",
-    },
-    {
-        "policy_id": "active_state_information",
-        "objective_name": "State information",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
-            r"\log\det\operatorname{chol}(I+P_i^- I_{z,i})$"
-        ),
-        "objective_notes": "Scores latent-state observability, not parameter sensitivity.",
-    },
-    {
-        "policy_id": "active_dynamics",
-        "objective_name": "Dynamics sensitivity",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
-            r"\operatorname{tr}(S_i^\top P_i^- S_i)$"
-        ),
-        "objective_notes": "Scores predicted state sensitivity to parameters without the decoder Fisher term.",
-    },
-    {
-        "policy_id": "active_observation_variance",
-        "objective_name": "Observation variance",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
-            r"\sum_j\log(1+\operatorname{Var}_{\theta\sim q(\theta)}"
-            r"[\lambda_j(z_i(\theta))])$"
-        ),
-        "objective_notes": "Monte Carlo objective using posterior samples and decoded observation rates.",
-    },
-    {
-        "policy_id": "active_e_optimality",
-        "objective_name": "E-optimality",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\lambda_{\min}(P_\theta "
-            r"\sum_{i=0}^{H-1}\gamma^i \Delta\Lambda_i)$"
-        ),
-        "objective_notes": "Maximizes the least-informed parameter direction.",
-    },
-    {
-        "policy_id": "active_state_variance",
-        "objective_name": "State variance",
-        "objective_formula": (
-            r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
-            r"\sum_d \operatorname{Var}_{\theta\sim q(\theta)}[z_{i,d}(\theta)]$"
-        ),
-        "objective_notes": "Latent-state disagreement baseline; it is not a Fisher-information objective.",
-    },
-    {
-        "policy_id": "prbs",
-        "objective_name": "PRBS",
-        "objective_formula": r"Preset pseudo-random binary excitation sequence.",
-        "objective_notes": "Passive baseline with no model-based acquisition optimization.",
-    },
-]
+_experiment_OBJECTIVE_POLICIES = _ablation.OBJECTIVE_POLICIES
+_experiment_OBJECTIVE_DEFINITIONS = _ablation.OBJECTIVE_DEFINITIONS
 _experiment_DOSE_POLICIES = [
     "adaptive",
     "active_planning",
@@ -145,13 +65,7 @@ _experiment_DOSE_POLICIES = [
 ]
 
 
-@dataclass(frozen=True)
-class _ExperimentSuiteSource:
-    exp_id: str
-    label: str
-    suite_dir: Path
-    dose: str | None = None
-    family: str | None = None
+_ExperimentSuiteSource = SuiteSource
 
 
 @dataclass(frozen=True)
@@ -201,54 +115,13 @@ _experiment_REQUIRED_SUITES_BY_PLOT = {
 }
 
 
-def _experiment_artifact_paths(
-    suite_dirs: Sequence[Path],
-    *,
-    subdir: str,
-    filename: str,
-) -> list[Path]:
-    return _unique_paths(
-        suite_dir / "experiment" / subdir / filename for suite_dir in suite_dirs
-    )
+_experiment_artifact_paths = _fig_artifacts.artifact_paths
+_experiment_write_csv_artifacts = _fig_artifacts.write_csv_artifacts
+_experiment_write_text_artifacts = _fig_artifacts.write_text_artifacts
+_experiment_copy_artifact = _fig_artifacts.copy_artifact
 
 
-def _experiment_write_csv_artifacts(
-    suite_dirs: Sequence[Path],
-    *,
-    filename: str,
-    rows: Iterable[dict[str, Any]],
-    fields: Sequence[str],
-) -> list[Path]:
-    paths = _experiment_artifact_paths(suite_dirs, subdir="tables", filename=filename)
-    row_list = list(rows)
-    for path in paths:
-        _write_csv(path, row_list, fields)
-    return paths
-
-
-def _experiment_write_text_artifacts(
-    suite_dirs: Sequence[Path],
-    *,
-    filename: str,
-    text: str,
-) -> list[Path]:
-    paths = _experiment_artifact_paths(suite_dirs, subdir="tables", filename=filename)
-    for path in paths:
-        _write_text(path, text)
-    return paths
-
-
-def _experiment_copy_artifact(source_path: Path, paths: Sequence[Path]) -> list[Path]:
-    for path in paths:
-        if path == source_path:
-            continue
-        path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source_path, path)
-    return list(paths)
-
-
-def _style_experiment_axis(ax: Any) -> None:
-    _style_manuscript_axis(ax, grid_alpha=0.55)
+_style_experiment_axis = _fig_theme.style_experiment_axis
 
 
 def plot_bottleneck_sweep(
@@ -284,9 +157,7 @@ def plot_bottleneck_sweep(
                 if row["condition"] == source.label and row["policy_id"] == policy_id
             ][0]
             r2_y.append(
-                np.nan
-                if match["trajectory_r2_mean"] is None
-                else match["trajectory_r2_mean"]
+                np.nan if match["trajectory_r2_mean"] is None else match["trajectory_r2_mean"]
             )
             r2_sem.append(match["trajectory_r2_sem"])
             step = match["step_to_r2_0p90"]
@@ -330,9 +201,7 @@ def plot_bottleneck_sweep(
     for ax in axes:
         style_axis(ax)
         ax.set_xticks(x)
-        ax.set_xticklabels(
-            [source.label for source in sources], rotation=22, ha="right"
-        )
+        ax.set_xticklabels([source.label for source in sources], rotation=22, ha="right")
     axes[0].set_ylabel("Final prediction R2")
     axes[0].set_ylim(min(-0.1, min(finite_r2) - 0.05) if finite_r2 else -0.1, 1.05)
     axes[0].set_title("A. Prediction under bottlenecks")
@@ -344,101 +213,7 @@ def plot_bottleneck_sweep(
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
-def plot_objective_ablation(
-    output_path: Path,
-    *,
-    sources: Sequence[Any],
-    metric_rows: list[dict[str, Any]],
-    curves_by_source: dict[str, dict[str, list[dict[str, float]]]],
-    policy_ids: Sequence[str],
-    policy_label: Callable[[str], str],
-    policy_color: Callable[[str], str],
-    apply_style: Callable[[Any], None] | None,
-    style_axis: Callable[..., None],
-    stroke_color: str,
-    neutral_light: str,
-) -> Path:
-    """Plot objective-ablation threshold bars and prediction-R2 recovery curves."""
-    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(
-        len(sources), 2, figsize=(7.15, 5.05), squeeze=False
-    )
-    x = np.arange(len(policy_ids), dtype=np.float64)
-    x_labels = [policy_label(policy_id) for policy_id in policy_ids]
-    letters = [chr(ord("A") + idx) for idx in range(2 * len(sources))]
-    for source_idx, source in enumerate(sources):
-        row_metrics = [row for row in metric_rows if row["experiment"] == source.exp_id]
-        bars = [
-            np.nan if row["step_to_r2_0p95"] is None else row["step_to_r2_0p95"]
-            for row in row_metrics
-        ]
-        colors = [policy_color(str(row["policy_id"])) for row in row_metrics]
-        ax_bar = axes[source_idx, 0]
-        ax_curve = axes[source_idx, 1]
-        ax_bar.bar(x, bars, color=colors, edgecolor=stroke_color, linewidth=0.45)
-        finite_steps = [float(v) for v in bars if np.isfinite(v)]
-        max_step = max(finite_steps) if finite_steps else 1.0
-        missing_x = [
-            float(x[idx]) for idx, value in enumerate(bars) if not np.isfinite(value)
-        ]
-        if missing_x:
-            ax_bar.scatter(
-                missing_x,
-                [max_step * 1.05 for _ in missing_x],
-                marker="x",
-                s=15,
-                color=stroke_color,
-                linewidths=0.8,
-            )
-        ax_bar.set_xticks(x)
-        ax_bar.set_xticklabels(x_labels, rotation=35, ha="right")
-        ax_bar.set_ylabel("Steps to prediction R2 >= 0.95")
-        ax_bar.set_ylim(0.0, max_step * 1.18)
-        ax_bar.set_title(f"{letters[2 * source_idx]}. {source.label}: threshold")
-        style_axis(ax_bar)
-
-        curves = curves_by_source[source.exp_id]
-        for policy_id in policy_ids:
-            curve_rows = curves.get(policy_id, [])
-            if not curve_rows:
-                continue
-            steps = np.asarray([row["step"] for row in curve_rows], dtype=np.float64)
-            values = np.asarray([row["value"] for row in curve_rows], dtype=np.float64)
-            sem = np.asarray([row["sem"] for row in curve_rows], dtype=np.float64)
-            color = policy_color(policy_id)
-            ax_curve.plot(
-                steps, values, color=color, linewidth=1.0, label=policy_label(policy_id)
-            )
-            if np.any(sem > 0):
-                ax_curve.fill_between(
-                    steps,
-                    values - sem,
-                    values + sem,
-                    color=color,
-                    alpha=0.14,
-                    linewidth=0,
-                )
-        ax_curve.axhline(0.95, color=neutral_light, linestyle="--", linewidth=0.7)
-        ax_curve.set_xlabel("Environment step")
-        ax_curve.set_ylabel("Prediction R2")
-        ax_curve.set_ylim(-0.1, 1.05)
-        ax_curve.set_title(f"{letters[2 * source_idx + 1]}. {source.label}: recovery")
-        style_axis(ax_curve)
-    handles, labels = axes[0, 1].get_legend_handles_labels()
-    fig.legend(
-        handles,
-        labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.01),
-        ncol=4,
-        fontsize=6.2,
-        columnspacing=0.9,
-        handlelength=1.5,
-    )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95), w_pad=1.0, h_pad=1.15)
-    return save_figure(fig, output_path, plt_module=plt_module)
+plot_objective_ablation = _ablation.plot_objective_ablation
 
 
 def plot_mismatch_dose_response(
@@ -496,9 +271,7 @@ def plot_mismatch_dose_response(
             if row.get("trajectory_r2_mean") is not None
             and np.isfinite(float(row["trajectory_r2_mean"]))
         ]
-        ax.set_ylim(
-            min(-0.1, min(finite_family_r2) - 0.05) if finite_family_r2 else -0.1, 1.05
-        )
+        ax.set_ylim(min(-0.1, min(finite_family_r2) - 0.05) if finite_family_r2 else -0.1, 1.05)
         ax.set_title(f"{family} mismatch dose-response")
         style_axis(ax)
     axes[1].legend(loc="upper left", fontsize=6.4)
@@ -566,9 +339,7 @@ def plot_per_parameter_recovery(
             means = []
             sems = []
             for step in steps:
-                vals = np.asarray(
-                    [arr[param_idx] for arr in by_step[step]], dtype=np.float64
-                )
+                vals = np.asarray([arr[param_idx] for arr in by_step[step]], dtype=np.float64)
                 vals = vals[np.isfinite(vals)]
                 means.append(float(np.mean(vals)) if vals.size else np.nan)
                 sems.append(sem(vals.tolist()))
@@ -641,103 +412,15 @@ def _experiment_required_suite_dirs(plot_ids: Sequence[str]) -> list[Path]:
     return [_suite_dir(group_name, suite_id) for group_name, suite_id in suite_keys]
 
 
-def _experiment_policy_label(policy_id: str) -> str:
-    short = {
-        "active_planning": "Planning",
-        "active_fully_observable": "Full obs.",
-        "active_e_optimality": "E-opt.",
-        "active_state_information": "State info",
-        "active_dynamics": "Dynamics",
-        "active_observation_variance": "Obs. var.",
-        "active_myopic": "Myopic",
-        "active_state_variance": "State var.",
-        "prbs": "PRBS",
-        "random": "Random",
-    }
-    return short.get(
-        policy_id, POLICY_LABELS.get(policy_id, policy_id.replace("_", " "))
-    )
+_experiment_policy_label = _fig_theme.short_policy_label
 
 
-def _experiment_escape_tex(text: object) -> str:
-    return str(text).replace("&", r"\&").replace("%", r"\%").replace("_", r"\_")
-
-
-def _experiment_metrics_by_policy(suite_dir: Path) -> dict[str, list[dict[str, str]]]:
-    rows = read_trace_csv(suite_dir / "summary" / "metrics.csv")
-    grouped: dict[str, list[dict[str, str]]] = {}
-    for row in rows:
-        if row.get("status") not in {None, "", "completed"}:
-            continue
-        grouped.setdefault(str(row.get("policy_id", "")), []).append(row)
-    return grouped
-
-
-def _experiment_metric_values(
-    suite_dir: Path, policy_id: str, field: str
-) -> list[float]:
-    values: list[float] = []
-    for row in _experiment_metrics_by_policy(suite_dir).get(policy_id, []):
-        value = _safe_float(row.get(field))
-        if value is not None:
-            values.append(value)
-    return values
-
-
-def _experiment_metric_mean_sem(
-    suite_dir: Path, policy_id: str, field: str
-) -> tuple[float | None, float, int]:
-    values = _experiment_metric_values(suite_dir, policy_id, field)
-    if not values:
-        return None, 0.0, 0
-    return float(np.mean(values)), sample_sem(values), len(values)
-
-
-def _experiment_curve_rows(
-    suite_dir: Path, name: str, value_col: str
-) -> dict[str, list[dict[str, float]]]:
-    grouped: dict[str, list[dict[str, float]]] = {}
-    for row in read_trace_csv(suite_dir / "summary" / name):
-        policy_id = str(row.get("policy_id", ""))
-        step = _safe_float(row.get("step"))
-        value = _safe_float(row.get(value_col))
-        sem = _safe_float(row.get("value_sem"))
-        if not policy_id or step is None or value is None:
-            continue
-        grouped.setdefault(policy_id, []).append(
-            {"step": step, "value": value, "sem": 0.0 if sem is None else sem}
-        )
-    for policy_rows in grouped.values():
-        policy_rows.sort(key=lambda row: row["step"])
-    return grouped
-
-
-def _experiment_r2_threshold_step(
-    suite_dir: Path, policy_id: str, threshold: float = 0.90
-) -> float | None:
-    suffix = _r2_threshold_suffix(threshold)
-    for row in read_trace_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv"):
-        if str(row.get("policy_id", "")) != policy_id:
-            continue
-        return _safe_float(row.get(f"step_to_r2_{suffix}"))
-    return None
-
-
-def _experiment_r2_threshold_times(
-    suite_dir: Path,
-    policy_id: str,
-    threshold: float,
-) -> tuple[float | None, float | None, float | None]:
-    suffix = _r2_threshold_suffix(threshold)
-    for row in read_trace_csv(suite_dir / "summary" / "trajectory_r2_thresholds.csv"):
-        if str(row.get("policy_id", "")) != policy_id:
-            continue
-        return (
-            _safe_float(row.get(f"step_to_r2_{suffix}")),
-            _safe_float(row.get(f"cpu_time_sec_to_r2_{suffix}")),
-            _safe_float(row.get(f"r2_at_{suffix}")),
-        )
-    return None, None, None
+_experiment_metrics_by_policy = _fig_data.metrics_by_policy
+_experiment_metric_values = _fig_data.metric_values
+_experiment_metric_mean_sem = _fig_data.metric_mean_sem
+_experiment_curve_rows = _fig_data.curve_rows
+_experiment_r2_threshold_step = _fig_data.r2_threshold_step
+_experiment_r2_threshold_times = _fig_data.r2_threshold_times
 
 
 def _experiment_plot_bottleneck_sweep() -> list[Path]:
@@ -786,9 +469,7 @@ def _experiment_plot_bottleneck_sweep() -> list[Path]:
             r2, r2_sem, n_r2 = _experiment_metric_mean_sem(
                 source.suite_dir, policy_id, "trajectory_r2_final_mean"
             )
-            step_to_r2 = _experiment_r2_threshold_step(
-                source.suite_dir, policy_id, threshold=0.90
-            )
+            step_to_r2 = _experiment_r2_threshold_step(source.suite_dir, policy_id, threshold=0.90)
             rows.append(
                 {
                     "experiment": source.exp_id,
@@ -836,172 +517,9 @@ def _experiment_plot_bottleneck_sweep() -> list[Path]:
     return [*_experiment_copy_artifact(figure_path, figure_paths), *csv_paths]
 
 
-def _experiment_objective_sources() -> list[_ExperimentSuiteSource]:
-    return [
-        _ExperimentSuiteSource(
-            "gated_duffing",
-            "Default gated Duffing",
-            _suite_dir("objective_ablation", "gated_duffing"),
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_asymmetric",
-            "Asymmetric loading",
-            _suite_dir("objective_ablation", "gated_duffing_asymmetric"),
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_challenging",
-            "Challenging gated Duffing",
-            _suite_dir("objective_ablation", "gated_duffing_challenging"),
-        ),
-    ]
-
-
-def _experiment_write_objective_definition_tables(
-    suite_dirs: Sequence[Path],
-) -> list[Path]:
-    rows = [
-        {
-            "policy_id": str(row["policy_id"]),
-            "policy_label": _experiment_policy_label(str(row["policy_id"])),
-            "objective_name": str(row["objective_name"]),
-            "objective_formula": str(row["objective_formula"]),
-            "objective_notes": str(row["objective_notes"]),
-        }
-        for row in _experiment_OBJECTIVE_DEFINITIONS
-    ]
-    written = _experiment_write_csv_artifacts(
-        suite_dirs,
-        filename="tbme_experiment_objective_ablation_objectives.csv",
-        rows=rows,
-        fields=[
-            "policy_id",
-            "policy_label",
-            "objective_name",
-            "objective_formula",
-            "objective_notes",
-        ],
-    )
-
-    lines = [
-        "% Auto-generated by experiments/tbme/generate_figures.py experiment",
-        (
-            r"\noindent Active policies maximize \(J(u_{0:H-1})\) over candidate "
-            r"action sequences; the runtime minimizes \(-J\). Here "
-            r"\(S_i=\partial z_i/\partial\theta\), \(P_\theta\) is the current "
-            r"parameter covariance, \(P_i^-\) is the predicted latent covariance, "
-            r"\(I_{z,i}=H_i^\top R_i^{-1}H_i\), \(H_i=\partial h/\partial z_i\), "
-            r"and \(\gamma\) is the horizon discount."
-        ),
-        r"\begin{tabular}{lll}",
-        r"\toprule",
-        r"Policy & Objective & Maximized acquisition \\",
-        r"\midrule",
-    ]
-    for row in rows:
-        lines.append(
-            " & ".join(
-                [
-                    _experiment_escape_tex(row["policy_label"]),
-                    _experiment_escape_tex(row["objective_name"]),
-                    str(row["objective_formula"]),
-                ]
-            )
-            + r" \\"
-        )
-    lines += [r"\bottomrule", r"\end{tabular}"]
-    written.extend(
-        _experiment_write_text_artifacts(
-            suite_dirs,
-            filename="tbme_experiment_objective_ablation_objectives.tex",
-            text="\n".join(lines) + "\n",
-        )
-    )
-    return written
-
-
-def _experiment_plot_objective_ablation() -> list[Path]:
-    sources = _experiment_objective_sources()
-    threshold = 0.95
-    metric_rows: list[dict[str, Any]] = []
-    curves_by_source: dict[str, dict[str, list[dict[str, float]]]] = {}
-    for source in sources:
-        curves_by_source[source.exp_id] = _experiment_curve_rows(
-            source.suite_dir,
-            "trajectory_r2_over_steps.csv",
-            "trajectory_r2_mean",
-        )
-        for policy_id in _experiment_OBJECTIVE_POLICIES:
-            err, err_sem, n_err = _experiment_metric_mean_sem(
-                source.suite_dir, policy_id, "value_final_mean"
-            )
-            r2, r2_sem, n_r2 = _experiment_metric_mean_sem(
-                source.suite_dir, policy_id, "trajectory_r2_final_mean"
-            )
-            step_to_r2, cpu_time_to_r2, r2_at_threshold = (
-                _experiment_r2_threshold_times(
-                    source.suite_dir,
-                    policy_id,
-                    threshold,
-                )
-            )
-            metric_rows.append(
-                {
-                    "experiment": source.exp_id,
-                    "condition": source.label,
-                    "policy_id": policy_id,
-                    "policy_label": _experiment_policy_label(policy_id),
-                    "parameter_error_mean": err,
-                    "parameter_error_sem": err_sem,
-                    "trajectory_r2_mean": r2,
-                    "trajectory_r2_sem": r2_sem,
-                    "step_to_r2_0p95": step_to_r2,
-                    "cpu_time_sec_to_r2_0p95": cpu_time_to_r2,
-                    "r2_at_0p95": r2_at_threshold,
-                    "n_error": n_err,
-                    "n_r2": n_r2,
-                }
-            )
-
-    suite_dirs = [source.suite_dir for source in sources]
-    csv_paths = _experiment_write_csv_artifacts(
-        suite_dirs,
-        filename="tbme_experiment_objective_ablation.csv",
-        rows=metric_rows,
-        fields=[
-            "experiment",
-            "condition",
-            "policy_id",
-            "policy_label",
-            "trajectory_r2_mean",
-            "trajectory_r2_sem",
-            "step_to_r2_0p95",
-            "cpu_time_sec_to_r2_0p95",
-            "r2_at_0p95",
-            "parameter_error_mean",
-            "parameter_error_sem",
-            "n_error",
-            "n_r2",
-        ],
-    )
-    figure_paths = _experiment_artifact_paths(
-        suite_dirs,
-        subdir="figures",
-        filename="tbme_experiment_objective_ablation_gated_duffing.pdf",
-    )
-    figure_path = plot_objective_ablation(
-        figure_paths[0],
-        sources=sources,
-        metric_rows=metric_rows,
-        curves_by_source=curves_by_source,
-        policy_ids=_experiment_OBJECTIVE_POLICIES,
-        policy_label=_experiment_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        style_axis=_style_experiment_axis,
-        stroke_color=_experiment_C_STROKE,
-        neutral_light=_experiment_C_NEUTRAL_LIGHT,
-    )
-    return [*_experiment_copy_artifact(figure_path, figure_paths), *csv_paths]
+_experiment_objective_sources = _ablation.objective_sources
+_experiment_write_objective_definition_tables = _ablation.write_definition_tables
+_experiment_plot_objective_ablation = _ablation.generate
 
 
 def _experiment_dose_sources() -> list[_ExperimentSuiteSource]:
@@ -1242,15 +760,11 @@ def _experiment_state_bounds_from_metadata(
 def _experiment_trace_path(
     record: _ExperimentRunRecord, metadata_key: str, fallback_name: str
 ) -> Path:
-    return _tbme_trace_path(
-        record.run_dir, record.metadata, metadata_key, fallback_name
-    )
+    return _tbme_trace_path(record.run_dir, record.metadata, metadata_key, fallback_name)
 
 
 def _experiment_load_xy_trace(record: _ExperimentRunRecord) -> np.ndarray:
-    path = _experiment_trace_path(
-        record, "state_action_trace_path", "state_action_trace.csv"
-    )
+    path = _experiment_trace_path(record, "state_action_trace_path", "state_action_trace.csv")
     return _read_xy_trace(path)
 
 
@@ -1279,9 +793,7 @@ def _experiment_logdet_information(
     mean_counts = np.clip(rate_hz * float(dt), 1e-12, 1e12)
     info_mats = np.einsum("nd,di,dj->nij", mean_counts, weights, weights, optimize=True)
     info_mats = 0.5 * (info_mats + np.swapaxes(info_mats, -1, -2))
-    info_mats = (
-        info_mats + 1e-9 * np.eye(weights.shape[1], dtype=np.float64)[None, :, :]
-    )
+    info_mats = info_mats + 1e-9 * np.eye(weights.shape[1], dtype=np.float64)[None, :, :]
     sign, logabsdet = np.linalg.slogdet(info_mats)
     return np.where(sign > 0.0, logabsdet, np.nan)
 
@@ -1308,9 +820,7 @@ def _experiment_information_reference_records(
 ) -> list[_ExperimentRunRecord]:
     out: list[_ExperimentRunRecord] = []
     seen: set[tuple[Any, ...]] = set()
-    for record in sorted(
-        records, key=lambda item: (item.seed, _policy_sort_key(item.policy_id))
-    ):
+    for record in sorted(records, key=lambda item: (item.seed, _policy_sort_key(item.policy_id))):
         key = _experiment_observation_model_key(record.metadata)
         if key in seen:
             continue
@@ -1333,9 +843,7 @@ def _experiment_make_information_grid(
     axis = np.linspace(state_min, state_max, n_grid, dtype=np.float32)
     xx, yy = np.meshgrid(axis, axis, indexing="xy")
     latent = np.stack([xx.reshape(-1), yy.reshape(-1)], axis=1)
-    logdet = _experiment_logdet_information(latent, metadata=metadata).reshape(
-        n_grid, n_grid
-    )
+    logdet = _experiment_logdet_information(latent, metadata=metadata).reshape(n_grid, n_grid)
     return axis, axis, logdet
 
 
@@ -1347,9 +855,7 @@ def _experiment_make_mean_information_grid(
     axis_max: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     if not records:
-        raise ValueError(
-            "At least one record is required to compute an information grid"
-        )
+        raise ValueError("At least one record is required to compute an information grid")
     x_axis, y_axis, first_grid = _experiment_make_information_grid(
         records[0].metadata,
         n_grid=n_grid,
@@ -1414,9 +920,7 @@ def _experiment_plot_true_dynamics_all(suite_dirs: Sequence[Path]) -> list[Path]
         log_speed = np.log1p(np.nan_to_num(speed, nan=0.0, posinf=1e6, neginf=0.0))
         fields.append((title, x_np, y_np, u_np, v_np, log_speed))
 
-    finite_speed = np.concatenate(
-        [arr[np.isfinite(arr)].reshape(-1) for *_rest, arr in fields]
-    )
+    finite_speed = np.concatenate([arr[np.isfinite(arr)].reshape(-1) for *_rest, arr in fields])
     vmax = float(np.percentile(finite_speed, 98.0)) if finite_speed.size else 1.0
     norm = Normalize(vmin=0.0, vmax=max(vmax, 1e-6))
     panel_title_size = 12.0
@@ -1435,9 +939,7 @@ def _experiment_plot_true_dynamics_all(suite_dirs: Sequence[Path]) -> list[Path]
         fig.add_subplot(gs[0, 2]),
     ]
     cax = fig.add_subplot(gs[0, 3])
-    for panel_idx, (ax, (title, x_np, y_np, u_np, v_np, log_speed)) in enumerate(
-        zip(axes, fields)
-    ):
+    for panel_idx, (ax, (title, x_np, y_np, u_np, v_np, log_speed)) in enumerate(zip(axes, fields)):
         ax.pcolormesh(
             x_np,
             y_np,
@@ -1513,9 +1015,7 @@ def _experiment_aggregate_parameter_traces(
         or [],
         dtype=np.float64,
     )
-    traces: dict[str, dict[int, list[np.ndarray]]] = {
-        policy_id: {} for policy_id in policy_ids
-    }
+    traces: dict[str, dict[int, list[np.ndarray]]] = {policy_id: {} for policy_id in policy_ids}
     if true_params.size == 0:
         return traces, true_params
     for record in records:
@@ -1525,9 +1025,7 @@ def _experiment_aggregate_parameter_traces(
         steps, theta_trace = read_embedding_trace(path)
         for step, theta in zip(steps, theta_trace, strict=False):
             step = int(step)
-            if step % stride != 0 and step != int(
-                record.metadata.get("total_steps", 0)
-            ):
+            if step % stride != 0 and step != int(record.metadata.get("total_steps", 0)):
                 continue
             if theta.shape[0] < true_params.size:
                 continue
@@ -1697,9 +1195,7 @@ def _compound_summary_rows(
                 if value is not None:
                     final_r2.append(value)
             state_rows = read_trace_csv(record.run_dir / "state_action_trace.csv")
-            selector = np.asarray(
-                [float(row["true_x"]) for row in state_rows], dtype=np.float64
-            )
+            selector = np.asarray([float(row["true_x"]) for row in state_rows], dtype=np.float64)
             if selector.size:
                 occupancies.append(
                     _selector_gate_occupancy(
@@ -1822,15 +1318,12 @@ def _reach_hold_selector_occupancy(
 ) -> tuple[float, float, float, float]:
     """Deterministic transit baseline for moving from rest to a held selector gate."""
     selector = float(rest_center)
-    holding_action = float(selector_contraction) * (
-        float(target_center) - float(rest_center)
-    )
+    holding_action = float(selector_contraction) * (float(target_center) - float(rest_center))
     trace = np.empty(int(total_steps), dtype=np.float64)
     for step in range(int(total_steps)):
         trace[step] = selector
         selector += float(dt) * (
-            -float(selector_contraction) * (selector - float(rest_center))
-            + holding_action
+            -float(selector_contraction) * (selector - float(rest_center)) + holding_action
         )
     return _selector_gate_occupancy(
         trace,
@@ -1880,9 +1373,7 @@ def generate_compound_tri_gate_figures(
         raise ValueError("figure_suffix must include the leading period")
     records = _compound_trace_records(result_roots, exp_id=exp_id)
     if not records:
-        raise FileNotFoundError(
-            f"No CompoundTriGate metadata found for exp_id={exp_id!r}"
-        )
+        raise FileNotFoundError(f"No CompoundTriGate metadata found for exp_id={exp_id!r}")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     summary_rows = _compound_summary_rows(
@@ -1979,9 +1470,7 @@ def generate_compound_tri_gate_figures(
     )
 
     summary_path = output_dir / f"{file_stem}_step_r2{figure_suffix}"
-    plt_module = load_plotting(
-        summary_path, apply_style=_apply_style, path_is_file=True
-    )
+    plt_module = load_plotting(summary_path, apply_style=_apply_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
     fig, axes = plt_module.subplots(2, 2, figsize=(10.0, 6.3))
@@ -2019,9 +1508,7 @@ def generate_compound_tri_gate_figures(
     axes[0, 1].set_title("B. Targeted trajectory recovery")
     axes[0, 1].set_xlabel("Environment step")
     axes[0, 1].set_ylabel(r2_label)
-    axes[0, 1].axhline(
-        0.8, color=_experiment_C_NEUTRAL_LIGHT, linestyle="--", linewidth=0.8
-    )
+    axes[0, 1].axhline(0.8, color=_experiment_C_NEUTRAL_LIGHT, linestyle="--", linewidth=0.8)
     axes[0, 1].set_ylim(*r2_ylim)
 
     x = np.arange(len(summary_rows))
@@ -2032,9 +1519,7 @@ def generate_compound_tri_gate_figures(
         error_yerr = np.asarray([row["parameter_error_sem"] for row in summary_rows])
         final_statistic_label = "Mean at step 2000"
     else:
-        error_center = np.asarray(
-            [row["parameter_error_median"] for row in summary_rows]
-        )
+        error_center = np.asarray([row["parameter_error_median"] for row in summary_rows])
         error_q25 = np.asarray([row["parameter_error_q25"] for row in summary_rows])
         error_q75 = np.asarray([row["parameter_error_q75"] for row in summary_rows])
         error_yerr = np.vstack((error_center - error_q25, error_q75 - error_center))
@@ -2086,14 +1571,10 @@ def generate_compound_tri_gate_figures(
     save_figure(fig, summary_path, plt_module=plt_module)
 
     trajectory_path = output_dir / f"{file_stem}_exemplary_trajectories{figure_suffix}"
-    plt_module = load_plotting(
-        trajectory_path, apply_style=_apply_style, path_is_file=True
-    )
+    plt_module = load_plotting(trajectory_path, apply_style=_apply_style, path_is_file=True)
     fig, axes = plt_module.subplots(3, 3, figsize=(10.0, 7.0), sharex=True, sharey=True)
     exemplar_records = {
-        record.policy_id: record
-        for record in records
-        if int(record.seed) == int(exemplar_seed)
+        record.policy_id: record for record in records if int(record.seed) == int(exemplar_seed)
     }
     gate_specs = tuple(
         (center, label, color)
@@ -2106,9 +1587,7 @@ def generate_compound_tri_gate_figures(
     )
     for ax, policy_id in zip(axes.ravel(), _COMPOUND_POLICY_ORDER, strict=True):
         if rest_center is not None:
-            ax.axhline(
-                float(rest_center), color="#777777", linestyle=":", linewidth=0.7
-            )
+            ax.axhline(float(rest_center), color="#777777", linestyle=":", linewidth=0.7)
         for center, label, color in gate_specs:
             span = float(gate_span_sigma) * float(gate_width)
             ax.axhspan(center - span, center + span, color=color, alpha=0.12)
@@ -2152,9 +1631,7 @@ def generate_compound_tri_gate_figures(
         1, int(parameter_dim), figsize=(3.35 * int(parameter_dim), 3.0), squeeze=False
     )
     axes = axes.ravel()
-    for param_idx, (ax, response_range) in enumerate(
-        zip(axes, response_ranges, strict=True)
-    ):
+    for param_idx, (ax, response_range) in enumerate(zip(axes, response_ranges, strict=True)):
         r_grid = np.linspace(
             min(gate_centers) - 1.2 * float(gate_width),
             max(gate_centers) + 1.2 * float(gate_width),
@@ -2172,9 +1649,7 @@ def generate_compound_tri_gate_figures(
         uu = drift[:, 0].reshape(rr.shape)
         vv = drift[:, 1 + param_idx].reshape(rr.shape)
         speed = np.sqrt(uu**2 + vv**2)
-        ax.pcolormesh(
-            rr, ss, np.log1p(speed), cmap="viridis", shading="auto", alpha=0.72
-        )
+        ax.pcolormesh(rr, ss, np.log1p(speed), cmap="viridis", shading="auto", alpha=0.72)
         ax.streamplot(
             r_grid,
             s_grid,
@@ -2187,24 +1662,19 @@ def generate_compound_tri_gate_figures(
         )
         for center, label, color in gate_specs:
             ax.axvline(center, color=color, linestyle="--", linewidth=0.8)
-            ax.text(
-                center, response_range[1], label, color=color, ha="center", va="bottom"
-            )
+            ax.text(center, response_range[1], label, color=color, ha="center", va="bottom")
         ax.set_title(rf"Unit $\theta_{param_idx + 1}$ basis field")
         ax.set_xlabel(r"Selector $r$")
         ax.set_ylabel(rf"Response $s_{param_idx + 1}$")
         _style_manuscript_axis(ax)
     fig.suptitle(
-        f"{system_label} parameter-basis vector fields; "
-        f"{observation_label} observations"
+        f"{system_label} parameter-basis vector fields; " f"{observation_label} observations"
     )
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.91), w_pad=1.3)
     save_figure(fig, vector_path, plt_module=plt_module)
 
     parameter_path = output_dir / f"{file_stem}_parameter_estimates{figure_suffix}"
-    plt_module = load_plotting(
-        parameter_path, apply_style=_apply_style, path_is_file=True
-    )
+    plt_module = load_plotting(parameter_path, apply_style=_apply_style, path_is_file=True)
     fig, axes = plt_module.subplots(
         1,
         int(parameter_dim),
@@ -2233,9 +1703,7 @@ def generate_compound_tri_gate_figures(
                 alpha=1.0 if policy_id == "compound_active_planning" else 0.75,
                 label=_COMPOUND_POLICY_LABELS[policy_id],
             )
-        ax.axhline(
-            true_params[param_idx], color="#222222", linestyle="--", linewidth=0.8
-        )
+        ax.axhline(true_params[param_idx], color="#222222", linestyle="--", linewidth=0.8)
         ax.set_title(rf"$\theta_{param_idx + 1}$ estimate")
         ax.set_xlabel("Environment step")
         ax.set_ylabel("Posterior mean")
@@ -2270,9 +1738,7 @@ def generate_compound_tri_gate_figures(
     return paths
 
 
-def _compound_poisson_observation_figure(
-    metadata: dict[str, Any], output_path: Path
-) -> None:
+def _compound_poisson_observation_figure(metadata: dict[str, Any], output_path: Path) -> None:
     """Plot realized rate and state-Fisher geometry for the paired Poisson decoder."""
     weights, bias, dt = reconstruct_loglinear_rate_model(metadata)
     radius = float(metadata.get("boundary_radius", 6.0))
@@ -2348,9 +1814,7 @@ def _compound_poisson_observation_figure(
     axes[2].set_ylabel("Latent coordinate")
     axes[2].set_yticks(np.arange(1, latent_dim + 1))
     coordinate_labels = [r"$r$"]
-    coordinate_labels.extend(
-        rf"$s_{index}$" for index in range(1, max(1, latent_dim - 1))
-    )
+    coordinate_labels.extend(rf"$s_{index}$" for index in range(1, max(1, latent_dim - 1)))
     coordinate_labels.append(r"$h$")
     axes[2].set_yticklabels(coordinate_labels)
     fig.colorbar(image, ax=axes[2], label=r"$\log_{10} I_{z,ii}$", fraction=0.05)
@@ -2361,7 +1825,7 @@ def _compound_poisson_observation_figure(
     save_figure(fig, output_path, plt_module=plt_module)
 
 
-def generate_simple_tri_gate_poisson_figures(
+def generate_three_gate_diagnostic_figures(
     result_roots: Sequence[Path],
     *,
     output_dir: Path,
@@ -2369,20 +1833,20 @@ def generate_simple_tri_gate_poisson_figures(
     summary_kind: str = "mean_sem",
     figure_suffix: str = ".png",
 ) -> list[Path]:
-    """Write the complete comparison for the simplified wide-gate benchmark."""
+    """Write the complete comparison for the designed three-gate diagnostic."""
     return generate_compound_tri_gate_figures(
         result_roots,
         output_dir=output_dir,
         exemplar_seed=exemplar_seed,
         summary_kind=summary_kind,
         figure_suffix=figure_suffix,
-        exp_id="simple_tri_gate_poisson",
-        file_stem="simple_tri_gate_poisson",
+        exp_id="three_gate_diagnostic",
+        file_stem="three_gate_diagnostic",
         observation_label="compact log-linear Poisson",
-        system_label="SimpleTriGate",
+        system_label="ThreeGateDiagnostic",
         r2_label="Response-balanced rollout $R^2$",
         r2_ylim=(-0.2, 1.02),
-        dynamics_type="simple_tri_gate",
+        dynamics_type="three_gate_diagnostic",
         gate_centers=(-0.5, -0.1, 0.3),
         gate_width=0.1,
         gate_span_sigma=2.0,
@@ -2425,9 +1889,7 @@ def experiment_main(argv: list[str] | None = None) -> int:
         "mismatch_dose_response": _experiment_plot_mismatch_dose_response,
     }
     figure_only_plotters = {
-        "true_dynamics_all": lambda: _experiment_plot_true_dynamics_all(
-            output_suite_dirs
-        ),
+        "true_dynamics_all": lambda: _experiment_plot_true_dynamics_all(output_suite_dirs),
         "per_parameter_recovery": lambda: _experiment_plot_per_parameter_recovery(
             max_seeds=max_seeds
         ),
