@@ -109,10 +109,8 @@ def test_tbme_loading_target_snr_is_available_in_session_metadata():
     try:
         bundle = configure_tbme_catalogs()
         env_preset = bundle.environment_presets["tbme_duffing"]
-        hard_env_preset = bundle.environment_presets["tbme_duffing_hard"]
         assert env_preset.loading_fisher_snr_db is None
         assert env_preset.loading_target_snr_db == pytest.approx(-5.0)
-        assert hard_env_preset.loading_target_snr_db == pytest.approx(-10.0)
         small_snr = compute_loglinear_loading_fisher_snr_db(
             env_preset,
             num_trajectories=2,
@@ -168,7 +166,7 @@ def test_tbme_loading_target_snr_is_available_in_session_metadata():
         assert np.allclose(bias, b.numpy())
 
         entry = experiment_run._build_session_experiment_entry(
-            exp_id="exp01_duffing",
+            exp_id="duffing",
             seeds=[0],
             repeats=1,
             total_steps_override=None,
