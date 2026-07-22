@@ -108,21 +108,22 @@ def plot_trajectory_overlay(
     )
     for idx, policy_id in enumerate(policies):
         ax = axes[idx // n_cols, idx % n_cols]
-        plot_vector_field(
-            dyn_true,
-            ax=ax,
-            x_range=plot_lim,
-            n_grid=36,
-            is_residual=True,
-            device="cpu",
-            streamplot_kwargs={
-                "color": neutral_light,
-                "linewidth": 0.34,
-                "density": 1.35,
-                "arrowsize": 0.55,
-                "zorder": 1,
-            },
-        )
+        if dyn_true is not None:
+            plot_vector_field(
+                dyn_true,
+                ax=ax,
+                x_range=plot_lim,
+                n_grid=36,
+                is_residual=True,
+                device="cpu",
+                streamplot_kwargs={
+                    "color": neutral_light,
+                    "linewidth": 0.34,
+                    "density": 1.35,
+                    "arrowsize": 0.55,
+                    "zorder": 1,
+                },
+            )
         traces = grouped[policy_id]
         for seed, traj in traces:
             color = seed_colors.get(seed, write_color)
@@ -234,21 +235,22 @@ def plot_trajectory_density(
     im = None
     for idx, policy_id in enumerate(policies):
         ax = axes[idx // n_cols, idx % n_cols]
-        plot_vector_field(
-            dyn_true,
-            ax=ax,
-            x_range=plot_lim,
-            n_grid=36,
-            is_residual=True,
-            device="cpu",
-            streamplot_kwargs={
-                "color": neutral_light,
-                "linewidth": 0.34,
-                "density": 1.35,
-                "arrowsize": 0.55,
-                "zorder": 1,
-            },
-        )
+        if dyn_true is not None:
+            plot_vector_field(
+                dyn_true,
+                ax=ax,
+                x_range=plot_lim,
+                n_grid=36,
+                is_residual=True,
+                device="cpu",
+                streamplot_kwargs={
+                    "color": neutral_light,
+                    "linewidth": 0.34,
+                    "density": 1.35,
+                    "arrowsize": 0.55,
+                    "zorder": 1,
+                },
+            )
         counts = hists[policy_id]
         hist = np.ma.masked_where(counts <= 0.0, np.log10(counts + 1.0))
         im = ax.imshow(

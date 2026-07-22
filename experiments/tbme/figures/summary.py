@@ -226,16 +226,21 @@ def _dynamics_from_metadata(metadata: dict[str, Any]) -> tuple[Any, float, str] 
     env_preset = get_environment_preset_from_metadata(metadata)
     if bool(getattr(env_preset, "real_data", False)):
         return None
+    grid_lim = float(env_preset.resolved_plot_limit())
+    label = str(getattr(env_preset, "system_label", None) or env_preset.system_id)
+    if int(metadata.get("latent_dim", getattr(env_preset, "latent_dim", 2)) or 2) != 2:
+        # The trajectory panels project onto the first two state coordinates;
+        # a 2D grid cannot be fed to a higher-dimensional vector field, so the
+        # streamplot background is skipped for these systems.
+        return None, grid_lim, label
     theta_true = np.asarray(metadata.get("embedding_true", [0.0, 0.0]), dtype=np.float32)
     dynamics_alpha = float(metadata.get("dynamics_alpha", 0.7))
-    grid_lim = float(env_preset.resolved_plot_limit())
     dyn_true = ResidualDynamicsCallable(
         dynamics_type=env_preset.resolved_dynamics_type(),
         dyn_params=env_preset.params_from_embedding(theta_true),
         dynamics_alpha=dynamics_alpha,
         device="cpu",
     )
-    label = str(getattr(env_preset, "system_label", None) or env_preset.system_id)
     return dyn_true, grid_lim, label
 
 
