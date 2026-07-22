@@ -25,18 +25,17 @@ from ...visualize import (
     plot_metric_over_cpu_time,
     plot_metric_over_steps,
 )
-from .. import tbme_figures as _figures
-from ..tbme_figures import (
-    _TBME_STROKE_COLOR,
-    _apply_style,
-    _policy_color,
-    _policy_label,
-    _policy_sort_key,
-    _style_manuscript_axis,
-    plot_trajectory_density,
-    plot_trajectory_overlay,
-)
 from ..tbme_io import read_state_action_trace, read_xy_trace as _read_xy_trace
+from . import groups as _groups
+from .theme import (
+    STROKE_COLOR as _TBME_STROKE_COLOR,
+    apply_style as _apply_style,
+    policy_color as _policy_color,
+    policy_label as _policy_label,
+    policy_sort_key as _policy_sort_key,
+    style_axis as _style_manuscript_axis,
+)
+from .trajectories import plot_trajectory_density, plot_trajectory_overlay
 
 # Summary output
 _summary_trace_C_WRITE = "#1F4FA8"
@@ -103,7 +102,7 @@ def _summary_build_parser() -> argparse.ArgumentParser:
 def _parse_selection(
     raw: str,
 ) -> tuple[list[Path], dict[Path, set[str]]]:
-    session_root = _figures._latest_session(_figures._TBME_RESULTS_DIR)
+    session_root = _groups.session_root()
     suite_dirs: list[Path] = []
     policy_ids_by_suite: dict[Path, set[str]] = {}
     for item in (part.strip() for part in str(raw).split(",") if part.strip()):

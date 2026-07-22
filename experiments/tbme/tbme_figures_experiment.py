@@ -18,11 +18,8 @@ from .figures import data as _fig_data
 from .figures import theme as _fig_theme
 from .figures.groups import SuiteSource
 from .figures.records import RunRecord
-from .tbme_figures import (
-    GROUPS,
-    _suite_dir,
-    _unique_paths,
-)
+from .figures.artifacts import unique_paths as _unique_paths
+from .figures.groups import groups as _groups_table, suite_dir as _suite_dir
 
 # Experiment manuscript output
 _experiment_C_STROKE = _fig_theme.STROKE_COLOR
@@ -155,7 +152,7 @@ def _experiment_build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--groups",
         type=str,
-        default=",".join(GROUPS),
+        default=",".join(_groups_table()),
         help="Comma-separated TBME groups whose suite folders receive global experiment figures.",
     )
     return parser
@@ -163,7 +160,7 @@ def _experiment_build_parser() -> argparse.ArgumentParser:
 
 def _experiment_suite_dirs_from_groups(raw: str) -> list[Path]:
     group_ids = [item.strip() for item in str(raw).split(",") if item.strip()]
-    unknown = sorted(set(group_ids) - set(GROUPS))
+    unknown = sorted(set(group_ids) - set(_groups_table()))
     if unknown:
         raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
     if not group_ids:
@@ -171,7 +168,7 @@ def _experiment_suite_dirs_from_groups(raw: str) -> list[Path]:
     return _unique_paths(
         ref.session_root / "tracks" / ref.suite_id
         for group_id in group_ids
-        for ref in GROUPS[group_id]
+        for ref in _groups_table()[group_id]
     )
 
 

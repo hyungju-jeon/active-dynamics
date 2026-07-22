@@ -34,10 +34,7 @@ from experiments.tbme.run_tbme_experiments import (
 )
 
 
-def _legacy_figures() -> Any:
-    from experiments.tbme import tbme_figures
-
-    return tbme_figures
+from experiments.tbme.figures import groups as _groups
 
 
 DEFAULT_ENV_IDS = ("all",)
@@ -50,7 +47,7 @@ ENV_ALIASES = {
 
 
 def _default_output_dir() -> Path:
-    return _legacy_figures()._latest_session(_legacy_figures()._TBME_RESULTS_DIR) / "diagnostics"
+    return _groups.session_root() / "diagnostics"
 
 
 def _resolve_env_id(raw: str) -> str:

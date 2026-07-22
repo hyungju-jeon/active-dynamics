@@ -15,7 +15,7 @@ from ..experiment_io import (
     get_environment_preset_from_metadata,
     load_json,
 )
-from . import tbme_figures as _figures
+from .figures import groups as _groups_mod
 from .figures.ablation import (
     OBJECTIVE_POLICIES as _experiment_OBJECTIVE_POLICIES,
     objective_sources as _experiment_objective_sources,
@@ -32,7 +32,6 @@ from .figures.data import (
 )
 from .figures.gates import (
     COMPOUND_POLICY_ORDER as _COMPOUND_POLICY_ORDER,
-    compound_curve as _compound_curve,
     compound_summary_rows as _compound_summary_rows,
     compound_trace_records as _compound_trace_records,
     plot_neutral_vector_field,
@@ -54,10 +53,10 @@ from .figures.theme import (
     style_axis as _style_manuscript_axis,
     style_experiment_axis as _style_experiment_axis,
 )
-from .tbme_figures import (
-    _REPO_ROOT,
-    _RESULTS_ROOT,
-    _latest_session,
+from .figures.groups import (
+    REPO_ROOT as _REPO_ROOT,
+    RESULTS_ROOT as _RESULTS_ROOT,
+    latest_session as _latest_session,
 )
 from .tbme_io import (
     load_planned_trace,
@@ -431,7 +430,7 @@ def _asset_plot_r2_curves(
 def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Path:
     sources = [
         _ExperimentSuiteSource(ref.suite_id, ref.label, ref.session_root / "tracks" / ref.suite_id)
-        for ref in _figures.GROUPS["simple_system_identification"]
+        for ref in _groups_mod.groups()["simple_system_identification"]
     ]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
     plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
@@ -1586,74 +1585,6 @@ _ASSET_TRI_GATE_GATE_COLORS = (
 )
 
 
-def _asset_tri_gate_fixed_gate_scores() -> tuple[list[str], np.ndarray]:
-    """Each closed-form objective's own score with the state clamped at each gate.
-
-    Mirrors the fixed-gate ranking test: 40 coarse steps of the planner's
-    linearized propagation from the gate center with the true parameters and
-    identity initial covariances. This is a controlled gate-preference assay,
-    not a closed-loop occupancy prediction. The sample-based variance
-    objectives have no closed-form fixed-gate score and are deliberately
-    absent rather than proxied.
-    """
-    import torch
-
-    from actdyn.environment.vectorfield import (
-        jacobian_param_torch,
-        jacobian_state_torch,
-    )
-    from actdyn.utils.torch_utils import attenuated_state_information
-
-    params = torch.ones(3)
-    dt, horizon = 0.1, 40
-    eye_state, eye_parameter = torch.eye(5), torch.eye(3)
-    state_information = torch.diag(torch.tensor([0.09, 0.09, 0.09, 0.09, 0.0025]))
-    row_labels = ["PALDI", "Full obs.", "E-opt.", "State info", "Dyn. sens."]
-    matrix = np.zeros((len(row_labels), len(_ASSET_TRI_GATE_CENTERS)))
-    for gate_idx, center in enumerate(_ASSET_TRI_GATE_CENTERS):
-        state = torch.tensor([[center, 0.0, 0.0, 0.0, 0.0]])
-        f_theta = jacobian_param_torch(
-            "three_gate_diagnostic", state, params, dynamics_alpha=1.0
-        )[0].detach()
-        f_state = jacobian_state_torch(
-            "three_gate_diagnostic", state, params, dynamics_alpha=1.0
-        )[0].detach()
-        sensitivity = torch.zeros(5, 3)
-        covariance = eye_state.clone()
-        information = torch.zeros(3, 3)
-        full_information = torch.zeros(3, 3)
-        dynamics_score = 0.0
-        state_info_score = 0.0
-        for _ in range(horizon):
-            transition = eye_state + f_state * dt
-            sensitivity = transition @ sensitivity + f_theta * dt
-            attenuated = attenuated_state_information(covariance, state_information)
-            information += sensitivity.T @ attenuated @ sensitivity
-            full_information += sensitivity.T @ state_information @ sensitivity
-            dynamics_score += float(torch.trace(sensitivity.T @ covariance @ sensitivity))
-            state_info_score += float(
-                0.5 * torch.logdet(eye_state + covariance @ state_information)
-            )
-            covariance = transition @ covariance @ transition.T + 0.01 * eye_state
-        matrix[:, gate_idx] = (
-            float(0.5 * torch.logdet(eye_parameter + information)),
-            float(0.5 * torch.logdet(eye_parameter + full_information)),
-            float(torch.linalg.eigvalsh(information)[0]),
-            state_info_score,
-            dynamics_score,
-        )
-    return row_labels, matrix
-
-
-_ASSET_TRI_GATE_SCORE_POLICY_IDS = (
-    "compound_active_planning",
-    "compound_active_fully_observable",
-    "compound_active_e_optimality",
-    "compound_active_state_information",
-    "compound_active_dynamics",
-)
-
-
 def _asset_tri_gate_assignment_bands(top: float) -> list[tuple[float, float, str]]:
     """Gate assignment regions (midpoint boundaries), tiling the axis gap-free.
 
@@ -1684,12 +1615,13 @@ def _asset_plot_gate_diagnostic(
     *,
     r2_summary: str,
     result_roots: Sequence[Path],
+    exemplar_seed: int = _ASSET_TRI_GATE_EXEMPLAR_SEED,
 ) -> Path:
     """Manuscript figure for the designed three-gate objective diagnostic.
 
-    (A) selector-axis schematic of the three gates, (B) response-balanced
-    rollout R2 curves, (C) final parameter error, (D) selector occupancy with
-    the deterministic reach-and-hold-M transit reference.
+    Single row: (A) final rollout R2 per objective, (B) selector occupancy with
+    the deterministic reach-and-hold-M transit reference, (C) all nine exemplar
+    selector traces overlaid on the gate assignment bands.
     """
     _asset_parse_r2_summaries(r2_summary)
     records = _compound_trace_records(result_roots, exp_id=_ASSET_TRI_GATE_EXP_ID)
@@ -1730,12 +1662,6 @@ def _asset_plot_gate_diagnostic(
             "gate_M_fraction",
         ),
     )
-    r2_curves = _compound_curve(
-        records,
-        filename="trajectory_r2_trace.csv",
-        value_key="trajectory_r2",
-        stride=20,
-    )
     transit_occupancy = _reach_hold_selector_occupancy(
         rest_center=_ASSET_TRI_GATE_REST_CENTER,
         target_center=_ASSET_TRI_GATE_CENTERS[-1],
@@ -1745,170 +1671,72 @@ def _asset_plot_gate_diagnostic(
         dt=float(records[0].metadata.get("dt", 0.01)),
         total_steps=int(records[0].metadata.get("total_steps", 2000)),
     )
+    exemplar_by_policy = {
+        record.policy_id: record
+        for record in records
+        if record.seed == int(exemplar_seed)
+    }
 
-    fig, axis_grid = plt_module.subplots(2, 2, figsize=(7.25, 4.4))
+    fig, axis_grid = plt_module.subplots(1, 3, figsize=(7.25, 2.55))
     axes = list(axis_grid.ravel())
-
-    # A: fixed-gate objective-preference assay. Each row is one closed-form
-    # objective's own score with the state clamped at each gate, shaded relative
-    # to its row maximum (colors are comparable only within a row); the ring
-    # marks each objective's preferred gate. Sample-based variance objectives
-    # have no closed-form fixed-gate score and are omitted.
-    from matplotlib.patches import Rectangle
-
-    ax = axes[0]
-    score_rows, score_matrix = _asset_tri_gate_fixed_gate_scores()
-    row_max = score_matrix.max(axis=1, keepdims=True)
-    normalized = score_matrix / np.where(row_max > 0.0, row_max, 1.0)
-    ax.imshow(
-        normalized,
-        cmap="Blues",
-        vmin=0.0,
-        vmax=1.35,
-        aspect="auto",
-        interpolation="nearest",
-    )
-    gate_short = ("A: confounded", "B: balanced", "M: full rank")
-    gate_colors = [color for _key, _label, color in _ASSET_TRI_GATE_GATE_COLORS[1:]]
-    for row_idx in range(score_matrix.shape[0]):
-        best = int(np.argmax(score_matrix[row_idx]))
-        ax.add_patch(
-            Rectangle(
-                (best - 0.5, row_idx - 0.5),
-                1.0,
-                1.0,
-                fill=False,
-                edgecolor=gate_colors[best],
-                linewidth=1.4,
-            )
-        )
-        for col_idx in range(score_matrix.shape[1]):
-            value = normalized[row_idx, col_idx]
-            ax.text(
-                col_idx,
-                row_idx,
-                f"{value:.2f}" if value >= 0.005 else "0",
-                ha="center",
-                va="center",
-                fontsize=5.2,
-                color="#1F3044" if value < 0.6 else "white",
-            )
-    ax.set_xticks(range(len(gate_short)))
-    ax.set_xticklabels(gate_short)
-    for tick, color in zip(ax.get_xticklabels(), gate_colors, strict=True):
-        tick.set_color(color)
-        tick.set_fontweight("bold")
-    ax.set_yticks(range(len(score_rows)))
-    ax.set_yticklabels(score_rows)
-    for tick, policy_id in zip(
-        ax.get_yticklabels(), _ASSET_TRI_GATE_SCORE_POLICY_IDS, strict=True
-    ):
-        tick.set_color(_asset_tri_gate_policy_color(policy_id))
-    ax.tick_params(axis="both", length=0.0)
-    for spine in ax.spines.values():
-        spine.set_visible(False)
-    ax.set_title(
-        "A", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
-    )
-    ax.set_title(
-        "Fixed-gate objective preference", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0
-    )
-
-    # B: response-balanced rollout R2 over environment steps.
-    ax = axes[1]
-    for policy_id in _COMPOUND_POLICY_ORDER:
-        curve = r2_curves.get(policy_id, [])
-        if not curve:
-            continue
-        step = np.asarray([row["step"] for row in curve], dtype=np.float64)
-        if r2_summary == "median_iqr":
-            center = np.asarray([row["median"] for row in curve], dtype=np.float64)
-            lower = np.asarray([row["q25"] for row in curve], dtype=np.float64)
-            upper = np.asarray([row["q75"] for row in curve], dtype=np.float64)
-        else:
-            center = np.asarray([row["mean"] for row in curve], dtype=np.float64)
-            sem = np.asarray([row["sem"] for row in curve], dtype=np.float64)
-            lower, upper = center - sem, center + sem
-        is_paldi = policy_id == "compound_active_planning"
-        color = _asset_tri_gate_policy_color(policy_id)
-        ax.plot(
-            step,
-            center,
-            color=color,
-            linewidth=1.3 if is_paldi else 0.7,
-            alpha=1.0 if is_paldi else 0.85,
-            zorder=3 if is_paldi else 2,
-            label=_ASSET_TRI_GATE_LABELS[policy_id],
-        )
-        if is_paldi:
-            ax.fill_between(step, lower, upper, color=color, alpha=0.18, linewidth=0.0)
-    ax.set_xlim(left=0.0)
-    ax.set_ylim(*_ASSET_TRI_GATE_R2_YLIM)
-    ax.set_xlabel("Environment steps")
-    ax.set_ylabel("Rollout $R^2$")
-    _style_experiment_axis(ax)
-    ax.set_title(
-        "B", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
-    )
-    ax.set_title("Rollout recovery", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
-
-    # C: final parameter error, one bar per objective.
-    ax = axes[2]
     x = np.arange(len(summary_rows), dtype=np.float64)
+
+    # A: final rollout R2, one bar per objective.
+    ax = axes[0]
     if r2_summary == "median_iqr":
-        error_center = np.asarray(
-            [row["parameter_error_median"] for row in summary_rows], dtype=np.float64
+        r2_center = np.asarray(
+            [row["trajectory_r2_median"] for row in summary_rows], dtype=np.float64
         )
-        error_yerr = np.vstack(
+        r2_yerr = np.vstack(
             (
-                error_center
+                r2_center
                 - np.asarray(
-                    [row["parameter_error_q25"] for row in summary_rows],
-                    dtype=np.float64,
+                    [row["trajectory_r2_q25"] for row in summary_rows], dtype=np.float64
                 ),
                 np.asarray(
-                    [row["parameter_error_q75"] for row in summary_rows],
-                    dtype=np.float64,
+                    [row["trajectory_r2_q75"] for row in summary_rows], dtype=np.float64
                 )
-                - error_center,
+                - r2_center,
             )
         )
     else:
-        error_center = np.asarray(
-            [row["parameter_error_mean"] for row in summary_rows], dtype=np.float64
+        r2_center = np.asarray(
+            [row["trajectory_r2_mean"] for row in summary_rows], dtype=np.float64
         )
-        error_yerr = np.asarray(
-            [row["parameter_error_sem"] for row in summary_rows], dtype=np.float64
+        r2_yerr = np.asarray(
+            [row["trajectory_r2_sem"] for row in summary_rows], dtype=np.float64
         )
     bar_colors = [
         _asset_tri_gate_policy_color(str(row["policy_id"])) for row in summary_rows
     ]
     ax.bar(
         x,
-        error_center,
-        yerr=error_yerr,
+        r2_center,
+        yerr=r2_yerr,
         color=bar_colors,
         edgecolor=bar_colors,
         linewidth=0.6,
         capsize=1.6,
         error_kw={"elinewidth": 0.6, "capthick": 0.6},
     )
+    ax.axhline(0.0, color=_experiment_C_STROKE, linewidth=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(
         [_ASSET_TRI_GATE_LABELS[str(row["policy_id"])] for row in summary_rows],
         rotation=30,
         ha="right",
     )
-    ax.set_ylabel(r"Final $\|\hat{\theta}-\theta^{*}\|_2$")
+    ax.set_ylim(*_ASSET_TRI_GATE_R2_YLIM)
+    ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
     _style_experiment_axis(ax)
     ax.set_title(
-        "C", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+        "A", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
-    ax.set_title("Parameter error", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+    ax.set_title("Rollout recovery", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
-    # D: selector occupancy stacks plus the deterministic transit reference; the
+    # B: selector occupancy stacks plus the deterministic transit reference; the
     # reference bar shows that B occupancy at PALDI's level is pure transit.
-    ax = axes[3]
+    ax = axes[1]
     transit_x = float(len(summary_rows)) + 0.9
     bottom = np.zeros(len(summary_rows), dtype=np.float64)
     transit_bottom = 0.0
@@ -1939,9 +1767,74 @@ def _asset_plot_gate_diagnostic(
     ax.set_ylabel("Fraction of steps")
     _style_experiment_axis(ax)
     ax.set_title(
-        "D", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+        "B", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
     ax.set_title("Selector occupancy", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+
+    # C: every objective's exemplar selector trace overlaid on the gate bands,
+    # so dwell-at-A, dwell-at-B, and reach-and-hold-M behaviors read against the
+    # shared gate assignment regions.
+    ax = axes[2]
+    rest_color = _ASSET_TRI_GATE_GATE_COLORS[0][2]
+    y_bottom, y_top = -1.2, 0.62
+    ax.axhspan(
+        y_bottom, _ASSET_TRI_GATE_REST_CUTOFF, color=rest_color, alpha=0.22, linewidth=0.0
+    )
+    for low, high, color in _asset_tri_gate_assignment_bands(y_top):
+        ax.axhspan(low, high, color=color, alpha=0.14, linewidth=0.0)
+    ax.axhline(
+        _ASSET_TRI_GATE_REST_CENTER, color=rest_color, linestyle="--", linewidth=0.6
+    )
+    max_steps = 1
+    for policy_id in _COMPOUND_POLICY_ORDER:
+        record = exemplar_by_policy.get(policy_id)
+        if record is None:
+            continue
+        rows = read_trace_csv(record.run_dir / "state_action_trace.csv")
+        selector = np.asarray([float(row["true_x"]) for row in rows], dtype=np.float64)
+        max_steps = max(max_steps, selector.size)
+        is_paldi = policy_id == "compound_active_planning"
+        ax.plot(
+            np.arange(selector.size, dtype=np.float64),
+            selector,
+            color=_asset_tri_gate_policy_color(policy_id),
+            linewidth=1.1 if is_paldi else 0.5,
+            alpha=1.0 if is_paldi else 0.7,
+            zorder=3 if is_paldi else 2,
+        )
+    ax.set_ylim(y_bottom, y_top)
+    ax.set_xlim(0.0, float(max_steps))
+    for (_key, label, color), center in zip(
+        _ASSET_TRI_GATE_GATE_COLORS[1:], _ASSET_TRI_GATE_CENTERS, strict=True
+    ):
+        ax.text(
+            1.02,
+            center,
+            label.split(":")[0],
+            transform=ax.get_yaxis_transform(),
+            ha="left",
+            va="center",
+            fontsize=_ASSET_TICK_SIZE,
+            fontweight="bold",
+            color=color,
+        )
+    ax.text(
+        1.02,
+        _ASSET_TRI_GATE_REST_CENTER,
+        "rest",
+        transform=ax.get_yaxis_transform(),
+        ha="left",
+        va="center",
+        fontsize=5.2,
+        color=_experiment_C_STROKE,
+    )
+    ax.set_xlabel("Environment steps")
+    ax.set_ylabel("Selector $r$")
+    _style_experiment_axis(ax)
+    ax.set_title(
+        "C", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+    )
+    ax.set_title("Exemplar selector traces", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
     from matplotlib.lines import Line2D
 
@@ -1953,13 +1846,13 @@ def _asset_plot_gate_diagnostic(
         ],
         [_ASSET_TRI_GATE_LABELS[policy_id] for policy_id in legend_policies],
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.005),
+        bbox_to_anchor=(0.5, 1.02),
         ncol=len(legend_policies),
         fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
         handlelength=1.4,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.95), w_pad=0.9, h_pad=1.3)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.9), w_pad=1.1)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
@@ -2086,7 +1979,7 @@ def _asset_flex_groups() -> tuple[tuple[str, tuple[_ExperimentSuiteSource, ...]]
             display_titles.get(ref.suite_id, ref.label),
             ref.session_root / "tracks" / ref.suite_id,
         )
-        for ref in _figures.GROUPS["flex_comparison"]
+        for ref in _groups_mod.groups()["flex_comparison"]
     }
     grouped = (
         ("baseline", ("duffing", "damped_pendulum", "gated_duffing")),
@@ -2244,7 +2137,7 @@ def _assets_build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--groups",
         type=str,
-        default=",".join(_figures.GROUPS),
+        default=",".join(_groups_mod.groups()),
         help="Comma-separated TBME groups to scan for component figures.",
     )
     parser.add_argument(
@@ -2285,9 +2178,9 @@ def assets_main(argv: list[str] | None = None) -> int:
     """Generate TBME manuscript asset figures from existing result summaries."""
     args = _assets_build_parser().parse_args(argv)
     if args.results_dir is not None:
-        _figures._set_tbme_results_dir(args.results_dir)
+        _groups_mod.set_results_dir(args.results_dir)
     group_ids = [item.strip() for item in str(args.groups).split(",") if item.strip()]
-    unknown = sorted(set(group_ids) - set(_figures.GROUPS))
+    unknown = sorted(set(group_ids) - set(_groups_mod.groups()))
     if unknown:
         raise ValueError(f"Unknown group(s): {', '.join(unknown)}")
     if not group_ids:
@@ -2302,7 +2195,7 @@ def assets_main(argv: list[str] | None = None) -> int:
     output_dir = (
         Path(args.output_dir)
         if args.output_dir is not None
-        else _latest_session(_figures._TBME_RESULTS_DIR) / "assets"
+        else _groups_mod.session_root() / "assets"
     ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_groups = set(group_ids)
@@ -2398,7 +2291,7 @@ def assets_main(argv: list[str] | None = None) -> int:
         ]
     lines.append("Component roots:")
     for group_id in group_ids:
-        for ref in _figures.GROUPS[group_id]:
+        for ref in _groups_mod.groups()[group_id]:
             suite_dir = ref.session_root / "tracks" / ref.suite_id
             lines.append(_asset_display_path(suite_dir / "summary" / "figures"))
             lines.append(_asset_display_path(suite_dir / "experiment" / "figures"))
