@@ -20,6 +20,7 @@ from ..experiment_io import (
     reconstruct_loglinear_rate_model,
 )
 from .figures import ablation as _ablation
+from .figures import bottleneck as _bottleneck
 from .figures import artifacts as _fig_artifacts
 from .figures import data as _fig_data
 from .figures import theme as _fig_theme
@@ -47,13 +48,7 @@ _experiment_C_NEUTRAL_LIGHT = _fig_theme.NEUTRAL_LIGHT
 _experiment_C_NEUTRAL_FILL = _fig_theme.NEUTRAL_FILL
 _experiment_C_GRID = _fig_theme.GRID_COLOR
 
-_experiment_BOTTLENECK_POLICIES = [
-    "adaptive",
-    "active_planning",
-    "active_myopic",
-    "active_state_variance",
-    "prbs",
-]
+_experiment_BOTTLENECK_POLICIES = _bottleneck.BOTTLENECK_POLICIES
 _experiment_OBJECTIVE_POLICIES = _ablation.OBJECTIVE_POLICIES
 _experiment_OBJECTIVE_DEFINITIONS = _ablation.OBJECTIVE_DEFINITIONS
 _experiment_DOSE_POLICIES = [
@@ -87,21 +82,8 @@ EXPERIMENT_PLOTS = _experiment_PLOTS
 
 _experiment_OBJECTIVE_DEFINITION_PLOTS = {"objective_ablation"}
 _experiment_REQUIRED_SUITES_BY_PLOT = {
-    "bottleneck_sweep": (
-        ("simple_system_identification", "gated_duffing"),
-        ("observation_action_bottleneck", "gated_duffing_observation_bottleneck_mild"),
-        (
-            "observation_action_bottleneck",
-            "gated_duffing_observation_bottleneck_strong",
-        ),
-        ("observation_action_bottleneck", "gated_duffing_action_bottleneck_mild"),
-        ("observation_action_bottleneck", "gated_duffing_action_bottleneck_strong"),
-    ),
-    "objective_ablation": (
-        ("objective_ablation", "gated_duffing"),
-        ("objective_ablation", "gated_duffing_asymmetric"),
-        ("objective_ablation", "gated_duffing_challenging"),
-    ),
+    "bottleneck_sweep": _bottleneck.REQUIRED_SUITES,
+    "objective_ablation": _ablation.REQUIRED_SUITES,
     "mismatch_dose_response": (
         ("simple_system_identification", "duffing"),
         ("simple_system_identification", "gated_duffing"),
@@ -124,93 +106,7 @@ _experiment_copy_artifact = _fig_artifacts.copy_artifact
 _style_experiment_axis = _fig_theme.style_experiment_axis
 
 
-def plot_bottleneck_sweep(
-    output_path: Path,
-    *,
-    sources: Sequence[Any],
-    rows: list[dict[str, Any]],
-    policy_ids: Sequence[str],
-    policy_label: Callable[[str], str],
-    policy_color: Callable[[str], str],
-    apply_style: Callable[[Any], None] | None,
-    style_axis: Callable[..., None],
-) -> Path:
-    """Plot final prediction and threshold steps for bottleneck conditions."""
-    plt_module = load_plotting(output_path, apply_style=apply_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(1, 2, figsize=(7.8, 2.95), sharex=True)
-    x = np.arange(len(sources), dtype=np.float64)
-    offsets = np.linspace(-0.30, 0.30, len(policy_ids))
-    max_step = 1.0
-    finite_r2: list[float] = []
-    for idx, policy_id in enumerate(policy_ids):
-        color = policy_color(policy_id)
-        r2_y = []
-        r2_sem = []
-        step_y = []
-        missing_x = []
-        for source in sources:
-            match = [
-                row
-                for row in rows
-                if row["condition"] == source.label and row["policy_id"] == policy_id
-            ][0]
-            r2_y.append(
-                np.nan if match["trajectory_r2_mean"] is None else match["trajectory_r2_mean"]
-            )
-            r2_sem.append(match["trajectory_r2_sem"])
-            step = match["step_to_r2_0p90"]
-            if step is None:
-                step_y.append(np.nan)
-                missing_x.append(x[len(step_y) - 1] + offsets[idx])
-            else:
-                step_y.append(float(step))
-                max_step = max(max_step, float(step))
-        xpos = x + offsets[idx]
-        axes[0].errorbar(
-            xpos,
-            r2_y,
-            yerr=r2_sem,
-            fmt="o-",
-            color=color,
-            linewidth=1.0,
-            markersize=3.4,
-            capsize=2.0,
-            label=policy_label(policy_id),
-        )
-        finite_r2.extend(float(v) for v in r2_y if np.isfinite(v))
-        axes[1].plot(
-            xpos,
-            step_y,
-            marker="o",
-            color=color,
-            linewidth=1.0,
-            markersize=3.4,
-            label=policy_label(policy_id),
-        )
-        if missing_x:
-            axes[1].scatter(
-                missing_x,
-                [max_step * 1.04 for _ in missing_x],
-                marker="x",
-                s=14,
-                color=color,
-                linewidths=0.75,
-            )
-    for ax in axes:
-        style_axis(ax)
-        ax.set_xticks(x)
-        ax.set_xticklabels([source.label for source in sources], rotation=22, ha="right")
-    axes[0].set_ylabel("Final prediction R2")
-    axes[0].set_ylim(min(-0.1, min(finite_r2) - 0.05) if finite_r2 else -0.1, 1.05)
-    axes[0].set_title("A. Prediction under bottlenecks")
-    axes[1].set_ylabel("Steps to prediction R2 >= 0.90")
-    axes[1].set_ylim(0.0, max_step * 1.15)
-    axes[1].set_title("B. Predictive sample efficiency")
-    axes[1].legend(loc="upper left", fontsize=6.6, ncol=1)
-    fig.tight_layout(w_pad=1.1)
-    return save_figure(fig, output_path, plt_module=plt_module)
+plot_bottleneck_sweep = _bottleneck.plot_bottleneck_sweep
 
 
 plot_objective_ablation = _ablation.plot_objective_ablation
@@ -423,98 +319,7 @@ _experiment_r2_threshold_step = _fig_data.r2_threshold_step
 _experiment_r2_threshold_times = _fig_data.r2_threshold_times
 
 
-def _experiment_plot_bottleneck_sweep() -> list[Path]:
-    sources = [
-        _ExperimentSuiteSource(
-            "gated_duffing",
-            "Default",
-            _suite_dir("simple_system_identification", "gated_duffing"),
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_observation_bottleneck_mild",
-            "Obs. mild",
-            _suite_dir(
-                "observation_action_bottleneck",
-                "gated_duffing_observation_bottleneck_mild",
-            ),
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_observation_bottleneck_strong",
-            "Obs. strong",
-            _suite_dir(
-                "observation_action_bottleneck",
-                "gated_duffing_observation_bottleneck_strong",
-            ),
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_action_bottleneck_mild",
-            "Action mild",
-            _suite_dir(
-                "observation_action_bottleneck",
-                "gated_duffing_action_bottleneck_mild",
-            ),
-        ),
-        _ExperimentSuiteSource(
-            "gated_duffing_action_bottleneck_strong",
-            "Action strong",
-            _suite_dir(
-                "observation_action_bottleneck",
-                "gated_duffing_action_bottleneck_strong",
-            ),
-        ),
-    ]
-    rows: list[dict[str, Any]] = []
-    for source in sources:
-        for policy_id in _experiment_BOTTLENECK_POLICIES:
-            r2, r2_sem, n_r2 = _experiment_metric_mean_sem(
-                source.suite_dir, policy_id, "trajectory_r2_final_mean"
-            )
-            step_to_r2 = _experiment_r2_threshold_step(source.suite_dir, policy_id, threshold=0.90)
-            rows.append(
-                {
-                    "experiment": source.exp_id,
-                    "condition": source.label,
-                    "policy_id": policy_id,
-                    "policy_label": _experiment_policy_label(policy_id),
-                    "trajectory_r2_mean": r2,
-                    "trajectory_r2_sem": r2_sem,
-                    "step_to_r2_0p90": step_to_r2,
-                    "n_r2": n_r2,
-                }
-            )
-
-    suite_dirs = [source.suite_dir for source in sources]
-    csv_paths = _experiment_write_csv_artifacts(
-        suite_dirs,
-        filename="tbme_experiment_bottleneck_sweep.csv",
-        rows=rows,
-        fields=[
-            "experiment",
-            "condition",
-            "policy_id",
-            "policy_label",
-            "trajectory_r2_mean",
-            "trajectory_r2_sem",
-            "step_to_r2_0p90",
-            "n_r2",
-        ],
-    )
-    figure_paths = _experiment_artifact_paths(
-        suite_dirs,
-        subdir="figures",
-        filename="tbme_experiment_bottleneck_sweep.pdf",
-    )
-    figure_path = plot_bottleneck_sweep(
-        figure_paths[0],
-        sources=sources,
-        rows=rows,
-        policy_ids=_experiment_BOTTLENECK_POLICIES,
-        policy_label=_experiment_policy_label,
-        policy_color=_policy_color,
-        apply_style=_apply_style,
-        style_axis=_style_experiment_axis,
-    )
-    return [*_experiment_copy_artifact(figure_path, figure_paths), *csv_paths]
+_experiment_plot_bottleneck_sweep = _bottleneck.generate
 
 
 _experiment_objective_sources = _ablation.objective_sources

@@ -21,6 +21,13 @@ def _objective_ablation() -> list[Path]:
     return ablation.generate()
 
 
+def _bottleneck_sweep() -> list[Path]:
+    from experiments.tbme.figures import bottleneck
+
+    return bottleneck.generate()
+
+
 FIGURES: dict[str, Callable[[], list[Path]]] = {
     "objective_ablation": _objective_ablation,
+    "bottleneck_sweep": _bottleneck_sweep,
 }
