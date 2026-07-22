@@ -106,7 +106,7 @@ def _write_r2_ceiling_metadata(suite_dir: Path, *, state_noise: float) -> None:
 
 
 def test_asset_true_model_r2_ceiling_is_one_without_process_noise(tmp_path: Path):
-    from experiments.tbme import tbme_figures_assets as module
+    from experiments.tbme.figures import assets as module
 
     _write_r2_ceiling_metadata(tmp_path, state_noise=0.0)
 
@@ -117,7 +117,7 @@ def test_asset_true_model_r2_ceiling_reflects_process_noise(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from experiments.tbme import tbme_figures_assets as module
+    from experiments.tbme.figures import assets as module
 
     monkeypatch.setattr(module, "_ASSET_R2_CEILING_REPEATS", 4)
     _write_r2_ceiling_metadata(tmp_path, state_noise=0.8)
@@ -132,7 +132,7 @@ def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from experiments.tbme import tbme_figures_assets as module
+    from experiments.tbme.figures import assets as module
 
     summary_dir = tmp_path / "summary"
     write_trace_csv(
@@ -234,7 +234,7 @@ def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
 
 
 def test_asset_r2_summary_selection_is_explicit() -> None:
-    from experiments.tbme import tbme_figures_assets as module
+    from experiments.tbme.figures import assets as module
 
     assert module._ASSET_PREDICTIVE_R2_LABEL == "Predictive R²"
     assert module._ASSET_FINAL_R2_LABEL == "Final predictive R²"
@@ -250,7 +250,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from experiments.tbme import tbme_figures_assets as module
+    from experiments.tbme.figures import assets as module
 
     policy_ids = ("flex", "flex_filter", "flex_true", "flex_rollback")
     refs = []
@@ -411,7 +411,7 @@ def _write_tri_gate_run(
 
 def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
-    from experiments.tbme import tbme_figures_assets as module
+    from experiments.tbme.figures import assets as module
 
     for seed in (0, 1):
         _write_tri_gate_run(
@@ -480,7 +480,7 @@ def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None
 
 def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
-    from experiments.tbme.tbme_figures_experiment import plot_objective_ablation
+    from experiments.tbme.figures.ablation import plot_objective_ablation
 
     policy_id = "active_dynamics"
     sources = [
@@ -1179,8 +1179,8 @@ def test_trajectory_r2_many_scores_all_three_gate_diagnostic_parameters():
 
 
 def test_three_gate_diagnostic_reach_hold_baseline_separates_transit_from_dwell():
-    from experiments.tbme.tbme_figures_experiment import (
-        _reach_hold_selector_occupancy,
+    from experiments.tbme.figures.gates import (
+        reach_hold_selector_occupancy as _reach_hold_selector_occupancy,
     )
 
     occupancy = _reach_hold_selector_occupancy(

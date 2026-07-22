@@ -1,9 +1,11 @@
 """TBME figure package — one module per figure family.
 
-Migration status: families still living in the legacy split modules
-(``tbme_figures_summary/_experiment/_assets/_diagnostics``) are being moved
-here one family per change. The legacy modules keep their public names as
-aliases while any consumer remains.
+Layers: ``theme``/``groups``/``artifacts``/``data``/``records``/``information``
+are shared infrastructure; every other module is one figure family following
+``prepare() -> FamilyData -> plot builder -> generate()`` with figure and CSV
+sidecars produced from the same prepared data. ``cli`` and ``assets`` hold the
+experiment-level and manuscript-asset entry points; the documented CLI router
+is ``experiments/tbme/generate_figures.py``.
 
 Dispatch is an explicit table (no decorator registration); imports happen
 inside the wrappers so importing this package stays cheap and cycle-free.

@@ -13,8 +13,11 @@ if __package__ in {None, ""}:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-from experiments.tbme import tbme_figures
-from experiments.tbme import tbme_figures_experiment
+from experiments.tbme.figures import assets as tbme_assets
+from experiments.tbme.figures import cli as tbme_experiment_cli
+from experiments.tbme.figures import diagnostics as tbme_diagnostics
+from experiments.tbme.figures import groups as tbme_groups
+from experiments.tbme.figures import summary as tbme_summary
 from experiments.tbme.run_tbme_experiments import SHARED_TBME_GROUP_MODULES
 
 
@@ -31,7 +34,7 @@ EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
     "flex_comparison": (),
 }
 
-DEFAULT_GROUPS = ",".join(tbme_figures.GROUPS)
+DEFAULT_GROUPS = ",".join(tbme_groups.groups())
 DIAGNOSTIC_ENV_IDS = (
     "tbme_duffing",
     "tbme_damped_pendulum",
@@ -141,7 +144,7 @@ def _csv_items(raw: str) -> list[str]:
 
 def _experiment_plot_ids(group_csv: str) -> list[str]:
     group_ids = _csv_items(group_csv)
-    unknown = sorted(set(group_ids) - set(tbme_figures.GROUPS))
+    unknown = sorted(set(group_ids) - set(tbme_groups.groups()))
     if unknown:
         raise ValueError(f"Unknown experiment group(s): {', '.join(unknown)}")
     missing = sorted(set(group_ids) - set(EXPERIMENT_PLOTS_BY_GROUP))
@@ -160,7 +163,7 @@ def _experiment_plot_ids(group_csv: str) -> list[str]:
 
 def _experiment_args(args: argparse.Namespace) -> list[str]:
     plot_ids = _experiment_plot_ids(str(args.groups))
-    unknown = sorted(set(plot_ids) - set(tbme_figures_experiment.EXPERIMENT_PLOTS))
+    unknown = sorted(set(plot_ids) - set(tbme_experiment_cli.EXPERIMENT_PLOTS))
     if unknown:
         raise ValueError(f"Unknown experiment plot(s): {', '.join(unknown)}")
     return [
@@ -291,26 +294,26 @@ def main(argv: list[str] | None = None) -> int:
         parser.print_help()
         return 0
     if getattr(args, "results_dir", None) is not None:
-        tbme_figures._set_tbme_results_dir(Path(args.results_dir))
+        tbme_groups.set_results_dir(Path(args.results_dir))
     if args.output_set == "summary":
-        return int(tbme_figures.summary_main(_summary_args(args)))
+        return int(tbme_summary.summary_main(_summary_args(args)))
     if args.output_set == "experiment":
-        return int(tbme_figures.experiment_main(_experiment_args(args)))
+        return int(tbme_experiment_cli.experiment_main(_experiment_args(args)))
     if args.output_set == "assets":
-        return int(tbme_figures.assets_main(_assets_args(args)))
+        return int(tbme_assets.assets_main(_assets_args(args)))
     if args.output_set == "diagnostics":
-        return int(tbme_figures.diagnostics_main(_diagnostics_args(args)))
+        return int(tbme_diagnostics.main(_diagnostics_args(args)))
     if args.output_set == "all":
         args.trajectory_max_seeds = (
             args.trajectory_max_seeds if args.trajectory_max_seeds is not None else args.max_seeds
         )
-        code = int(tbme_figures.summary_main(_summary_args(args)))
+        code = int(tbme_summary.summary_main(_summary_args(args)))
         if code != 0:
             return code
-        code = int(tbme_figures.experiment_main(_experiment_args(args)))
+        code = int(tbme_experiment_cli.experiment_main(_experiment_args(args)))
         if code != 0:
             return code
-        code = int(tbme_figures.assets_main(_assets_args(args)))
+        code = int(tbme_assets.assets_main(_assets_args(args)))
         if code != 0:
             return code
         return 0

@@ -26,11 +26,14 @@ Suite ids use clean environment slugs such as `duffing` and `gated_duffing`, not
 - `generate_figures.py`: single entrypoint for TBME figure and asset generation.
 - `generate_behavior_video.py`: TBME behavior frame/video renderer.
 - `tbme_io.py`: shared TBME run trace and metadata-loading helpers.
-- `tbme_figures.py`: shared TBME figure configuration and thin figure entrypoint delegates.
-- `tbme_figures_summary.py`: per-suite summary and trajectory figures.
-- `tbme_figures_experiment.py`: experiment-level manuscript figures.
-- `tbme_figures_assets.py`: manuscript asset assembly used by `generate_figures.py assets`.
-- `tbme_figures_diagnostics.py`: catalog-level dynamics and observation diagnostics.
+- `figures/`: TBME figure package — one module per figure family.
+  - `theme.py` (visual style + policy labels/colors), `groups.py` (suite/GROUPS
+    resolution and `--results-dir` override), `artifacts.py`, `data.py`,
+    `records.py`, `information.py` (shared load/aggregate layers).
+  - Families: `ablation.py`, `bottleneck.py`, `mismatch.py`, `true_dynamics.py`,
+    `recovery.py`, `gates.py`, `trajectories.py`, `summary.py`,
+    `diagnostics.py`, plus `assets.py` (manuscript asset assembly) and
+    `cli.py` (experiment-level figure CLI).
 
 The shared experiment runtime remains outside this directory:
 

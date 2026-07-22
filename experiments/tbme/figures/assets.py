@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+"""Manuscript asset assembly for the TBME figures package."""
 from __future__ import annotations
 
 import argparse
@@ -10,40 +11,40 @@ import numpy as np
 from actdyn.utils.experiment_runtime import read_trace_csv, safe_float as _safe_float
 from actdyn.utils.figure_io import load_plotting, save_figure
 
-from ..experiment_io import (
+from ...experiment_io import (
     find_nested_metadata_paths,
     get_environment_preset_from_metadata,
     load_json,
 )
-from .figures import groups as _groups_mod
-from .figures.ablation import (
+from . import groups as _groups_mod
+from .ablation import (
     OBJECTIVE_POLICIES as _experiment_OBJECTIVE_POLICIES,
     objective_sources as _experiment_objective_sources,
 )
-from .figures.artifacts import (
+from .artifacts import (
     write_csv as _write_csv,
     write_text as _write_text,
 )
-from .figures.data import (
+from .data import (
     metric_mean_sem as _experiment_metric_mean_sem,
     metric_values as _experiment_metric_values,
     r2_threshold_step as _experiment_r2_threshold_step,
     r2_threshold_times as _experiment_r2_threshold_times,
 )
-from .figures.gates import (
+from .gates import (
     COMPOUND_POLICY_ORDER as _COMPOUND_POLICY_ORDER,
     compound_summary_rows as _compound_summary_rows,
     compound_trace_records as _compound_trace_records,
     plot_neutral_vector_field,
     reach_hold_selector_occupancy as _reach_hold_selector_occupancy,
 )
-from .figures.groups import SuiteSource as _ExperimentSuiteSource, suite_dir as _suite_dir
-from .figures.information import make_information_grid as _experiment_make_information_grid
-from .figures.records import (
+from .groups import SuiteSource as _ExperimentSuiteSource, suite_dir as _suite_dir
+from .information import make_information_grid as _experiment_make_information_grid
+from .records import (
     RunRecord as _ExperimentRunRecord,
     load_xy_trace as _experiment_load_xy_trace,
 )
-from .figures.theme import (
+from .theme import (
     NEUTRAL_FILL as _experiment_C_NEUTRAL_FILL,
     NEUTRAL_LIGHT as _experiment_C_NEUTRAL_LIGHT,
     STROKE_COLOR as _experiment_C_STROKE,
@@ -53,12 +54,12 @@ from .figures.theme import (
     style_axis as _style_manuscript_axis,
     style_experiment_axis as _style_experiment_axis,
 )
-from .figures.groups import (
+from .groups import (
     REPO_ROOT as _REPO_ROOT,
     RESULTS_ROOT as _RESULTS_ROOT,
     latest_session as _latest_session,
 )
-from .tbme_io import (
+from ..tbme_io import (
     load_planned_trace,
     planned_xy_cycle_for_step,
     true_dynamics_from_metadata,
@@ -500,7 +501,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     from experiments.experiment_definitions import get_environment_preset
     from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
 
-    from .figures.diagnostics import (
+    from .diagnostics import (
         finite_limits as _finite_limits,
         loading_model as _loading_model,
         parameter_sensitivity_grid as _parameter_sensitivity_grid,
@@ -1568,20 +1569,20 @@ _ASSET_TRI_GATE_LABELS = {
 _ASSET_TRI_GATE_CENTERS = (-0.5, -0.1, 0.3)
 _ASSET_TRI_GATE_WIDTH = 0.1
 # Exemplar seed for the trajectory panels, chosen by ranking matched seeds on
-# occupancy contrast: PALDI holds gate M while the fully observed objective
-# abandons M for gate A, with every panel showing its policy's modal behavior.
+# occupancy contrast: PALDI holds gate F while the fully observed objective
+# abandons F for gate N, with every panel showing its policy's modal behavior.
 # Population occupancy statistics live in the main diagnostic figure.
 _ASSET_TRI_GATE_EXEMPLAR_SEED = 90
 _ASSET_TRI_GATE_REST_CENTER = -1.0
 _ASSET_TRI_GATE_REST_CUTOFF = -0.75
 _ASSET_TRI_GATE_R2_YLIM = (-0.2, 1.0)
-# Gate identity colors couple the schematic (panel A) to the occupancy stacks
-# (panel D); they are deliberately darker than the pastel policy palette.
+# Gate identity colors couple the occupancy stacks (panel B) to the selector
+# traces (panel C); they are deliberately darker than the pastel policy palette.
 _ASSET_TRI_GATE_GATE_COLORS = (
     ("rest_fraction", "Rest", "#C8CDD1"),
-    ("gate_A_fraction", "A: confounded", "#C4564E"),
+    ("gate_A_fraction", "N: confounded", "#2F7D5B"),
     ("gate_B_fraction", "B: weak, balanced", "#6C5FB8"),
-    ("gate_M_fraction", "M: full rank", "#2F7D5B"),
+    ("gate_M_fraction", "F: full rank", "#C4564E"),
 )
 
 
@@ -1620,7 +1621,7 @@ def _asset_plot_gate_diagnostic(
     """Manuscript figure for the designed three-gate objective diagnostic.
 
     Single row: (A) final rollout R2 per objective, (B) selector occupancy with
-    the deterministic reach-and-hold-M transit reference, (C) all nine exemplar
+    the deterministic reach-and-hold-F transit reference, (C) all nine exemplar
     selector traces overlaid on the gate assignment bands.
     """
     _asset_parse_r2_summaries(r2_summary)
@@ -1677,7 +1678,9 @@ def _asset_plot_gate_diagnostic(
         if record.seed == int(exemplar_seed)
     }
 
-    fig, axis_grid = plt_module.subplots(1, 3, figsize=(7.25, 2.55))
+    fig, axis_grid = plt_module.subplots(
+        1, 3, figsize=(7.25, 2.55), gridspec_kw={"width_ratios": (3.0, 3.0, 4.0)}
+    )
     axes = list(axis_grid.ravel())
     x = np.arange(len(summary_rows), dtype=np.float64)
 
@@ -1719,14 +1722,13 @@ def _asset_plot_gate_diagnostic(
         capsize=1.6,
         error_kw={"elinewidth": 0.6, "capthick": 0.6},
     )
-    ax.axhline(0.0, color=_experiment_C_STROKE, linewidth=0.5)
     ax.set_xticks(x)
     ax.set_xticklabels(
         [_ASSET_TRI_GATE_LABELS[str(row["policy_id"])] for row in summary_rows],
         rotation=30,
         ha="right",
     )
-    ax.set_ylim(*_ASSET_TRI_GATE_R2_YLIM)
+    ax.set_ylim(0.0, _ASSET_TRI_GATE_R2_YLIM[1])
     ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
     _style_experiment_axis(ax)
     ax.set_title(
@@ -1758,7 +1760,7 @@ def _asset_plot_gate_diagnostic(
     ax.set_xticks(np.append(x, transit_x))
     ax.set_xticklabels(
         [_ASSET_TRI_GATE_LABELS[str(row["policy_id"])] for row in summary_rows]
-        + ["Hold M"],
+        + ["Hold F"],
         rotation=30,
         ha="right",
     )
@@ -1772,7 +1774,7 @@ def _asset_plot_gate_diagnostic(
     ax.set_title("Selector occupancy", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
     # C: every objective's exemplar selector trace overlaid on the gate bands,
-    # so dwell-at-A, dwell-at-B, and reach-and-hold-M behaviors read against the
+    # so dwell-at-N, dwell-at-B, and reach-and-hold-F behaviors read against the
     # shared gate assignment regions.
     ax = axes[2]
     rest_color = _ASSET_TRI_GATE_GATE_COLORS[0][2]
@@ -1865,8 +1867,8 @@ def _asset_plot_gate_diagnostic_trajectories(
     """Appendix companion: one exemplar selector trace per acquisition objective.
 
     Gate bands (center +/- one gate width) and the rest line reuse the gate
-    identity colors of the main diagnostic figure, so dwell-at-A, dwell-at-B,
-    and reach-and-hold-M behaviors are visible directly.
+    identity colors of the main diagnostic figure, so dwell-at-N, dwell-at-B,
+    and reach-and-hold-F behaviors are visible directly.
     """
     records = [
         record
