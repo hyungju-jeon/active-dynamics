@@ -16,39 +16,48 @@ from ..experiment_io import (
     load_json,
 )
 from . import tbme_figures as _figures
+from .figures.ablation import (
+    OBJECTIVE_POLICIES as _experiment_OBJECTIVE_POLICIES,
+    objective_sources as _experiment_objective_sources,
+)
+from .figures.artifacts import (
+    write_csv as _write_csv,
+    write_text as _write_text,
+)
+from .figures.data import (
+    metric_mean_sem as _experiment_metric_mean_sem,
+    metric_values as _experiment_metric_values,
+    r2_threshold_step as _experiment_r2_threshold_step,
+    r2_threshold_times as _experiment_r2_threshold_times,
+)
+from .figures.gates import (
+    COMPOUND_POLICY_ORDER as _COMPOUND_POLICY_ORDER,
+    compound_curve as _compound_curve,
+    compound_summary_rows as _compound_summary_rows,
+    compound_trace_records as _compound_trace_records,
+    plot_neutral_vector_field,
+    reach_hold_selector_occupancy as _reach_hold_selector_occupancy,
+)
+from .figures.groups import SuiteSource as _ExperimentSuiteSource, suite_dir as _suite_dir
+from .figures.information import make_information_grid as _experiment_make_information_grid
+from .figures.records import (
+    RunRecord as _ExperimentRunRecord,
+    load_xy_trace as _experiment_load_xy_trace,
+)
+from .figures.theme import (
+    NEUTRAL_FILL as _experiment_C_NEUTRAL_FILL,
+    NEUTRAL_LIGHT as _experiment_C_NEUTRAL_LIGHT,
+    STROKE_COLOR as _experiment_C_STROKE,
+    apply_style as _apply_style,
+    extended_policy_label as _experiment_short_policy_label,
+    policy_color as _policy_color,
+    style_axis as _style_manuscript_axis,
+    style_experiment_axis as _style_experiment_axis,
+)
 from .tbme_figures import (
     _REPO_ROOT,
     _RESULTS_ROOT,
-    _apply_style,
     _latest_session,
-    _policy_color,
-    _style_manuscript_axis,
-    _suite_dir,
-    _write_csv,
-    _write_text,
-)
-from .tbme_figures_experiment import (
-    _COMPOUND_POLICY_ORDER,
-    _ExperimentRunRecord,
-    _ExperimentSuiteSource,
-    _compound_curve,
-    _compound_summary_rows,
-    _compound_trace_records,
-    _experiment_C_NEUTRAL_FILL,
-    _experiment_C_NEUTRAL_LIGHT,
-    _experiment_C_STROKE,
-    _experiment_OBJECTIVE_POLICIES,
-    _experiment_load_xy_trace,
-    _experiment_make_information_grid,
-    _experiment_metric_mean_sem,
-    _experiment_metric_values,
-    _experiment_objective_sources,
-    _experiment_r2_threshold_step,
-    _experiment_r2_threshold_times,
-    _experiment_short_policy_label,
-    _reach_hold_selector_occupancy,
-    _style_experiment_axis,
-    plot_neutral_vector_field,
 )
 from .tbme_io import (
     load_planned_trace,
@@ -492,14 +501,14 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     from experiments.experiment_definitions import get_environment_preset
     from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
 
-    from .tbme_figures_diagnostics import (
-        _finite_limits,
-        _loading_model,
-        _parameter_sensitivity_grid,
-        _rate_hz,
-        _simulate_trajectories,
-        _state_information_grid,
-        _true_dynamics,
+    from .figures.diagnostics import (
+        finite_limits as _finite_limits,
+        loading_model as _loading_model,
+        parameter_sensitivity_grid as _parameter_sensitivity_grid,
+        rate_hz as _rate_hz,
+        simulate_trajectories as _simulate_trajectories,
+        state_information_grid as _state_information_grid,
+        true_dynamics as _true_dynamics,
     )
 
     configure_tbme_catalogs(suite_entries={})
