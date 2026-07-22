@@ -22,10 +22,13 @@ from ..experiment_io import (
 from .figures import ablation as _ablation
 from .figures import bottleneck as _bottleneck
 from .figures import mismatch as _mismatch
+from .figures import information as _information
+from .figures import records as _records
 from .figures import artifacts as _fig_artifacts
 from .figures import data as _fig_data
 from .figures import theme as _fig_theme
 from .figures.groups import SuiteSource
+from .figures.records import RunRecord
 from .tbme_figures import (
     GROUPS,
     _apply_style,
@@ -58,12 +61,7 @@ _experiment_DOSE_POLICIES = _mismatch.DOSE_POLICIES
 _ExperimentSuiteSource = SuiteSource
 
 
-@dataclass(frozen=True)
-class _ExperimentRunRecord:
-    policy_id: str
-    seed: int
-    run_dir: Path
-    metadata: dict[str, Any]
+_ExperimentRunRecord = RunRecord
 
 
 _experiment_PLOTS = (
@@ -257,40 +255,7 @@ _experiment_dose_sources = _mismatch.dose_sources
 _experiment_plot_mismatch_dose_response = _mismatch.generate
 
 
-def _experiment_collect_records(
-    suite_dir: Path,
-    policy_ids: Sequence[str],
-    *,
-    max_seeds: int | None = None,
-    completed_only: bool = False,
-) -> list[_ExperimentRunRecord]:
-    records: list[_ExperimentRunRecord] = []
-    for policy_id in sorted(policy_ids, key=_policy_sort_key):
-        policy_dir = suite_dir / policy_id
-        if not policy_dir.exists():
-            continue
-        seed_dirs: list[tuple[int, Path]] = []
-        for seed_dir in policy_dir.glob("seed_*"):
-            suffix = seed_dir.name.removeprefix("seed_")
-            if suffix.isdigit():
-                seed_dirs.append((int(suffix), seed_dir))
-        selected_seed_dirs = sorted(seed_dirs)
-        if max_seeds is not None:
-            selected_seed_dirs = selected_seed_dirs[: int(max_seeds)]
-        for seed, seed_dir in selected_seed_dirs:
-            for metadata_path in find_nested_metadata_paths(seed_dir):
-                metadata = load_json(metadata_path)
-                if completed_only and metadata.get("status") != "completed":
-                    continue
-                records.append(
-                    _ExperimentRunRecord(
-                        policy_id=policy_id,
-                        seed=seed,
-                        run_dir=metadata_path.parent,
-                        metadata=metadata,
-                    )
-                )
-    return records
+_experiment_collect_records = _records.collect_records
 
 
 def _experiment_build_parser() -> argparse.ArgumentParser:
@@ -333,154 +298,17 @@ def _experiment_suite_dirs_from_groups(raw: str) -> list[Path]:
     )
 
 
-def _experiment_short_policy_label(policy_id: str) -> str:
-    labels = {
-        "active_planning": "Planning",
-        "active_planning_u10_r20_h40": "Plan U10/R20",
-        "active_planning_u5_r20_h40": "Plan U5/R20",
-        "active_planning_u10_r10_h40": "Plan U10/R10",
-        "active_planning_u5_r10_h40": "Plan U5/R10",
-        "active_planning_u5_r5_h40": "Plan U5/R5",
-        "active_planning_u1_r1_h40": "Plan U1/R1",
-        "active_fully_observable": "Full-observable EIG",
-        "active_e_optimality": "E-optimality",
-        "active_state_information": "State information",
-        "active_dynamics": "Dynamics",
-        "active_observation_variance": "Observation variance",
-        "active_myopic": "Myopic",
-        "prbs": "PRBS",
-        "random": "Random",
-        "active_state_variance": "State variance",
-        "rhc": "RHC-US",
-        "flex": "FLEX",
-        "flex_true_state": "FLEX true",
-    }
-    return labels.get(policy_id, _policy_label(policy_id))
+_experiment_short_policy_label = _fig_theme.extended_policy_label
 
 
-def _experiment_state_bounds_from_metadata(
-    metadata: dict[str, Any],
-) -> tuple[float, float]:
-    low = np.asarray(metadata.get("state_low", [-5.0, -5.0]), dtype=np.float64)
-    high = np.asarray(metadata.get("state_high", [5.0, 5.0]), dtype=np.float64)
-    return float(np.min(low)), float(np.max(high))
-
-
-def _experiment_trace_path(
-    record: _ExperimentRunRecord, metadata_key: str, fallback_name: str
-) -> Path:
-    return _tbme_trace_path(record.run_dir, record.metadata, metadata_key, fallback_name)
-
-
-def _experiment_load_xy_trace(record: _ExperimentRunRecord) -> np.ndarray:
-    path = _experiment_trace_path(record, "state_action_trace_path", "state_action_trace.csv")
-    return _read_xy_trace(path)
-
-
-def _experiment_logdet_information(
-    latent: np.ndarray,
-    *,
-    metadata: dict[str, Any],
-) -> np.ndarray:
-    """Compute log det of the state Fisher information for Poisson log-linear observations.
-
-    For mean counts mu(z)=dt*exp(W z + b), H=dmu/dz=diag(mu)W and
-    R=diag(mu), so I_z = H^T R^{-1} H = W^T diag(mu) W.
-    """
-    latent = np.asarray(latent, dtype=np.float64)
-    if latent.ndim == 1:
-        latent = latent.reshape(1, -1)
-    weights, bias, dt = reconstruct_loglinear_rate_model(
-        metadata,
-        obs_dim=int(metadata.get("observation_dim", 20)),
-        latent_dim=int(metadata.get("latent_dim", 2)),
-    )
-    weights = np.asarray(weights, dtype=np.float64)
-    bias = np.asarray(bias, dtype=np.float64)
-    log_rate_hz = latent @ weights.T + bias.reshape(1, -1)
-    rate_hz = np.exp(np.clip(log_rate_hz, -20.0, 20.0))
-    mean_counts = np.clip(rate_hz * float(dt), 1e-12, 1e12)
-    info_mats = np.einsum("nd,di,dj->nij", mean_counts, weights, weights, optimize=True)
-    info_mats = 0.5 * (info_mats + np.swapaxes(info_mats, -1, -2))
-    info_mats = info_mats + 1e-9 * np.eye(weights.shape[1], dtype=np.float64)[None, :, :]
-    sign, logabsdet = np.linalg.slogdet(info_mats)
-    return np.where(sign > 0.0, logabsdet, np.nan)
-
-
-def _experiment_observation_model_key(metadata: dict[str, Any]) -> tuple[Any, ...]:
-    loading_seed = metadata.get("observation_loading_seed")
-    if loading_seed is None:
-        loading_seed = metadata.get("seed", 0)
-    return (
-        int(loading_seed),
-        int(metadata.get("loading_snr_trajectory_seed", 0)),
-        str(metadata.get("env_preset_id", "")),
-        int(metadata.get("observation_dim", 20)),
-        int(metadata.get("latent_dim", 2)),
-        float(metadata.get("dt", 0.01)),
-        float(metadata.get("mean_firing_rate_target", 10.0)),
-        float(metadata.get("max_firing_rate_target", 100.0)),
-        _safe_float(metadata.get("loading_target_snr_db")),
-    )
-
-
-def _experiment_information_reference_records(
-    records: Sequence[_ExperimentRunRecord],
-) -> list[_ExperimentRunRecord]:
-    out: list[_ExperimentRunRecord] = []
-    seen: set[tuple[Any, ...]] = set()
-    for record in sorted(records, key=lambda item: (item.seed, _policy_sort_key(item.policy_id))):
-        key = _experiment_observation_model_key(record.metadata)
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(record)
-    return out
-
-
-def _experiment_make_information_grid(
-    metadata: dict[str, Any],
-    *,
-    n_grid: int = 121,
-    axis_min: float | None = None,
-    axis_max: float | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if axis_min is None or axis_max is None:
-        state_min, state_max = _experiment_state_bounds_from_metadata(metadata)
-    else:
-        state_min, state_max = float(axis_min), float(axis_max)
-    axis = np.linspace(state_min, state_max, n_grid, dtype=np.float32)
-    xx, yy = np.meshgrid(axis, axis, indexing="xy")
-    latent = np.stack([xx.reshape(-1), yy.reshape(-1)], axis=1)
-    logdet = _experiment_logdet_information(latent, metadata=metadata).reshape(n_grid, n_grid)
-    return axis, axis, logdet
-
-
-def _experiment_make_mean_information_grid(
-    records: Sequence[_ExperimentRunRecord],
-    *,
-    n_grid: int = 121,
-    axis_min: float | None = None,
-    axis_max: float | None = None,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    if not records:
-        raise ValueError("At least one record is required to compute an information grid")
-    x_axis, y_axis, first_grid = _experiment_make_information_grid(
-        records[0].metadata,
-        n_grid=n_grid,
-        axis_min=axis_min,
-        axis_max=axis_max,
-    )
-    maps = [first_grid.astype(np.float64)]
-    for record in records[1:]:
-        _x, _y, grid = _experiment_make_information_grid(
-            record.metadata,
-            n_grid=n_grid,
-            axis_min=axis_min,
-            axis_max=axis_max,
-        )
-        maps.append(grid.astype(np.float64))
-    return x_axis, y_axis, np.nanmean(np.stack(maps, axis=0), axis=0)
+_experiment_state_bounds_from_metadata = _records.state_bounds_from_metadata
+_experiment_trace_path = _records.record_trace_path
+_experiment_load_xy_trace = _records.load_xy_trace
+_experiment_logdet_information = _information.logdet_information
+_experiment_observation_model_key = _information.observation_model_key
+_experiment_information_reference_records = _information.information_reference_records
+_experiment_make_information_grid = _information.make_information_grid
+_experiment_make_mean_information_grid = _information.make_mean_information_grid
 
 
 def _experiment_plot_true_dynamics_all(suite_dirs: Sequence[Path]) -> list[Path]:

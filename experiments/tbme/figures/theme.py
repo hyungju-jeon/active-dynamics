@@ -187,3 +187,31 @@ def short_policy_label(policy_id: str) -> str:
     return _SHORT_POLICY_LABELS.get(
         policy_id, POLICY_LABELS.get(policy_id, policy_id.replace("_", " "))
     )
+
+
+_EXTENDED_POLICY_LABELS = {
+    "active_planning": "Planning",
+    "active_planning_u10_r20_h40": "Plan U10/R20",
+    "active_planning_u5_r20_h40": "Plan U5/R20",
+    "active_planning_u10_r10_h40": "Plan U10/R10",
+    "active_planning_u5_r10_h40": "Plan U5/R10",
+    "active_planning_u5_r5_h40": "Plan U5/R5",
+    "active_planning_u1_r1_h40": "Plan U1/R1",
+    "active_fully_observable": "Full-observable EIG",
+    "active_e_optimality": "E-optimality",
+    "active_state_information": "State information",
+    "active_dynamics": "Dynamics",
+    "active_observation_variance": "Observation variance",
+    "active_myopic": "Myopic",
+    "prbs": "PRBS",
+    "random": "Random",
+    "active_state_variance": "State variance",
+    "rhc": "RHC-US",
+    "flex": "FLEX",
+    "flex_true_state": "FLEX true",
+}
+
+
+def extended_policy_label(policy_id: str) -> str:
+    """Longer per-figure labels used by recovery/compound diagnostics."""
+    return _EXTENDED_POLICY_LABELS.get(policy_id, policy_label(policy_id))
