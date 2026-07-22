@@ -108,3 +108,8 @@ def suite_dir(group_name: str, suite_id: str) -> Path:
         if ref.suite_id == suite_id:
             return ref.session_root / "tracks" / ref.suite_id
     raise KeyError(f"Unknown suite {group_name}/{suite_id}")
+
+
+# Build eagerly at import: the table must reflect the full default catalog,
+# not whatever catalog subset happens to be configured at first lazy access.
+groups()

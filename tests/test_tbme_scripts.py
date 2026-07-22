@@ -329,7 +329,9 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
             )
         )
 
-    monkeypatch.setitem(module._figures.GROUPS, "flex_comparison", refs)
+    from experiments.tbme.figures import groups as groups_mod
+
+    monkeypatch.setitem(groups_mod.groups(), "flex_comparison", refs)
     mean_path = tmp_path / "assets" / "tbme_fig_flex_comparison.pdf"
     median_path = tmp_path / "assets" / "median_iqr" / "tbme_fig_flex_comparison.pdf"
     # One bar figure plus one recovery figure for each of the three condition groups.
@@ -432,6 +434,7 @@ def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None
         output_path,
         r2_summary="median_iqr",
         result_roots=(tmp_path,),
+        exemplar_seed=0,
     )
 
     assert written == output_path
@@ -440,7 +443,7 @@ def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None
     # resolve its session tracks directory as the default result root.
     assert any(
         ref.suite_id == module._ASSET_TRI_GATE_EXP_ID
-        for ref in module._figures.GROUPS["objective_ablation"]
+        for ref in __import__("experiments.tbme.figures.groups", fromlist=["groups"]).groups()["objective_ablation"]
     )
     rows = read_trace_csv(output_path.with_suffix(".csv"))
     assert [row["policy_id"] for row in rows] == [
