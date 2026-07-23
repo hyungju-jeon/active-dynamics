@@ -710,7 +710,20 @@ def test_tbme_catalog_define_expected_matrices():
     ).EXPERIMENT_SUITES["three_gate_diagnostic"]
     assert simple_suite["env_preset_id"] == "tbme_three_gate_diagnostic"
     assert simple_suite["total_steps"] == 2000
-    assert simple_suite["model_ids"] == compound_suite["model_ids"]
+    # The diagnostic suite additionally carries the logdet dynamics-sensitivity
+    # variant; the compound tri-gate benchmarks keep the original nine policies.
+    assert simple_suite["model_ids"] == [
+        "compound_active_planning",
+        "compound_active_fully_observable",
+        "compound_active_e_optimality",
+        "compound_active_state_information",
+        "compound_active_dynamics",
+        "compound_active_dynamics_logdet",
+        "compound_active_observation_variance",
+        "compound_active_state_variance",
+        "prbs",
+        "random",
+    ]
 
 
 def test_tbme_runtime_config_respects_catalog_policy_type_for_prbs(tmp_path: Path):
