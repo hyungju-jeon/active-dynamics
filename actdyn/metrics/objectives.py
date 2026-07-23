@@ -360,6 +360,30 @@ class StateInformationMetric(_FilteringObjectiveBase):
 
 
 class DynamicsMetric(_FilteringObjectiveBase):
+    """Covariance-weighted parameter-sensitivity objective.
+
+    Scores the sensitivity Gramian ``G = S^T P S`` accumulated along the
+    rollout, where ``S = d z / d theta`` is the propagated parameter
+    sensitivity and ``P`` is the predicted state covariance. Two
+    scalarizations:
+
+    - ``"trace"`` (default): ``tr(G)`` -- total parameter-induced state
+      variance. Rank-blind: rewards concentrating on the single most
+      sensitive parameter direction.
+    - ``"logdet"``: ``logdet(I + G)`` -- rank-aware (D-optimal on the
+      Gramian). Still observation-free, so it shares the ``"trace"`` blind
+      spot to the nuisance confound, but it rewards spreading sensitivity to
+      full rank instead of piling onto one direction.
+    """
+
+    def __init__(self, *, scalarization: str = "trace", **kwargs) -> None:
+        super().__init__(**kwargs)
+        if scalarization not in {"trace", "logdet"}:
+            raise ValueError(
+                f"scalarization must be 'trace' or 'logdet', got {scalarization!r}"
+            )
+        self.scalarization = scalarization
+
     def compute_stepwise(self, rollout: dict) -> torch.Tensor:
         z = rollout["model_state"].to(self.device).float()
         if z.ndim != 3:
@@ -400,7 +424,14 @@ class DynamicsMetric(_FilteringObjectiveBase):
             dfdz = eye + Fz[:, i] * dt
             dfde = Fe[:, i] * dt
             s_sens = dfdz @ s_sens + dfde
-            score = torch.einsum("bde,bdk,bke->b", s_sens, P_pred, s_sens)
+            if self.scalarization == "logdet":
+                gram = torch.einsum("bde,bdk,bkf->bef", s_sens, P_pred, s_sens)
+                eye_embed = torch.eye(
+                    embed_dim, device=self.device, dtype=gram.dtype
+                ).unsqueeze(0)
+                score = torch.logdet(symmetrize(gram) + eye_embed)
+            else:
+                score = torch.einsum("bde,bdk,bke->b", s_sens, P_pred, s_sens)
             total = total + (self.gamma**i) * score
             P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + q)
         self.current_cost = (-total).unsqueeze(-1)
@@ -778,6 +809,26 @@ def dynamics(
         Fz_net=Fz_net,
         gamma=gamma,
         device=device,
+        scalarization="trace",
+    )
+
+
+def dynamics_logdet(
+    *,
+    model: FilteringEmbedding,
+    Fe_net: Callable,
+    Fz_net: Callable,
+    gamma: float,
+    device: str,
+) -> DynamicsMetric:
+    """Rank-aware ``logdet(I + S^T P S)`` variant of the dynamics objective."""
+    return DynamicsMetric(
+        model=model,
+        Fe_net=Fe_net,
+        Fz_net=Fz_net,
+        gamma=gamma,
+        device=device,
+        scalarization="logdet",
     )
 
 

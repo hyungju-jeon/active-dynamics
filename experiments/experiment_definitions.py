@@ -19,6 +19,7 @@ ObjectiveKind = Literal[
     "fully_observable_parameter_eig",
     "state_information",
     "dynamics",
+    "dynamics_logdet",
     "observation_variance",
     "corrected_observation_variance",
     "state_variance",

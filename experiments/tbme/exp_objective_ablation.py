@@ -97,6 +97,7 @@ EXPERIMENT_SUITES = {
             "compound_active_e_optimality",
             "compound_active_state_information",
             "compound_active_dynamics",
+            "compound_active_dynamics_logdet",
             "compound_active_observation_variance",
             "compound_active_state_variance",
             "prbs",

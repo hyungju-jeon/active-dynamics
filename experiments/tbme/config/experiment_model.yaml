@@ -162,6 +162,10 @@ models:
     extends: active_planning
     objective_kind: dynamics
 
+  active_dynamics_logdet:
+    extends: active_planning
+    objective_kind: dynamics_logdet
+
   active_observation_variance:
     extends: active_planning
     objective_kind: observation_variance
@@ -188,6 +192,10 @@ models:
 
   compound_active_dynamics:
     extends: active_dynamics
+    coarse_dt_factor: 10
+
+  compound_active_dynamics_logdet:
+    extends: active_dynamics_logdet
     coarse_dt_factor: 10
 
   compound_active_observation_variance:

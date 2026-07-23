@@ -60,6 +60,7 @@ COMPOUND_POLICY_ORDER = (
     "compound_active_e_optimality",
     "compound_active_state_information",
     "compound_active_dynamics",
+    "compound_active_dynamics_logdet",
     "compound_active_observation_variance",
     "compound_active_state_variance",
     "prbs",
@@ -71,6 +72,7 @@ COMPOUND_POLICY_LABELS = {
     "compound_active_e_optimality": "E-optimality",
     "compound_active_state_information": "State information",
     "compound_active_dynamics": "Dynamics sensitivity",
+    "compound_active_dynamics_logdet": "Dynamics sensitivity (logdet)",
     "compound_active_observation_variance": "Observation variance",
     "compound_active_state_variance": "State variance",
     "prbs": "PRBS",
@@ -82,6 +84,7 @@ COMPOUND_POLICY_COLORS = {
     "compound_active_e_optimality": "#CC79A7",
     "compound_active_state_information": "#009E73",
     "compound_active_dynamics": "#E69F00",
+    "compound_active_dynamics_logdet": "#AA4499",
     "compound_active_observation_variance": "#56B4E9",
     "compound_active_state_variance": "#F0E442",
     "prbs": "#666666",
@@ -554,7 +557,11 @@ def generate_compound_tri_gate_figures(
 
     trajectory_path = output_dir / f"{file_stem}_exemplary_trajectories{figure_suffix}"
     plt_module = load_plotting(trajectory_path, apply_style=theme.apply_style, path_is_file=True)
-    fig, axes = plt_module.subplots(3, 3, figsize=(10.0, 7.0), sharex=True, sharey=True)
+    n_col = 3
+    n_row = int(np.ceil(len(COMPOUND_POLICY_ORDER) / n_col))
+    fig, axes = plt_module.subplots(
+        n_row, n_col, figsize=(10.0, 2.34 * n_row), sharex=True, sharey=True, squeeze=False
+    )
     exemplar_records = {
         record.policy_id: record for record in records if int(record.seed) == int(exemplar_seed)
     }
@@ -567,7 +574,9 @@ def generate_compound_tri_gate_figures(
             strict=True,
         )
     )
-    for ax, policy_id in zip(axes.ravel(), COMPOUND_POLICY_ORDER, strict=True):
+    for ax in axes.ravel()[len(COMPOUND_POLICY_ORDER) :]:
+        ax.set_visible(False)
+    for ax, policy_id in zip(axes.ravel(), COMPOUND_POLICY_ORDER):
         if rest_center is not None:
             ax.axhline(float(rest_center), color="#777777", linestyle=":", linewidth=0.7)
         for center, label, color in gate_specs:

@@ -523,6 +523,7 @@ def _build_metric(
     from actdyn.metrics.objectives import (
         ambiguity_aware_parameter_eig,
         dynamics as build_dynamics_metric,
+        dynamics_logdet as build_dynamics_logdet_metric,
         e_optimality as build_e_optimality_metric,
         fully_observable_parameter_eig,
         parameter_eig,
@@ -589,6 +590,14 @@ def _build_metric(
         )
     if objective_kind == "dynamics":
         return build_dynamics_metric(
+            model=model,
+            Fe_net=Fe_net,
+            Fz_net=Fz_net,
+            gamma=gamma,
+            device=device,
+        )
+    if objective_kind == "dynamics_logdet":
+        return build_dynamics_logdet_metric(
             model=model,
             Fe_net=Fe_net,
             Fz_net=Fz_net,

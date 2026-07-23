@@ -36,7 +36,6 @@ from .gates import (
     compound_summary_rows as _compound_summary_rows,
     compound_trace_records as _compound_trace_records,
     plot_neutral_vector_field,
-    reach_hold_selector_occupancy as _reach_hold_selector_occupancy,
 )
 from .groups import SuiteSource as _ExperimentSuiteSource, suite_dir as _suite_dir
 from .information import make_information_grid as _experiment_make_information_grid
@@ -1560,7 +1559,8 @@ _ASSET_TRI_GATE_LABELS = {
     "compound_active_fully_observable": "Full obs.",
     "compound_active_e_optimality": "E-opt.",
     "compound_active_state_information": "State info",
-    "compound_active_dynamics": "Dyn. sens.",
+    "compound_active_dynamics": "Dyn. sens. (trace)",
+    "compound_active_dynamics_logdet": "Dyn. sens.",
     "compound_active_observation_variance": "Obs. var.",
     "compound_active_state_variance": "State var.",
     "prbs": "PRBS",
@@ -1568,6 +1568,12 @@ _ASSET_TRI_GATE_LABELS = {
 }
 _ASSET_TRI_GATE_CENTERS = (-0.5, -0.1, 0.3)
 _ASSET_TRI_GATE_WIDTH = 0.1
+# Policies present in the suite but kept out of the polished manuscript figure:
+# the nonadaptive PRBS control and the trace dynamics-sensitivity variant (the
+# paper reports the rank-aware logdet form as "Dynamics sensitivity").
+_ASSET_TRI_GATE_EXCLUDED_POLICIES = frozenset(
+    {"prbs", "compound_active_dynamics"}
+)
 # Exemplar seed for the trajectory panels, chosen by ranking matched seeds on
 # occupancy contrast: PALDI holds gate F while the fully observed objective
 # abandons F for gate N, with every panel showing its policy's modal behavior.
@@ -1603,8 +1609,28 @@ def _asset_tri_gate_assignment_bands(top: float) -> list[tuple[float, float, str
     ]
 
 
+# Dedicated qualitative palette for the tri-gate objectives: the shared
+# manuscript colors put two objectives in near-identical greens, so this figure
+# spreads the hues for legibility when eight traces overlay in one panel. PALDI
+# keeps its warm identity; Random keeps a neutral gray.
+_ASSET_TRI_GATE_POLICY_COLORS = {
+    "compound_active_planning": "#D1495B",
+    "compound_active_fully_observable": "#2E6FB8",
+    "compound_active_e_optimality": "#944FC7",
+    "compound_active_state_information": "#E8A33D",
+    "compound_active_dynamics": "#AA4499",
+    "compound_active_dynamics_logdet": "#17A398",
+    "compound_active_observation_variance": "#8C5A3B",
+    "compound_active_state_variance": "#4CAF50",
+    "random": "#7C868D",
+}
+
+
 def _asset_tri_gate_policy_color(policy_id: str) -> str:
-    """Color each objective as its counterpart in the other manuscript figures."""
+    """Distinguishable per-objective color for the overlaid tri-gate panels."""
+    color = _ASSET_TRI_GATE_POLICY_COLORS.get(policy_id)
+    if color is not None:
+        return color
     base = policy_id.removeprefix("compound_")
     return _asset_baseline_policy_color(
         "adaptive" if base == "active_planning" else base
@@ -1620,9 +1646,11 @@ def _asset_plot_gate_diagnostic(
 ) -> Path:
     """Manuscript figure for the designed three-gate objective diagnostic.
 
-    Single row: (A) final rollout R2 per objective, (B) selector occupancy with
-    the deterministic reach-and-hold-F transit reference, (C) all nine exemplar
-    selector traces overlaid on the gate assignment bands.
+    Single row: (A) final rollout R2 per objective, (B) selector occupancy, (C)
+    every objective's exemplar selector trace overlaid on the gate assignment
+    bands. The nonadaptive PRBS control and the trace dynamics-sensitivity
+    variant are omitted (the paper reports the rank-aware logdet form as
+    "Dyn. sens.").
     """
     _asset_parse_r2_summaries(r2_summary)
     records = _compound_trace_records(result_roots, exp_id=_ASSET_TRI_GATE_EXP_ID)
@@ -1635,11 +1663,15 @@ def _asset_plot_gate_diagnostic(
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
 
-    summary_rows = _compound_summary_rows(
-        records,
-        gate_centers=_ASSET_TRI_GATE_CENTERS,
-        rest_cutoff=_ASSET_TRI_GATE_REST_CUTOFF,
-    )
+    summary_rows = [
+        row
+        for row in _compound_summary_rows(
+            records,
+            gate_centers=_ASSET_TRI_GATE_CENTERS,
+            rest_cutoff=_ASSET_TRI_GATE_REST_CUTOFF,
+        )
+        if str(row["policy_id"]) not in _ASSET_TRI_GATE_EXCLUDED_POLICIES
+    ]
     _write_csv(
         output_path.with_suffix(".csv"),
         summary_rows,
@@ -1663,15 +1695,6 @@ def _asset_plot_gate_diagnostic(
             "gate_M_fraction",
         ),
     )
-    transit_occupancy = _reach_hold_selector_occupancy(
-        rest_center=_ASSET_TRI_GATE_REST_CENTER,
-        target_center=_ASSET_TRI_GATE_CENTERS[-1],
-        gate_centers=_ASSET_TRI_GATE_CENTERS,
-        rest_cutoff=_ASSET_TRI_GATE_REST_CUTOFF,
-        selector_contraction=1.0,
-        dt=float(records[0].metadata.get("dt", 0.01)),
-        total_steps=int(records[0].metadata.get("total_steps", 2000)),
-    )
     exemplar_by_policy = {
         record.policy_id: record
         for record in records
@@ -1679,7 +1702,7 @@ def _asset_plot_gate_diagnostic(
     }
 
     fig, axis_grid = plt_module.subplots(
-        1, 3, figsize=(7.25, 2.55), gridspec_kw={"width_ratios": (3.0, 3.0, 4.0)}
+        1, 3, figsize=(7.25, 2.1), gridspec_kw={"width_ratios": (2.5, 2.5, 5.0)}
     )
     axes = list(axis_grid.ravel())
     x = np.arange(len(summary_rows), dtype=np.float64)
@@ -1736,35 +1759,19 @@ def _asset_plot_gate_diagnostic(
     )
     ax.set_title("Rollout recovery", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
-    # B: selector occupancy stacks plus the deterministic transit reference; the
-    # reference bar shows that B occupancy at PALDI's level is pure transit.
+    # B: selector occupancy stacks, one per objective.
     ax = axes[1]
-    transit_x = float(len(summary_rows)) + 0.9
     bottom = np.zeros(len(summary_rows), dtype=np.float64)
-    transit_bottom = 0.0
-    for (key, _label, color), transit_value in zip(
-        _ASSET_TRI_GATE_GATE_COLORS, transit_occupancy, strict=True
-    ):
+    for key, _label, color in _ASSET_TRI_GATE_GATE_COLORS:
         value = np.asarray([row[key] for row in summary_rows], dtype=np.float64)
         ax.bar(x, value, bottom=bottom, width=0.72, color=color)
         bottom += value
-        ax.bar(
-            (transit_x,),
-            (transit_value,),
-            bottom=(transit_bottom,),
-            width=0.72,
-            color=color,
-            alpha=0.55,
-        )
-        transit_bottom += float(transit_value)
-    ax.set_xticks(np.append(x, transit_x))
+    ax.set_xticks(x)
     ax.set_xticklabels(
-        [_ASSET_TRI_GATE_LABELS[str(row["policy_id"])] for row in summary_rows]
-        + ["Hold F"],
+        [_ASSET_TRI_GATE_LABELS[str(row["policy_id"])] for row in summary_rows],
         rotation=30,
         ha="right",
     )
-    ax.get_xticklabels()[-1].set_fontstyle("italic")
     ax.set_ylim(0.0, 1.0)
     ax.set_ylabel("Fraction of steps")
     _style_experiment_axis(ax)
@@ -1789,6 +1796,8 @@ def _asset_plot_gate_diagnostic(
     )
     max_steps = 1
     for policy_id in _COMPOUND_POLICY_ORDER:
+        if policy_id in _ASSET_TRI_GATE_EXCLUDED_POLICIES:
+            continue
         record = exemplar_by_policy.get(policy_id)
         if record is None:
             continue
@@ -1887,7 +1896,10 @@ def _asset_plot_gate_diagnostic_trajectories(
         raise RuntimeError("Matplotlib is unavailable")
 
     policy_ids = [
-        policy_id for policy_id in _COMPOUND_POLICY_ORDER if policy_id in by_policy
+        policy_id
+        for policy_id in _COMPOUND_POLICY_ORDER
+        if policy_id in by_policy
+        and policy_id != "compound_active_dynamics"
     ]
     n_col = 3
     n_row = int(np.ceil(len(policy_ids) / n_col))
