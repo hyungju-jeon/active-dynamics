@@ -1,0 +1,466 @@
+environments:
+  tbme_duffing:
+    system_id: bistable_attractor
+    system_label: duffing oscillator
+    dynamics_type: duffing
+    x_range: 5.0
+    dt: 0.01
+    latent_dim: 2
+    action_dim: 2
+    embedding_dim: 2
+    min_embedding_dim: 2
+    initial_parameter_mean: 0.0
+    initial_parameter_variance: 0.25
+    observation_dim: 20
+    dynamics_alpha: 1.0
+    state_noise: 0.25
+    state_init_uncertainty: 1.0
+    action_max: 1.0
+    asymmetric_loading: false
+    loading_target_snr_db: -5.0
+    firing_rate_scale: 1
+    observation_noise_scale: 1
+    observation_noise_type: poisson
+    mean_firing_rate_target: 20.0
+    max_firing_rate_target: 100.0
+    true_params:
+    - -0.5
+    - -0.75
+    - 0.1
+    state_low:
+    - -5
+    - -5
+    state_high:
+    - 5
+    - 5
+    boundary_enabled: true
+    boundary_type: radial
+    boundary_radius: 8.0
+    boundary_barrier_enabled: true
+    boundary_projection_enabled: true
+    boundary_barrier_width: 0.5
+    boundary_barrier_strength: 5.0
+    boundary_barrier_temperature: 0.1
+    information_boundary_visibility_enabled: true
+    information_boundary_margin: 1.0
+    information_boundary_temperature: 0.15
+
+  tbme_duffing_asymmetric:
+    extends: tbme_duffing
+    system_label: hard duffing oscillator with asymmetric loading
+    asymmetric_loading: true
+    observation_primary_scale: 5.0
+
+  tbme_duffing_parameter_mismatch:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mid fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.2
+
+  tbme_duffing_parameter_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.15
+
+  tbme_duffing_parameter_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.3
+
+  tbme_duffing_observation_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild observation-loading mismatch
+    observation_loading_mismatch_variance: 0.01
+
+  tbme_duffing_observation_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong observation-loading mismatch
+    observation_loading_mismatch_variance: 0.1
+
+  tbme_duffing_observation_tuning_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild observation tuning mismatch
+    observation_loading_direction_mismatch_max_deg: 15.0
+    observation_loading_gain_mismatch_max_factor: 1.25
+
+  tbme_duffing_observation_tuning_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong observation tuning mismatch
+    observation_loading_direction_mismatch_max_deg: 30.0
+    observation_loading_gain_mismatch_max_factor: 1.5
+
+  tbme_damped_pendulum:
+    extends: tbme_duffing
+    system_id: damped_pendulum
+    system_label: damped pendulum
+    dynamics_type: damped_pendulum
+    true_params:
+    - -0.5
+    - 1.0
+
+  tbme_damped_pendulum_asymmetric:
+    extends: tbme_duffing_asymmetric
+    system_id: damped_pendulum
+    system_label: damped pendulum with asymmetric loading
+    dynamics_type: damped_pendulum
+    true_params:
+    - -0.5
+    - 1.0
+
+
+  tbme_gated_duffing:
+    extends: tbme_duffing
+    system_id: gated_duffing
+    system_label: Gated Duffing
+    dynamics_type: gated_duffing
+    embedding_dim: 4
+    true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - 1.1
+
+  tbme_gated_duffing_asymmetric:
+    extends: tbme_duffing_asymmetric
+    system_id: gated_duffing
+    system_label: Gated Duffing
+    dynamics_type: gated_duffing
+    embedding_dim: 4
+    true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - 1.1
+
+  tbme_gated_duffing_challenging:
+    extends: tbme_gated_duffing_asymmetric
+    system_label: Gated Duffing / challenging
+    state_noise: 0.5
+    loading_target_snr_db: -10.0
+    action_max: 0.75
+
+  tbme_confounded_gate:
+    extends: tbme_duffing
+    system_id: confounded_gate
+    system_label: Confounded-gate latent nuisance
+    dynamics_type: confounded_gate
+    latent_dim: 3
+    action_dim: 2
+    embedding_dim: 1
+    min_embedding_dim: 1
+    true_params:
+    - 0.5
+    initial_parameter_mean: 0.0
+    initial_parameter_variance: 0.0
+    state_low:
+    - -0.51
+    - -0.01
+    - -0.01
+    state_high:
+    - -0.49
+    - 0.01
+    - 0.01
+    state_noise: 0.1
+    state_init_uncertainty: 4.0
+    filter_initial_state_mean:
+    - -0.5
+    - 0.0
+    - 0.0
+    action_max: 1.0
+    observation_dim: 30
+    asymmetric_loading: true
+    observation_primary_scale: 1.0
+    observation_secondary_scale: 2.0
+    observation_nuisance_scale: 0.02
+    loading_target_snr_db: null
+    boundary_radius: 4.0
+
+  tbme_rank_imbalanced_gate:
+    extends: tbme_duffing
+    system_id: rank_imbalanced_gate
+    system_label: Rank-imbalanced information gates
+    dynamics_type: rank_imbalanced_gate
+    latent_dim: 4
+    action_dim: 1
+    embedding_dim: 3
+    min_embedding_dim: 3
+    true_params:
+    - 1.0
+    - 0.5
+    - 0.0
+    initial_parameter_mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    initial_parameter_variance: 0.0
+    state_low:
+    - -0.51
+    - -0.01
+    - -0.01
+    - -0.01
+    state_high:
+    - -0.49
+    - 0.01
+    - 0.01
+    - 0.01
+    state_noise: 0.01
+    state_init_uncertainty: 0.25
+    action_max: 1.0
+    observation_dim: 40
+    asymmetric_loading: true
+    observation_primary_scale: 1.0
+    observation_secondary_scale: 1.0
+    observation_nuisance_scale: 1.0
+    loading_target_snr_db: null
+    boundary_radius: 4.0
+
+  tbme_compound_tri_gate:
+    extends: tbme_duffing
+    system_id: compound_tri_gate
+    system_label: Compound three-gate objective stress test
+    dynamics_type: compound_tri_gate
+    latent_dim: 5
+    action_dim: 1
+    embedding_dim: 3
+    min_embedding_dim: 3
+    true_params:
+    - 1.0
+    - 1.0
+    - 0.0
+    initial_parameter_mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    initial_parameter_variance: 0.0
+    state_low:
+    - -0.5
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    state_high:
+    - -0.5
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    state_noise: 0.01
+    state_init_uncertainty: 1.0
+    trajectory_eval_state_noise: 0.0
+    trajectory_eval_state_low:
+    - -0.55
+    - -0.25
+    - -0.25
+    - -0.25
+    - 0.0
+    trajectory_eval_state_high:
+    - 0.05
+    - 0.25
+    - 0.25
+    - 0.25
+    - 0.0
+    # Average coordinate-wise R2 over the three parameter-sensitive responses.
+    # This prevents the large A-gate theta_1 coefficient and parameter-independent
+    # selector/nuisance coordinates from dominating the recovery score.
+    trajectory_eval_state_indices:
+    - 1
+    - 2
+    - 3
+    trajectory_eval_coordinate_balanced: true
+    filter_initial_state_mean:
+    - -0.5
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    action_max: 1.0
+    observation_model: linear
+    observation_dim: 5
+    observation_noise_type: gaussian
+    # For the linear-Gaussian path this is the per-coordinate variance.
+    observation_noise_scale: 1.0
+    # C^T R^-1 C: h is observed weakly, so theta_1 and h remain confounded at A.
+    observation_information_diag:
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 0.01
+    asymmetric_loading: false
+    loading_target_snr_db: null
+    information_boundary_visibility_enabled: false
+    boundary_radius: 6.0
+
+  tbme_compound_tri_gate_poisson:
+    extends: tbme_compound_tri_gate
+    system_label: Compound three-gate stress test / paired Poisson observations
+    observation_model: log_linear
+    observation_dim: 160
+    observation_noise_type: poisson
+    observation_noise_scale: 1.0
+    observation_information_diag: null
+    # Sixteen +/- neurons per state coordinate. At z=0 this gives
+    # I_z=diag(1,1,1,1,0.01), matching the Gaussian benchmark exactly.
+    observation_loading_design: paired_diagonal
+    observation_loading_gains:
+    - 0.35
+    - 0.35
+    - 0.35
+    - 0.35
+    - 0.035
+    observation_loading_repeats_per_sign: 16
+    mean_firing_rate_target: 25.51020408163265
+    # Peak rate is 208.34 Hz over the radius-six state domain.
+    max_firing_rate_target: 210.0
+    loading_target_snr_db: null
+
+  # Formerly tbme_simple_tri_gate_poisson; nuisance ratio h/theta1=5, M gate
+  # theta3 loading 0.75, compact paired-Poisson observations.
+  tbme_three_gate_diagnostic:
+    extends: tbme_compound_tri_gate
+    system_id: three_gate_diagnostic
+    system_label: Three-gate diagnostic / compact Poisson observations
+    dynamics_type: three_gate_diagnostic
+    latent_dim: 5
+    action_dim: 1
+    embedding_dim: 3
+    min_embedding_dim: 3
+    true_params:
+    - 1.0
+    - 1.0
+    - 1.0
+    initial_parameter_mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    initial_parameter_variance: 0.0
+    state_low:
+    - -1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    state_high:
+    - -1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    state_noise: 0.01
+    state_init_uncertainty: 1.0
+    trajectory_eval_state_noise: 0.0
+    trajectory_eval_state_low:
+    - -1.05
+    - -0.25
+    - -0.25
+    - -0.25
+    - 0.0
+    trajectory_eval_state_high:
+    - 0.35
+    - 0.25
+    - 0.25
+    - 0.25
+    - 0.0
+    filter_initial_state_mean:
+    - -1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    action_max: 1.5
+    observation_model: log_linear
+    observation_dim: 10
+    observation_noise_type: poisson
+    observation_noise_scale: 1.0
+    observation_information_diag: null
+    # One +/- neuron per state coordinate gives a transparent ten-neuron
+    # population. At z=0, I_z=diag(0.09,0.09,0.09,0.09,0.0025).
+    observation_loading_design: paired_diagonal
+    observation_loading_gains:
+    - 0.3
+    - 0.3
+    - 0.3
+    - 0.3
+    - 0.05
+    observation_loading_repeats_per_sign: 1
+    mean_firing_rate_target: 50.0
+    # The radius-three bound gives 50 exp(0.3 * 3) = 122.98 Hz.
+    max_firing_rate_target: 125.0
+    loading_target_snr_db: null
+    information_boundary_visibility_enabled: false
+    boundary_radius: 3.0
+
+  tbme_gated_duffing_state_noise_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild state noise
+    state_noise: 0.5
+  
+  tbme_gated_duffing_state_noise_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong state noise
+    state_noise: 0.75
+
+  tbme_gated_duffing_observation_bottleneck_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild observation SNR bottleneck
+    loading_target_snr_db: -10.0
+
+  tbme_gated_duffing_observation_bottleneck_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong observation SNR bottleneck
+    loading_target_snr_db: -15.0
+
+  tbme_gated_duffing_action_bottleneck_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild action bottleneck
+    action_max: 0.75
+
+  tbme_gated_duffing_action_bottleneck_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong action bottleneck
+    action_max: 0.5
+
+  tbme_gated_duffing_parameter_mismatch_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild fixed-parameter mismatch
+    estimator_dynamics_type: gated_duffing
+    estimator_true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - 0.55
+    embedding_dim: 3
+
+  tbme_gated_duffing_parameter_mismatch_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong fixed-parameter mismatch
+    estimator_dynamics_type: gated_duffing
+    estimator_true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - -1.0
+    embedding_dim: 3
+
+  tbme_gated_duffing_observation_mismatch_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild observation mismatch
+    observation_loading_direction_mismatch_max_deg: 15.0
+    observation_loading_gain_mismatch_max_factor: 1.25
+
+  tbme_gated_duffing_observation_mismatch_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong observation mismatch
+    observation_loading_direction_mismatch_max_deg: 30.0
+    observation_loading_gain_mismatch_max_factor: 1.5

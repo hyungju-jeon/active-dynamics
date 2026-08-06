@@ -5,14 +5,22 @@ to dynamically resolve metrics by name.
 """
 
 from .base import BaseMetric, CompositeMetric, DiscountedMetric
-from .information import FisherInformationMetric
+from .cost import ActionCost, NormalizedActionCost
+from .information import (
+    AmbiguityAwareEmbeddingFisherMetric,
+    EmbeddingFisherMetric,
+    FisherInformationMetric,
+)
 
 __all__ = [
-    "metric_from_str",
     "BaseMetric",
+    "EmbeddingFisherMetric",
+    "AmbiguityAwareEmbeddingFisherMetric",
     "FisherInformationMetric",
     "CompositeMetric",
     "DiscountedMetric",
+    "ActionCost",
+    "NormalizedActionCost",
 ]
 
 import importlib
@@ -21,9 +29,12 @@ _metric_map = {
     "reward": (".reward", "RewardMetric"),
     "goal-distance": (".reward", "GoalDistanceMetric"),
     "action": (".cost", "ActionCost"),
-    "A-optimality": (".information", "AOptimality"),
-    "D-optimality": (".information", "DOptimality"),
-    "Ensemble_disagreement": (".uncertainty", "EnsembleDisagreement"),
+    "normalized-action": (".cost", "NormalizedActionCost"),
+    "a-optimality": (".information", "AOptimality"),
+    "d-optimality": (".information", "DOptimality"),
+    "ensemble-disagreement": (".uncertainty", "EnsembleDisagreement"),
+    "embedding-fisher": (".information", "EmbeddingFisherMetric"),
+    "ambiguity-aware-embedding-fisher": (".information", "AmbiguityAwareEmbeddingFisherMetric"),
 }
 
 

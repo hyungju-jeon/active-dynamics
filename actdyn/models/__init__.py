@@ -17,7 +17,24 @@ from .base import (
 )
 from .decoder import Decoder
 from .model_wrapper import ModelWrapper
-from .model import *
+from .model import SeqVae, FilteringEmbedding
+
+
+class _MissingPlanningSurrogate:
+    def __init__(self, *args, **kwargs) -> None:
+        del args, kwargs
+        raise ModuleNotFoundError(
+            "CasADi-backed planning surrogates require the optional 'casadi' package."
+        )
+
+
+try:
+    from .planning_surrogates import LocalRBFBayesianLinearDynamics, RFFBayesianLinearDynamics
+except ModuleNotFoundError as exc:
+    if exc.name != "casadi":
+        raise
+    LocalRBFBayesianLinearDynamics = _MissingPlanningSurrogate
+    RFFBayesianLinearDynamics = _MissingPlanningSurrogate
 
 __all__ = [
     # Base classes
@@ -32,6 +49,8 @@ __all__ = [
     "ModelWrapper",
     "SeqVae",
     "FilteringEmbedding",
+    "RFFBayesianLinearDynamics",
+    "LocalRBFBayesianLinearDynamics",
     # Factory functions
     "mapping_from_str",
     "noise_from_str",
@@ -45,13 +64,13 @@ import importlib
 # Factory tables
 _model_map = {
     "seq-vae": (".model", "SeqVae"),
-    "filtering-posterior": (".model", "FilteringPosterior"),
+    "filtering-embedding": (".model", "FilteringEmbedding"),
 }
 _encoder_map = {"mlp": (".encoder", "MLPEncoder"), "rnn": (".encoder", "RNNEncoder")}
 _mapping_map = {
     "identity": (".decoder", "IdentityMapping"),
     "linear": (".decoder", "LinearMapping"),
-    "loglinear": (".decoder", "LogLinearMapping"),
+    "log-linear": (".decoder", "LogLinearMapping"),
     "mlp": (".decoder", "MLPMapping"),
 }
 _noise_map = {"gaussian": (".decoder", "GaussianNoise"), "poisson": (".decoder", "PoissonNoise")}

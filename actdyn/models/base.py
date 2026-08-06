@@ -1,18 +1,17 @@
+from __future__ import annotations
+
 """Base model classes for the active dynamics package."""
 
 from typing import Any, Dict, Tuple
 from collections.abc import Callable
 import torch
-import torch.nn as nn
+from torch import nn
 from torch.nn.functional import softplus
 from torch.utils.data import DataLoader, Dataset
 
 
 from actdyn.environment.base import BaseAction
-
-
-# Small constant to prevent numerical instability
-eps = 1e-6
+from actdyn.utils import eps, Rollout
 
 
 # Encoder models
@@ -28,66 +27,45 @@ class BaseEncoder(nn.Module):
         self.action_dim = action_dim
         self.latent_dim = latent_dim
         self.device = torch.device(device)
-        self.network = None
 
     def compute_param(self):
+        """Compute parameters of the encoding distribution."""
         raise NotImplementedError
 
     def forward(self):
+        """Encode observations into latent space."""
         raise NotImplementedError
 
-    def to(self, device):
-        self.device = torch.device(device)
-        self.network.to(device)
-        return self
+    def validate_input(
+        self, observation: torch.Tensor, action: torch.Tensor | None = None
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Validate input dimensions for observations and actions."""
+        assert (
+            observation.dim() == 3
+        ), f"Input y must be of shape (batch, time, input_dim), got {observation.shape}"
 
-    def validate_input(self, y, u):
-        assert y.dim() == 3, f"Input y must be of shape (batch, time, input_dim), got {y.shape}"
-        if u is not None:
-            assert u.dim() == 3
+        if self.action_dim == 0:
+            action = None
+
+        if action is not None:
+            assert action.dim() == 3
             assert (
-                u.shape[0] == y.shape[0]
-            ), f"Batch size of a {u.shape[0]} must match y {y.shape[0]}"
+                action.shape[0] == observation.shape[0]
+            ), f"Batch size of a {action.shape[0]} must match y {observation.shape[0]}"
             assert (
-                u.shape[1] == y.shape[1]
-            ), f"Time dimension of a {u.shape[1]} must match y {y.shape[1]}"
-            # DESIGN NOTE: Action dimension validation flexibility
-            # =======================================================
-            # Current: Strict assertion requires exact match
-            # Problem: Fails when action_dim=0 (no action encoder) but u is passed
-            #
-            # Better design options:
-            #
-            # Option 1 (Recommended - More flexible):
-            # if self.action_dim > 0:
-            #     assert u.shape[2] == self.action_dim, \
-            #         f"Action dimension {u.shape[2]} must match action_dim {self.action_dim}"
-            # else:
-            #     # If no action encoder, ignore actions or warn
-            #     u = None  # or warn and ignore
-            #
-            # Option 2 (Handle None action_dim):
-            # if self.action_dim is not None and self.action_dim > 0:
-            #     # validate as normal
-            # else:
-            #     # Either ignore actions or use them anyway
-            #
-            # Option 3 (Auto-infer):
-            # if self.action_dim is None:
-            #     self.action_dim = u.shape[2]  # infer from data
-            #
-            # Current usage:
-            # - experiments/run_experiment.py: Models can be trained without actions
-            # - Some environments don't use actions (passive observation only)
+                action.shape[1] == observation.shape[1]
+            ), f"Time dimension of a {action.shape[1]} must match y {observation.shape[1]}"
             assert (
-                u.shape[2] == self.action_dim
-            ), f"Action dimension of a {u.shape[2]} must match action_dim {self.action_dim}"
+                action.shape[2] == self.action_dim
+            ), f"Action dimension of a {action.shape[2]} must match action_dim {self.action_dim}"
         else:
-            u = torch.zeros(
-                (y.shape[0], y.shape[1], self.action_dim), device=y.device, dtype=y.dtype
+            action = torch.zeros(
+                (observation.shape[0], observation.shape[1], self.action_dim),
+                device=observation.device,
+                dtype=observation.dtype,
             )
 
-        return y.to(self.device), u.to(self.device)
+        return observation.to(self.device), action.to(self.device)
 
 
 # Observation mappings
@@ -95,31 +73,50 @@ class BaseMapping(nn.Module):
 
     network: nn.Module
 
-    def __init__(self, latent_dim: int, obs_dim: int, device="cpu"):
+    def __init__(self, latent_dim: int, obs_dim: int, device="cpu", **kwargs):
         super().__init__()
         self.device = torch.device(device)
-        self.network = None
         self.latent_dim = latent_dim
         self.obs_dim = obs_dim
 
-    def forward(self, z):
-        return self.network(z)
-
     def to(self, device):
+        """Override to update device attribute."""
+        super().to(device)
         self.device = torch.device(device)
-        self.network.to(device)
         return self
 
-    def set_weights(self, weights):
-        raise NotImplementedError
+    def forward(self, z: torch.Tensor) -> torch.Tensor:
+        """Map latent state z to observation space."""
+        return self.network(z)
 
-    def set_bias(self, bias):
-        raise NotImplementedError
+    def set_weights(self, weights: torch.Tensor, requires_grad: bool = False):
+        """Set the weights of the linear mapping."""
+        assert (
+            weights.shape == self.network.weight.shape
+        ), f"Expected weights shape {self.network.weight.shape}, got {weights.shape}"
 
-    def set_params(self, weights, bias):
+        if isinstance(weights, torch.Tensor):
+            self.network.weight.data = weights
+            self.network.weight.requires_grad = requires_grad
+        else:
+            raise ValueError("Weights must be a torch.Tensor")
+
+    def set_bias(self, bias, requires_grad=False):
+        """Set the bias of the linear mapping."""
+        assert (
+            bias.shape == self.network.bias.shape
+        ), f"Expected bias shape {self.network.bias.shape}, got {bias.shape}"
+
+        if isinstance(bias, torch.Tensor):
+            self.network.bias.data = bias
+            self.network.bias.requires_grad = requires_grad
+        else:
+            raise ValueError("Bias must be a torch.Tensor")
+
+    def set_params(self, weights, bias, requires_grad=False):
         """Set both weights and bias of the linear mapping."""
-        self.set_weights(weights)
-        self.set_bias(bias)
+        self.set_weights(weights, requires_grad)
+        self.set_bias(bias, requires_grad)
 
     @property
     def jacobian(self):
@@ -135,6 +132,12 @@ class BaseNoise(nn.Module):
     def log_prob(self, mean, x):
         raise NotImplementedError
 
+    def to(self, device):
+        """Override to update device attribute."""
+        super().to(device)
+        self.device = torch.device(device)
+        return self
+
 
 # Dynamics models
 class BaseDynamics(nn.Module):
@@ -148,15 +151,10 @@ class BaseDynamics(nn.Module):
         self.dt = dt
         self.is_residual = is_residual
         self.logvar = nn.Parameter(
-            -2 * torch.rand(1, state_dim, device=self.device), requires_grad=True
+            torch.log(torch.ones(1, state_dim, device=self.device) * 0.0001), requires_grad=True
         )
         self.network = None
         self.state_dim = state_dim
-
-    def to(self, device):
-        self.device = torch.device(device)
-        if isinstance(self.network, nn.Module):
-            self.network.to(device)
 
     def compute_param(self, state):
         mu = self.network(state)
@@ -203,14 +201,21 @@ class BaseDynamics(nn.Module):
 
         Recommended: Option 1 for backward compatibility with minimal changes.
         """
-        B, T, _ = init_z.shape
+        B = init_z.shape[0]
+        T = init_z.shape[-2]
         if action is not None:
-            if action.ndim == 2:
+            if len(action.shape) == 2:
                 action = action.unsqueeze(0)
-            # If action is longer than the initial trajectory, adjust k_step
-            k_step = action.shape[-2] - T + 1
+            # k_step = max(1, action.shape[-2] - T + 1)
             if B < action.shape[0]:
-                init_z = init_z.repeat(action.shape[0], 1, 1)
+                repeat_dims = [1] * init_z.dim()
+                repeat_dims[0] = action.shape[0]
+                init_z = init_z.repeat(*repeat_dims)
+        # B, T, _ = init_z.shape
+        # if action is not None:
+        #     if action.ndim == 2:
+        #         action = action.unsqueeze(0)
+        # If action is longer than the initial trajectory, adjust k_step
 
         samples, mus, vars = [init_z], [], []
         for k in range(1, k_step + 1):
@@ -222,11 +227,16 @@ class BaseDynamics(nn.Module):
             if len(z_pred.shape) == 2:
                 z_pred = z_pred.unsqueeze(0)
 
-            if action is not None:
+            if action is not None and action.shape[-1] > 0:
                 valid_T = min(z_pred.shape[-2], action.shape[-2])
                 z_pred = z_pred[..., :valid_T, :]
                 z_pred += action[..., :valid_T, :] * self.dt
                 action = action[..., 1:, :]  # Shift action for next step
+            elif action is not None:
+                action = action[..., 1:, :]
+
+            if hasattr(self.network, "project_state"):
+                z_pred = self.network.project_state(z_pred)
 
             mus.append(z_pred)
             vars.append(var)
@@ -234,6 +244,8 @@ class BaseDynamics(nn.Module):
             z_sample = z_pred
             if add_noise:
                 z_sample += torch.sqrt(var * self.dt) * torch.randn_like(z_pred, device=self.device)
+                if hasattr(self.network, "project_state"):
+                    z_sample = self.network.project_state(z_sample)
             samples.append(z_sample)
 
         if return_traj:
@@ -369,7 +381,10 @@ class BaseModel(nn.Module):
         self.dynamics = dynamics
         self.input_dim = self.decoder.obs_dim
         self.latent_dim = getattr(self.decoder, "latent_dim", 0)
-        self.action_dim = getattr(self.action_encoder, "action_dim", 0)
+        # Support both 'action_dim' (model classes) and 'd_action' (environment classes)
+        self.action_dim = getattr(self.action_encoder, "action_dim", None) or getattr(
+            self.action_encoder, "d_action", 0
+        )
         self.is_ensemble = hasattr(self.dynamics, "ensemble") and hasattr(self.dynamics, "n_models")
         self.dt = getattr(self.dynamics, "dt", 1.0)
         self.step_count = 0
@@ -379,22 +394,28 @@ class BaseModel(nn.Module):
 
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
-        self._state = torch.zeros(1, 1, self.dynamics.state_dim, device=self.device)
+        self._state = -torch.ones(1, 1, self.dynamics.state_dim, device=self.device)
 
         # Encode initial state to latent space
-        with torch.no_grad():
-            self._state = self.update_posterior(y=observation)  # Use mean of encoding
+        # with torch.no_grad():
+        #     self._state = self.update_posterior(y=observation)  # Use mean of encoding
 
         info = {"latent_state": self._state}
 
         return observation, info
 
-    def update(self, observation: torch.Tensor, action: torch.Tensor) -> Dict[str, Any]:
+    def update(self, recent: Rollout, update_theta: bool = True) -> Dict[str, Any]:
         """Update the model state given new observation and action."""
+        # Extract the latest observation and action from the recent rollout
+        observation = recent["next_obs"]
+        action = recent["action"]
+
         with torch.no_grad():
-            self._state = self.update_posterior(y=observation, u=action)
+            self._state = self.update_posterior_embedding(
+                y=observation, u=action, update_theta=update_theta
+            )
             if self.action_encoder is not None and action is not None:
-                encoded_action = self.action_encoder(action)
+                encoded_action = self.action_encoder(action, self._state)
             else:
                 encoded_action = action
 
@@ -405,11 +426,19 @@ class BaseModel(nn.Module):
 
         return info
 
+    def get_state(self) -> torch.Tensor:
+        """Get the current internal state."""
+        return self._state
+
     def predict(self, action: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Predict the next state given the current state and action."""
         with torch.no_grad():
             _, next_state, _ = self.dynamics.sample_forward(
-                init_z=self._state, action=action, add_noise=False, return_traj=True
+                init_z=self._state,
+                action=action,
+                k_step=action.shape[-2],
+                add_noise=False,
+                return_traj=True,
             )
 
         return torch.cat(next_state, dim=-2)
@@ -498,7 +527,7 @@ class BaseModel(nn.Module):
             "grad_clip_norm": kwargs.get("grad_clip_norm", 1.0),
             "n_samples": kwargs.get("n_samples", 5),
             "k_steps": kwargs.get("k_steps", 1),
-            "p_mask": kwargs.get("p_mask", 0.0),
+            "p_mask": kwargs.get("p_mask", 0.5),
             "beta": kwargs.get("beta", 1.0),
             "warmup": kwargs.get("warmup", 1000),
             "annealing_steps": kwargs.get("annealing_steps", 1000),
@@ -546,7 +575,11 @@ class BaseModel(nn.Module):
 
         return params
 
-    def update_posterior(self, y, u=None):
+    def update_posterior_embedding(self, y, u=None):
+        """Update the posterior state given new observation and action."""
+        raise NotImplementedError
+
+    def update_prediction(self, y, u=None):
         """Update the posterior state given new observation and action."""
         raise NotImplementedError
 

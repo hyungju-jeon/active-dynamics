@@ -1,4 +1,5 @@
-from calendar import c
+from __future__ import annotations
+
 import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
@@ -7,15 +8,49 @@ from einops import rearrange, repeat, einsum
 from torch.nn.functional import softplus
 
 from actdyn.environment.action import BaseAction
-from actdyn.utils.helper import safe_cholesky, symmetrize, eps
+from actdyn.utils.torch_utils import (
+    attenuated_state_information,
+    safe_cholesky,
+    symmetrize,
+    eps,
+    Belief,
+)
 from actdyn.utils.rollout import RolloutBuffer
 
 from .base import BaseDynamicsEnsemble, BaseModel
-from .decoder import Decoder
+from .decoder import Decoder, diagonal_observation_information
 from .dynamics import BaseDynamics, FunctionDynamics
 from .encoder import BaseEncoder
 
-Belief = Dict[str, torch.Tensor]
+
+def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
+    """Monte Carlo KL estimate for diagonal Gaussian posterior/prior terms."""
+    if z_prior.dim() == 3:
+        z_prior = z_prior.unsqueeze(0)
+
+    target_ndim = z_prior.dim()
+
+    def _unsqueeze_to(tensor: torch.Tensor, ndim: int) -> torch.Tensor:
+        while tensor.dim() < ndim:
+            tensor = tensor.unsqueeze(0)
+        return tensor
+
+    mu_q = _unsqueeze_to(mu_q, target_ndim)
+    var_q = _unsqueeze_to(var_q, target_ndim)
+    mu_p = _unsqueeze_to(mu_p, target_ndim)
+    var_p = _unsqueeze_to(var_p, target_ndim)
+
+    var_q = var_q.clamp_min(eps)
+    var_p = var_p.clamp_min(eps)
+
+    log_q = -0.5 * (torch.log(2 * torch.pi * var_q) + (z_prior - mu_q) ** 2 / var_q).sum(
+        dim=(-2, -1)
+    )
+    log_p = -0.5 * (torch.log(2 * torch.pi * var_p) + (z_prior - mu_p) ** 2 / var_p).sum(
+        dim=(-2, -1)
+    )
+
+    return (log_q - log_p).mean(dim=0)
 
 
 class SeqVae(BaseModel):
@@ -28,36 +63,6 @@ class SeqVae(BaseModel):
         super().__init__(**kwargs)
 
         self.beta = 0.0
-
-    @staticmethod
-    def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
-        """Monte Carlo KL"""
-        if z_prior.dim() == 3:
-            z_prior = z_prior.unsqueeze(0)
-
-        target_ndim = z_prior.dim()
-
-        def _unsqueeze_to(tensor: torch.Tensor, ndim: int) -> torch.Tensor:
-            while tensor.dim() < ndim:
-                tensor = tensor.unsqueeze(0)
-            return tensor
-
-        mu_q = _unsqueeze_to(mu_q, target_ndim)
-        var_q = _unsqueeze_to(var_q, target_ndim)
-        mu_p = _unsqueeze_to(mu_p, target_ndim)
-        var_p = _unsqueeze_to(var_p, target_ndim)
-
-        var_q = var_q.clamp_min(eps)
-        var_p = var_p.clamp_min(eps)
-
-        log_q = -0.5 * (torch.log(2 * torch.pi * var_q) + (z_prior - mu_q) ** 2 / var_q).sum(
-            dim=(-2, -1)
-        )
-        log_p = -0.5 * (torch.log(2 * torch.pi * var_p) + (z_prior - mu_p) ** 2 / var_p).sum(
-            dim=(-2, -1)
-        )
-
-        return (log_q - log_p).mean(dim=0)
 
     def _compute_multistep_kl(
         self,
@@ -119,11 +124,11 @@ class SeqVae(BaseModel):
                 z_prior = samples_list[k][:, :, :-k, :]  # shape (S,B,T,D)
                 mu_p = mus_list[k - 1][:, :, :-k, :]
                 var_p = vars_list[k - 1]
-                kl_mc = self._kl_div_mc(mu_q_target, var_q_target, z_prior, mu_p, var_p)  # (B,)
+                kl_mc = _kl_div_mc(mu_q_target, var_q_target, z_prior, mu_p, var_p)  # (B,)
                 kl_terms.append(kl_mc)
             else:
                 # Analytic KL
-                mu_p = mus_list[k - 1]
+                mu_p = mus_list[k - 1][..., :-k, :]
                 var_p = vars_list[k - 1]
 
                 mu_q_target_s = repeat(mu_q_target, "b t d -> s b t d", s=S)
@@ -165,7 +170,7 @@ class SeqVae(BaseModel):
         # Apply temporal masking
         t_mask = torch.bernoulli((1 - p_mask) * torch.ones((T, 1), device=mu_q_x.device))
 
-        z_tr = self.dynamics.sample_forward(init_z=z_me, action=u_encoded, k_step=1)[1]
+        z_tr = self.dynamics.sample_forward(init_z=z_me[..., :-1, :], action=u_encoded, k_step=1)[1]
         z_tr = torch.cat([z_me[..., :1, :], z_tr], dim=-2)  # (S,B),T,D)
 
         z_samples = t_mask * z_me + (1 - t_mask) * z_tr  # (S,B),T,D)
@@ -276,16 +281,9 @@ class SeqVae(BaseModel):
                     "log_L": log_like.detach().detach(),
                     "KL": kl_d.detach(),
                 }
-                batch_info.append(info)
                 # Update parameters
                 opt.step()
-                loss, log_like, kl_d = (
-                    loss.detach().item(),
-                    log_like.detach().item(),
-                    kl_d.detach().item(),
-                )
-                # Store normalized losses
-                batch_info.append(info)  # Assuming info contains the relevant metrics
+                batch_info.append(info)
 
                 # Explicit cleanup for gradient tensors
                 del batch, obs, loss, log_like, kl_d
@@ -311,51 +309,13 @@ class SeqVae(BaseModel):
                 epoch_pbar.set_postfix({k: f"{v:.4f}" for k, v in current_info.items()})
                 epoch_pbar.update(10)
 
-            # End of epoch cleanup
-            if "cuda" in str(self.device):
-                torch.cuda.empty_cache()
-
         # Close progress bar
         if verbose:
             epoch_pbar.close()
 
-        epoch_info = {
-            key: torch.tensor([e[key] for e in epoch_info]).mean(dim=0).item()
-            for key in epoch_info[0]
-        }
+        epoch_info = {key: torch.tensor([e[key] for e in epoch_info]) for key in epoch_info[0]}
 
         return epoch_info
-
-    # DESIGN NOTE: Missing save/load methods
-    # =======================================
-    # Issue: experiment.py expects model.save_model(path) method
-    # Impact: Experiment tests fail - cannot save checkpoints
-    #
-    # Recommended implementation:
-    #
-    # def save_model(self, filepath):
-    #     """Save model state dict to file."""
-    #     torch.save({
-    #         'encoder': self.encoder.state_dict(),
-    #         'decoder': self.decoder.state_dict(),
-    #         'dynamics': self.dynamics.state_dict(),
-    #         'action_encoder': self.action_encoder.state_dict() if self.action_encoder else None,
-    #         'step_count': self.step_count,
-    #         'beta': self.beta,
-    #     }, filepath)
-    #
-    # def load_model(self, filepath):
-    #     """Load model state dict from file."""
-    #     checkpoint = torch.load(filepath, map_location=self.device)
-    #     self.encoder.load_state_dict(checkpoint['encoder'])
-    #     self.decoder.load_state_dict(checkpoint['decoder'])
-    #     self.dynamics.load_state_dict(checkpoint['dynamics'])
-    #     if self.action_encoder and checkpoint['action_encoder']:
-    #         self.action_encoder.load_state_dict(checkpoint['action_encoder'])
-    #     self.step_count = checkpoint.get('step_count', 0)
-    #     self.beta = checkpoint.get('beta', 0.0)
-    #
-    # Usage: experiments/run_experiment.py saves checkpoints during training
 
     def update_posterior_embedding(self, y, u=None):
         """Update the posterior state given new observation and action."""
@@ -374,36 +334,6 @@ class SeqStateVae(BaseModel):
         super().__init__(**kwargs)
 
         self.beta = 0.0
-
-    @staticmethod
-    def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
-        """Monte Carlo KL"""
-        if z_prior.dim() == 3:
-            z_prior = z_prior.unsqueeze(0)
-
-        target_ndim = z_prior.dim()
-
-        def _unsqueeze_to(tensor: torch.Tensor, ndim: int) -> torch.Tensor:
-            while tensor.dim() < ndim:
-                tensor = tensor.unsqueeze(0)
-            return tensor
-
-        mu_q = _unsqueeze_to(mu_q, target_ndim)
-        var_q = _unsqueeze_to(var_q, target_ndim)
-        mu_p = _unsqueeze_to(mu_p, target_ndim)
-        var_p = _unsqueeze_to(var_p, target_ndim)
-
-        var_q = var_q.clamp_min(eps)
-        var_p = var_p.clamp_min(eps)
-
-        log_q = -0.5 * (torch.log(2 * torch.pi * var_q) + (z_prior - mu_q) ** 2 / var_q).sum(
-            dim=(-2, -1)
-        )
-        log_p = -0.5 * (torch.log(2 * torch.pi * var_p) + (z_prior - mu_p) ** 2 / var_p).sum(
-            dim=(-2, -1)
-        )
-
-        return (log_q - log_p).mean(dim=0)
 
     def _compute_multistep_kl(
         self,
@@ -465,7 +395,7 @@ class SeqStateVae(BaseModel):
                 z_prior = samples_list[k][:, :, :-k, :]  # shape (S,B,T,D)
                 mu_p = mus_list[k - 1][:, :, :-k, :]
                 var_p = vars_list[k - 1]
-                kl_mc = self._kl_div_mc(mu_q_target, var_q_target, z_prior, mu_p, var_p)  # (B,)
+                kl_mc = _kl_div_mc(mu_q_target, var_q_target, z_prior, mu_p, var_p)  # (B,)
                 kl_terms.append(kl_mc)
             else:
                 # Analytic KL
@@ -511,7 +441,7 @@ class SeqStateVae(BaseModel):
         # Apply temporal masking
         t_mask = torch.bernoulli((1 - p_mask) * torch.ones((T, 1), device=mu_q_x.device))
 
-        z_tr = self.dynamics.sample_forward(init_z=z_me, action=u_encoded, k_step=1)[1]
+        z_tr = self.dynamics.sample_forward(init_z=z_me[..., :-1, :], action=u_encoded, k_step=1)[1]
         z_tr = torch.cat([z_me[..., :1, :], z_tr], dim=-2)  # (S,B),T,D)
 
         z_samples = t_mask * z_me + (1 - t_mask) * z_tr  # (S,B),T,D)
@@ -625,16 +555,9 @@ class SeqStateVae(BaseModel):
                     "log_L": log_like.detach().detach(),
                     "KL": kl_d.detach(),
                 }
-                batch_info.append(info)
                 # Update parameters
                 opt.step()
-                loss, log_like, kl_d = (
-                    loss.detach().item(),
-                    log_like.detach().item(),
-                    kl_d.detach().item(),
-                )
-                # Store normalized losses
-                batch_info.append(info)  # Assuming info contains the relevant metrics
+                batch_info.append(info)
 
                 # Explicit cleanup for gradient tensors
                 del batch, obs, loss, log_like, kl_d
@@ -660,10 +583,6 @@ class SeqStateVae(BaseModel):
                 epoch_pbar.set_postfix({k: f"{v:.4f}" for k, v in current_info.items()})
                 epoch_pbar.update(10)
 
-            # End of epoch cleanup
-            if "cuda" in str(self.device):
-                torch.cuda.empty_cache()
-
         # Close progress bar
         if verbose:
             epoch_pbar.close()
@@ -675,7 +594,7 @@ class SeqStateVae(BaseModel):
 
         return epoch_info
 
-    def update_posterior_embedding(self, y, z, u=None):
+    def update_posterior_embedding(self, y, u=None, update_theta: bool = True, **kwargs):
         """Update the posterior state given new observation and action."""
         # with torch.no_grad():
         _, z_post, _ = self.encoder(y=y, u=u, n_samples=1)
@@ -710,39 +629,349 @@ class FilteringEmbedding(BaseModel):
         e: Belief,
         Fe: Callable = None,
         Fz: Callable = None,
+        q_theta: float = 1e-4,
+        k_theta: int = 10,
+        e_clip: float = 5.0,
+        state_init_uncertainty: float = 1.0,
+        state_initial_mean: torch.Tensor | list[float] | None = None,
+        q_theta_meas_coeff: float = 0.0,
+        q_theta_max_scale: float = 10.0,
+        adaptive_update: bool = False,
+        adaptive_update_min_interval: int = 1,
+        adaptive_update_eig_threshold: float | None = None,
+        shrinkage_map: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
+        shrinkage_min: float = 0.0,
         **kwargs,
     ):
         super().__init__(**kwargs)
         self.beta = 0.0
         self.e: Belief = e
+        self.e_clip = max(float(e_clip), 1e-3)
+        self._normalize_embedding_belief()
+        self.state_init_uncertainty = max(float(state_init_uncertainty), 1e-9)
+        initial_batch = self.e["m"].shape[0]
+        self.state_initial_mean = None
+        if state_initial_mean is not None:
+            state_mean = torch.as_tensor(
+                state_initial_mean, dtype=torch.float32, device=self.device
+            ).reshape(-1)
+            if state_mean.numel() != self.latent_dim:
+                raise ValueError(
+                    f"state_initial_mean must have {self.latent_dim} values, "
+                    f"got {state_mean.numel()}."
+                )
+            self.state_initial_mean = state_mean.reshape(1, 1, self.latent_dim)
         self.z: Belief = {
-            "m": torch.zeros(1, 1, self.latent_dim, device=self.device),
-            "P": torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0),
+            "m": (
+                torch.zeros(1, 1, self.latent_dim, device=self.device)
+                if self.state_initial_mean is None
+                else self.state_initial_mean.clone()
+            ),
+            "P": self._initial_state_covariance(batch_size=initial_batch),
         }
         self.Fe = Fe
         self.Fz = Fz
         self._state = torch.zeros(1, 1, self.latent_dim, device=self.device)
+        self.q_theta = float(q_theta)
+        self.q_theta_meas_coeff = max(float(q_theta_meas_coeff), 0.0)
+        self.q_theta_max_scale = max(float(q_theta_max_scale), 1.0)
+        self.k_theta = max(1, int(k_theta))
+        self.adaptive_update = bool(adaptive_update)
+        self.adaptive_update_min_interval = max(1, int(adaptive_update_min_interval))
+        self.adaptive_update_eig_threshold = (
+            None
+            if adaptive_update_eig_threshold is None
+            else float(adaptive_update_eig_threshold)
+        )
+        self.shrinkage_map = shrinkage_map
+        self.shrinkage_min = float(shrinkage_min)
         self.gn_iter = 10
-        self.set_params(e["m"])
+        self._last_innovation_statistic = None
+        self._last_parameter_shrinkage = None
+        self._last_parameter_update_reason = "none"
+        self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
+        self.last_information = {
+            "I_z_t": 0.0,
+            "I_theta_t": 0.0,
+            "theta_block_eig": 0.0,
+            "theta_block_steps": 0,
+            "parameter_update_reason": "none",
+            "Pz00": 0.0,
+            "Pz01": 0.0,
+            "Pz11": 0.0,
+        }
+        self.set_params(self.e["m"])
+
+    def _normalize_embedding_belief(self) -> None:
+        """Normalize embedding belief tensors to batched shapes on the model device."""
+        e_m = self.e["m"].to(self.device)
+        if e_m.dim() == 1:
+            e_m = e_m.unsqueeze(0)
+        e_m = torch.nan_to_num(e_m, nan=0.0, posinf=self.e_clip, neginf=-self.e_clip).clamp(
+            -self.e_clip, self.e_clip
+        )
+        batch = e_m.shape[0]
+        d_embed = e_m.shape[-1]
+        eye = torch.eye(d_embed, device=self.device).unsqueeze(0)
+
+        P = self.e.get("P", eye.clone())
+        if P.dim() == 2:
+            P = P.unsqueeze(0)
+        P = P.to(self.device)
+        if P.shape[0] == 1 and batch > 1:
+            P = P.expand(batch, -1, -1).clone()
+        if P.shape[0] != batch:
+            raise ValueError(
+                f"Embedding covariance batch mismatch: {P.shape} vs mean batch {batch}"
+            )
+        P = symmetrize(P)
+
+        L = self.e.get("L")
+        if L is None:
+            chol_P = safe_cholesky(P)
+            L = torch.cholesky_inverse(chol_P)
+        if L.dim() == 2:
+            L = L.unsqueeze(0)
+        L = L.to(self.device)
+        if L.shape[0] == 1 and batch > 1:
+            L = L.expand(batch, -1, -1).clone()
+        if L.shape[0] != batch:
+            raise ValueError(f"Embedding precision batch mismatch: {L.shape} vs mean batch {batch}")
+        L = symmetrize(L)
+
+        self.e = {"m": e_m, "P": P, "L": L}
+
+    def _ensure_state_belief_shapes(self, batch_size: int) -> None:
+        """Normalize latent-state belief tensors to (B, 1, ...) shapes."""
+        z_m = self.z["m"]
+        if z_m.dim() == 2:
+            z_m = z_m.unsqueeze(1)
+        z_m = z_m.to(self.device)
+        if z_m.shape[0] == 1 and batch_size > 1:
+            z_m = z_m.expand(batch_size, -1, -1).clone()
+
+        z_P = self.z["P"]
+        if z_P.dim() == 2:
+            z_P = z_P.unsqueeze(0).unsqueeze(0)
+        elif z_P.dim() == 3:
+            z_P = z_P.unsqueeze(1)
+        z_P = z_P.to(self.device)
+        if z_P.shape[0] == 1 and batch_size > 1:
+            z_P = z_P.expand(batch_size, -1, -1, -1).clone()
+        z_P = symmetrize(z_P)
+        self.z = {"m": z_m, "P": z_P}
+
+    def _reset_embedding_block_state(self, batch_size: int) -> None:
+        d_embed = self.e["m"].shape[-1]
+        self._theta_block_steps = 0
+        self._theta_score_block = torch.zeros(batch_size, d_embed, device=self.device)
+        self._theta_info_block = torch.zeros(batch_size, d_embed, d_embed, device=self.device)
+        self._theta_sensitivity = torch.zeros(
+            batch_size, self.latent_dim, d_embed, device=self.device
+        )
+
+    def _initial_state_covariance(self, batch_size: int) -> torch.Tensor:
+        return (
+            (
+                self.state_init_uncertainty
+                * torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
+            )
+            .expand(batch_size, -1, -1, -1)
+            .clone()
+        )
+
+    def _compute_innovation_statistic(
+        self,
+        residual: torch.Tensor,
+        chol_covariance: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return normalized innovation energy used to moderate parameter updates."""
+        residual_col = residual.unsqueeze(-1)
+        inv_cov_residual = torch.cholesky_solve(residual_col, chol_covariance)
+        innovation_quad = residual_col.transpose(-1, -2) @ inv_cov_residual
+        innovation_quad = innovation_quad.squeeze(-1).squeeze(-1).squeeze(-1)
+        obs_dim = residual.shape[-1]
+        return innovation_quad / float(obs_dim)
+
+    def _compute_parameter_shrinkage(self, innovation_statistic: torch.Tensor) -> torch.Tensor:
+        """Map a mismatch statistic to a scalar shrinkage factor in [shrinkage_min, 1]."""
+        if self.shrinkage_map is None:
+            return torch.ones_like(innovation_statistic)
+
+        tau = self.shrinkage_map(innovation_statistic)
+        if not torch.is_tensor(tau):
+            tau = torch.as_tensor(
+                tau, device=innovation_statistic.device, dtype=innovation_statistic.dtype
+            )
+        tau = tau.to(device=innovation_statistic.device, dtype=innovation_statistic.dtype)
+        if tau.ndim == 0:
+            tau = tau.expand_as(innovation_statistic)
+        elif tau.shape != innovation_statistic.shape:
+            if tau.numel() == innovation_statistic.numel():
+                tau = tau.reshape_as(innovation_statistic)
+            else:
+                tau = tau.expand_as(innovation_statistic)
+
+        tau = torch.nan_to_num(tau, nan=1.0, posinf=1.0, neginf=self.shrinkage_min)
+        return tau.clamp(min=self.shrinkage_min, max=1.0)
+
+    def _apply_embedding_block_update(self) -> None:
+        """Apply block-wise information-form update with drifting prior."""
+        score = self._theta_score_block
+        info = self._theta_info_block
+        if score.shape[0] != self.e["m"].shape[0]:
+            # Shared parameter belief across batch: aggregate per-step statistics.
+            score = score.mean(dim=0, keepdim=True)
+            info = info.mean(dim=0, keepdim=True)
+        score = torch.nan_to_num(score, nan=0.0, posinf=1e6, neginf=-1e6)
+        info = torch.nan_to_num(info, nan=0.0, posinf=1e6, neginf=-1e6)
+        self._last_theta_score_block_applied = score.detach().clone()
+        self._last_theta_info_block_applied = info.detach().clone()
+        self._last_theta_block_steps_applied = int(self._theta_block_steps)
+
+        d_embed = self.e["m"].shape[-1]
+        eye = torch.eye(d_embed, device=self.device).unsqueeze(0)
+
+        # No measurement-error-dependent scaling: process drift uses fixed q_theta.
+        q_theta_eff = torch.full((self.e["m"].shape[0],), float(self.q_theta), device=self.device)
+
+        P_prior = symmetrize(self.e["P"] + q_theta_eff.view(-1, 1, 1) * eye)
+        try:
+            chol_P_prior = safe_cholesky(P_prior)
+        except Exception:
+            P_prior = self._project_spd(P_prior + 1e-6 * eye, min_eig=1e-6)
+            chol_P_prior = safe_cholesky(P_prior)
+        L_prior = torch.cholesky_inverse(chol_P_prior)
+
+        L_new = symmetrize(L_prior + info)
+        try:
+            chol_L_new = safe_cholesky(L_new)
+        except Exception:
+            L_new = self._project_spd(L_new + 1e-4 * eye, min_eig=1e-4)
+            chol_L_new = safe_cholesky(L_new)
+        P_new = torch.cholesky_inverse(chol_L_new)
+        m_new = self.e["m"] + (P_new @ score.unsqueeze(-1)).squeeze(-1)
+        m_new = torch.nan_to_num(m_new, nan=0.0, posinf=self.e_clip, neginf=-self.e_clip).clamp(
+            -self.e_clip, self.e_clip
+        )
+
+        self.e = {"m": m_new.detach(), "P": P_new.detach(), "L": L_new.detach()}
+        self.set_params(self.e["m"].detach())
+        self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
+
+    def _theta_block_eig(self) -> torch.Tensor:
+        """Return posterior-scaled EIG for the currently accumulated parameter block."""
+        d_embed = self.e["m"].shape[-1]
+        if d_embed <= 0 or self._theta_block_steps <= 0:
+            return torch.tensor(0.0, device=self.device)
+        info = torch.nan_to_num(
+            self._theta_info_block, nan=0.0, posinf=1e6, neginf=-1e6
+        )
+        if info.shape[0] != self.e["P"].shape[0]:
+            info = info.mean(dim=0, keepdim=True)
+        P = symmetrize(self.e["P"])
+        try:
+            chol_P = safe_cholesky(P)
+        except Exception:
+            P = self._project_spd(P)
+            chol_P = safe_cholesky(P)
+        eye = torch.eye(d_embed, device=self.device).unsqueeze(0).expand(P.shape[0], -1, -1)
+        scaled_info = symmetrize(eye + chol_P.transpose(-1, -2) @ info @ chol_P)
+        try:
+            chol_scaled = safe_cholesky(scaled_info)
+        except Exception:
+            scaled_info = self._project_spd(scaled_info, min_eig=1e-9)
+            chol_scaled = safe_cholesky(scaled_info)
+        logdet = 2.0 * torch.log(
+            torch.diagonal(chol_scaled, dim1=-2, dim2=-1).clamp_min(eps)
+        ).sum(dim=-1)
+        eig = 0.5 * logdet / float(d_embed)
+        return torch.nan_to_num(eig.mean(), nan=0.0, posinf=1e6, neginf=0.0)
+
+    def _embedding_block_update_reason(
+        self, block_eig: torch.Tensor | None = None
+    ) -> str | None:
+        """Return why the current parameter block should be applied, if at all."""
+        steps = int(self._theta_block_steps)
+        if steps >= self.k_theta:
+            return "max_interval"
+        if not self.adaptive_update:
+            return None
+        if steps < min(self.adaptive_update_min_interval, self.k_theta):
+            return None
+        if self.adaptive_update_eig_threshold is None:
+            return None
+        eig = self._theta_block_eig() if block_eig is None else block_eig
+        if float(eig.item()) >= float(self.adaptive_update_eig_threshold):
+            return "block_eig"
+        return None
+
+    @staticmethod
+    def _project_spd(M: torch.Tensor, min_eig: float = 1e-6) -> torch.Tensor:
+        M = symmetrize(torch.nan_to_num(M.float(), nan=0.0, posinf=1e6, neginf=-1e6))
+        floor = max(float(min_eig), 1e-8)
+        eye = torch.eye(M.shape[-1], device=M.device, dtype=M.dtype).expand_as(M)
+        work = M
+        for _ in range(4):
+            try:
+                eigvals, eigvecs = torch.linalg.eigh((work + floor * eye).double())
+                eigvals = eigvals.clamp_min(floor)
+                proj = eigvecs @ torch.diag_embed(eigvals) @ eigvecs.transpose(-1, -2)
+                proj = torch.nan_to_num(proj, nan=0.0, posinf=1e6, neginf=-1e6).to(M.dtype)
+                return symmetrize(proj)
+            except RuntimeError:
+                work = symmetrize(work + floor * eye)
+                floor *= 10.0
+
+        diag = torch.diagonal(M, dim1=-2, dim2=-1)
+        diag = torch.nan_to_num(diag, nan=floor, posinf=1e6, neginf=floor).clamp_min(floor)
+        return torch.diag_embed(diag)
 
     def set_params(self, e: torch.Tensor):
-        self.e["m"] = e.to(self.device)
-        self.dynamics.set_params(e)
+        self.e["m"] = torch.nan_to_num(
+            e.to(self.device), nan=0.0, posinf=self.e_clip, neginf=-self.e_clip
+        ).clamp(-self.e_clip, self.e_clip)
+        self.dynamics.set_params(self.e["m"])
 
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
         observation, info = super().reset(observation)
+        d_embed = self.e["m"].shape[-1]
+        batch = self.e["m"].shape[0]
+        if self.state_initial_mean is not None:
+            self._state = self.state_initial_mean.expand(batch, -1, -1).clone()
+            info["latent_state"] = self._state
+        eye_embed = (
+            torch.eye(d_embed, device=self.device).unsqueeze(0).expand(batch, -1, -1).clone()
+        )
         self.e.update(
             {
-                "P": torch.eye(self.e["m"].shape[-1], device=self.device),
-                "L": torch.eye(self.e["m"].shape[-1], device=self.device),
+                "P": eye_embed,
+                "L": eye_embed.clone(),
             }
         )
+        self._normalize_embedding_belief()
         self.z = {
             "m": self._state,
-            "P": torch.eye(self.latent_dim, device=self.device),
+            "P": self._initial_state_covariance(batch_size=batch),
         }
+        self._ensure_state_belief_shapes(batch_size=batch)
         self.set_params(self.e["m"])
+        self._reset_embedding_block_state(batch_size=self.e["m"].shape[0])
+        self._last_theta_score_block_applied = torch.zeros_like(self._theta_score_block)
+        self._last_theta_info_block_applied = torch.zeros_like(self._theta_info_block)
+        self._last_theta_block_steps_applied = 0
+        self._last_parameter_update_reason = "none"
+        self.last_information = {
+            "I_z_t": 0.0,
+            "I_theta_t": 0.0,
+            "theta_block_eig": 0.0,
+            "theta_block_steps": 0,
+            "parameter_update_reason": "none",
+            "Pz00": 0.0,
+            "Pz01": 0.0,
+            "Pz11": 0.0,
+        }
 
         return observation, info
 
@@ -861,7 +1090,7 @@ class FilteringEmbedding(BaseModel):
         self.e = {"m": mu_e.detach(), "P": Sigma_e.detach(), "L": L_new.detach()}
 
     @torch.no_grad()
-    def update_posterior(self, y, u=None):
+    def update_prediction(self, y, u=None):
         """Update the posterior state given new observation and action."""
 
         y = y[:, -1:, :]
@@ -938,17 +1167,35 @@ class FilteringEmbedding(BaseModel):
         return self._state
 
     @torch.no_grad()
-    def update_posterior_embedding(self, y, u=None, **kwargs):
+    def update_posterior_embedding(self, y, u=None, update_theta: bool = True, **kwargs):
         """Update the posterior state given new observation and action."""
 
+        self._last_parameter_update_reason = "none"
+        self._normalize_embedding_belief()
+        self._ensure_state_belief_shapes(batch_size=self.e["m"].shape[0])
         y = y[:, -1:, :]
         u = u[:, -1:, :] if u is not None else None
         Q = softplus(self.dynamics.logvar).diag_embed().unsqueeze(0) * self.dt
         I = torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
 
+        if self.Fe is None or self.Fz is None:
+            raise ValueError(
+                "FilteringEmbedding requires both Fe and Fz callables for parameter updates."
+            )
+
+        batch_size = y.shape[0]
+        if self._theta_score_block.shape[0] != batch_size:
+            self._reset_embedding_block_state(batch_size=batch_size)
+
+        z_prev = torch.nan_to_num(self.z["m"], nan=0.0, posinf=1e6, neginf=-1e6)
+        e_eval = self.e["m"]
+        if e_eval.shape[0] == 1 and batch_size > 1:
+            e_eval = e_eval.expand(batch_size, -1)
+
         # Transition linearization at current posterior mean
-        Fz = self.Fz(self.z["m"], self.e["m"])
+        Fz = self.Fz(z_prev, e_eval)
         dfdz = Fz * self.dt + I
+        F_theta = self.Fe(z_prev, e_eval) * self.dt
 
         if u is not None and self.action_encoder is not None:
             u_enc = self.action_encoder(u, self.z["m"])
@@ -957,43 +1204,128 @@ class FilteringEmbedding(BaseModel):
 
         # Predict
 
+        pred_m = torch.nan_to_num(self.predict(action=u_enc), nan=0.0, posinf=1e6, neginf=-1e6)
+        pred_cov = symmetrize(
+            torch.nan_to_num(
+                dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q + 1e-6 * I,
+                nan=0.0,
+                posinf=1e6,
+                neginf=-1e6,
+            )
+        )
+        try:
+            chol_P_pred = safe_cholesky(pred_cov)
+        except Exception:
+            pred_cov = self._project_spd(pred_cov)
+            chol_P_pred = safe_cholesky(pred_cov)
         z_pred = {
-            "m": self.predict(action=u_enc),
-            "P": dfdz @ self.z["P"] @ dfdz.transpose(-1, -2) + Q,
+            "m": pred_m,
+            "P": pred_cov,
         }
 
-        # Re-linearize observation and variance at new z_pred
-        dhdz = self.decoder.jacobian(z_pred["m"])
-        R = self.decoder.var(z_pred["m"]).diag_embed()
-        S = symmetrize(dhdz @ z_pred["P"] @ dhdz.transpose(-1, -2)) + R
-        chol_S = safe_cholesky(S)
+        # Re-linearize observation at new z_pred. Observation noise is diagonal
+        # for the Gaussian and Poisson decoders used here, so the EKF update can
+        # use the equivalent information form without materializing dense R/S.
+        z_obs = torch.nan_to_num(z_pred["m"], nan=0.0, posinf=1e6, neginf=-1e6)
+        y_pred, I_z, obs_score, r_Rinv_r = diagonal_observation_information(
+            self.decoder, z_obs, observation=y
+        )
+        assert obs_score is not None and r_Rinv_r is not None
 
-        # Compute Kalman Gain and update posterior with observation y_t
-        HPt = dhdz @ z_pred["P"]
-        K = torch.cholesky_solve(HPt, chol_S).transpose(-1, -2)
-        KH = K @ dhdz
-        P_upd = (I - KH) @ z_pred["P"] @ (I - KH).transpose(-1, -2) + K @ R @ K.transpose(-1, -2)
+        P_pred_inv = torch.cholesky_inverse(chol_P_pred)
+        L_post = symmetrize(P_pred_inv + I_z)
+        try:
+            chol_L_post = safe_cholesky(L_post)
+        except Exception:
+            L_post = self._project_spd(L_post + 1e-4 * I, min_eig=1e-4)
+            chol_L_post = safe_cholesky(L_post)
+        P_upd = torch.cholesky_inverse(chol_L_post)
+        z_post_m = z_pred["m"] + (P_upd @ obs_score.unsqueeze(-1)).squeeze(-1)
+        z_post_m = torch.nan_to_num(z_post_m, nan=0.0, posinf=1e6, neginf=-1e6)
 
-        # innovation uses current y_pred; recompute for consistency
-        y_pred = self.decoder(z_pred["m"])
-        r = y - y_pred
+        correction = (obs_score.unsqueeze(-2) @ P_upd @ obs_score.unsqueeze(-1)).squeeze(-1).squeeze(-1)
+        delta_t = torch.nan_to_num(
+            (r_Rinv_r - correction).clamp_min(0.0) / float(y.shape[-1]),
+            nan=0.0,
+            posinf=1e6,
+            neginf=0.0,
+        ).squeeze(-1)
+        tau_t = self._compute_parameter_shrinkage(delta_t)
+        self._last_innovation_statistic = delta_t.detach()
+        self._last_parameter_shrinkage = tau_t.detach()
 
         z_post = {
-            "m": z_pred["m"] + (K @ r.unsqueeze(-1)).squeeze(-1),
-            "P": symmetrize(P_upd),
+            "m": z_post_m,
+            "P": symmetrize(
+                torch.nan_to_num(P_upd, nan=0.0, posinf=1e6, neginf=-1e6) + 1e-8 * I
+            ),
         }
 
         self.z = {"m": z_post["m"].detach(), "P": z_post["P"].detach()}
         self._state = z_post["m"].detach()
-        # Sensitivity wrt embedding via dynamics (ignore Fz dependence)
-        Gt = self.Fe(self.z["m"], self.e["m"]) * self.dt
-        HzGt = dhdz @ Gt
 
-        # GN curvature
-        X = torch.cholesky_solve(HzGt, chol_S)
-        curv_ll = einsum(HzGt, X, "b t y d, b t y e->b t d e")
-        curv_ll = symmetrize(curv_ll)  # ensure symmetry
-        self.update_embedding(r, chol_S, HzGt, curv_ll)
+        # Information diagnostics are still useful in state-only update mode, but
+        # parameter score / posterior updates are disabled when update_theta=False.
+        info_t = None
+        if update_theta:
+            # Parameter sensitivity recursion S_t = F_theta,t + F_z,t S_{t-1}.
+            S_prev = self._theta_sensitivity
+            S_t = F_theta.squeeze(1) + dfdz.squeeze(1) @ S_prev  # (B, Dz, De)
+
+            # Score: s_t = S_t^T (Pz_pred)^-1 (z_post - z_pred).
+            delta_z = z_post["m"] - z_pred["m"]  # (B, 1, Dz)
+            invP_delta = (
+                torch.cholesky_solve(delta_z.unsqueeze(-1), chol_P_pred).squeeze(-1).squeeze(1)
+            )
+            score_t = torch.einsum("bze,bz->be", S_t, invP_delta)
+            score_t = tau_t.unsqueeze(-1) * score_t
+
+            # Information: I_t = S_t^T I_z (I + Pz_pred I_z)^-1 S_t.
+            atten_Iz = attenuated_state_information(z_pred["P"], I_z).squeeze(1)
+            info_t = symmetrize(S_t.transpose(-1, -2) @ atten_Iz @ S_t)
+
+        # Diagnostic traces for visualization: average matrix trace over batch.
+        I_z_scalar = torch.diagonal(I_z.squeeze(1), dim1=-2, dim2=-1).sum(dim=-1).mean()
+        if info_t is not None:
+            I_theta_scalar = torch.diagonal(info_t, dim1=-2, dim2=-1).sum(dim=-1).mean()
+        else:
+            I_theta_scalar = torch.tensor(0.0, device=self.device)
+        Pz_eval = z_pred["P"].squeeze(1)
+        Pz00 = Pz_eval[:, 0, 0].mean()
+        Pz01 = Pz_eval[:, 0, 1].mean()
+        Pz11 = Pz_eval[:, 1, 1].mean()
+        theta_block_eig = torch.tensor(0.0, device=self.device)
+        self.last_information = {
+            "I_z_t": float(torch.nan_to_num(I_z_scalar, nan=0.0, posinf=1e6, neginf=0.0).item()),
+            "I_theta_t": float(
+                torch.nan_to_num(I_theta_scalar, nan=0.0, posinf=1e6, neginf=0.0).item()
+            ),
+            "theta_block_eig": float(
+                torch.nan_to_num(theta_block_eig, nan=0.0, posinf=1e6, neginf=0.0).item()
+            ),
+            "theta_block_steps": int(self._theta_block_steps),
+            "parameter_update_reason": "none",
+            "Pz00": float(torch.nan_to_num(Pz00, nan=0.0, posinf=1e6, neginf=0.0).item()),
+            "Pz01": float(torch.nan_to_num(Pz01, nan=0.0, posinf=1e6, neginf=0.0).item()),
+            "Pz11": float(torch.nan_to_num(Pz11, nan=0.0, posinf=1e6, neginf=0.0).item()),
+        }
+        if update_theta and info_t is not None:
+            info_t = tau_t.view(-1, 1, 1) * info_t
+
+            self._theta_score_block += score_t
+            self._theta_info_block += info_t
+            self._theta_sensitivity = S_t.detach()
+            self._theta_block_steps += 1
+            block_eig = self._theta_block_eig()
+            reason = self._embedding_block_update_reason(block_eig)
+            self.last_information["theta_block_eig"] = float(
+                torch.nan_to_num(block_eig, nan=0.0, posinf=1e6, neginf=0.0).item()
+            )
+            self.last_information["theta_block_steps"] = int(self._theta_block_steps)
+            self.last_information["parameter_update_reason"] = "none" if reason is None else reason
+            if reason is not None:
+                self._last_parameter_update_reason = reason
+                self._apply_embedding_block_update()
 
         return self._state
 
@@ -1016,8 +1348,6 @@ class FilteringEmbedding(BaseModel):
             L, eta = L_new, eta_new
 
         # Detach after all refinements
-        alpha = 0.5
-        mu_e = (1 - alpha) * mu_e + alpha * self.e["m"].detach()
         self.e = {"m": mu_e.detach(), "P": Sigma_e.detach(), "L": L_new.detach()}
         self.set_params(self.e["m"].detach())
 
@@ -1095,10 +1425,6 @@ class FilteringEmbedding(BaseModel):
                 current_info = epoch_info[-1]
                 epoch_pbar.set_postfix({k: f"{v:.4f}" for k, v in current_info.items()})
                 epoch_pbar.update(10)
-
-            # End of epoch cleanup
-            if "cuda" in str(self.device):
-                torch.cuda.empty_cache()
 
         # Close progress bar
         if verbose:

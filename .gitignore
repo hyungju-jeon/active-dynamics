@@ -5,6 +5,7 @@
 *.fdb_latexmk
 *.bbl
 *.blg
+*.pdf
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -21,7 +22,6 @@ develop-eggs/
 dist/
 reference/
 downloads/
-tests/
 runs/
 eggs/
 .eggs/
@@ -48,13 +48,18 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Virtual Environment
+.venv/
 venv/
 env/
 ENV/
+uv.lock
 
 # IDE
 .idea/
 .vscode/
+.debug-journal.md
+.omo/
+AGENTS.md
 *.swp
 *.swo
 .DS_Store
@@ -66,6 +71,7 @@ results/
 external/
 data/
 logs/
+.worktrees/
 */_OLD/
 *.log
 *.pkl
@@ -82,9 +88,18 @@ htmlcov/
 coverage.xml
 *.cover
 .hypothesis/
+tests/*
+!tests/test_boundary_constraints.py
+!tests/test_eig_1d_example.py
+!tests/test_flex_safe_policy.py
 
 # Documentation
 docs/_build/
+docs/plans/
+docs/presentation/
+docs/figs/
+docs/tables/
+canvas/
 site/
 
 # Jupyter Notebook
@@ -95,3 +110,8 @@ site/
 dist/
 build/
 *.egg-info/
+
+.venv/
+**/gcp_runs/
+# hunkwise
+.vscode/hunkwise/

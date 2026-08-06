@@ -1,13 +1,8 @@
-"""Setup file for the active-dynamics package."""
+"""Compatibility shim for editable installs.
 
-from setuptools import setup, find_packages
+Project metadata lives in pyproject.toml for uv and PEP 517 builds.
+"""
 
-setup(
-    name="actdyn",
-    version="0.1.0",
-    description="Active Learning for Latent Dynamical System Identification",
-    author="Hyungju Jeon",
-    author_email="hyungju.jeon@gmail.com",
-    packages=find_packages(),
-    python_requires=">=3.8",
-)
+from setuptools import setup
+
+setup()

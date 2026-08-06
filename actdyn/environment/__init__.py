@@ -1,27 +1,58 @@
+"""Environment factories for actdyn.
+
+Only canonical, explicitly-registered environment keys are supported.
+Unknown keys raise ImportError (no implicit fallback).
+"""
+
+from __future__ import annotations
+
 import importlib
-from typing import Type, Union
-from .base import BaseDynamicsEnv, BaseObservation, BaseAction
-from .env_wrapper import GymObservationWrapper
+from typing import Type
+
+import gymnasium as gym
+
+from .base import BaseAction, BaseObservation
+from .env_wrapper import EnvWrapper
+from .boundary import boundary_barrier_drift, boundary_visibility, project_to_boundary
+from .vectorfield import (
+    ResidualDynamicsCallable,
+    jacobian_embedding_torch,
+    jacobian_param_torch,
+    jacobian_state_torch,
+    residual_np,
+    residual_torch,
+    rollout_no_input,
+    step_np,
+)
 
 __all__ = [
     "environment_from_str",
     "observation_from_str",
     "action_from_str",
-    "GymObservationWrapper",
+    "EnvWrapper",
+    "ResidualDynamicsCallable",
+    "residual_torch",
+    "residual_np",
+    "jacobian_embedding_torch",
+    "jacobian_state_torch",
+    "jacobian_param_torch",
+    "rollout_no_input",
+    "step_np",
+    "boundary_visibility",
+    "boundary_barrier_drift",
+    "project_to_boundary",
 ]
 
 _environment_map = {
     "vectorfield": (".vectorfield", "VectorFieldEnv"),
-    "continuous_cartpole": (".cartpole", "ContinuousCartPoleEnv"),
-    "continuous_cartpole_partial": (".cartpole", "ContinuousCartPoleEnv_partial"),
-    "continuous_cartpole_angle": (".cartpole", "ContinuousCartPoleEnv_angle"),
+    "windfield": (".windfield", "WindField"),
 }
 
 _observation_map = {
     "identity": (".observation", "IdentityObservation"),
     "linear": (".observation", "LinearObservation"),
-    "loglinear": (".observation", "LogLinearObservation"),
-    "nonlinear": (".observation", "NonlinearObservation"),
+    "log-linear": (".observation", "LogLinearObservation"),
+    "non-linear": (".observation", "NonlinearObservation"),
 }
 
 _action_map = {
@@ -31,103 +62,24 @@ _action_map = {
 }
 
 
-def environment_from_str(env_str: str) -> Union[Type[BaseDynamicsEnv], str]:
-    """
-    Dynamically import and return the environment class based on the string key.
-
-    Args:
-        env_str: String identifier for the environment
-
-    Returns:
-        Either an environment class or a string for gymnasium environments
-    """
-    if env_str not in _environment_map:
-        print(f"Unknown environment: {env_str}. Using gymnasium environment instead.")
-        module = importlib.import_module("gymnasium")
-        return env_str
-
-    module_name, class_name = _environment_map[env_str]
-    if module_name == "gymnasium":
-        return env_str
-    else:
-        module = importlib.import_module(module_name, __package__)
-        return getattr(module, class_name)
-
-
-def observation_from_str(obs_str: str) -> type[BaseObservation]:
-    """Dynamically import and return the observation model class based on the string key."""
-    if obs_str not in _observation_map:
-        raise ImportError(
-            f"Unknown observation model: {obs_str}. Available: {list(_observation_map.keys())}"
-        )
-    module_name, class_name = _observation_map[obs_str]
+def _resolve(map_table: dict[str, tuple[str, str]], key: str):
+    if key not in map_table:
+        raise ImportError(f"Unknown key: {key}. Available: {sorted(map_table.keys())}")
+    module_name, class_name = map_table[key]
     module = importlib.import_module(module_name, __package__)
     return getattr(module, class_name)
 
 
+def environment_from_str(env_str: str) -> Type[gym.Env]:
+    """Return an environment class from a canonical key."""
+    return _resolve(_environment_map, env_str)
+
+
+def observation_from_str(obs_str: str) -> type[BaseObservation]:
+    """Return an observation model class from a canonical key."""
+    return _resolve(_observation_map, obs_str)
+
+
 def action_from_str(act_str: str) -> type[BaseAction]:
-    """Dynamically import and return the observation model class based on the string key."""
-    """Environment helpers and factory functions.
-
-    Provide lightweight factory functions to resolve environment, observation and
-    action classes from short string keys. The functions perform dynamic imports
-    so that importing :mod:`actdyn.environment` stays cheap.
-    """
-
-    from .env_wrapper import GymObservationWrapper
-
-    __all__ = [
-        "environment_from_str",
-        "observation_from_str",
-        "action_from_str",
-        "GymObservationWrapper",
-    ]
-
-    # Keep mapping tables local to the module. The factory functions are defined
-    # in separate file to keep this __init__ small, but for convenience they are
-    # implemented here.
-    import importlib
-    from typing import Type, Union
-    from .base import BaseDynamicsEnv, BaseObservation, BaseAction
-
-    _environment_map = {
-        "vectorfield": (".vectorfield", "VectorFieldEnv"),
-        "continuous_cartpole": (".cartpole", "ContinuousCartPoleEnv"),
-        "continuous_cartpole_partial": (".cartpole", "ContinuousCartPoleEnv_partial"),
-        "continuous_cartpole_angle": (".cartpole", "ContinuousCartPoleEnv_angle"),
-    }
-
-    _observation_map = {
-        "identity": (".observation", "IdentityObservation"),
-        "linear": (".observation", "LinearObservation"),
-        "loglinear": (".observation", "LogLinearObservation"),
-        "nonlinear": (".observation", "NonlinearObservation"),
-    }
-
-    _action_map = {
-        "identity": (".action", "IdentityActionEncoder"),
-        "linear": (".action", "LinearActionEncoder"),
-        "mlp": (".action", "MlpActionEncoder"),
-    }
-
-    def environment_from_str(env_str: str) -> Union[Type[BaseDynamicsEnv], str]:
-        if env_str not in _environment_map:
-            # Fall back to gymnasium environment string
-            return env_str
-        module_name, class_name = _environment_map[env_str]
-        module = importlib.import_module(module_name, __package__)
-        return getattr(module, class_name)
-
-    def observation_from_str(obs_str: str) -> Type[BaseObservation]:
-        if obs_str not in _observation_map:
-            raise ImportError(f"Unknown observation model: {obs_str}")
-        module_name, class_name = _observation_map[obs_str]
-        module = importlib.import_module(module_name, __package__)
-        return getattr(module, class_name)
-
-    def action_from_str(act_str: str) -> Type[BaseAction]:
-        if act_str not in _action_map:
-            raise ImportError(f"Unknown action model: {act_str}")
-        module_name, class_name = _action_map[act_str]
-        module = importlib.import_module(module_name, __package__)
-        return getattr(module, class_name)
+    """Return an action model class from a canonical key."""
+    return _resolve(_action_map, act_str)

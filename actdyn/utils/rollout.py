@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 # %%
 from typing import List, Union
 import torch
@@ -145,7 +147,11 @@ class Rollout:
                 if self.verbose:
                     print(f"Key {key} is not allowed. Allowed keys are: {self.allowed_fields}")
                 continue
-            value = torch.as_tensor(value) if not isinstance(value, torch.Tensor) else value
+            value = (
+                torch.as_tensor(value, device=self.device)
+                if not isinstance(value, torch.Tensor)
+                else value
+            )
             if isinstance(value, torch.Tensor):
                 if value.requires_grad:
                     value = value.detach()
@@ -488,7 +494,7 @@ class RolloutBuffer:
         self._cache_dirty = False
 
     def add(self, item: Union[Rollout, dict, List[dict], List[Rollout]]):
-        if isinstance(item, Rollout):
+        if isinstance(item, Rollout) or isinstance(item, RecentRollout):
             self.add_rollout(item)
         elif isinstance(item, list):
             for sub_item in item:
@@ -510,7 +516,7 @@ class RolloutBuffer:
     def add_rollout(self, rollout_item: Rollout):
         if not rollout_item.finalized:
             rollout_item.finalize()
-        self.buffer.append(rollout_item)
+        self.buffer.append(rollout_item.copy())
         self._cache_dirty = True
 
     def _invalidate_cache(self):
@@ -787,27 +793,14 @@ class RecentRollout(Rollout):
                         self._data[key][0, -1] = tensor_value.reshape(self._data[key][0, -1].shape)
         else:
             super().add(**kwargs)
-            if len(self) >= self.max_len:
-                for key in self._data:
-                    # Keep only the last max_len timesteps
-                    if isinstance(self._data[key], list):
-                        self._data[key] = self._data[key][-self.max_len :]
+
+            if len(self) > self.max_len:
+                for k, v in self._data.items():
+                    if isinstance(v, list):
+                        if len(v) > self.max_len:
+                            self._data[k] = v[-self.max_len :]
                 self.length = self.max_len
                 self.finalize()
-
-    # def as_batch(self):
-    #     """Return data as a batch with batch dimension added. Uses views where possible to avoid copying.
-    #     Handles the (1, time, dim) format properly by adding an additional batch dimension for training.
-    #     """
-    #     batch_data = {}
-    #     for k, v in self._data.items():
-    #         if isinstance(v, torch.Tensor):
-    #             # v is already (1, time, dim) from finalize()
-    #             # For batch processing, we can keep this as is since batch_size=1
-    #             batch_data[k] = v.detach()
-    #         else:
-    #             batch_data[k] = v
-    #     return batch_data
 
 
 class RolloutDataset(Dataset):

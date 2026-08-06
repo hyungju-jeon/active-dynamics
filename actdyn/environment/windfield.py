@@ -3,23 +3,25 @@
 import torch
 import numpy as np
 from actdyn.environment.vectorfield import VectorFieldEnv
-from actdyn.utils.vectorfield_definition import (
+from actdyn.utils.vectorfields_eqn import (
     LimitCycle,
     DoubleLimitCycle,
     MultiAttractor,
 )
 
 vf_from_string = {
-    "limit_cycle":     LimitCycle,
-    "double_limit":    DoubleLimitCycle,
+    "limit_cycle": LimitCycle,
+    "double_limit": DoubleLimitCycle,
     "multi_attractor": MultiAttractor,
 }
+
 
 class WindField(VectorFieldEnv):
     """
     A 2D “wind” field based on vector-field dynamics.
     Inherits all the VF machinery, but only exposes a get_wind(x,y) -> np.array([wx,wy]).
     """
+
     def __init__(
         self,
         dynamics_type: str = "multi_attractor",
@@ -31,8 +33,8 @@ class WindField(VectorFieldEnv):
         # 2D state space, no actions in a “wind field”
         super().__init__(
             dynamics_type=dynamics_type,
-            state_dim=2,
-            noise_scale=noise_scale,
+            d_state=2,
+            Q=noise_scale,
             dt=dt,
             device=device,
             render_mode=None,

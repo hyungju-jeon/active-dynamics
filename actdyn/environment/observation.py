@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 from typing import Optional
 
-from actdyn.utils.helper import activation_from_str
+from actdyn.utils.torch_utils import activation_from_str
 from .base import BaseObservation
 
 

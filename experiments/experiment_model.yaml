@@ -1,0 +1,160 @@
+schedules:
+  u1_r1_h1:
+    update_interval: 1
+    replan_interval: 1
+    planning_horizon: 1
+
+  u1_r1_h2:
+    update_interval: 1
+    replan_interval: 1
+    planning_horizon: 2
+
+  u1_r1_h20:
+    update_interval: 1
+    replan_interval: 1
+    planning_horizon: 20
+
+  u5_r1_h20:
+    update_interval: 5
+    replan_interval: 1
+    planning_horizon: 20
+    predictive_only_window: true
+
+  u5_r5_h20:
+    update_interval: 5
+    replan_interval: 5
+    planning_horizon: 20
+    predictive_only_window: true
+
+  u5_r5_h40:
+    update_interval: 5
+    replan_interval: 5
+    planning_horizon: 40
+    predictive_only_window: true
+
+  u10_r10_h20:
+    update_interval: 10
+    replan_interval: 10
+    planning_horizon: 20
+    predictive_only_window: true
+
+  u10_r10_h40:
+    update_interval: 10
+    replan_interval: 10
+    planning_horizon: 40
+    predictive_only_window: true
+
+  u10_r10_h100:
+    update_interval: 10
+    replan_interval: 10
+    planning_horizon: 40
+
+  u20_r20_h20:
+    update_interval: 20
+    replan_interval: 20
+    planning_horizon: 20
+
+models:
+  active_myopic:
+    objective_kind: parameter_eig
+    schedule_id: u1_r1_h2
+
+  active_planning:
+    objective_kind: parameter_eig
+    schedule_id: u1_r1_h20
+    coarse_dt_factor: 10
+    coarse_action_mapping: hold
+
+  active_planning_async:
+    extends: active_planning
+    policy_type: async-mpc-icem
+    async_planning: true
+
+  active_planning_update:
+    extends: active_planning
+    schedule_id: u10_r10_h100
+
+  active_planning_u5_r5_h20:
+    extends: active_planning
+    schedule_id: u5_r5_h20
+
+  active_planning_update_u5_r5_h20:
+    extends: active_planning_update
+    schedule_id: u5_r5_h20
+
+  active_planning_update_u5_r5_h40:
+    extends: active_planning_update
+    schedule_id: u5_r5_h40
+
+  active_planning_update_u10_r10_h40:
+    extends: active_planning_update
+    schedule_id: u10_r10_h40
+
+  fully_observable:
+    objective_kind: fully_observable_parameter_eig
+    schedule_id: u10_r10_h100
+
+  fully_observable_u5_r5_h40:
+    extends: fully_observable
+    schedule_id: u5_r5_h40
+
+  state_information:
+    objective_kind: state_information
+    schedule_id: u1_r1_h20
+
+  state_information_u5_r5_h40:
+    extends: state_information
+    schedule_id: u5_r5_h40
+
+  dynamics:
+    objective_kind: dynamics
+    schedule_id: u10_r10_h100
+
+  dynamics_u5_r5_h40:
+    extends: dynamics
+    schedule_id: u5_r5_h40
+
+  observation_variance:
+    objective_kind: observation_variance
+    schedule_id: u10_r10_h100
+
+  observation_variance_u5_r5_h20:
+    extends: observation_variance
+    schedule_id: u5_r5_h20
+
+  observation_variance_u10_r10_h40:
+    extends: observation_variance
+    schedule_id: u10_r10_h40
+
+  random:
+    schedule_id: u1_r1_h1
+    policy_type: random
+    passive: true
+
+  off_policy:
+    extends: random
+    policy_type: off-policy
+
+  u1_r1_h20:
+    objective_kind: parameter_eig
+    schedule_id: u1_r1_h20
+
+  u5_r1_h20:
+    objective_kind: parameter_eig
+    schedule_id: u5_r1_h20
+
+  u5_r5_h20:
+    objective_kind: parameter_eig
+    schedule_id: u5_r5_h20
+
+  u5_r5_h40:
+    objective_kind: parameter_eig
+    schedule_id: u5_r5_h40
+
+  u10_r10_h20:
+    objective_kind: parameter_eig
+    schedule_id: u10_r10_h20
+
+  u10_r10_h40:
+    objective_kind: parameter_eig
+    schedule_id: u10_r10_h40

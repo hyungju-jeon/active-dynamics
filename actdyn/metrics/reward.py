@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import torch
 
 from actdyn.utils.rollout import Rollout, RolloutBuffer
@@ -8,11 +10,11 @@ class RewardMetric(BaseMetric):
     """Basic reward metric that sums rewards."""
 
     def __init__(self, compute_type: str = "sum", device: str = "cuda", **kwargs):
-        super().__init__(compute_type, device)
+        super().__init__(compute_type=compute_type, device=device)
 
-    def compute(self, rollout: Rollout or RolloutBuffer) -> torch.Tensor:
-        self.metric = -rollout["reward"]
-        return self.metric
+    def compute_stepwise(self, rollout: Rollout | RolloutBuffer) -> torch.Tensor:
+        self.current_cost = -rollout["reward"]
+        return self.current_cost
 
 
 class GoalDistanceMetric(BaseMetric):
@@ -21,19 +23,17 @@ class GoalDistanceMetric(BaseMetric):
     def __init__(
         self,
         goal: torch.Tensor,
-        compute_type: str = "sum",
+        compute_type: str = "last",
         device: str = "cuda",
         **kwargs,
     ):
-        super().__init__(compute_type, device)
-        self.goal = goal.to(device)
+        super().__init__(compute_type=compute_type, device=device)
+        self.set_goal(goal)
 
     def set_goal(self, goal: torch.Tensor):
         """Set the goal for the metric."""
         self.goal = goal.to(self.device)
 
-    def compute(self, rollout: Rollout or RolloutBuffer) -> torch.Tensor:
-        self.metric = (
-            torch.norm(rollout["model_state"] - self.goal, dim=-1).sum(dim=-1).unsqueeze(-1)
-        )
-        return self.metric
+    def compute_stepwise(self, rollout: Rollout | RolloutBuffer) -> torch.Tensor:
+        self.current_metric = torch.norm(rollout["model_state"] - self.goal, dim=-1)
+        return self.current_metric

@@ -1,8 +1,13 @@
+from __future__ import annotations
+
 import copy
+import queue
 import re
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 from matplotlib.figure import Figure
 import torch
@@ -11,12 +16,89 @@ from tqdm import tqdm
 
 from actdyn.config import ExperimentConfig
 from actdyn.core.agent import Agent
-from actdyn.utils import save_load
-from actdyn.utils.helper import format_list, to_np
-from actdyn.utils.rollout import Rollout, RolloutBuffer
-from actdyn.utils.video import VideoRecorder
+from actdyn.utils import to_np, format_list, VideoRecorder, Rollout, RolloutBuffer, save_rollout
+from actdyn.utils.persistence import load_and_concatenate_rollouts
 
 SESSION_DIR_PATTERN = re.compile(r"\d{8}_\d{4}_session\d{2}")
+
+
+def _numeric_suffix(path: Path) -> int | None:
+    matches = re.findall(r"\d+", path.stem)
+    return int(matches[-1]) if matches else None
+
+
+class _AsyncExperimentWriter:
+    """Background TensorBoard and rollout writer for online experiments."""
+
+    def __init__(self, log_dir: Path):
+        self._log_dir = Path(log_dir)
+        self._queue: queue.Queue[tuple] = queue.Queue()
+        self._closed = False
+        self._error: BaseException | None = None
+        self._thread = threading.Thread(
+            target=self._run,
+            name="actdyn-experiment-writer",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _check_error(self) -> None:
+        if self._error is not None:
+            raise RuntimeError("background experiment writer failed") from self._error
+
+    def _put(self, item: tuple) -> None:
+        if self._closed:
+            return
+        self._check_error()
+        self._queue.put(item)
+
+    def add_scalar(self, *args: Any, **kwargs: Any) -> None:
+        self._put(("scalar", args, kwargs))
+
+    def add_scalars(self, *args: Any, **kwargs: Any) -> None:
+        self._put(("scalars", args, kwargs))
+
+    def add_transition(self, transition: dict) -> None:
+        self._put(("transition", dict(transition)))
+
+    def save_rollout(self, path: Path, *, keep_last: int | None = None) -> None:
+        self._put(("save_rollout", str(path), keep_last))
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._queue.put(("close",))
+        self._thread.join()
+        self._check_error()
+
+    def _run(self) -> None:
+        writer = SummaryWriter(log_dir=str(self._log_dir))
+        rollout = Rollout(device="cpu")
+        try:
+            while True:
+                item = self._queue.get()
+                op = item[0]
+                if op == "close":
+                    return
+                if op == "scalar":
+                    _, args, kwargs = item
+                    writer.add_scalar(*args, **kwargs)
+                elif op == "scalars":
+                    _, args, kwargs = item
+                    writer.add_scalars(*args, **kwargs)
+                elif op == "transition":
+                    _, transition = item
+                    rollout.add(**transition)
+                elif op == "save_rollout":
+                    _, path, keep_last = item
+                    save_rollout(rollout, path)
+                    if keep_last is not None:
+                        rollout.clear(keep_last=keep_last)
+        except BaseException as exc:
+            self._error = exc
+        finally:
+            writer.close()
 
 
 class Experiment:
@@ -28,6 +110,7 @@ class Experiment:
         self.rollout = Rollout(device="cpu")
         self.writer = None
         self.video_recorder = None
+        self.pbar = None
         self.training_info = {}
 
         # Setup results directory
@@ -73,7 +156,7 @@ class Experiment:
 
     def _find_latest_session_dir(self) -> Path | None:
         # Find the latest session directory
-        base_dir = getattr(self, "base_results_dir", None)
+        base_dir = getattr(self, "base_results_path", None)
         if base_dir is None or not base_dir.is_dir():
             return None
         session_dirs = [
@@ -118,13 +201,9 @@ class Experiment:
         if not rollout_files:
             return None
 
-        def extract_step(path: Path) -> int | None:
-            matches = re.findall(r"\d+", path.stem)
-            return int(matches[-1]) if matches else None
-
         candidates: list[tuple[int, Path]] = []
         for path in rollout_files:
-            step = extract_step(path)
+            step = _numeric_suffix(path)
             if step is not None:
                 candidates.append((step, path))
 
@@ -143,13 +222,9 @@ class Experiment:
         if not checkpoint_files:
             return None
 
-        def extract_step(path: Path) -> int | None:
-            matches = re.findall(r"\d+", path.stem)
-            return int(matches[-1]) if matches else None
-
         numeric_candidates: list[tuple[int, Path]] = []
         for path in checkpoint_files:
-            step = extract_step(path)
+            step = _numeric_suffix(path)
             if step is not None:
                 numeric_candidates.append((step, path))
 
@@ -170,31 +245,36 @@ class Experiment:
         video_filename = self.cfg.logging.video_filename
         if video_filename:
             video_path = self.results_path / "video" / video_filename
-            self.video_recorder = VideoRecorder(self.agent.env, video_path, fps=fps)
+            self.video_recorder = VideoRecorder(video_path, fps=fps)
             self.video_recorder.capture_frame()
         else:
             self.video_recorder = None
 
     def _finalize_experiment(self):
         # Finalize experiment
-        if self.writer:
+        if hasattr(self, "writer") and self.writer:
             self.writer.close()
             self.writer = None
-        if self.video_recorder:
+        if hasattr(self, "video_recorder") and self.video_recorder:
             self.video_recorder.close()
             self.video_recorder = None
-        if self.pbar:
+        if hasattr(self, "pbar") and self.pbar:
             self.pbar.close()
             self.pbar = None
 
-        self.rollout.finalize()
-        self.agent.model.save(self.results_path / "model" / "model_final.pth")
+        if hasattr(self, "rollout") and self.rollout:
+            self.rollout.finalize()
+        if hasattr(self, "agent") and self.agent and hasattr(self, "results_path"):
+            close_agent = getattr(self.agent, "close", None)
+            if callable(close_agent):
+                close_agent()
+            self.agent.model.save(self.results_path / "model" / "model_final.pth")
 
     def init_experiment(self, reset=True):
         # Create necessary directories
         for subdir in ["rollouts", "logs", "model", "video"]:
             (self.results_path / subdir).mkdir(parents=True, exist_ok=True)
-        self.writer = SummaryWriter(log_dir=self.results_path / "logs")
+        self.writer = _AsyncExperimentWriter(self.results_path / "logs")
 
         # Initialize environment
         if reset:
@@ -242,8 +322,8 @@ class Experiment:
         validate_rollout_path = target_dir / "validation.pkl"
         train_rollout_path = target_dir / "train.pkl"
 
-        save_load.save_rollout(rb_train, str(train_rollout_path))
-        save_load.save_rollout(rb_validate, str(validate_rollout_path))
+        save_rollout(rb_train, str(train_rollout_path))
+        save_rollout(rb_validate, str(validate_rollout_path))
         print(f"rollout saved to {validate_rollout_path} and {train_rollout_path}")
         return rb_train, rb_validate
 
@@ -261,8 +341,10 @@ class Experiment:
             else:
                 self.writer.add_scalar(prefix + key, value, self.env_step)
 
-    def update_pbar(self, pbar: tqdm, interval: int = 100, postfix: dict = {}):
+    def update_pbar(self, pbar: tqdm, interval: int = 100, postfix: dict | None = None):
         # Update progress bar with training info
+        if postfix is None:
+            postfix = {}
         if self.env_step % interval == 0 and self.env_step > 0:
             pbar.set_postfix(
                 {k: f"{format_list(v)}" for k, v in self.training_info.items()} | postfix
@@ -287,60 +369,101 @@ class Experiment:
         plot_fcn: Callable[[Agent], Figure] | None = None,
         reset: bool = True,
     ):
-        train_cfg = self.cfg.training
+        self._run_online_loop(
+            train_cfg=self.cfg.training,
+            pbar_desc="Online",
+            plot_fcn=plot_fcn,
+            reset=reset,
+        )
 
-        # Initialize environment
+    def _run_online_loop(
+        self,
+        train_cfg,
+        pbar_desc: str,
+        plot_fcn: Callable[[Agent], Figure] | None,
+        reset: bool,
+        on_step_end: Callable[[dict], None] | None = None,
+    ) -> None:
         self.init_experiment(reset=reset)
         self._setup_video_recording()
+        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc=pbar_desc)
 
-        # Setup progress bar
-        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Online")
+        set_foreground_active = getattr(self.agent, "set_foreground_active", None)
+
         while self.env_step < train_cfg.total_steps:
             self.env_step += 1
-
-            # 1. Plan
-            action = self.agent.plan()
-            # 2. Execute
-            transition, done = self.agent.step(action)
+            plan_start = time.perf_counter()
+            if callable(set_foreground_active):
+                set_foreground_active(True)
+            try:
+                action = self.agent.plan()
+            finally:
+                if callable(set_foreground_active):
+                    set_foreground_active(False)
+            plan_sec = time.perf_counter() - plan_start
+            plan_info = getattr(getattr(self.agent, "policy", None), "last_plan_info", {}) or {}
+            step_start = time.perf_counter()
+            if callable(set_foreground_active):
+                set_foreground_active(True)
+            try:
+                transition, done = self.agent.step(action)
+            finally:
+                if callable(set_foreground_active):
+                    set_foreground_active(False)
+            step_sec = time.perf_counter() - step_start
+            launch_start = time.perf_counter()
+            launch_background_plan = getattr(self.agent, "launch_background_plan", None)
+            launch_info = {}
+            if callable(launch_background_plan):
+                launch_info = launch_background_plan() or {}
+            launch_sec = time.perf_counter() - launch_start
+            if isinstance(launch_info, dict):
+                transition.update(launch_info)
+            transition["loop_plan_sec"] = float(plan_sec)
+            transition["loop_step_sec"] = float(step_sec)
+            transition["loop_async_launch_sec"] = float(launch_sec)
+            transition["loop_compute_sec"] = float(plan_sec + step_sec + launch_sec)
+            transition["loop_plan_executed"] = bool(plan_info.get("plan_executed", False))
+            transition["loop_plan_reason"] = str(plan_info.get("plan_reason", "none"))
             self.rollout.add(**transition)
+            add_transition = getattr(getattr(self, "writer", None), "add_transition", None)
+            if callable(add_transition):
+                add_transition(transition)
 
-            # 3-1. Update policy
-            self.agent.update_policy(transition)
-
-            # 3-2. Train model
             if self.check_step("train"):
                 sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
                 self.training_info = self.agent.train_model(
                     **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
                 )
 
-            # 3-3. Update logs and plot
+            if on_step_end is not None:
+                on_step_end(transition)
+
             self.update_writer(self.training_info)
             self.update_pbar(self.pbar)
 
-            # Periodic rollout saving for crash recovery and memory management
-            if self.check_step("save"):
-                save_load.save_rollout(
-                    self.rollout,
-                    str(self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"),
-                )
-                if self.env_step < train_cfg.total_steps:
+            final_save = done or self.env_step >= train_cfg.total_steps
+            if self.check_step("save") or final_save:
+                rollout_path = self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"
+                save_async = getattr(getattr(self, "writer", None), "save_rollout", None)
+                keep_last = None if final_save else 100
+                if callable(save_async):
+                    # ponytail: skip nonfinal async pickle checkpoints; add a realtime-safe
+                    # checkpoint format if mid-run resume becomes important again.
+                    if final_save:
+                        save_async(rollout_path, keep_last=keep_last)
+                else:
+                    save_rollout(self.rollout, str(rollout_path))
+                if not final_save:
                     self.rollout.clear(keep_last=100)
 
-            if self.check_step("plot"):
-                if plot_fcn:
-                    fig = plot_fcn(self.agent)
-                    self.video_recorder.capture_frame(fig=fig)
-
-            # Clean up tensors to prevent memory accumulation
-            if "cuda" in str(self.agent.device):
-                del transition, action
-                torch.cuda.empty_cache()
+            if self.check_step("plot") and plot_fcn:
+                fig = plot_fcn(self.agent)
+                self.video_recorder.capture_frame(fig=fig)
 
             if done:
                 break
 
-        # Close progress bar and finalize experiment
         self._finalize_experiment()
 
     # TODO Update offline_run to match new experiment structure
@@ -351,9 +474,7 @@ class Experiment:
             self.writer = SummaryWriter(log_dir=str(self.results_path / "logs"))
             self.rollout.clear()
             # Check if rollout exists in the results directory
-            self.rollout = save_load.load_and_concatenate_rollouts(
-                str(self.results_path / "rollouts")
-            )
+            self.rollout = load_and_concatenate_rollouts(str(self.results_path / "rollouts"))
             offline_cfg = self.cfg.training.get_offline_optim_cfg()
             print(f"Training params: {offline_cfg['param_list']}")
 
@@ -394,75 +515,29 @@ class Experiment:
 
 
 class MetaEmbeddingExperiment(Experiment):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
 
     def run(self, plot_fcn: Callable[[Agent], Figure] | None = None, reset: bool = True):
         self.e_norm = []
-        train_cfg = self.cfg.training
+        self.e_trace = []
 
-        # Initialize environment
-        self.init_experiment(reset=reset)
-        self._setup_video_recording()
-
-        # Setup progress bar
-        self.pbar = tqdm(total=train_cfg.total_steps - self.env_step, desc="Embedding")
-        while self.env_step < train_cfg.total_steps:
-            self.env_step += 1
-
-            # 1. Plan
-            action = self.agent.plan()
-            # 2. Execute
-            transition, done = self.agent.step(action)
-            self.rollout.add(**transition)
+        def _embedding_step_hook(transition: dict) -> None:
             e_bel = self.agent.model.embedding.reshape(-1)
-
-            # 3-1. Update policy
-            self.agent.update_policy(transition)
-
-            # 3-2. Train model
-            if self.check_step("train"):
-                sampling_ratio = self.agent.model.dynamics.dt / self.agent.env.dt
-                self.training_info = self.agent.train_model(
-                    **train_cfg.get_optim_cfg(), sampling_ratio=sampling_ratio
-                )
-
-            # 3-3. Update logs and plot
             self.training_info["e"] = e_bel
-            e = self.agent.env.env.get_params()
+
+            e_true = self.agent.env.env.get_params()
             self.writer.add_scalars(
                 "e",
-                {f"true_{i}": v for i, v in enumerate(to_np(e).tolist())},
+                {f"true_{i}": v for i, v in enumerate(to_np(e_true).tolist())},
                 self.env_step,
             )
-            self.e_norm.append(
-                torch.norm(e_bel.cpu() - self.agent.env.env.get_params().cpu()).item()
-            )
+            self.e_trace.append([float(v) for v in to_np(e_bel).reshape(-1).tolist()])
+            self.e_norm.append(torch.norm(e_bel.cpu() - e_true.cpu()).item())
             self.training_info["e_norm"] = self.e_norm[-1]
-            self.update_writer(self.training_info)
-            self.update_pbar(self.pbar)
 
-            # Periodic rollout saving for crash recovery and memory management
-            if self.check_step("save"):
-                save_load.save_rollout(
-                    self.rollout,
-                    str(self.results_path / "rollouts" / f"rollout_{self.env_step}.pkl"),
-                )
-                if self.env_step < train_cfg.total_steps:
-                    self.rollout.clear(keep_last=100)
-
-            if self.check_step("plot"):
-                if plot_fcn:
-                    fig = plot_fcn(self.agent)
-                    self.video_recorder.capture_frame(fig=fig)
-
-            # Clean up tensors to prevent memory accumulation
-            if "cuda" in str(self.agent.device):
-                del transition, action
-                torch.cuda.empty_cache()
-
-            if done:
-                break
-
-        # Close progress bar and finalize experiment
-        self._finalize_experiment()
+        self._run_online_loop(
+            train_cfg=self.cfg.training,
+            pbar_desc="Embedding",
+            plot_fcn=plot_fcn,
+            reset=reset,
+            on_step_end=_embedding_step_hook,
+        )
