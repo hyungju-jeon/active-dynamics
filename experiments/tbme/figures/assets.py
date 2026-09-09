@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from actdyn.utils.experiment_runtime import read_trace_csv, safe_float as _safe_float
-from actdyn.utils.figure_io import load_plotting, save_figure
+from actdyn.utils.figure_io import load_plotting
 
 from ...experiment_io import (
     find_nested_metadata_paths,
@@ -65,6 +66,48 @@ from ..tbme_io import (
 )
 
 # Manuscript asset assembly
+def save_figure(fig: Any, output_path: Path, *, plt_module: Any) -> Path:
+    """Export both vectors without cropping away the intended physical size."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    texts = list(fig.texts)
+    for legend in fig.legends:
+        texts.extend(legend.get_texts())
+    for ax in fig.axes:
+        if not ax.get_visible():
+            continue
+        texts.extend([ax.xaxis.label, ax.yaxis.label, ax.title])
+        # Locators also create ticks outside the limits; those are not rendered.
+        for locations, labels, limits in (
+            (ax.get_xticks(), ax.get_xticklabels(), ax.get_xlim()),
+            (ax.get_yticks(), ax.get_yticklabels(), ax.get_ylim()),
+        ):
+            lo, hi = sorted(limits)
+            texts.extend(label for value, label in zip(locations, labels) if lo <= value <= hi)
+        texts.extend(ax.texts)
+        if ax.get_legend() is not None:
+            texts.extend(ax.get_legend().get_texts())
+    outside = []
+    for text in texts:
+        if text.get_visible() and text.get_text():
+            box = text.get_window_extent(renderer)
+            if box.x0 < -1 or box.y0 < -1 or box.x1 > fig.bbox.width + 1 or box.y1 > fig.bbox.height + 1:
+                outside.append(text.get_text())
+    if outside:
+        raise RuntimeError(f"Text outside figure canvas in {output_path}: {outside}")
+    output_path.with_suffix('.audit.json').write_text(json.dumps({
+        'size_inches': fig.get_size_inches().tolist(), 'axes': len(fig.axes),
+        'text_outside_canvas': outside,
+    }, indent=2))
+    with plt_module.rc_context({"savefig.bbox": None}):
+        fig.savefig(output_path, bbox_inches=None)
+        if output_path.suffix != ".svg":
+            fig.savefig(output_path.with_suffix(".svg"), bbox_inches=None)
+    plt_module.close(fig)
+    return output_path
+
+
 _POLICY_LABELS = {
     "adaptive": "PALDI",
     "adaptive_async_anytime": "Async PALDI(anytime)",
@@ -73,7 +116,7 @@ _POLICY_LABELS = {
     "active_myopic": "Myopic",
     "prbs": "PRBS",
     "random": "Random",
-    "active_fully_observable": "Full obs.",
+    "active_fully_observable": "Unatten.",
     "active_state_information": "State info",
     "active_dynamics": "Dyn. sens.",
     "active_e_optimality": "E-opt.",
@@ -405,7 +448,7 @@ def _asset_plot_r2_curves(
                 color=_experiment_C_NEUTRAL_LIGHT,
                 linestyle="--",
                 linewidth=0.65,
-                label="true-model max" if ylabel and labels else None,
+                label="true-model reference" if ylabel and labels else None,
             )
         curve_ax.set_xlim(left=0.0)
         curve_ax.set_yscale("log", nonpositive="clip")
@@ -436,7 +479,9 @@ def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Pa
     plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(1, len(sources), figsize=(7.25, 2.35), squeeze=False)
+    fig, axes = plt_module.subplots(
+        1, len(sources), figsize=(516.0 / 72.27, 2.35), squeeze=False
+    )
     display_titles = {
         "duffing oscillator": "Duffing",
         "damped pendulum": "Damped Pendulum",
@@ -458,7 +503,7 @@ def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Pa
         handles,
         labels,
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.01),
+        bbox_to_anchor=(0.5, 0.995),
         ncol=len(_ASSET_MATCHED_POLICIES) + 1,
         fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
@@ -624,6 +669,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     cbar = fig.colorbar(im_sens, cax=cbar_ax)
     cbar.ax.tick_params(labelsize=6.0, width=0.4, length=2.0)
     cbar.outline.set_linewidth(0.4)
+    cbar.set_label(r"$\|\partial\mathbf{v}/\partial\theta\|_F$", fontsize=7.0)
 
     # Panel C: state Fisher information (per-map log scale) with loading-vector insets.
     from matplotlib.colors import LogNorm
@@ -780,7 +826,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     fig.text(
         0.5 * (b_left + b_right),
         b_top + 0.045,
-        r"$\|df/d\theta\|_F$",
+        "Parameter sensitivity",
         ha="center",
         va="bottom",
         fontsize=8.0,
@@ -788,7 +834,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     fig.text(
         0.5 * (c_left + c_right),
         c_top + 0.045,
-        "State Fisher Information",
+        "State Fisher determinant",
         ha="center",
         va="bottom",
         fontsize=8.0,
@@ -1345,7 +1391,7 @@ def _asset_plot_recovery_curves(
         handles,
         labels,
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.01),
+        bbox_to_anchor=(0.5, 0.995),
         ncol=legend_ncol,
         fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
@@ -1367,6 +1413,7 @@ def _asset_plot_final_bar(
     ylim: tuple[float, float] = (0.0, 1.0),
     policy_labels: Mapping[str, str] | None = None,
     policy_legend: bool = True,
+    ax: Any | None = None,
 ) -> Path:
     """Standalone final-performance bars, colored by policy with per-condition shade.
 
@@ -1405,7 +1452,11 @@ def _asset_plot_final_bar(
     # One row reserves 8% of the default figure, matching the unwrapped layout.
     legend_height = 0.188 + 0.16 * (legend_rows - 1)
     fig_height = (1.55 if short else 2.35) + 0.16 * (legend_rows - 1)
-    fig, ax = plt_module.subplots(figsize=(fig_width, fig_height))
+    standalone = ax is None
+    if standalone:
+        fig, ax = plt_module.subplots(figsize=(fig_width, fig_height))
+    else:
+        fig = ax.figure
     y_floor, y_top = float(ylim[0]), float(ylim[1])
     x = np.arange(n_policy, dtype=np.float64)
     bar_width = 0.8 / max(n_cond, 1)
@@ -1444,6 +1495,7 @@ def _asset_plot_final_bar(
         ax.axhline(0.0, color=_experiment_C_STROKE, linewidth=0.5)
         # Carets mark bars whose value or lower band runs past the axis floor;
         # the exact numbers stay in the companion CSV.
+    if clipped_x:
         ax.plot(
             clipped_x,
             np.full(len(clipped_x), y_floor),
@@ -1475,16 +1527,17 @@ def _asset_plot_final_bar(
             Line2D([0], [0], color=_asset_baseline_policy_color(policy_id), linewidth=1.6)
             for policy_id in active_policies
         ]
-        fig.legend(
-            policy_handles,
-            [_asset_policy_label(policy_id, policy_labels) for policy_id in active_policies],
-            loc="upper center",
-            bbox_to_anchor=(0.5, 1.02),
-            ncol=legend_ncol,
-            fontsize=_ASSET_TICK_SIZE,
-            columnspacing=1.0,
-            handlelength=1.4,
-        )
+        if standalone:
+            fig.legend(
+                policy_handles,
+                [_asset_policy_label(policy_id, policy_labels) for policy_id in active_policies],
+                loc="upper center",
+                bbox_to_anchor=(0.5, 0.995),
+                ncol=legend_ncol,
+                fontsize=_ASSET_TICK_SIZE,
+                columnspacing=1.0,
+                handlelength=1.4,
+            )
         ax.legend(
             cond_handles,
             cond_labels,
@@ -1500,12 +1553,14 @@ def _asset_plot_final_bar(
             cond_handles,
             cond_labels,
             loc="upper center",
-            bbox_to_anchor=(0.5, 1.02),
+            bbox_to_anchor=(0.5, 0.995),
             ncol=legend_ncol,
             fontsize=_ASSET_TICK_SIZE,
             columnspacing=1.0,
             handlelength=1.2,
         )
+    if not standalone:
+        return output_path
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 1.0 - legend_height / fig_height))
     return save_figure(fig, output_path, plt_module=plt_module)
 
@@ -1556,7 +1611,7 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> lis
 _ASSET_TRI_GATE_EXP_ID = "three_gate_diagnostic"
 _ASSET_TRI_GATE_LABELS = {
     "compound_active_planning": "PALDI",
-    "compound_active_fully_observable": "Full obs.",
+    "compound_active_fully_observable": "Unatten.",
     "compound_active_e_optimality": "E-opt.",
     "compound_active_state_information": "State info",
     "compound_active_dynamics": "Dyn. sens. (trace)",
@@ -1575,7 +1630,7 @@ _ASSET_TRI_GATE_EXCLUDED_POLICIES = frozenset(
     {"prbs", "compound_active_dynamics"}
 )
 # Exemplar seed for the trajectory panels, chosen by ranking matched seeds on
-# occupancy contrast: PALDI holds gate F while the fully observed objective
+# occupancy contrast: PALDI holds gate F while the unattenuated objective
 # abandons F for gate N, with every panel showing its policy's modal behavior.
 # Population occupancy statistics live in the main diagnostic figure.
 _ASSET_TRI_GATE_EXEMPLAR_SEED = 90
@@ -1700,9 +1755,22 @@ def _asset_plot_gate_diagnostic(
         for record in records
         if record.seed == int(exemplar_seed)
     }
+    line_styles = {
+        "compound_active_planning": "-",
+        "compound_active_fully_observable": "--",
+        "compound_active_e_optimality": "-.",
+        "compound_active_state_information": ":",
+        "compound_active_dynamics_logdet": (0, (5, 1, 1, 1)),
+        "compound_active_observation_variance": (0, (3, 1, 1, 1, 1, 1)),
+        "compound_active_state_variance": (0, (2, 2)),
+        "random": (0, (6, 3)),
+    }
 
+    # IEEEtran journal text width is 43 picas (516 TeX points).
+    manuscript_width_in = 516.0 / 72.27
     fig, axis_grid = plt_module.subplots(
-        1, 3, figsize=(7.25, 2.1), gridspec_kw={"width_ratios": (2.5, 2.5, 5.0)}
+        1, 3, figsize=(manuscript_width_in, 2.1),
+        gridspec_kw={"width_ratios": (2.5, 2.5, 5.0)},
     )
     axes = list(axis_grid.ravel())
     x = np.arange(len(summary_rows), dtype=np.float64)
@@ -1757,14 +1825,27 @@ def _asset_plot_gate_diagnostic(
     ax.set_title(
         "A", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
-    ax.set_title("Rollout recovery", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
     # B: selector occupancy stacks, one per objective.
     ax = axes[1]
     bottom = np.zeros(len(summary_rows), dtype=np.float64)
-    for key, _label, color in _ASSET_TRI_GATE_GATE_COLORS:
+    for key, label, color in _ASSET_TRI_GATE_GATE_COLORS:
         value = np.asarray([row[key] for row in summary_rows], dtype=np.float64)
         ax.bar(x, value, bottom=bottom, width=0.72, color=color)
+        # Direct labels keep the occupancy comparison readable in grayscale.
+        for column, fraction in enumerate(value):
+            if fraction >= 0.25:
+                is_rest = key == "rest_fraction"
+                ax.text(
+                    x[column],
+                    bottom[column] + fraction / 2,
+                    "rest" if is_rest else label.split(":")[0],
+                    ha="center",
+                    va="center",
+                    fontsize=_ASSET_TICK_SIZE,
+                    color=_experiment_C_STROKE if is_rest else "white",
+                    rotation=90 if is_rest else 0,
+                )
         bottom += value
     ax.set_xticks(x)
     ax.set_xticklabels(
@@ -1778,7 +1859,6 @@ def _asset_plot_gate_diagnostic(
     ax.set_title(
         "B", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
-    ax.set_title("Selector occupancy", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
     # C: every objective's exemplar selector trace overlaid on the gate bands,
     # so dwell-at-N, dwell-at-B, and reach-and-hold-F behaviors read against the
@@ -1809,6 +1889,7 @@ def _asset_plot_gate_diagnostic(
             np.arange(selector.size, dtype=np.float64),
             selector,
             color=_asset_tri_gate_policy_color(policy_id),
+            linestyle=line_styles[policy_id],
             linewidth=1.1 if is_paldi else 0.5,
             alpha=1.0 if is_paldi else 0.7,
             zorder=3 if is_paldi else 2,
@@ -1845,23 +1926,27 @@ def _asset_plot_gate_diagnostic(
     ax.set_title(
         "C", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
-    ax.set_title("Exemplar selector traces", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
     from matplotlib.lines import Line2D
 
     legend_policies = [str(row["policy_id"]) for row in summary_rows]
     fig.legend(
         [
-            Line2D([0], [0], color=_asset_tri_gate_policy_color(policy_id), linewidth=1.6)
+            Line2D(
+                [0], [0],
+                color=_asset_tri_gate_policy_color(policy_id),
+                linestyle=line_styles[policy_id],
+                linewidth=1.6,
+            )
             for policy_id in legend_policies
         ],
         [_ASSET_TRI_GATE_LABELS[policy_id] for policy_id in legend_policies],
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.02),
+        bbox_to_anchor=(0.5, 0.995),
         ncol=len(legend_policies),
         fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
-        handlelength=1.4,
+        handlelength=2.6,
     )
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.9), w_pad=1.1)
     return save_figure(fig, output_path, plt_module=plt_module)
@@ -1944,8 +2029,8 @@ def _asset_plot_gate_diagnostic_trajectories(
         ax.tick_params(axis="both", labelsize=5.2, pad=1.0)
     for idx in range(len(policy_ids), n_row * n_col):
         axes[idx // n_col, idx % n_col].set_visible(False)
-    # Gate letters ride the right edge of the last column, keyed by band color.
-    right_ax = axes[0, n_col - 1]
+    # Keep gate labels on a visible panel when fewer than three policies exist.
+    right_ax = axes[0, min(n_col, len(policy_ids)) - 1]
     for (_key, label, color), center in zip(
         _ASSET_TRI_GATE_GATE_COLORS[1:], _ASSET_TRI_GATE_CENTERS, strict=True
     ):

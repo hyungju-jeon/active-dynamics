@@ -68,7 +68,7 @@ COMPOUND_POLICY_ORDER = (
 )
 COMPOUND_POLICY_LABELS = {
     "compound_active_planning": "PALDI",
-    "compound_active_fully_observable": "Full-observed EIG",
+    "compound_active_fully_observable": "Unattenuated p-EIG",
     "compound_active_e_optimality": "E-optimality",
     "compound_active_state_information": "State information",
     "compound_active_dynamics": "Dynamics sensitivity",
