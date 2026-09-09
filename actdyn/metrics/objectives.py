@@ -132,8 +132,13 @@ class EOptimalityMetric(BaseMetric):
 
     def compute_stepwise(self, rollout: dict) -> torch.Tensor:
         z = rollout["model_state"].to(self.device).float()
+        z_next = rollout["next_model_state"].to(self.device).float()
+        if z_next.ndim != 3:
+            z_next = z_next.unsqueeze(0)
         if z.ndim != 3:
             z = z.unsqueeze(0)
+        if z_next.shape != z.shape:
+            raise ValueError("model_state and next_model_state must have matching shapes")
         batch, steps, d_latent = z.shape
         e_bel = self.model.e
         z_bel = self.model.z
@@ -177,7 +182,9 @@ class EOptimalityMetric(BaseMetric):
             dfde = Fe[:, i] * dt
             s_sens = dfdz @ s_sens + dfde
 
-            z_i = z[:, i : i + 1]
+            # Match sensitivity, covariance, and observation curvature at the next state.
+            p_pred = symmetrize(dfdz @ p_pred @ dfdz.transpose(-1, -2) + q)
+            z_i = z_next[:, i : i + 1]
             H_i = self.model.decoder.jacobian(z_i).to(self.device)
             if H_i.ndim == 4:
                 H_i = H_i.squeeze(1)
@@ -209,8 +216,6 @@ class EOptimalityMetric(BaseMetric):
             atten_i_z = attenuated_state_information(p_pred, i_z)
             info_step = symmetrize(s_sens.transpose(-1, -2) @ atten_i_z @ s_sens)
             j_total = j_total + (self.gamma**i) * info_step
-
-            p_pred = symmetrize(dfdz @ p_pred @ dfdz.transpose(-1, -2) + q)
 
         p_theta = e_bel["P"].to(self.device)
         if p_theta.ndim == 2:

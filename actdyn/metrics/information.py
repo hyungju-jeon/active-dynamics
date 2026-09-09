@@ -414,16 +414,27 @@ class EmbeddingFisherMetric(BaseMetric):
         Fz_net: Callable,
         decoder: Optional[Decoder] = None,
     ) -> torch.Tensor:
-        """Compute the discounted EIG for one nominal model used in planning."""
+        """Compute discounted EIG using information at each transition's destination.
+
+        Rollout states have shape (batch, horizon, latent_dim): ``model_state``
+        supplies transition Jacobians and ``next_model_state`` supplies
+        observation curvature. Covariance is propagated before scoring, without
+        hypothetical measurement updates. Returns one EIG per batch member.
+        """
         e_bel = self.model.e
         z_bel = self.model.z
         decoder = self.model.decoder if decoder is None else decoder
 
         z = rollout["model_state"].to(self.device).float()
+        z_next = rollout["next_model_state"].to(self.device).float()
+        if z_next.ndim != 3:
+            z_next = z_next.unsqueeze(0)
 
         if len(z.shape) != 3:
             z = z.unsqueeze(0)  # Ensure z is (batch, T, d_latent)
         assert len(z.shape) == 3, "z must be a tensor of shape (batch, T, d_latent)"
+        if z_next.shape != z.shape:
+            raise ValueError("model_state and next_model_state must have matching shapes")
         batch, T, d_latent = z.shape
         d_embedding = e_bel["m"].shape[-1]
         dt = float(getattr(self.model, "dt", 1.0))
@@ -483,7 +494,7 @@ class EmbeddingFisherMetric(BaseMetric):
             P_diag = _cov_diag(P_pred)
             Q_diag = _cov_diag(Q)
 
-        _, I_z_all, _, _ = diagonal_observation_information(decoder, z)
+        _, I_z_all, _, _ = diagonal_observation_information(decoder, z_next)
         I_z_all = I_z_all.to(self.device)
 
         # Discounted accumulation of predicted parameter information.
@@ -500,6 +511,15 @@ class EmbeddingFisherMetric(BaseMetric):
             else:
                 S_sens = dfdz @ S_sens + dfde
 
+            # Score the next observation with next-state sensitivity and covariance.
+            if self.diagonal_covariance:
+                P_diag = (dfdz.square() * P_diag.unsqueeze(1)).sum(dim=-1) + Q_diag
+                P_diag = torch.nan_to_num(
+                    P_diag, nan=0.0, posinf=1e6, neginf=0.0
+                ).clamp_min(0.0)
+            elif not (self.freeze_covariance or self.fully_observed):
+                P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)
+
             # I_z = H^T R^{-1} H (Fisher approximation in state space).
             I_z = I_z_all[:, i]
 
@@ -515,7 +535,7 @@ class EmbeddingFisherMetric(BaseMetric):
             info_step = symmetrize(S_sens.transpose(-1, -2) @ atten_Iz @ S_sens)
             if self.boundary_visibility_enabled:
                 visibility = boundary_visibility(
-                    z[:, i],
+                    z_next[:, i],
                     boundary_type=self.boundary_type,
                     radius=self.boundary_radius,
                     margin=self.boundary_margin,
@@ -523,14 +543,6 @@ class EmbeddingFisherMetric(BaseMetric):
                 )
                 info_step = visibility.square().view(batch, 1, 1) * info_step
             J += discounts[i] * info_step
-
-            if self.diagonal_covariance:
-                P_diag = (dfdz.square() * P_diag.unsqueeze(1)).sum(dim=-1) + Q_diag
-                P_diag = torch.nan_to_num(
-                    P_diag, nan=0.0, posinf=1e6, neginf=0.0
-                ).clamp_min(0.0)
-            elif not (self.freeze_covariance or self.fully_observed):
-                P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)
 
         P_theta = e_bel["P"].to(self.device)
         if P_theta.dim() == 2:

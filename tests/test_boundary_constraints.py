@@ -98,6 +98,9 @@ def test_vectorfield_env_accepts_batched_single_parameter_values():
 class _LinearDecoder:
     noise = object()
 
+    def __call__(self, z: torch.Tensor) -> torch.Tensor:
+        return z
+
     def jacobian(self, z: torch.Tensor) -> torch.Tensor:
         batch = z.shape[0]
         eye = torch.eye(2, dtype=z.dtype, device=z.device)
@@ -139,7 +142,13 @@ def test_embedding_fisher_metric_visibility_reduces_boundary_eig():
         boundary_temperature=0.15,
     )
 
-    interior_eig = -metric.compute_stepwise({"model_state": torch.zeros(1, 3, 2)})
-    boundary_eig = -metric.compute_stepwise({"model_state": torch.full((1, 3, 2), 3.95)})
+    interior_eig = -metric.compute_stepwise({
+        "model_state": torch.zeros(1, 1, 2),
+        "next_model_state": torch.zeros(1, 1, 2),
+    })
+    boundary_eig = -metric.compute_stepwise({
+        "model_state": torch.zeros(1, 1, 2),
+        "next_model_state": torch.full((1, 1, 2), 3.95),
+    })
 
     assert float(boundary_eig.item()) < float(interior_eig.item())
