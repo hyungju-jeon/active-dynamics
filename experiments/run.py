@@ -16,6 +16,9 @@ from typing import Any
 
 import numpy as np
 import torch
+from actdyn.metrics.planning import PLANNING_MEASUREMENT_UPDATES
+from actdyn.models.model import LEARNING_SENSITIVITY_REVISION
+from actdyn.models.sensitivity import LEARNING_SENSITIVITY_UPDATES
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -519,6 +522,7 @@ def _build_metric(
     ensemble_kind: str | None = None,
     eig_freeze_covariance: bool = False,
     eig_diagonal_covariance: bool = False,
+    planning_rollout: str = "prediction_only",
 ):
     from actdyn.metrics.objectives import (
         ambiguity_aware_parameter_eig,
@@ -543,6 +547,7 @@ def _build_metric(
             device=device,
             freeze_covariance=eig_freeze_covariance,
             diagonal_covariance=eig_diagonal_covariance,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "shrinkage_parameter_eig":
         return shrinkage_parameter_eig(
@@ -551,6 +556,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "ambiguity_aware_parameter_eig":
         return ambiguity_aware_parameter_eig(
@@ -563,6 +569,7 @@ def _build_metric(
                 1.0 if ambiguity_temperature is None else float(ambiguity_temperature)
             ),
             ensemble_kind=ensemble_kind,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "e_optimality":
         return build_e_optimality_metric(
@@ -571,6 +578,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "fully_observable_parameter_eig":
         return fully_observable_parameter_eig(
@@ -579,6 +587,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "state_information":
         return build_state_information_metric(
@@ -587,6 +596,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "dynamics":
         return build_dynamics_metric(
@@ -595,6 +605,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "dynamics_logdet":
         return build_dynamics_logdet_metric(
@@ -603,6 +614,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "observation_variance":
         return build_observation_variance_metric(
@@ -611,6 +623,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
             num_parameter_samples=int(observation_variance_samples),
             sample_seed=observation_variance_seed,
         )
@@ -621,6 +634,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
             num_parameter_samples=int(observation_variance_samples),
             sample_seed=observation_variance_seed,
             correction_df=3.0,
@@ -633,6 +647,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
             num_parameter_samples=int(observation_variance_samples),
             sample_seed=observation_variance_seed,
         )
@@ -886,6 +901,8 @@ def _run_single_parameter_identification(
     traj_eval_samples: int,
     observation_variance_samples: int,
     capture_planned_trajectory: bool = False,
+    planning_rollout: str = "prediction_only",
+    learning_sensitivity: str = "measurement_corrected",
 ) -> dict[str, Any]:
     import torch
     import torch.nn as nn
@@ -1196,6 +1213,7 @@ def _run_single_parameter_identification(
         "Fe": fe_true,
         "Fz": fz_true,
         "device": device,
+        "learning_sensitivity": learning_sensitivity,
     }
     fe_init = inspect.signature(actdyn.models.FilteringEmbedding.__init__)
     if "q_theta" in fe_init.parameters:
@@ -1263,6 +1281,7 @@ def _run_single_parameter_identification(
             eig_diagonal_covariance=bool(
                 getattr(policy_spec, "eig_diagonal_covariance", False)
             ),
+            planning_rollout=planning_rollout,
         )
         _apply_boundary_visibility_to_metric(base_metric, env_preset)
         action_cost_weight = float(getattr(policy_spec, "action_cost_weight", 0.01))
@@ -2132,6 +2151,8 @@ def _run_single_parameter_identification(
             "eig_freeze_covariance": bool(
                 getattr(policy_spec, "eig_freeze_covariance", False)
             ),
+            "planning_rollout": planning_rollout,
+            "learning_sensitivity": learning_sensitivity,
             "eig_diagonal_covariance": bool(
                 getattr(policy_spec, "eig_diagonal_covariance", False)
             ),
@@ -2278,9 +2299,31 @@ def _run_one(
         layout=str(getattr(args, "path_layout", "legacy")),
     )
     metadata_path = run_dir / "run_metadata.json"
-    if bool(getattr(args, "skip_existing", False)) and metadata_path.exists():
+    from actdyn.metrics.planning import PLANNING_ROLLOUT_REVISION
+
+    planning_rollout = getattr(args, "planning_rollout", "prediction_only")
+    learning_sensitivity = getattr(args, "learning_sensitivity", "measurement_corrected")
+    if metadata_path.exists():
         existing_payload = load_json(metadata_path)
-        if str(existing_payload.get("status")) == "completed":
+        if existing_payload.get("planning_rollout") != planning_rollout:
+            raise ValueError(
+                f"Planning rollout mismatch at {metadata_path}: existing "
+                f"{existing_payload.get('planning_rollout', 'unrecorded')!r}, "
+                f"requested {planning_rollout!r}. Use a separate --base-dir."
+            )
+        if existing_payload.get("planning_rollout_revision") != PLANNING_ROLLOUT_REVISION:
+            raise ValueError(f"Planning rollout revision mismatch at {metadata_path}. Use a separate --base-dir.")
+        if existing_payload.get("learning_sensitivity_revision") != LEARNING_SENSITIVITY_REVISION:
+            raise ValueError(f"Learning sensitivity revision mismatch at {metadata_path}. Use a separate --base-dir.")
+        # This revision initially used corrected learning without a mode field.
+        previous_learning = existing_payload.get("learning_sensitivity", "measurement_corrected")
+        if previous_learning != learning_sensitivity:
+            raise ValueError(
+                f"Learning sensitivity mismatch at {metadata_path}: existing "
+                f"{previous_learning!r}, requested {learning_sensitivity!r}. "
+                "Use a separate --base-dir."
+            )
+        if bool(getattr(args, "skip_existing", False)) and str(existing_payload.get("status")) == "completed":
             return existing_payload
     ensure_dir(run_dir)
     try:
@@ -2301,6 +2344,8 @@ def _run_one(
                 traj_eval_samples=int(exp_spec.trajectory_eval_samples),
                 observation_variance_samples=int(args.observation_variance_samples),
                 capture_planned_trajectory=bool(args.capture_planned_trajectory),
+                planning_rollout=planning_rollout,
+                learning_sensitivity=learning_sensitivity,
             )
         else:
             if __package__ in {None, ""}:
@@ -2340,6 +2385,10 @@ def _run_one(
             results_path=run_dir,
             extra={"error": f"{type(exc).__name__}: {exc}"},
         )
+    payload["planning_rollout"] = planning_rollout
+    payload["planning_rollout_revision"] = PLANNING_ROLLOUT_REVISION
+    payload["learning_sensitivity_revision"] = LEARNING_SENSITIVITY_REVISION
+    payload["learning_sensitivity"] = learning_sensitivity
     write_json(run_dir / "run_metadata.json", payload)
     return payload
 
@@ -2591,6 +2640,8 @@ def _build_session_metadata(
     repeats: int,
     records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    from actdyn.metrics.planning import PLANNING_ROLLOUT_REVISION
+
     policy_filter = set(parse_csv_list(getattr(args, "policy_ids", None))) or None
     experiments = [
         _build_session_experiment_entry(
@@ -2622,6 +2673,8 @@ def _build_session_metadata(
         },
         "parameters": {
             **{str(key): value for key, value in vars(args).items()},
+            "planning_rollout_revision": PLANNING_ROLLOUT_REVISION,
+            "learning_sensitivity_revision": LEARNING_SENSITIVITY_REVISION,
             "exp_ids_resolved": [str(exp_id) for exp_id in exp_ids],
             "seeds_resolved": [int(seed) for seed in seeds],
             "repeats_resolved": int(repeats),
@@ -2738,6 +2791,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-theta-meas-coeff", type=float, default=0.0)
     parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
     parser.add_argument("--eig-gamma", type=float, default=1.0)
+    parser.add_argument(
+        "--learning-sensitivity",
+        choices=tuple(LEARNING_SENSITIVITY_UPDATES),
+        default="measurement_corrected",
+        help=(
+            "Parameter learning: measurement_corrected carries P+ (P-)^{-1} S- "
+            "after each real observation (default); dynamics_only retains the "
+            "original sensitivity. Combine with --planning-rollout prediction_only "
+            "for corrected learning and prediction-only planning."
+        ),
+    )
+    parser.add_argument(
+        "--planning-rollout",
+        choices=tuple(PLANNING_MEASUREMENT_UPDATES),
+        default="prediction_only",
+        help=(
+            "Parameter-information rollout: prediction_only carries nominal "
+            "sensitivity; measurement_conditioned contracts state covariance "
+            "and corrects conditional sensitivity after scoring each observation."
+        ),
+    )
     parser.add_argument("--observation-variance-samples", type=int, default=8)
     parser.add_argument("--capture-planned-trajectory", action="store_true")
     return parser
@@ -2810,6 +2884,27 @@ def main(
         create=args.mode in {"run", "all"},
         exp_ids=exp_ids,
     )
+    session_metadata_path = base_dir / "session_metadata.json"
+    if args.mode in {"run", "all"} and session_metadata_path.exists():
+        from actdyn.metrics.planning import PLANNING_ROLLOUT_REVISION
+
+        previous_parameters = load_json(session_metadata_path).get("parameters", {})
+        if previous_parameters.get("planning_rollout_revision") != PLANNING_ROLLOUT_REVISION:
+            parser.error("Session planning rollout revision differs. Use a separate --base-dir.")
+        if previous_parameters.get("learning_sensitivity_revision") != LEARNING_SENSITIVITY_REVISION:
+            parser.error("Session learning sensitivity revision differs. Use a separate --base-dir.")
+        previous_mode = previous_parameters.get("planning_rollout")
+        if previous_mode != args.planning_rollout:
+            parser.error(
+                f"Session planning rollout is {previous_mode or 'unrecorded'!r}, "
+                f"requested {args.planning_rollout!r}. Use a separate --base-dir."
+            )
+        previous_learning = previous_parameters.get("learning_sensitivity", "measurement_corrected")
+        if previous_learning != args.learning_sensitivity:
+            parser.error(
+                f"Session learning sensitivity is {previous_learning!r}, "
+                f"requested {args.learning_sensitivity!r}. Use a separate --base-dir."
+            )
     seeds = parse_csv_ints(args.seeds) or [0, 10, 20, 30]
     repeats = int(args.repeats)
     if args.mode in {"run", "all"}:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from actdyn.metrics.information import EmbeddingFisherMetric
@@ -213,7 +214,8 @@ def test_loglinear_poisson_eig_reuses_rate_without_jacobian() -> None:
     assert mapping.jacobian_calls == 0
 
 
-def test_diagonal_covariance_ablation_is_finite_and_distinct() -> None:
+@pytest.mark.parametrize("planning_rollout", ["prediction_only", "measurement_conditioned"])
+def test_diagonal_covariance_ablation_is_finite_and_distinct(planning_rollout) -> None:
     def build(*, diagonal_covariance: bool) -> EmbeddingFisherMetric:
         model = SimpleNamespace(
             e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
@@ -227,6 +229,7 @@ def test_diagonal_covariance_ablation_is_finite_and_distinct() -> None:
             Fz_net=_fz_shear,
             gamma=1.0,
             diagonal_covariance=diagonal_covariance,
+            planning_rollout=planning_rollout,
             device="cpu",
         )
 
@@ -238,7 +241,8 @@ def test_diagonal_covariance_ablation_is_finite_and_distinct() -> None:
     assert not torch.allclose(diagonal_value, full_value)
 
 
-def test_next_observation_information_matches_scalar_closed_form() -> None:
+@pytest.mark.parametrize("planning_rollout", ["prediction_only", "measurement_conditioned"])
+def test_next_observation_information_matches_scalar_closed_form(planning_rollout) -> None:
     """A one-step score uses the destination rate and includes transition noise."""
     from actdyn.metrics.objectives import EOptimalityMetric
 
@@ -271,20 +275,30 @@ def test_next_observation_information_matches_scalar_closed_form() -> None:
     for flag in (None, "diagonal_covariance", "freeze_covariance", "fully_observed"):
         kwargs = {} if flag is None else {flag: True}
         metric = EmbeddingFisherMetric(
-            model=model, Fe_net=fe, Fz_net=fz, gamma=1.0, device="cpu", **kwargs
+            model=model, Fe_net=fe, Fz_net=fz, gamma=1.0, device="cpu",
+            planning_rollout=planning_rollout, **kwargs
         )
         variance = 0.4 if flag == "freeze_covariance" else predicted_variance
         info = 4.0 * rates if flag == "fully_observed" else 4.0 * rates / (1.0 + variance * rates)
         expected = -0.5 * torch.log1p(0.7 * info)
         torch.testing.assert_close(metric.compute_stepwise(rollout).flatten(), expected)
 
-    e_opt = EOptimalityMetric(model=model, Fe_net=fe, Fz_net=fz, gamma=1.0, device="cpu")
+    e_opt = EOptimalityMetric(
+        model=model, Fe_net=fe, Fz_net=fz, gamma=1.0, device="cpu",
+        planning_rollout=planning_rollout,
+    )
     expected_e_opt = -0.7 * 4.0 * rates / (1.0 + predicted_variance * rates)
     torch.testing.assert_close(e_opt.compute_stepwise(rollout).flatten(), expected_e_opt)
 
 
-def test_prediction_only_covariance_advances_once_per_observation() -> None:
-    """Two observations retain prediction-only propagation and include each Q once."""
+@pytest.mark.parametrize(
+    "planning_rollout,second_sensitivity,second_variance",
+    [("prediction_only", 2.0, 2.0), ("measurement_conditioned", 1.4, 1.1)],
+)
+def test_rollout_covariance_and_sensitivity_match_two_step_closed_form(
+    planning_rollout, second_sensitivity, second_variance,
+) -> None:
+    """Measurement conditioning changes both P and S before the second prediction."""
     model = SimpleNamespace(
         e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
         z={"P": torch.eye(2).unsqueeze(0)},
@@ -293,9 +307,50 @@ def test_prediction_only_covariance_advances_once_per_observation() -> None:
         dt=1.0,
     )
     metric = EmbeddingFisherMetric(
-        model=model, Fe_net=_fe_identity, Fz_net=_fz_zero, gamma=0.5, device="cpu"
+        model=model, Fe_net=_fe_identity, Fz_net=_fz_zero, gamma=0.5, device="cpu",
+        planning_rollout=planning_rollout,
     )
     rollout = {"model_state": torch.zeros(1, 2, 2), "next_model_state": torch.zeros(1, 2, 2)}
-    # S1=I, S2=2I; P1=1.5I, P2=2I. No hypothetical measurement contraction.
-    expected = torch.tensor(-math.log1p(1.0 / 2.5 + 0.5 * 4.0 / 3.0))
+    # S1-=I, P1-=1.5I. Conditioning gives S1+=0.4I, P1+=0.6I.
+    expected = torch.tensor(-math.log1p(
+        1.0 / 2.5 + 0.5 * second_sensitivity**2 / (1.0 + second_variance)
+    ))
     torch.testing.assert_close(metric.compute_stepwise(rollout).reshape(()), expected)
+
+
+def test_contraction_matches_noncommuting_gaussian_update() -> None:
+    from actdyn.utils.torch_utils import posterior_state_covariance
+    P = torch.tensor([[2., .4], [.4, .7]], dtype=torch.float64)
+    H = torch.tensor([[1., .3], [-.2, 2.]], dtype=torch.float64)
+    R = torch.diag(torch.tensor([.6, 1.2], dtype=torch.float64))
+    I_z = H.T @ torch.linalg.solve(R, H)
+    expected = P - P @ H.T @ torch.linalg.solve(H @ P @ H.T + R, H @ P)
+    actual = posterior_state_covariance(P, I_z)
+    torch.testing.assert_close(actual, expected)
+    assert torch.linalg.eigvalsh(P-actual).min() >= -1e-10
+    torch.testing.assert_close(posterior_state_covariance(P, torch.zeros_like(P)), P)
+
+
+@pytest.mark.parametrize(
+    "planning_rollout,second_sensitivity,second_variance",
+    [("prediction_only", 2.0, 2.0), ("measurement_conditioned", 1.4, 1.1)],
+)
+def test_eoptimality_matches_two_step_closed_form(
+    planning_rollout, second_sensitivity, second_variance,
+) -> None:
+    from actdyn.metrics.objectives import EOptimalityMetric
+    model = SimpleNamespace(
+        e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
+        z={"P": torch.eye(2).unsqueeze(0)},
+        dynamics=SimpleNamespace(logvar=torch.full((1, 2), math.log(math.expm1(.5)))),
+        decoder=_DummyPoissonDecoder(), dt=1.,
+    )
+    metric = EOptimalityMetric(
+        model=model, Fe_net=_fe_identity, Fz_net=_fz_zero, gamma=.5, device="cpu",
+        planning_rollout=planning_rollout,
+    )
+    rollout = {"model_state":torch.zeros(1,2,2), "next_model_state":torch.zeros(1,2,2)}
+    before = model.z['P'].clone()
+    expected = torch.tensor(-(1 / 2.5 + .5 * second_sensitivity**2 / (1 + second_variance)))
+    torch.testing.assert_close(metric.compute_stepwise(rollout).reshape(()), expected)
+    torch.testing.assert_close(model.z['P'], before)

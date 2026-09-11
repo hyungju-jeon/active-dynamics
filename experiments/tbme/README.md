@@ -481,6 +481,98 @@ Common forwarded arguments include:
 - `--q-theta`
 - `--parameter-prior-covariance`
 - `--eig-gamma`
+- `--planning-rollout {prediction_only,measurement_conditioned}`
+- `--learning-sensitivity {dynamics_only,measurement_corrected}`
+
+`prediction_only` is the default and carries state covariance and parameter
+effects forward without conditioning on planned measurements.
+`measurement_conditioned` scores each future observation using predictive
+covariance and sensitivity, then carries forward both
+`P+ = (P-^{-1} + I_z)^{-1}` and `S+ = P+ P-^{-1} S- = (I-KC) S-`.
+The latter is a local Gaussian, zero-innovation approximation with the nominal
+observation held fixed for the parameter derivative. It omits gain/curvature
+derivatives and covariance contributions to Fisher information. Parameter mean
+and covariance stay fixed throughout either planning rollout; there is no
+parameter covariance inflation during planning.
+
+The argument applies to every active objective: p-EIG (including shrinkage,
+ambiguity, unattenuated, and covariance variants), E-optimality, state
+information, dynamics trace/logdet, and observation/state variance. Each scores
+the destination prediction before the common measurement correction. State
+information only needs covariance; objectives that use parameter sensitivity
+also correct that sensitivity. Unattenuated p-EIG removes only the information
+attenuation in its score. Frozen-covariance p-EIG uses the initial covariance
+only in its score; its rollout covariance and sensitivity still update. The
+diagonal variant projects the corrected covariance to its diagonal.
+
+For variance objectives, parameter draws remain fixed. Each predictive sample
+is scored first, then its deviation from the nominal state is transformed by
+`M = P+ P-^{-1}` before the next prediction. This is the same local,
+fixed-observation correction as `S+ = M S-`, applied to finite sample deviations;
+it is exact for the conditional means of a linear Gaussian model and is a local
+approximation for nonlinear dynamics and Poisson observations. These scores
+retain their original sample-variance scalarizations. The dynamics score has no
+explicit observation-information weighting, although its corrected rollout now
+uses observations. Random and PRBS have no planning belief rollout.
+
+Learning sensitivity is selected independently of planning:
+
+- `measurement_corrected` (default) uses `S-` for the current observation's
+  parameter score and information, then carries `S+ = P+ P-^{-1} S-` to the
+  next prediction within the block.
+- `dynamics_only` carries `S-` unchanged after the observation. Combine it with
+  `--planning-rollout prediction_only` to retain the original learning and
+  planning sensitivity rules.
+
+The requested combination of corrected learning and prediction-only planning is:
+
+```bash
+python -m experiments.tbme.exp_objective_ablation \
+  --mode run --exp-ids three_gate_diagnostic \
+  --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
+  --learning-sensitivity measurement_corrected \
+  --planning-rollout prediction_only --base-dir /tmp/tbme_corrected_learning
+```
+
+Both learning modes retain the real state measurement update and reset
+sensitivity at parameter block boundaries. The option applies when
+`FilteringEmbedding` owns parameter learning, including Random and PRBS;
+policies that update their own parameters keep their existing learner.
+The parameter update rule and block triggers are unchanged, although the
+information used by adaptive triggers can change with sensitivity.
+
+The corrected sensitivity is exact for a linear Gaussian filter with
+parameter-independent covariance matrices. For nonlinear dynamics and Poisson
+observations, it is a local approximation with the observation held fixed;
+gain and covariance derivatives are omitted, including the Poisson residual
+term `(dP+/dtheta_j) s_z`. The state covariance update itself is unchanged.
+
+`learning_sensitivity` and `learning_sensitivity_revision=fixed_observation_v1`
+are saved in every session and run. A different learning mode or a different
+or unrecorded revision cannot be resumed or reused with `--skip-existing`.
+The first runs with this revision predate the mode field and used corrected
+learning; a missing mode with this matching revision therefore means
+`measurement_corrected`. Earlier results remain separate.
+
+Use separate output roots for the two versions. The mode and `planning_rollout_revision=all_objectives_v2` are saved in session
+and run metadata; runs with a different or unrecorded mode cannot be overwritten or
+reused with `--skip-existing`. Earlier revisions with only some objectives
+corrected also require separate output roots. Previous covariance-only contraction results have
+no recorded mode and must remain separate from these two versions.
+
+For example, run a one-step smoke check in each mode from the worktree:
+
+```bash
+python -m experiments.tbme.exp_objective_ablation \
+  --mode run --exp-ids three_gate_diagnostic \
+  --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
+  --planning-rollout prediction_only --base-dir /tmp/tbme_prediction_only
+
+python -m experiments.tbme.exp_objective_ablation \
+  --mode run --exp-ids three_gate_diagnostic \
+  --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
+  --planning-rollout measurement_conditioned --base-dir /tmp/tbme_measurement_conditioned
+```
 
 Use `--help` on the TBME entrypoints to inspect the current parser. Prefer these entrypoints because they install the TBME catalog stack before calling the generic runner:
 

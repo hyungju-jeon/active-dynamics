@@ -125,6 +125,17 @@ def symmetrize(M):
     return 0.5 * (M + M.transpose(-1, -2))
 
 
+def posterior_state_covariance(prior_cov: torch.Tensor, state_info: torch.Tensor) -> torch.Tensor:
+    """Contract a predicted state covariance using nominal observation information.
+
+    Inputs and output have shape (..., d, d). This computes
+    (P_prior^{-1} + I_z)^{-1}; it does not change the state mean or parameters.
+    """
+    prior_precision = torch.cholesky_inverse(safe_cholesky(symmetrize(prior_cov)))
+    posterior_precision = symmetrize(prior_precision + state_info)
+    return symmetrize(torch.cholesky_inverse(safe_cholesky(posterior_precision)))
+
+
 def attenuated_state_information(prior_cov: torch.Tensor, state_info: torch.Tensor) -> torch.Tensor:
     """Return the Schur-complement information transferred through uncertain state.
 

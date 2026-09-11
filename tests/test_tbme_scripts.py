@@ -54,6 +54,10 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
             "0,10",
             "--base-dir",
             "results/tbme",
+            "--planning-rollout",
+            "measurement_conditioned",
+            "--learning-sensitivity",
+            "measurement_corrected",
         ]
     )
 
@@ -75,6 +79,10 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
             "tbme_tracks",
             "--mode",
             "summary",
+            "--planning-rollout",
+            "measurement_conditioned",
+            "--learning-sensitivity",
+            "measurement_corrected",
         ]
     )
 

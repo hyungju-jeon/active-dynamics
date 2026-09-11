@@ -21,6 +21,10 @@ from .base import BaseDynamicsEnsemble, BaseModel
 from .decoder import Decoder, diagonal_observation_information
 from .dynamics import BaseDynamics, FunctionDynamics
 from .encoder import BaseEncoder
+from .sensitivity import learning_sensitivity_update
+
+
+LEARNING_SENSITIVITY_REVISION = "fixed_observation_v1"
 
 
 def _kl_div_mc(mu_q, var_q, z_prior, mu_p, var_p):
@@ -622,7 +626,11 @@ class DeepVariationalBayesFilter(SeqVae):
 
 
 class FilteringEmbedding(BaseModel):
-    """Filtering embedding model."""
+    """State filter and blockwise parameter learner with selectable sensitivity.
+
+    ``learning_sensitivity`` changes the sensitivity carried after each real
+    observation. Current scores use predicted sensitivity in both modes.
+    """
 
     def __init__(
         self,
@@ -641,9 +649,12 @@ class FilteringEmbedding(BaseModel):
         adaptive_update_eig_threshold: float | None = None,
         shrinkage_map: Optional[Callable[[torch.Tensor], torch.Tensor]] = None,
         shrinkage_min: float = 0.0,
+        learning_sensitivity: str = "measurement_corrected",
         **kwargs,
     ):
         super().__init__(**kwargs)
+        self.learning_sensitivity = learning_sensitivity
+        self._learning_sensitivity_update = learning_sensitivity_update(learning_sensitivity)
         self.beta = 0.0
         self.e: Belief = e
         self.e_clip = max(float(e_clip), 1e-3)
@@ -1268,7 +1279,7 @@ class FilteringEmbedding(BaseModel):
         # parameter score / posterior updates are disabled when update_theta=False.
         info_t = None
         if update_theta:
-            # Parameter sensitivity recursion S_t = F_theta,t + F_z,t S_{t-1}.
+            # Predict sensitivity from the selected carry at the previous observation.
             S_prev = self._theta_sensitivity
             S_t = F_theta.squeeze(1) + dfdz.squeeze(1) @ S_prev  # (B, Dz, De)
 
@@ -1314,7 +1325,10 @@ class FilteringEmbedding(BaseModel):
 
             self._theta_score_block += score_t
             self._theta_info_block += info_t
-            self._theta_sensitivity = S_t.detach()
+            # Score with S- before correcting the sensitivity carried to the next step.
+            self._theta_sensitivity = self._learning_sensitivity_update(
+                S_t, P_pred_inv.squeeze(1), chol_L_post.squeeze(1)
+            ).detach()
             self._theta_block_steps += 1
             block_eig = self._theta_block_eig()
             reason = self._embedding_block_update_reason(block_eig)
