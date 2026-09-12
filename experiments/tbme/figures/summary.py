@@ -102,7 +102,7 @@ def _summary_build_parser() -> argparse.ArgumentParser:
 def _parse_selection(
     raw: str,
 ) -> tuple[list[Path], dict[Path, set[str]]]:
-    session_root = _groups.session_root()
+    results_root = _groups.results_dir()
     suite_dirs: list[Path] = []
     policy_ids_by_suite: dict[Path, set[str]] = {}
     for item in (part.strip() for part in str(raw).split(",") if part.strip()):
@@ -112,7 +112,7 @@ def _parse_selection(
         env_preset_id, policy_id = parts
         if not env_preset_id or not policy_id:
             raise ValueError(f"Invalid summary selection item: {item!r}")
-        suite_dir = session_root / "tracks" / experiment_env_slug(env_preset_id)
+        suite_dir = results_root / "tracks" / experiment_env_slug(env_preset_id)
         if suite_dir not in policy_ids_by_suite:
             suite_dirs.append(suite_dir)
             policy_ids_by_suite[suite_dir] = set()

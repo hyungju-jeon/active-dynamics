@@ -57,7 +57,6 @@ from .theme import (
 from .groups import (
     REPO_ROOT as _REPO_ROOT,
     RESULTS_ROOT as _RESULTS_ROOT,
-    latest_session as _latest_session,
 )
 from ..tbme_io import (
     load_planned_trace,
@@ -472,7 +471,7 @@ def _asset_plot_r2_curves(
 
 def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Path:
     sources = [
-        _ExperimentSuiteSource(ref.suite_id, ref.label, ref.session_root / "tracks" / ref.suite_id)
+        _ExperimentSuiteSource(ref.suite_id, ref.label, ref.results_root / "tracks" / ref.suite_id)
         for ref in _groups_mod.groups()["simple_system_identification"]
     ]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
@@ -1605,7 +1604,7 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> lis
 
 
 # Designed three-gate objective diagnostic (compact Poisson observations).
-# The suite lives in the shared session tracks (objective_ablation group); the
+# The suite lives in the shared result tracks (objective_ablation group); the
 # asset reads the raw run traces because its panels need per-seed occupancy and
 # final-value quantiles that the suite summary does not carry.
 _ASSET_TRI_GATE_EXP_ID = "three_gate_diagnostic"
@@ -1698,8 +1697,12 @@ def _asset_plot_gate_diagnostic(
     r2_summary: str,
     result_roots: Sequence[Path],
     exemplar_seed: int = _ASSET_TRI_GATE_EXEMPLAR_SEED,
+    exp_id: str = _ASSET_TRI_GATE_EXP_ID,
 ) -> Path:
     """Manuscript figure for the designed three-gate objective diagnostic.
+
+    ``exp_id`` selects the suite whose runs are read (``three_gate_diagnostic``
+    or a retuned variant such as ``three_gate_tradeoff`` sharing its gates).
 
     Single row: (A) final rollout R2 per objective, (B) selector occupancy, (C)
     every objective's exemplar selector trace overlaid on the gate assignment
@@ -1708,11 +1711,11 @@ def _asset_plot_gate_diagnostic(
     "Dyn. sens.").
     """
     _asset_parse_r2_summaries(r2_summary)
-    records = _compound_trace_records(result_roots, exp_id=_ASSET_TRI_GATE_EXP_ID)
+    records = _compound_trace_records(result_roots, exp_id=exp_id)
     if not records:
         roots_text = ", ".join(str(root) for root in result_roots)
         raise RuntimeError(
-            f"No trajectory R2 curves available for {_ASSET_TRI_GATE_EXP_ID} in {roots_text}"
+            f"No trajectory R2 curves available for {exp_id} in {roots_text}"
         )
     plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt_module is None:
@@ -1957,6 +1960,7 @@ def _asset_plot_gate_diagnostic_trajectories(
     *,
     result_roots: Sequence[Path],
     exemplar_seed: int = _ASSET_TRI_GATE_EXEMPLAR_SEED,
+    exp_id: str = _ASSET_TRI_GATE_EXP_ID,
 ) -> Path:
     """Appendix companion: one exemplar selector trace per acquisition objective.
 
@@ -1966,13 +1970,13 @@ def _asset_plot_gate_diagnostic_trajectories(
     """
     records = [
         record
-        for record in _compound_trace_records(result_roots, exp_id=_ASSET_TRI_GATE_EXP_ID)
+        for record in _compound_trace_records(result_roots, exp_id=exp_id)
         if record.seed == int(exemplar_seed)
     ]
     if not records:
         roots_text = ", ".join(str(root) for root in result_roots)
         raise RuntimeError(
-            f"No trajectory R2 curves available for {_ASSET_TRI_GATE_EXP_ID} "
+            f"No trajectory R2 curves available for {exp_id} "
             f"seed {exemplar_seed} in {roots_text}"
         )
     by_policy = {record.policy_id: record for record in records}
@@ -2076,7 +2080,7 @@ def _asset_flex_groups() -> tuple[tuple[str, tuple[_ExperimentSuiteSource, ...]]
         ref.suite_id: _ExperimentSuiteSource(
             ref.suite_id,
             display_titles.get(ref.suite_id, ref.label),
-            ref.session_root / "tracks" / ref.suite_id,
+            ref.results_root / "tracks" / ref.suite_id,
         )
         for ref in _groups_mod.groups()["flex_comparison"]
     }
@@ -2107,7 +2111,10 @@ def _asset_flex_groups() -> tuple[tuple[str, tuple[_ExperimentSuiteSource, ...]]
     )
 
 
-def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> list[Path]:
+def _asset_plot_flex_comparison(
+    output_path: Path, *, r2_summary: str,
+    skipped: list[tuple[str, str]] | None = None,
+) -> list[Path]:
     """FLEX state-source/update variants: short final-R2 bars plus recovery curves.
 
     One bar figure and one recovery figure per condition group, matching how the
@@ -2115,6 +2122,17 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> list[P
     """
     written: list[Path] = []
     for suffix, sources in _asset_flex_groups():
+        if skipped is not None:
+            available = []
+            for source in sources:
+                rows = read_trace_csv(source.suite_dir / "summary" / "metrics.csv")
+                if any(row.get("policy_id") in _ASSET_FLEX_POLICIES for row in rows):
+                    available.append(source)
+                else:
+                    skipped.append((str(source.suite_dir), "No FLEX runs; condition omitted from FLEX assets"))
+            sources = tuple(available)
+            if not sources:
+                continue
         _asset_require_suite_dirs([source.suite_dir for source in sources])
         metric_rows = _asset_method_metric_rows(
             sources,
@@ -2152,12 +2170,16 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> list[P
                 policy_ids=_ASSET_FLEX_POLICIES,
                 r2_summary=r2_summary,
                 policy_labels=_ASSET_FLEX_LABELS,
+                single_column=len(sources) == 1,
             )
         )
     return written
 
 
-def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]:
+def _asset_plot_constraints(
+    output_path: Path, *, r2_summary: str,
+    skipped: list[tuple[str, str]] | None = None,
+) -> list[Path]:
     bottleneck_sources = _asset_bottleneck_sources()
     figures = (
         ("snr", "Observation SNR", tuple(bottleneck_sources[:3])),
@@ -2181,7 +2203,13 @@ def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]
     )
     written: list[Path] = []
     for suffix, _figure_title, sources in figures:
-        _asset_require_suite_dirs([source.suite_dir for source in sources])
+        try:
+            _asset_require_suite_dirs([source.suite_dir for source in sources])
+        except FileNotFoundError as exc:
+            if skipped is None:
+                raise
+            skipped.append((str(output_path.with_stem(f"{output_path.stem}_{suffix}")), str(exc)))
+            continue
         metric_rows = _asset_method_metric_rows(
             sources,
             _ASSET_MATCHED_POLICIES,
@@ -2243,7 +2271,7 @@ def _assets_build_parser() -> argparse.ArgumentParser:
         "--results-dir",
         type=Path,
         default=None,
-        help="TBME results root. Defaults to results/tbme.",
+        help="Result folder containing tracks/ directly; assets/ is written here by default.",
     )
     parser.add_argument(
         "--output-dir",
@@ -2267,8 +2295,20 @@ def _assets_build_parser() -> argparse.ArgumentParser:
         help=(
             "Root holding the SimpleTriGate diagnostic runs (searched "
             f"recursively). Defaults to the {_ASSET_TRI_GATE_EXP_ID} suite in "
-            "the session tracks."
+            "the result tracks."
         ),
+    )
+    parser.add_argument(
+        "--tri-gate-exp-id",
+        type=str,
+        default=_ASSET_TRI_GATE_EXP_ID,
+        help="Suite id of the three-gate runs under --tri-gate-root (same gate geometry).",
+    )
+    parser.add_argument(
+        "--tri-gate-exemplar-seed",
+        type=int,
+        default=_ASSET_TRI_GATE_EXEMPLAR_SEED,
+        help="Seed drawn in the three-gate exemplar selector panels.",
     )
     return parser
 
@@ -2288,16 +2328,21 @@ def assets_main(argv: list[str] | None = None) -> int:
     tri_gate_root = (
         Path(args.tri_gate_root)
         if args.tri_gate_root is not None
-        else _suite_dir("objective_ablation", _ASSET_TRI_GATE_EXP_ID)
+        else _suite_dir("objective_ablation", str(args.tri_gate_exp_id))
     )
 
+    tri_gate_kwargs = {
+        "exp_id": str(args.tri_gate_exp_id),
+        "exemplar_seed": int(args.tri_gate_exemplar_seed),
+    }
     output_dir = (
         Path(args.output_dir)
         if args.output_dir is not None
-        else _groups_mod.session_root() / "assets"
+        else _groups_mod.results_dir() / "assets"
     ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_groups = set(group_ids)
+    skipped: list[tuple[str, str]] = []
     asset_specs: list[tuple[Path, set[str], Any, dict[str, str]]] = [
         (
             output_dir / "tbme_fig_mechanistic.pdf",
@@ -2315,7 +2360,7 @@ def assets_main(argv: list[str] | None = None) -> int:
             output_dir / "tbme_fig_gate_diagnostic_trajectories.pdf",
             {"objective_ablation"},
             _asset_plot_gate_diagnostic_trajectories,
-            {"result_roots": (tri_gate_root,)},
+            {"result_roots": (tri_gate_root,), **tri_gate_kwargs},
         ),
     ]
     for r2_summary in r2_summaries:
@@ -2333,7 +2378,7 @@ def assets_main(argv: list[str] | None = None) -> int:
                     r2_output_dir / "tbme_fig_constraints.pdf",
                     {"simple_system_identification", "observation_action_bottleneck"},
                     _asset_plot_constraints,
-                    kwargs,
+                    {**kwargs, "skipped": skipped},
                 ),
                 (
                     r2_output_dir / "tbme_fig_objective_ablation.pdf",
@@ -2345,18 +2390,17 @@ def assets_main(argv: list[str] | None = None) -> int:
                     r2_output_dir / "tbme_fig_flex_comparison.pdf",
                     {"flex_comparison"},
                     _asset_plot_flex_comparison,
-                    kwargs,
+                    {**kwargs, "skipped": skipped},
                 ),
                 (
                     r2_output_dir / "tbme_fig_gate_diagnostic.pdf",
                     {"objective_ablation"},
                     _asset_plot_gate_diagnostic,
-                    {**kwargs, "result_roots": (tri_gate_root,)},
+                    {**kwargs, "result_roots": (tri_gate_root,), **tri_gate_kwargs},
                 ),
             ]
         )
     written: list[Path] = []
-    skipped: list[tuple[str, str]] = []
     for output_path, required_groups, plotter, kwargs in asset_specs:
         if not required_groups.issubset(selected_groups):
             missing = required_groups - selected_groups
@@ -2378,6 +2422,10 @@ def assets_main(argv: list[str] | None = None) -> int:
     lines = [
         "TBME manuscript asset assembly",
         "",
+        f"Result folder: {_groups_mod.results_dir()}",
+        f"Three-gate input: {tri_gate_root.resolve()}",
+        f"Three-gate experiment: {args.tri_gate_exp_id}",
+        "",
         "Generated assets:",
         *[_asset_display_path(path) for path in written],
         "",
@@ -2391,7 +2439,7 @@ def assets_main(argv: list[str] | None = None) -> int:
     lines.append("Component roots:")
     for group_id in group_ids:
         for ref in _groups_mod.groups()[group_id]:
-            suite_dir = ref.session_root / "tracks" / ref.suite_id
+            suite_dir = ref.results_root / "tracks" / ref.suite_id
             lines.append(_asset_display_path(suite_dir / "summary" / "figures"))
             lines.append(_asset_display_path(suite_dir / "experiment" / "figures"))
     manifest = output_dir / "tbme_assets_manifest.txt"

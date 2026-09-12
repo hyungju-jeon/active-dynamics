@@ -17,6 +17,37 @@ from actdyn.utils.experiment_runtime import read_trace_csv, write_trace_csv
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_figure_roots_use_tracks_directly(tmp_path: Path, monkeypatch) -> None:
+    from experiments.tbme.figures import groups, summary, diagnostics
+
+    # A leftover session folder must not redirect a selected result cohort.
+    (tmp_path / "session_99" / "tracks").mkdir(parents=True)
+    expected = tmp_path / "tracks" / "duffing"
+    expected.mkdir(parents=True)
+    monkeypatch.setattr(groups, "_results_dir", tmp_path)
+    monkeypatch.setattr(groups, "_groups", groups._build_groups(tmp_path))
+    assert groups.suite_dir("simple_system_identification", "duffing") == expected
+    paths, _ = summary._parse_selection("duffing:random")
+    assert paths == [expected]
+    assert diagnostics._default_output_dir() == tmp_path / "diagnostics"
+    assert all(ref.results_root == tmp_path for refs in groups.groups().values()
+               for ref in refs)
+
+
+def test_figure_cli_forwards_saved_asset_inputs(tmp_path: Path) -> None:
+    from experiments.tbme import generate_figures
+    from experiments.tbme.figures.assets import _assets_build_parser
+
+    args = generate_figures.build_parser().parse_args([
+        "assets", "--results-dir", str(tmp_path),
+        "--tri-gate-exp-id", "three_gate_tradeoff", "--tri-gate-exemplar-seed", "90",
+    ])
+    forwarded = _assets_build_parser().parse_args(generate_figures._assets_args(args))
+    assert forwarded.results_dir == tmp_path
+    assert forwarded.tri_gate_exp_id == "three_gate_tradeoff"
+    assert forwarded.tri_gate_exemplar_seed == 90
+
+
 def _load_module(name: str, rel_path: str):
     module_path = REPO_ROOT / rel_path
     spec = importlib.util.spec_from_file_location(name, module_path)
@@ -333,7 +364,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
             SimpleNamespace(
                 suite_id=exp_id,
                 label=f"Condition {idx}",
-                session_root=tmp_path,
+                results_root=tmp_path,
             )
         )
 
@@ -383,6 +414,42 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     assert failed_row["n_r2"] == "1"
     assert failed_row["n_r2_nonfinite"] == "1"
     assert failed_row["r2_nonfinite_rate"] == "0.5"
+    # The matched cohort has no Challenging FLEX runs. Its remaining single
+    # condition still needs enough width for the legend and must pass the audit.
+    (tmp_path / "tracks/gated_duffing_challenging/summary/metrics.csv").unlink()
+    hard_group = next(group for group in module._asset_flex_groups() if group[0] == "hard")
+    monkeypatch.setattr(module, "_asset_flex_groups", lambda: (hard_group,))
+    skipped = []
+    subset = module._asset_plot_flex_comparison(
+        tmp_path / "subset" / "flex.pdf", r2_summary="mean_sem", skipped=skipped)
+    assert len(subset) == 2 and all(path.exists() for path in subset)
+    assert len(skipped) == 1 and "gated_duffing_challenging" in skipped[0][0]
+
+
+def test_asset_subsets_report_absent_experiments(tmp_path: Path, monkeypatch) -> None:
+    from experiments.tbme.figures import assets, groups
+
+    monkeypatch.setattr(groups, "_groups", groups._build_groups(tmp_path))
+    suites = ["gated_duffing", "gated_duffing_asymmetric",
+              "gated_duffing_observation_bottleneck_mild",
+              "gated_duffing_observation_bottleneck_strong"]
+    for suite in suites:
+        (tmp_path / "tracks" / suite).mkdir(parents=True)
+    monkeypatch.setattr(assets, "_asset_method_metric_rows", lambda *a, **k: [])
+    monkeypatch.setattr(assets, "_asset_plot_final_bar", lambda path, **k: path)
+    monkeypatch.setattr(assets, "_asset_plot_recovery_curves", lambda path, **k: path)
+    skipped = []
+    written = assets._asset_plot_constraints(tmp_path / "constraints.pdf",
+                                             r2_summary="mean_sem", skipped=skipped)
+    assert [p.stem for p in written] == ["constraints_snr", "constraints_snr_recovery",
+                                        "constraints_asymmetry", "constraints_asymmetry_recovery"]
+    assert len(skipped) == 1 and "action_bottleneck" in skipped[0][1]
+    # No suite has FLEX rows: report the missing data instead of drawing empty panels.
+    skipped = []
+    assert assets._asset_plot_flex_comparison(tmp_path / "flex.pdf",
+                                             r2_summary="mean_sem", skipped=skipped) == []
+    assert len(skipped) == 7
+    assert all("No FLEX runs" in reason for _, reason in skipped)
 
 
 def _write_tri_gate_run(

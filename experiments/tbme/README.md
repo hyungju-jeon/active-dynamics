@@ -590,7 +590,7 @@ Runs write one session under the selected `--base-dir`. A typical run contains:
 - `tracks/<env>/<policy_id>/seed_<seed>/repeat_<repeat>/run_metadata.json`: per-run metadata.
 - Trace CSV files such as `parameter_error_trace.csv`, `trajectory_r2_trace.csv`, `embedding_estimate_trace.csv`, `information_trace.csv`, and `state_action_trace.csv`.
 - Summary artifacts when `--mode summary` or `--mode all` is used.
-- Figure assets and diagnostics default to `assets/` and `diagnostics/` under the same `session_<n>` root.
+- Figure assets and diagnostics default to `assets/` and `diagnostics/` directly under the selected result folder.
 
 ## Figure Generation
 
@@ -598,12 +598,11 @@ Use `generate_figures.py` as the single figure entrypoint:
 
 ```bash
 ./.venv/bin/python -m experiments.tbme.generate_figures --help
-./.venv/bin/python -m experiments.tbme.generate_figures summary
-./.venv/bin/python -m experiments.tbme.generate_figures experiment
-./.venv/bin/python -m experiments.tbme.generate_figures assets
+./.venv/bin/python -m experiments.tbme.generate_figures summary --help
+./.venv/bin/python -m experiments.tbme.generate_figures experiment --help
+./.venv/bin/python -m experiments.tbme.generate_figures assets --results-dir results/tbme/20260911_corrected_learning --groups simple_system_identification,observation_action_bottleneck,objective_ablation,flex_comparison --tri-gate-exp-id three_gate_tradeoff --tri-gate-exemplar-seed 90
 ./.venv/bin/python -m experiments.tbme.generate_figures diagnostics
-./.venv/bin/python -m experiments.tbme.generate_figures all
-./.venv/bin/python -m experiments.tbme.tbme_figures_assets --help
+./.venv/bin/python -m experiments.tbme.figures.assets --help
 ```
 
 Asset generation writes the existing mean/SEM R2 figures in `assets/` and the
@@ -612,7 +611,18 @@ parallel median/IQR R2 figures in `assets/median_iqr/`. Use
 set. Regenerate suite summaries once after upgrading so
 `trajectory_r2_over_steps.csv` contains the median and quartile columns.
 
-The figure code keeps TBME result-group definitions in `tbme_figures.py`. If result roots are renamed, update the `GROUPS` table there before relying on the figure commands.
+Figure inputs use `<results-dir>/tracks/<suite>` directly. There is no
+`session_#` discovery. Select one cohort with `--results-dir`; do not pass the
+parent directory containing multiple cohorts. Use the same asset command with
+`--results-dir results/tbme/20260911_corrected_learning_plannig` for the corrected
+learning-and-planning cohort (this is the stored directory spelling).
+
+The catalog group mapping lives in `figures/groups.py`. Renaming a result
+folder only requires changing `--results-dir`. The three-gate override affects
+only the gate figures; other empirical assets use the selected cohort's tracks
+and summaries. The asset manifest records the input roots.
+Missing action-budget suites and conditions without FLEX runs are listed in
+the manifest and omitted from those asset families.
 The diagnostics command does not require completed runs. The top-level `generate_figures diagnostics` entrypoint uses the fixed core environment list in `generate_figures.py`.
 
 ## Reproducibility Checklist

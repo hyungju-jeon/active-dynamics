@@ -82,6 +82,12 @@ def _add_r2_summaries_arg(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_asset_input_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--tri-gate-root", type=Path, default=None)
+    parser.add_argument("--tri-gate-exp-id", type=str, default=None)
+    parser.add_argument("--tri-gate-exemplar-seed", type=int, default=None)
+
+
 def _add_trajectory_args(
     parser: argparse.ArgumentParser,
     *,
@@ -191,6 +197,11 @@ def _assets_args(args: argparse.Namespace) -> list[str]:
         output_dir = getattr(args, "assets_output_dir", None)
     if output_dir is not None:
         argv.extend(["--output-dir", str(output_dir)])
+    for name in ("tri_gate_root", "tri_gate_exp_id",
+                 "tri_gate_exemplar_seed"):
+        value = getattr(args, name, None)
+        if value is not None:
+            argv.extend(["--" + name.replace("_", "-"), str(value)])
     return argv
 
 
@@ -249,13 +260,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_groups_arg(assets)
     _add_r2_summaries_arg(assets)
+    _add_asset_input_args(assets)
     assets.add_argument(
         "--output-dir",
         type=str,
         default=None,
         help="Directory for assembled manuscript assets.",
     )
-    _add_results_dir_arg(assets, help_text="TBME results root. Defaults to results/tbme.")
+    _add_results_dir_arg(assets, help_text="Result folder containing tracks/ directly.")
 
     diagnostics = subparsers.add_parser(
         "diagnostics",
@@ -277,6 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     _add_max_seeds_arg(all_parser)
     _add_trajectory_args(all_parser, max_seeds_default=None)
     _add_r2_summaries_arg(all_parser)
+    _add_asset_input_args(all_parser)
     _add_results_dir_arg(all_parser)
     all_parser.add_argument(
         "--assets-output-dir",

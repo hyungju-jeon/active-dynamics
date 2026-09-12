@@ -92,7 +92,7 @@ def _suite_dirs_from_groups(raw: str) -> list[Path]:
     if not group_ids:
         raise ValueError("At least one TBME group is required")
     return _unique_paths(
-        ref.session_root / "tracks" / ref.suite_id
+        ref.results_root / "tracks" / ref.suite_id
         for group_id in group_ids
         for ref in _groups_table()[group_id]
     )

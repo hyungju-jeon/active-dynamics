@@ -47,7 +47,7 @@ ENV_ALIASES = {
 
 
 def _default_output_dir() -> Path:
-    return _groups.session_root() / "diagnostics"
+    return _groups.results_dir() / "diagnostics"
 
 
 def _resolve_env_id(raw: str) -> str:
