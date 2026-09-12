@@ -99,6 +99,12 @@ def save_figure(fig: Any, output_path: Path, *, plt_module: Any) -> Path:
         raise RuntimeError(f"Text outside figure canvas in {output_path}: {outside}")
     output_path.with_suffix('.audit.json').write_text(json.dumps({
         'size_inches': fig.get_size_inches().tolist(), 'axes': len(fig.axes),
+        'r2_axes': [dict(ylabel=ax.get_ylabel(), ylim=list(ax.get_ylim()),
+                         references=[dict(label=line.get_label(), value=float(line.get_ydata()[0]),
+                                          linestyle=line.get_linestyle())
+                                     for line in ax.lines
+                                     if line.get_label().startswith('true-model reference')])
+                    for ax in fig.axes if ax.get_gid() == 'vf-roll-r2'],
         'text_outside_canvas': outside,
     }, indent=2))
     with plt_module.rc_context({"savefig.bbox": None}):
@@ -148,9 +154,9 @@ _ASSET_FLEX_LABELS = {
     "flex_filter": "FLEX (EKF)",
     "flex_rollback": "FLEX (EKF+stable)",
 }
-# FLEX variants lose whole seeds to the unguarded update, so their bars need room
-# below zero; whiskers past this floor are drawn as clipped.
-_ASSET_FLEX_BAR_YLIM = (-1.0, 1.0)
+# Values and whiskers below the requested display range retain their CSV values
+# and receive a clipping marker at the lower axis limit.
+_ASSET_FLEX_BAR_YLIM = (0.25, 1.0)
 
 
 def _asset_policy_label(
@@ -195,8 +201,8 @@ _ASSET_PANEL_LABEL_SIZE = 10.0
 _ASSET_TITLE_SIZE = 8.0
 _ASSET_LABEL_SIZE = 8.0
 _ASSET_TICK_SIZE = 6.0
-_ASSET_PREDICTIVE_R2_LABEL = "Predictive R²"
-_ASSET_FINAL_R2_LABEL = "Final predictive R²"
+_ASSET_PREDICTIVE_R2_LABEL = r"$R^2_{\mathrm{VF}\text{-}\mathrm{roll}}$"
+_ASSET_FINAL_R2_LABEL = _ASSET_PREDICTIVE_R2_LABEL
 _ASSET_SINGLE_COLUMN_WIDTH = 3.5
 
 
@@ -296,7 +302,11 @@ def _asset_true_model_r2_ceiling(
     true_embedding = np.asarray(true_embedding_raw, dtype=np.float32).reshape(-1)
     if true_embedding.size == 0:
         return None
-    state_noise = _safe_float(metadata.get("state_noise"))
+    state_noise = _safe_float(metadata.get("trajectory_eval_state_noise"))
+    if state_noise is None:
+        state_noise = env_preset.trajectory_eval_state_noise
+    if state_noise is None:
+        state_noise = _safe_float(metadata.get("state_noise"))
     if state_noise is None:
         state_noise = float(env_preset.state_noise)
     if state_noise <= 0.0:
@@ -339,6 +349,12 @@ def _asset_true_model_r2_ceiling(
         rng=np.random.default_rng(104729),
         device="cpu",
         state_noise=state_noise,
+        state_dim=len(metadata.get("state_low") or env_preset.state_low),
+        state_low=metadata.get("trajectory_eval_state_low", env_preset.trajectory_eval_state_low),
+        state_high=metadata.get("trajectory_eval_state_high", env_preset.trajectory_eval_state_high),
+        state_indices=metadata.get("trajectory_eval_state_indices", env_preset.trajectory_eval_state_indices),
+        coordinate_balanced=bool(metadata.get("trajectory_eval_coordinate_balanced",
+                                             env_preset.trajectory_eval_coordinate_balanced)),
     )
     finite = r2_values[np.isfinite(r2_values)]
     if finite.size == 0:
@@ -397,6 +413,8 @@ def _asset_plot_r2_curves(
     show_inset: bool = False,
     xlabel: bool = True,
     policy_labels: Mapping[str, str] | None = None,
+    ylim: tuple[float, float] = (0.25, 1.0),
+    title_pad: float = 3.0,
 ) -> None:
     from matplotlib.ticker import FixedLocator, FormatStrFormatter, NullFormatter
 
@@ -447,14 +465,17 @@ def _asset_plot_r2_curves(
             curve_ax.axhline(
                 r2_ceiling,
                 color=_experiment_C_NEUTRAL_LIGHT,
-                linestyle="--",
+                linestyle=":",
                 linewidth=0.65,
-                label="true-model reference" if ylabel and labels else None,
+                zorder=5,
+                clip_on=False,
+                label="true-model reference",
             )
         curve_ax.set_xlim(left=0.0)
         curve_ax.set_yscale("log", nonpositive="clip")
-        curve_ax.set_ylim(0.25, 1.05)
-        curve_ax.yaxis.set_major_locator(FixedLocator([0.25, 1.0]))
+        curve_ax.set_ylim(*ylim)
+        curve_ax.set_gid("vf-roll-r2")
+        curve_ax.yaxis.set_major_locator(FixedLocator([ylim[0], 1.0]))
         curve_ax.yaxis.set_major_formatter(FormatStrFormatter("%g"))
         curve_ax.yaxis.set_minor_formatter(NullFormatter())
         _style_experiment_axis(curve_ax)
@@ -462,9 +483,9 @@ def _asset_plot_r2_curves(
         inset.set_xlim(0.0, 250.0)
         inset.tick_params(axis="both", labelsize=5.2, pad=1.0)
     ax.set_title(
-        panel_label, loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+        panel_label, loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=title_pad
     )
-    ax.set_title(title, loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+    ax.set_title(title, loc="center", fontsize=_ASSET_TITLE_SIZE, pad=title_pad)
     if xlabel:
         ax.set_xlabel("Environment steps")
     if ylabel:
@@ -481,36 +502,53 @@ def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Pa
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
     fig, axes = plt_module.subplots(
-        1, len(sources), figsize=(516.0 / 72.27, 2.35), squeeze=False
+        1, len(sources), figsize=(252.0 / 72.27, 1.55), squeeze=False, sharey=True
     )
-    display_titles = {
-        "duffing oscillator": "Duffing",
-        "damped pendulum": "Damped Pendulum",
-        "Gated Duffing": "Gated Duffing",
-    }
     for idx, source in enumerate(sources):
-        title = display_titles.get(source.label, source.label)
         _asset_plot_r2_curves(
             axes[0, idx],
             source.suite_dir,
             _ASSET_MATCHED_POLICIES,
-            title=title,
-            panel_label=chr(65 + idx),
+            title="",
+            panel_label="",
             ylabel=idx == 0,
+            xlabel=False,
             r2_summary=r2_summary,
+            ylim=(0.25, 1.0),
+            title_pad=1.0,
+        )
+        axes[0, idx].set_xticks([0, 1000, 2000])
+        # Keep endpoint labels inside each panel to allow narrower gaps.
+        axes[0, idx].get_xticklabels()[0].set_ha("left")
+        axes[0, idx].get_xticklabels()[-1].set_ha("right")
+        axes[0, idx].tick_params(axis="both", which="both", pad=1.0)
+        axes[0, idx].yaxis.labelpad = 1.0
+        if idx == 0:
+            axes[0, idx].set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
+        axes[0, idx].annotate(
+            chr(65 + idx), (0, 1), xycoords="axes fraction",
+            xytext=(-7.2, 1.2), textcoords="offset points", ha="left", va="bottom",
+            fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold",
         )
     handles, labels = axes[0, 0].get_legend_handles_labels()
+    labels = ["true" if label == "true-model reference" else label for label in labels]
     fig.legend(
         handles,
         labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 0.995),
-        ncol=len(_ASSET_MATCHED_POLICIES) + 1,
+        loc="upper left",
+        bbox_to_anchor=(0.01, 0.985, 0.98, 0.0),
+        mode="expand",
+        ncol=len(handles),
         fontsize=_ASSET_TICK_SIZE,
-        columnspacing=0.9,
-        handlelength=1.5,
+        columnspacing=0.5,
+        handlelength=0.9,
+        handletextpad=0.3,
+        borderaxespad=0.0,
+        borderpad=0.1,
+        labelspacing=0.2,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90), w_pad=0.75)
+    fig.supxlabel("Environment steps", y=0.045, fontsize=_ASSET_LABEL_SIZE)
+    fig.subplots_adjust(left=0.15, right=0.995, bottom=0.24, top=0.78, wspace=0.045)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
@@ -573,7 +611,8 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
 
     fig = plt_module.figure(figsize=(7.52, 2.56))
     outer = fig.add_gridspec(
-        2, 1, height_ratios=[1.0, 1.0], hspace=0.32, left=0.045, right=0.985, top=0.91, bottom=0.11
+        2, 1, height_ratios=[1.0, 1.0], hspace=0.48,
+        left=0.045, right=0.925, top=0.85, bottom=0.18
     )
     # Top row as one grid so the A and B maps share an identical cell size and
     # inter-panel gap (3 A cells | spacer | 3 B cells | colorbar).
@@ -1411,7 +1450,8 @@ def _asset_plot_final_bar(
     metric_rows: Sequence[Mapping[str, Any]],
     single_column: bool = False,
     short: bool = False,
-    ylim: tuple[float, float] = (0.0, 1.0),
+    ylim: tuple[float, float] = (0.25, 1.0),
+    r2_summary: str = "mean_sem",
     policy_labels: Mapping[str, str] | None = None,
     policy_legend: bool = True,
     ax: Any | None = None,
@@ -1445,8 +1485,8 @@ def _asset_plot_final_bar(
 
     # Without the policy legend the x tick labels carry the policy names, so the
     # condition legend takes the strip above the axes instead of sitting inside it.
-    n_legend = n_policy if policy_legend else n_cond
-    legend_ncol = min(n_legend, 4) if single_column else n_legend
+    n_legend = n_policy if policy_legend else n_cond + 1
+    legend_ncol = min(n_legend, 4 if policy_legend else 2) if single_column else n_legend
     legend_rows = int(np.ceil(n_legend / max(legend_ncol, 1)))
     fig_width = _ASSET_SINGLE_COLUMN_WIDTH if single_column else 1.6 + 0.5 * max(n_policy, 1)
     # A wrapped policy legend needs its own strip above the axes, not axes height.
@@ -1488,8 +1528,15 @@ def _asset_plot_final_bar(
             capsize=1.6,
             error_kw={"elinewidth": 0.6, "capthick": 0.6},
         )
+        reference = _asset_true_model_r2_ceiling(source.suite_dir, r2_summary=r2_summary)
+        if reference is not None:
+            ax.axhline(reference, color=_experiment_C_NEUTRAL_LIGHT,
+                       alpha=float(cond_alpha[cond_idx]), linestyle=":", linewidth=0.8,
+                       zorder=5, clip_on=False,
+                       label=f"true-model reference ({source.label})")
 
     ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
+    ax.set_gid("vf-roll-r2")
     ax.set_ylim(y_floor, y_top)
     if y_floor < 0.0:
         ax.set_yticks(np.arange(y_floor, y_top + 1e-9, 0.5))
@@ -1523,6 +1570,10 @@ def _asset_plot_final_bar(
         for cond_idx in range(n_cond)
     ]
     cond_labels = [source.label for source in sources]
+    if any(line.get_label().startswith("true-model reference") for line in ax.lines):
+        cond_handles.append(Line2D([0], [0], color=_experiment_C_NEUTRAL_LIGHT,
+                                   linestyle=":", linewidth=0.8))
+        cond_labels.append("true-model reference")
     if policy_legend:
         policy_handles = [
             Line2D([0], [0], color=_asset_baseline_policy_color(policy_id), linewidth=1.6)
@@ -1544,7 +1595,7 @@ def _asset_plot_final_bar(
             cond_labels,
             loc="upper left",
             fontsize=_ASSET_TICK_SIZE,
-            ncol=min(n_cond, 3),
+            ncol=min(len(cond_handles), max(1, int(fig_width / 1.5))),
             handlelength=1.2,
             borderpad=0.3,
             columnspacing=1.0,
@@ -1593,6 +1644,7 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> lis
             sources=sources,
             policy_ids=_experiment_OBJECTIVE_POLICIES,
             metric_rows=metric_rows,
+            r2_summary=r2_summary,
             single_column=True,
         ),
         _asset_plot_recovery_curves(
@@ -1637,7 +1689,7 @@ _ASSET_TRI_GATE_EXCLUDED_POLICIES = frozenset(
 _ASSET_TRI_GATE_EXEMPLAR_SEED = 90
 _ASSET_TRI_GATE_REST_CENTER = -1.0
 _ASSET_TRI_GATE_REST_CUTOFF = -0.75
-_ASSET_TRI_GATE_R2_YLIM = (-0.2, 1.0)
+_ASSET_TRI_GATE_R2_YLIM = (0.25, 1.0)
 # Gate identity colors couple the occupancy stacks (panel B) to the selector
 # traces (panel C); they are deliberately darker than the pastel policy palette.
 _ASSET_TRI_GATE_GATE_COLORS = (
@@ -1824,7 +1876,18 @@ def _asset_plot_gate_diagnostic(
         rotation=30,
         ha="right",
     )
-    ax.set_ylim(0.0, _ASSET_TRI_GATE_R2_YLIM[1])
+    reference = _asset_true_model_r2_ceiling(records[0].run_dir.parents[2], r2_summary=r2_summary)
+    if reference is not None:
+        ax.axhline(reference, color=_experiment_C_NEUTRAL_LIGHT, linestyle=":",
+                   linewidth=0.8, zorder=5, clip_on=False, label="true-model reference")
+    lower = r2_center - (r2_yerr[0] if r2_yerr.ndim == 2 else r2_yerr)
+    clipped = lower < _ASSET_TRI_GATE_R2_YLIM[0]
+    if clipped.any():
+        ax.plot(x[clipped], np.full(clipped.sum(), _ASSET_TRI_GATE_R2_YLIM[0]),
+                marker="v", linestyle="none", markersize=2.2,
+                color=_experiment_C_STROKE, clip_on=False)
+    ax.set_ylim(*_ASSET_TRI_GATE_R2_YLIM)
+    ax.set_gid("vf-roll-r2")
     ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
     _style_experiment_axis(ax)
     ax.set_title(
@@ -2158,6 +2221,7 @@ def _asset_plot_flex_comparison(
                 sources=sources,
                 policy_ids=_ASSET_FLEX_POLICIES,
                 metric_rows=metric_rows,
+                r2_summary=r2_summary,
                 single_column=True,
                 short=True,
                 ylim=_ASSET_FLEX_BAR_YLIM,
@@ -2234,6 +2298,7 @@ def _asset_plot_constraints(
                 sources=sources,
                 policy_ids=bar_policies,
                 metric_rows=metric_rows,
+                r2_summary=r2_summary,
             )
         )
         written.append(

@@ -611,6 +611,13 @@ parallel median/IQR R2 figures in `assets/median_iqr/`. Use
 set. Regenerate suite summaries once after upgrading so
 `trajectory_r2_over_steps.csv` contains the median and quartile columns.
 
+Predictive and final R2 asset panels use the label `R^2_{VF-roll}` and display
+limits 0.25–1. Dotted lines show the true-model reference under the saved
+evaluation noise and coordinate settings, using the selected mean or median.
+Final-value bars below the display range receive a clipping marker; CSV values
+and uncertainty summaries are unchanged. Figure audits record the R2 limits,
+labels, and reference values.
+
 Figure inputs use `<results-dir>/tracks/<suite>` directly. There is no
 `session_#` discovery. Select one cohort with `--results-dir`; do not pass the
 parent directory containing multiple cohorts. Use the same asset command with

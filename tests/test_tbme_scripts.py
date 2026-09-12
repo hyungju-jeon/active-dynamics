@@ -199,6 +199,39 @@ def test_asset_true_model_r2_ceiling_reflects_process_noise(
     assert ceiling < 1.0
 
 
+def test_true_reference_uses_evaluation_noise_and_coordinates(tmp_path: Path, monkeypatch) -> None:
+    from experiments.tbme.figures import assets
+    from actdyn.utils import validation
+
+    _write_r2_ceiling_metadata(tmp_path, state_noise=.8)
+    path = next(tmp_path.rglob("run_metadata.json"))
+    metadata = json.loads(path.read_text())
+    metadata.update(trajectory_eval_state_noise=0.0)
+    path.write_text(json.dumps(metadata))
+    assert assets._asset_true_model_r2_ceiling(tmp_path) == 1.0
+
+    metadata.update(trajectory_eval_state_noise=.03, state_low=[-1.] * 5,
+                    trajectory_eval_state_low=[-.2] * 5,
+                    trajectory_eval_state_high=[.2] * 5,
+                    trajectory_eval_state_indices=[1, 2, 3],
+                    trajectory_eval_coordinate_balanced=True)
+    path.write_text(json.dumps(metadata))
+    captured = {}
+
+    def evaluate(**kwargs):
+        captured.update(kwargs)
+        return np.array([.7, .8, .95])
+
+    monkeypatch.setattr(validation, "trajectory_r2_vectorfield_many", evaluate)
+    assert assets._asset_true_model_r2_ceiling(tmp_path, r2_summary="median_iqr") == .8
+    assert captured["state_noise"] == .03
+    assert captured["state_dim"] == 5
+    assert captured["state_low"] == [-.2] * 5
+    assert captured["state_high"] == [.2] * 5
+    assert captured["state_indices"] == [1, 2, 3]
+    assert captured["coordinate_balanced"] is True
+
+
 def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -302,13 +335,25 @@ def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
     ) == bar_path
     assert recovery_path.exists()
     assert bar_path.exists()
+    for path in (recovery_path, bar_path):
+        axes = json.loads(path.with_suffix(".audit.json").read_text())["r2_axes"]
+        assert len(axes) == 1
+        assert axes[0]["ylim"] == [.25, 1.]
+        assert axes[0]["ylabel"] == module._ASSET_PREDICTIVE_R2_LABEL
+
+    monkeypatch.setattr(module, "_asset_true_model_r2_ceiling",
+                        lambda path, *, r2_summary: .9 if r2_summary == "median_iqr" else .8)
+    module._asset_plot_final_bar(bar_path, sources=[source], policy_ids=["adaptive"],
+                                metric_rows=metric_rows, r2_summary="median_iqr")
+    reference = json.loads(bar_path.with_suffix(".audit.json").read_text())["r2_axes"][0]["references"]
+    assert reference == [dict(label="true-model reference (Condition)", value=.9, linestyle=":")]
 
 
 def test_asset_r2_summary_selection_is_explicit() -> None:
     from experiments.tbme.figures import assets as module
 
-    assert module._ASSET_PREDICTIVE_R2_LABEL == "Predictive R²"
-    assert module._ASSET_FINAL_R2_LABEL == "Final predictive R²"
+    assert module._ASSET_PREDICTIVE_R2_LABEL == r"$R^2_{\mathrm{VF}\text{-}\mathrm{roll}}$"
+    assert module._ASSET_FINAL_R2_LABEL == module._ASSET_PREDICTIVE_R2_LABEL
     assert module._asset_parse_r2_summaries("mean_sem,median_iqr") == [
         "mean_sem",
         "median_iqr",
@@ -546,8 +591,12 @@ def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None
 
     assert written == output_path
     assert output_path.exists()
+    audit = json.loads(output_path.with_suffix(".audit.json").read_text())["r2_axes"]
+    assert audit[0]["ylim"] == [.25, 1.]
+    assert audit[0]["references"][0]["value"] == 1.
+    assert audit[0]["references"][0]["linestyle"] == ":"
     # The suite ships with the objective_ablation group, so the assets CLI can
-    # resolve its session tracks directory as the default result root.
+    # resolve its result tracks directory as the default result root.
     assert any(
         ref.suite_id == module._ASSET_TRI_GATE_EXP_ID
         for ref in __import__("experiments.tbme.figures.groups", fromlist=["groups"]).groups()["objective_ablation"]
