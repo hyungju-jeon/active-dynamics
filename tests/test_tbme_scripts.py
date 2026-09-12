@@ -40,12 +40,44 @@ def test_figure_cli_forwards_saved_asset_inputs(tmp_path: Path) -> None:
 
     args = generate_figures.build_parser().parse_args([
         "assets", "--results-dir", str(tmp_path),
+        "--mechanistic-results-dir", str(tmp_path / "scalar"),
         "--tri-gate-exp-id", "three_gate_tradeoff", "--tri-gate-exemplar-seed", "90",
     ])
     forwarded = _assets_build_parser().parse_args(generate_figures._assets_args(args))
     assert forwarded.results_dir == tmp_path
+    assert forwarded.mechanistic_results_dir == tmp_path / "scalar"
     assert forwarded.tri_gate_exp_id == "three_gate_tradeoff"
     assert forwarded.tri_gate_exemplar_seed == 90
+
+
+def test_mechanistic_assets_render_saved_arrays(tmp_path: Path, monkeypatch) -> None:
+    from experiments import eig_1d_example as scalar
+    from experiments.tbme.figures.assets import _asset_plot_eig_components
+
+    source = tmp_path / "scalar"
+    source.mkdir()
+    parameters = dict(theta_mean=0.9, theta_var=1.7, c=-1.6, b=0., dt=1.,
+                      state_var=.03, state_noise=.07, horizon=5)
+    curve = scalar.compute_eig_curve(
+        np.unique(np.r_[np.linspace(0., 4.8, 101), scalar._CANDIDATE_Z]), **parameters)
+    arrays = source / "figure_mechanistic.npz"
+    np.savez_compressed(arrays, **curve)
+    (source / "figure_mechanistic.json").write_text(json.dumps(parameters))
+
+    def no_recomputation(*args, **kwargs):
+        raise AssertionError("Asset rendering must use the saved scalar result")
+
+    monkeypatch.setattr(scalar, "compute_eig_curve", no_recomputation)
+    outputs = _asset_plot_eig_components(tmp_path / "assets" / "mechanistic.pdf",
+                                         results_dir=source)
+    assert len(outputs) == 2
+    for output in outputs:
+        assert output.is_file() and output.with_suffix(".svg").is_file()
+        assert output.with_suffix(".npz").read_bytes() == arrays.read_bytes()
+        metadata = json.loads(output.with_suffix(".json").read_text())
+        assert metadata["state_noise"] == .07
+        assert metadata["rendered_from_saved_arrays"]
+        assert str(arrays) in metadata["source_sha256"]
 
 
 def _load_module(name: str, rel_path: str):

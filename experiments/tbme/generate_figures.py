@@ -83,6 +83,8 @@ def _add_r2_summaries_arg(parser: argparse.ArgumentParser) -> None:
 
 
 def _add_asset_input_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mechanistic-results-dir", type=Path, default=None,
+                        help="Saved scalar result folder for the mechanistic figure.")
     parser.add_argument("--tri-gate-root", type=Path, default=None)
     parser.add_argument("--tri-gate-exp-id", type=str, default=None)
     parser.add_argument("--tri-gate-exemplar-seed", type=int, default=None)
@@ -197,7 +199,7 @@ def _assets_args(args: argparse.Namespace) -> list[str]:
         output_dir = getattr(args, "assets_output_dir", None)
     if output_dir is not None:
         argv.extend(["--output-dir", str(output_dir)])
-    for name in ("tri_gate_root", "tri_gate_exp_id",
+    for name in ("mechanistic_results_dir", "tri_gate_root", "tri_gate_exp_id",
                  "tri_gate_exemplar_seed"):
         value = getattr(args, name, None)
         if value is not None:

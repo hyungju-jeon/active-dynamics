@@ -600,7 +600,7 @@ Use `generate_figures.py` as the single figure entrypoint:
 ./.venv/bin/python -m experiments.tbme.generate_figures --help
 ./.venv/bin/python -m experiments.tbme.generate_figures summary --help
 ./.venv/bin/python -m experiments.tbme.generate_figures experiment --help
-./.venv/bin/python -m experiments.tbme.generate_figures assets --results-dir results/tbme/20260911_corrected_learning --groups simple_system_identification,observation_action_bottleneck,objective_ablation,flex_comparison --tri-gate-exp-id three_gate_tradeoff --tri-gate-exemplar-seed 90
+./.venv/bin/python -m experiments.tbme.generate_figures assets --results-dir results/tbme/20260911_corrected_learning --groups simple_system_identification,observation_action_bottleneck,objective_ablation,flex_comparison --tri-gate-exp-id three_gate_tradeoff --tri-gate-exemplar-seed 90 --mechanistic-results-dir results/scalar_final_q005_20260912
 ./.venv/bin/python -m experiments.tbme.generate_figures diagnostics
 ./.venv/bin/python -m experiments.tbme.figures.assets --help
 ```
@@ -620,7 +620,10 @@ learning-and-planning cohort (this is the stored directory spelling).
 The catalog group mapping lives in `figures/groups.py`. Renaming a result
 folder only requires changing `--results-dir`. The three-gate override affects
 only the gate figures; other empirical assets use the selected cohort's tracks
-and summaries. The asset manifest records the input roots.
+and summaries. The mechanistic figure is rendered from the saved scalar NPZ
+and JSON, with both column widths, a copied caption, and input SHA-256 hashes.
+It is the same saved scalar illustration in both cohorts, not an additional
+learning/planning experiment. The asset manifest records these input roots.
 Missing action-budget suites and conditions without FLEX runs are listed in
 the manifest and omitted from those asset families.
 The diagnostics command does not require completed runs. The top-level `generate_figures diagnostics` entrypoint uses the fixed core environment list in `generate_figures.py`.

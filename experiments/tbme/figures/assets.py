@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -2245,15 +2247,39 @@ def _asset_plot_constraints(
     return written
 
 
-def _asset_plot_eig_components(output_path: Path) -> list[Path]:
-    """Write the EIG components figure at both manuscript column widths."""
-    from experiments.eig_1d_example import main as _eig_1d_main
+def _asset_plot_eig_components(output_path: Path, *, results_dir: Path) -> list[Path]:
+    """Render both column widths from the saved scalar arrays and parameters."""
+    from experiments.eig_1d_example import _apply_eig_style, build_figure
 
-    single_path = output_path.with_name(f"{output_path.stem}_single{output_path.suffix}")
-    return [
-        _eig_1d_main(["--output", str(output_path), "--column", "double"]),
-        _eig_1d_main(["--output", str(single_path), "--column", "single"]),
-    ]
+    results_dir = results_dir.resolve()
+    array_path = results_dir / "figure_mechanistic.npz"
+    metadata_path = results_dir / "figure_mechanistic.json"
+    metadata = json.loads(metadata_path.read_text())
+    with np.load(array_path, allow_pickle=False) as saved:
+        curve = {key: saved[key] for key in saved.files}
+    inputs = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in (array_path, metadata_path)}
+    plt = load_plotting(output_path, apply_style=_apply_eig_style,
+                        path_is_file=True, use_agg=True)
+    if plt is None:
+        raise RuntimeError("Matplotlib is required for the mechanistic figure")
+    written = []
+    for column in ("double", "single"):
+        path = (output_path if column == "double" else
+                output_path.with_stem(f"{output_path.stem}_single"))
+        fig = build_figure(curve, **{key: metadata[key] for key in
+                           ("theta_mean", "theta_var", "c", "b", "dt")},
+                           plt=plt, single_column=column == "single")
+        written.append(save_figure(fig, path, plt_module=plt))
+        shutil.copyfile(array_path, path.with_suffix(".npz"))
+        path.with_suffix(".json").write_text(json.dumps(
+            metadata | {"output": str(path), "column": column,
+                        "source_sha256": inputs, "rendered_from_saved_arrays": True},
+            indent=2) + "\n")
+        caption = results_dir / "caption.tex"
+        if caption.is_file():
+            shutil.copyfile(caption, path.with_suffix(".caption.tex"))
+    return written
 
 
 def _assets_build_parser() -> argparse.ArgumentParser:
@@ -2272,6 +2298,11 @@ def _assets_build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=None,
         help="Result folder containing tracks/ directly; assets/ is written here by default.",
+    )
+    parser.add_argument(
+        "--mechanistic-results-dir", type=Path,
+        default=_RESULTS_ROOT / "scalar_final_q005_20260912",
+        help="Saved scalar result folder containing figure_mechanistic.npz and .json.",
     )
     parser.add_argument(
         "--output-dir",
@@ -2348,7 +2379,7 @@ def assets_main(argv: list[str] | None = None) -> int:
             output_dir / "tbme_fig_mechanistic.pdf",
             set(),
             _asset_plot_eig_components,
-            {},
+            {"results_dir": args.mechanistic_results_dir},
         ),
         (
             output_dir / "tbme_fig_dynamics_full.pdf",
@@ -2425,6 +2456,7 @@ def assets_main(argv: list[str] | None = None) -> int:
         f"Result folder: {_groups_mod.results_dir()}",
         f"Three-gate input: {tri_gate_root.resolve()}",
         f"Three-gate experiment: {args.tri_gate_exp_id}",
+        f"Mechanistic input: {args.mechanistic_results_dir.resolve()}",
         "",
         "Generated assets:",
         *[_asset_display_path(path) for path in written],
