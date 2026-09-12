@@ -2,8 +2,8 @@
 
 The scalar dynamics and observation model are
 
-    z_{k+1} = z_k + sin(z_k * theta)
-    y_{k+1} ~ Poisson(exp(c * z_{k+1} + b)).
+    z_{k+1} = z_k + dt * sin(z_k * theta)
+    y_{k+1} ~ Poisson(dt * exp(c * z_{k+1} + b)).
 
 The candidate planning variable is the initial probe state z_0.  This keeps
 the example focused on the information geometry: a real controller would add a
@@ -13,11 +13,12 @@ separate map from actions to reachable probe states.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
 
-from actdyn.utils.figure_io import load_plotting, save_figure
+from actdyn.utils.figure_io import load_plotting
 from actdyn.utils.plotting import apply_manuscript_figure_style, style_manuscript_axis
 
 _C_STROKE = "#3A3A3A"
@@ -28,7 +29,7 @@ _C_NEUTRAL_LIGHT = "#C8C1B8"
 # importable without the experiment result machinery.
 _C_STEP = ("#5DADE2", "#45B8AC", "#F1948A", "#8E63CE", "#B7791F")
 _C_EIG = "#DC2626"
-# Yellow reads against the dark end of the afmhot_r ramp where the optimum sits.
+# Yellow stars remain visible against the dark end of the manuscript colormap.
 _C_EIG_STAR = "#FFD400"
 _CANDIDATE_Z = (0.2, 1.5, 3, 4.5)
 
@@ -62,6 +63,23 @@ def _panel_label(ax, letter: str) -> None:
     ax.set_title(letter, loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0)
 
 
+def _prediction_only_update(prior_variance, prior_sensitivity, state_information):
+    """Carry the predicted scalar arrays forward without a measurement step."""
+    return prior_variance, prior_sensitivity
+
+
+def _conditioned_update(prior_variance, prior_sensitivity, state_information):
+    """Return P_plus=P_minus/(1+P_minus*I_z) and the same factor times S_minus."""
+    denominator = 1.0 + prior_variance * state_information
+    return prior_variance / denominator, prior_sensitivity / denominator
+
+
+_MEASUREMENT_UPDATES = {
+    "prediction_only": _prediction_only_update,
+    "measurement_conditioned": _conditioned_update,
+}
+
+
 def compute_eig_curve(
     z_probe: np.ndarray,
     *,
@@ -73,8 +91,9 @@ def compute_eig_curve(
     horizon: int = 1,
     state_noise: float = 0.02,
     dt: float = 0.1,
+    planning_rollout: str = "measurement_conditioned",
 ) -> dict[str, np.ndarray]:
-    """Return finite-horizon EIG terms for candidate scalar initial states.
+    """Return local p-EIG surrogate terms for candidate scalar initial states.
 
     Args:
         z_probe: Candidate initial states with shape ``(n,)``.
@@ -89,6 +108,11 @@ def compute_eig_curve(
         dt: Sampling interval. The drift is integrated as
             ``z + dt * sin(z * theta)`` and each observation is a Poisson count
             over a bin of width ``dt``.
+        planning_rollout: ``measurement_conditioned`` corrects covariance and
+            fixed-observation sensitivity; ``prediction_only`` carries both
+            predicted quantities forward. The parameter belief stays fixed.
+            Prediction-only sums marginal-observation information heuristically;
+            it is not the joint innovation-information decomposition.
 
     Returns:
         Dictionary containing predicted states, sensitivities, and state
@@ -96,9 +120,14 @@ def compute_eig_curve(
         shape ``(horizon, n)``, and objective arrays with shape ``(n,)``.
         The EIG uses the 1D specialization of
         ``0.5 log det(I + Sigma_theta I_theta)``.  Sensitivity follows the scalar
-        recursion ``S_{k+1}=(1+f_z)S_k + f_theta`` for residual dynamics.  The
-        stored covariance path contains the prior variance before each future
-        observation; the posterior variance is carried into the next step.
+        prediction ``S^-_{k+1}=(1+f_z)S^+_k + f_theta`` for residual dynamics.
+        ``sensitivity_path`` and ``state_variance_path`` store predicted values
+        at indices 1..H; index 0 is the initial condition. The corresponding
+        ``carried_*`` paths store values after the selected measurement step.
+        Nominal innovations are zero. Covariance derivatives are omitted.
+        Information is evaluated at the parameter mean; no expectation over
+        the parameter prior is taken. These scores are local Gaussian
+        surrogates, not exact EIG for the nonlinear Poisson model.
     """
     if horizon < 1:
         raise ValueError("horizon must be at least 1.")
@@ -108,15 +137,20 @@ def compute_eig_curve(
         raise ValueError("state_noise must be nonnegative.")
     if dt <= 0.0:
         raise ValueError("dt must be positive.")
+    if planning_rollout not in _MEASUREMENT_UPDATES:
+        raise ValueError(f"Unknown planning_rollout: {planning_rollout!r}")
+    measurement_update = _MEASUREMENT_UPDATES[planning_rollout]
 
     z_probe = np.asarray(z_probe, dtype=np.float64)
     z = z_probe.copy()
     sensitivity = np.zeros_like(z)
-    state_posterior_variance = np.full_like(z, float(state_var))
+    carried_variance = np.full_like(z, float(state_var))
 
     z_path = [z.copy()]
     sensitivity_path = [sensitivity.copy()]
-    state_variance_path = [state_posterior_variance.copy()]
+    state_variance_path = [carried_variance.copy()]
+    carried_sensitivity_path = [sensitivity.copy()]
+    carried_state_variance_path = [carried_variance.copy()]
     state_information_steps = []
     theta_information_steps = []
 
@@ -127,7 +161,7 @@ def compute_eig_curve(
         transition_z = 1.0 + residual_z
         sensitivity = transition_z * sensitivity + residual_theta
         state_prior_variance = (
-            transition_z * transition_z * state_posterior_variance + state_noise * dt
+            transition_z * transition_z * carried_variance + state_noise * dt
         )
         z = z + dt * np.sin(z * theta_mean)
 
@@ -138,15 +172,16 @@ def compute_eig_curve(
         )
         step_theta_fisher = sensitivity * sensitivity * attenuated_state_fisher
         theta_fisher += step_theta_fisher
-        state_posterior_variance = state_prior_variance / (
-            1.0 + state_prior_variance * state_information
-        )
-
         z_path.append(z.copy())
         sensitivity_path.append(sensitivity.copy())
         state_variance_path.append(state_prior_variance.copy())
         state_information_steps.append(state_information)
         theta_information_steps.append(step_theta_fisher)
+        carried_variance, sensitivity = measurement_update(
+            state_prior_variance, sensitivity, state_information,
+        )
+        carried_sensitivity_path.append(sensitivity.copy())
+        carried_state_variance_path.append(carried_variance.copy())
 
     eig = 0.5 * np.log1p(theta_var * theta_fisher)
     return {
@@ -154,6 +189,8 @@ def compute_eig_curve(
         "z_path": np.stack(z_path),
         "sensitivity_path": np.stack(sensitivity_path),
         "state_variance_path": np.stack(state_variance_path),
+        "carried_sensitivity_path": np.stack(carried_sensitivity_path),
+        "carried_state_variance_path": np.stack(carried_state_variance_path),
         "state_information_steps": np.stack(state_information_steps),
         "theta_information_steps": np.stack(theta_information_steps),
         "theta_fisher": theta_fisher,
@@ -162,32 +199,15 @@ def compute_eig_curve(
 
 
 def _add_candidate_legend(fig, colors: list[str], *, single_column: bool) -> None:
-    """Add the shared candidate-color and line-style key above the panels.
-
-    The per-step versus cumulative distinction is carried here rather than in the
-    C and D axis labels, which is where it used to live.
-    """
+    """Match the manuscript's candidate-only legend above the panels."""
     from matplotlib.lines import Line2D
 
-    handles = [
-        Line2D([0], [0], color=color, linewidth=1.2) for color in colors[: len(_CANDIDATE_Z)]
-    ]
+    handles = [Line2D([0], [0], color=color, linewidth=1.2) for color in colors]
     labels = [rf"$z_0={candidate_z:g}$" for candidate_z in _CANDIDATE_Z]
-    handles += [
-        Line2D([0], [0], color=_C_STROKE, linewidth=1.2),
-        Line2D([0], [0], color=_C_STROKE, linewidth=0.8, linestyle=":"),
-    ]
-    labels += ["cumulative", "per-step"]
     fig.legend(
-        handles,
-        labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.005),
-        # One row does not fit across a 3.5 in column.
-        ncol=3 if single_column else len(handles),
-        fontsize=_ASSET_TICK_SIZE,
-        columnspacing=0.9,
-        handlelength=1.5,
+        handles, labels, loc="upper center", bbox_to_anchor=(0.5, 1.005),
+        ncol=len(handles), fontsize=_ASSET_TICK_SIZE,
+        columnspacing=0.9, handlelength=1.5,
     )
 
 
@@ -206,7 +226,7 @@ def build_figure(
 
     Args:
         single_column: Lay the panels out for a 3.5 in column instead of the
-            7.25 in double-column width used by the other manuscript assets.
+            516 TeX point double-column width used by the manuscript.
     """
     z_probe = curve["z_probe"]
     horizon = curve["theta_information_steps"].shape[0]
@@ -237,7 +257,7 @@ def build_figure(
         )
         slots = [grid[0, 0], grid[0, 1], grid[1, 0], grid[1, 1], grid[2, :]]
     else:
-        fig = plt.figure(figsize=(7.25, 3.7))
+        fig = plt.figure(figsize=(516 / 72.27, 3.7))
         grid = fig.add_gridspec(
             2,
             3,
@@ -453,7 +473,7 @@ def build_figure(
             zorder=5,
         )
     colorbar = fig.colorbar(heatmap, ax=axes[4], pad=0.025, fraction=0.045)
-    colorbar.set_label("EIG (nats)", fontsize=_ASSET_TITLE_SIZE)
+    colorbar.set_label("p-EIG surrogate (nats)", fontsize=_ASSET_TITLE_SIZE)
     colorbar.ax.tick_params(labelsize=_ASSET_TICK_SIZE, width=0.4, length=2.0)
     colorbar.outline.set_linewidth(0.4)
     axes[4].set_ylim(float(np.min(z_probe)), float(np.max(z_probe)))
@@ -481,6 +501,14 @@ def build_figure(
     # Panel E is a heatmap; a grid over it only adds noise.
     axes[4].grid(False)
 
+    from matplotlib.lines import Line2D
+
+    axes[3].legend(
+        [Line2D([0], [0], color=_C_STROKE, linewidth=1.2),
+         Line2D([0], [0], color=_C_STROKE, linewidth=0.8, linestyle=":")],
+        ["cumulative", "per-step"], loc="lower right", frameon=False,
+        fontsize=_ASSET_TICK_SIZE,
+    )
     _add_candidate_legend(fig, colors, single_column=single_column)
     return fig
 
@@ -563,11 +591,11 @@ def build_detailed_figure(
 
     axes[3].axhline(0.0, color=_C_STROKE, linewidth=0.65, alpha=0.48)
     axes[3].set_title(r"D. sensitivity propagation")
-    axes[3].set_ylabel(r"$S_k=\partial z_k/\partial\theta$")
+    axes[3].set_ylabel(r"Predicted sensitivity $S_k^-$")
     axes[3].set_yscale("symlog", linthresh=1.0)
 
     axes[4].set_title(r"E. state Fisher information")
-    axes[4].set_ylabel(r"$I_{z,k}=c^2\lambda_k$")
+    axes[4].set_ylabel(r"$I_{z,k}=c^2\lambda_k\Delta t$")
     axes[4].set_yscale("log")
 
     axes[5].set_title(r"F. latent prior covariance")
@@ -612,7 +640,7 @@ def build_detailed_figure(
 def main(argv: list[str] | None = None) -> Path:
     """Write the 1D EIG planning figure and return its path."""
     parser = argparse.ArgumentParser(description=__doc__)
-    default_output = Path("results/eig_1d_example/eig_1d_example.png")
+    default_output = Path("results/eig_1d_example/eig_1d_example.pdf")
     parser.add_argument(
         "--output",
         type=Path,
@@ -627,25 +655,26 @@ def main(argv: list[str] | None = None) -> Path:
         "--column",
         choices=("double", "single"),
         default="double",
-        help="Panel layout width: 7.25 in double column or 3.5 in single column.",
+        help="Panel layout width: 516 TeX pt double column or 3.5 in single column.",
     )
     parser.add_argument("--theta-mean", type=float, default=1)
     parser.add_argument("--theta-var", type=float, default=2)
     parser.add_argument("--c", type=float, default=-1.6)
     parser.add_argument("--b", type=float, default=0)
-    parser.add_argument("--state-var", type=float, default=0.5)
-    parser.add_argument("--state-noise", type=float, default=0.1)
+    parser.add_argument("--state-var", type=float, default=0.02)
+    parser.add_argument("--state-noise", type=float, default=0.05)
+    parser.add_argument("--planning-rollout", choices=tuple(_MEASUREMENT_UPDATES), default="measurement_conditioned")
     parser.add_argument("--dt", type=float, default=1)
     parser.add_argument("--horizon", type=int, default=5)
     parser.add_argument("--z-min", type=float, default=0)
     parser.add_argument("--z-max", type=float, default=3 / 2 * np.pi)
-    parser.add_argument("--num-points", type=int, default=401)
+    parser.add_argument("--num-points", type=int, default=1801)
     args = parser.parse_args(argv)
 
     if args.detailed:
         args.horizon = 2
         if args.output == default_output:
-            args.output = Path("results/eig_1d_example/eig_1d_example_detailed.png")
+            args.output = Path("results/eig_1d_example/eig_1d_example_detailed.pdf")
 
     z_probe = np.sort(
         np.unique(
@@ -664,6 +693,7 @@ def main(argv: list[str] | None = None) -> Path:
         horizon=args.horizon,
         state_noise=args.state_noise,
         dt=args.dt,
+        planning_rollout=args.planning_rollout,
     )
     plt = load_plotting(
         args.output,
@@ -693,7 +723,28 @@ def main(argv: list[str] | None = None) -> Path:
             plt=plt,
             single_column=args.column == "single",
         )
-    return save_figure(fig, args.output, plt_module=plt, dpi=300)
+    # Preserve the audited physical width and export an SVG with the PDF.
+    from experiments.tbme.figures.assets import save_figure
+
+    with plt.rc_context({"savefig.dpi": 300}):
+        output = save_figure(fig, args.output, plt_module=plt)
+    np.savez_compressed(args.output.with_suffix(".npz"), **curve)
+    scores = 0.5 * np.log1p(args.theta_var * np.cumsum(curve["theta_information_steps"], axis=0))
+    indices = [int(np.argmin(np.abs(z_probe-z))) for z in _CANDIDATE_Z]
+    metadata = vars(args) | {
+        "output": str(args.output),
+        "candidates": list(_CANDIDATE_Z),
+        "objective_kind": "local_gaussian_mean_term_parameter_eig_surrogate",
+        "parameter_prior_expectation": False,
+        "covariance_information_terms": False,
+        "parameter_belief_fixed": True,
+        "sampled_observations": False,
+        "candidate_scores_nats": scores[:, indices].tolist(),
+        "candidate_winners": np.asarray(_CANDIDATE_Z)[scores[:, indices].argmax(axis=1)].tolist(),
+        "grid_maximizers": z_probe[scores.argmax(axis=1)].tolist(),
+    }
+    args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2))
+    return output
 
 
 if __name__ == "__main__":
