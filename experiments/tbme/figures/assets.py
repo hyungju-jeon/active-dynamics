@@ -1618,13 +1618,17 @@ def _asset_plot_final_bar(
 
 
 def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> list[Path]:
-    """Single-column ablation assets: final-R2 bars plus a stacked recovery figure."""
+    """Default/asymmetric ablation assets: final-R2 bars and recovery curves."""
+    condition_labels = {
+        "gated_duffing": "Default",
+        "gated_duffing_asymmetric": "Asymmetric",
+    }
     sources = [
-        _ExperimentSuiteSource(source.exp_id, label, source.suite_dir)
-        for source, label in zip(
-            _experiment_objective_sources(),
-            ("Default", "Asymmetric", "Challenging"),
+        _ExperimentSuiteSource(
+            source.exp_id, condition_labels[source.exp_id], source.suite_dir
         )
+        for source in _experiment_objective_sources()
+        if source.exp_id in condition_labels
     ]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
     metric_rows = _asset_method_metric_rows(
@@ -1646,6 +1650,7 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> lis
             metric_rows=metric_rows,
             r2_summary=r2_summary,
             single_column=True,
+            ylim=(0.0, 1.0),
         ),
         _asset_plot_recovery_curves(
             recovery_path,
