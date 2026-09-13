@@ -1095,16 +1095,16 @@ def test_exact_rhc_core_plans_and_updates_one_episode():
 
     first_info = policy.update(
         {
-            "env_state": torch.tensor([[[0.0]]], dtype=torch.float32),
-            "next_env_state": torch.tensor([[[0.1]]], dtype=torch.float32),
+            "model_state": torch.tensor([[[0.0]]], dtype=torch.float32),
+            "next_model_state": torch.tensor([[[0.1]]], dtype=torch.float32),
             "env_action": action_seq[:, :1],
         }
     )
     assert first_info["parameter_posterior_updated"] is False
     info = policy.update(
         {
-            "env_state": torch.tensor([[[0.1]]], dtype=torch.float32),
-            "next_env_state": torch.tensor([[[0.15]]], dtype=torch.float32),
+            "model_state": torch.tensor([[[0.1]]], dtype=torch.float32),
+            "next_model_state": torch.tensor([[[0.15]]], dtype=torch.float32),
             "env_action": action_seq[:, 1:2],
         }
     )
@@ -1113,6 +1113,94 @@ def test_exact_rhc_core_plans_and_updates_one_episode():
     assert policy._internal_model.prior_precision == pytest.approx(1e-8)
     assert info["parameter_posterior_updated"] is True
     assert info["rhc_episode_index"] == 1.0
+
+
+def test_rhc_agent_uses_filtered_states_and_fits_each_transition_once(monkeypatch):
+    pytest.importorskip('casadi')
+    from actdyn.policy.baseline_rhc import RecedingHorizonCuriosityPolicy
+    from actdyn.policy.rhc_planner import RhcMultipleShootingPlanner
+
+    from actdyn.core.agent import Agent
+
+    class FilteredModel:
+        def __init__(self):
+            self.device = torch.device('cpu')
+            self.k_theta = 1
+            self._theta_block_steps = 0
+
+        def get_state(self):
+            return self._state.clone()
+
+        def reset(self, obs):
+            self._state = torch.tensor([[[10.0, 20.0]]])
+            return None, {'latent_state': self._state.clone()}
+
+        def update(self, recent, update_theta=True):
+            self._state += torch.tensor([0.25, -0.5])
+            return {'env_action': torch.zeros((1, 1, 2)),
+                    'latent_state': self._state.clone()}
+
+    class BatchedEnv:
+        def __init__(self):
+            self.action_space = gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=float)
+
+        def reset(self, seed=None):
+            self.step_index = 0
+            obs = torch.zeros(1, 1, 2)
+            return obs, {'latent_state': obs.clone()}
+
+        def step(self, action):
+            self.step_index += 1
+            obs = torch.full((1, 1, 2), float(self.step_index))
+            return obs, 0., False, False, {'latent_state': obs.clone(), 'env_action': action}
+
+    planned_states = []
+
+    def plan(planner, *, x0, objective):
+        planned_states.append(x0.copy())
+        return SimpleNamespace(actions=np.tile([0.2, -0.3], (2, 1)), cost=0.0)
+
+    monkeypatch.setattr(RhcMultipleShootingPlanner, 'plan', plan)
+    env = BatchedEnv()
+    policy = RecedingHorizonCuriosityPolicy(
+        action_space=env.action_space, horizon=2, num_features=8,
+        optimize_hyperparams=False, device='cpu', seed=0,
+    )
+    agent = Agent(env=env, model=FilteredModel(), policy=policy,
+                  buffer_length=2, device='cpu')
+    agent.reset(seed=0)
+    for step in range(1, 5):
+        agent.step(agent.plan())
+        assert policy.last_update_info['model_samples'] == (step // 2) * 2
+        assert policy.last_update_info['episode_updates'] == step // 2
+
+    np.testing.assert_allclose(planned_states, [[10., 20.], [10.5, 19.]])
+    expected_states = np.array([[10., 20.], [10.25, 19.5],
+                                [10.5, 19.], [10.75, 18.5]])
+    np.testing.assert_allclose(policy._internal_model._X[:, :2], expected_states)
+    np.testing.assert_allclose(policy._internal_model._X[:, 2:],
+                               np.tile([0.2, -0.3], (4, 1)))
+    np.testing.assert_allclose(policy._internal_model._Y,
+                               np.tile([0.25, -0.5], (4, 1)))
+
+    with pytest.raises(ValueError, match='requires model_state'):
+        policy.update({'env_state': torch.zeros(1, 1, 2),
+                       'next_env_state': torch.ones(1, 1, 2),
+                       'env_action': torch.zeros(1, 1, 2)})
+
+
+def test_rhc_rejects_existing_results_without_fixed_revision(tmp_path, monkeypatch):
+    pytest.importorskip('casadi')
+    from experiments import run as runner
+
+    monkeypatch.setattr(runner, 'get_experiment_spec', lambda _: SimpleNamespace(total_steps=2000))
+    monkeypatch.setattr(runner, 'get_policy_spec', lambda _: SimpleNamespace(policy_type='rhc'))
+    monkeypatch.setattr(runner, 'experiment_run_dir', lambda *args, **kwargs: tmp_path)
+    (tmp_path / 'run_metadata.json').write_text(json.dumps({'status': 'completed'}))
+    args = SimpleNamespace(total_steps=None, skip_existing=True)
+    with pytest.raises(ValueError, match='RHC implementation revision mismatch'):
+        runner._run_one(exp_id='duffing', policy_id='rhc', seed=0, repeat=1,
+                        base_dir=tmp_path, args=args)
 
 
 def test_tbme_family_scripts_define_expected_suite_sets():

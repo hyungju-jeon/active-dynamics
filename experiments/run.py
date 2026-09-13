@@ -2135,6 +2135,13 @@ def _run_single_parameter_identification(
                 if hasattr(policy, "_flex_agent")
                 else None
             ),
+            **({
+                "rhc_implementation_revision": policy.implementation_revision,
+                "rhc_state_source": "filtered",
+                "rhc_update_state_source": "filtered",
+                "rhc_model_samples": int(policy.last_update_info["model_samples"]),
+                "rhc_episode_updates": int(policy.last_update_info["episode_updates"]),
+            } if policy_spec.policy_type == "rhc" else {}),
             "flex_update_mode": (
                 str(getattr(policy, "update_mode"))
                 if hasattr(policy, "update_mode")
@@ -2305,6 +2312,14 @@ def _run_one(
     learning_sensitivity = getattr(args, "learning_sensitivity", "measurement_corrected")
     if metadata_path.exists():
         existing_payload = load_json(metadata_path)
+        if get_policy_spec(policy_id).policy_type == "rhc":
+            from actdyn.policy.baseline_rhc import RHC_IMPLEMENTATION_REVISION
+
+            if existing_payload.get("rhc_implementation_revision") != RHC_IMPLEMENTATION_REVISION:
+                raise ValueError(
+                    f"RHC implementation revision mismatch at {metadata_path}. "
+                    "Use a separate --base-dir."
+                )
         if existing_payload.get("planning_rollout") != planning_rollout:
             raise ValueError(
                 f"Planning rollout mismatch at {metadata_path}: existing "

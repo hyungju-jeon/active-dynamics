@@ -220,6 +220,7 @@ def test_mode_default_and_invalid_arguments():
 
 def test_run_mode_provenance_and_resume_guard(tmp_path, monkeypatch):
     from experiments import run
+    monkeypatch.setattr(run, "get_policy_spec", lambda _: SimpleNamespace(policy_type="mpc-icem"))
 
     args = run.build_parser().parse_args(["--planning-rollout", "measurement_conditioned"])
     spec = SimpleNamespace(
@@ -408,6 +409,7 @@ def test_sample_variance_uses_corrected_parameter_effects_and_preserves_beliefs(
 
 def test_variance_factory_and_revision_guard(tmp_path, monkeypatch):
     from experiments import run
+    monkeypatch.setattr(run, "get_policy_spec", lambda _: SimpleNamespace(policy_type="mpc-icem"))
     from actdyn.metrics.planning import PLANNING_ROLLOUT_REVISION
 
     model, fe, fz, _, _ = gaussian_problem(2)
@@ -429,6 +431,7 @@ def test_variance_factory_and_revision_guard(tmp_path, monkeypatch):
 @pytest.mark.parametrize("policy", ["compound_active_planning", "random"])
 def test_learning_revision_guard_preserves_existing_runs(tmp_path, monkeypatch, revision, policy):
     from experiments import run
+    monkeypatch.setattr(run, "get_policy_spec", lambda _: SimpleNamespace(policy_type="mpc-icem"))
     from actdyn.metrics.planning import PLANNING_ROLLOUT_REVISION
     from actdyn.models.model import LEARNING_SENSITIVITY_REVISION
 
@@ -453,6 +456,7 @@ def test_learning_revision_guard_preserves_existing_runs(tmp_path, monkeypatch, 
 
 def test_corrected_learning_provenance_and_resume_guard(tmp_path, monkeypatch):
     from experiments import run
+    monkeypatch.setattr(run, "get_policy_spec", lambda _: SimpleNamespace(policy_type="mpc-icem"))
 
     args = run.build_parser().parse_args(["--learning-sensitivity", "measurement_corrected"])
     spec = SimpleNamespace(
