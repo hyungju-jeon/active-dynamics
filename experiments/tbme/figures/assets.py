@@ -611,7 +611,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
 
     phase_presets = [get_environment_preset(env_id) for env_id, _ in _DYNAMICS_FULL_PHASE_ENVS]
 
-    fig = plt_module.figure(figsize=(7.52, 2.56))
+    fig = plt_module.figure(figsize=(516.0 / 72.27, 2.56))
     outer = fig.add_gridspec(
         2, 1, height_ratios=[1.0, 1.0], hspace=0.48,
         left=0.045, right=0.925, top=0.85, bottom=0.18
@@ -2249,6 +2249,48 @@ def _asset_plot_flex_comparison(
     return written
 
 
+def _asset_plot_constraints_combined(
+    output_path: Path, *,
+    panels: Sequence[tuple[Sequence[_ExperimentSuiteSource], Sequence[Mapping[str, Any]]]],
+    r2_summary: str,
+) -> Path:
+    """Draw SNR and loading panels at the manuscript's 516 pt text width."""
+    from matplotlib.lines import Line2D
+
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt_module.subplots(1, 2, figsize=(516.0 / 72.27, 1.65))
+    fig.subplots_adjust(left=0.075, right=0.995, bottom=0.25, top=0.84, wspace=0.14)
+    for ax, label, (sources, rows) in zip(axes, ("A", "B"), panels):
+        _asset_plot_final_bar(
+            output_path, sources=sources, policy_ids=_ASSET_MATCHED_POLICIES,
+            metric_rows=rows, r2_summary=r2_summary, ylim=(0.0, 1.0), ax=ax,
+        )
+        legend = ax.get_legend()
+        ax.legend(legend.legend_handles,
+                  [text.get_text().replace("true-model reference", "True model")
+                   for text in legend.get_texts()],
+                  loc="upper left", ncol=len(legend.legend_handles),
+                  fontsize=_ASSET_TICK_SIZE, handlelength=1.0,
+                  borderpad=0.3, columnspacing=0.8)
+        ax.set_yticks(np.linspace(0.0, 1.0, 6))
+        ax.text(-0.085, 1.10, label, transform=ax.transAxes,
+                fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
+    axes[1].set_ylabel("")
+    fig.legend(
+        [Line2D([0], [0], color=_asset_baseline_policy_color(policy), linewidth=1.6)
+         for policy in _ASSET_MATCHED_POLICIES],
+        [_asset_policy_label(policy) for policy in _ASSET_MATCHED_POLICIES],
+        loc="upper left", bbox_to_anchor=(0.075, 1.015), ncol=6,
+        fontsize=_ASSET_TICK_SIZE, columnspacing=1.0, handlelength=1.4,
+    )
+    _asset_write_method_csv(output_path.with_suffix(".csv"),
+                            [row for _, rows in panels for row in rows],
+                            r2_summary=r2_summary)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
 def _asset_plot_constraints(
     output_path: Path, *, r2_summary: str,
     skipped: list[tuple[str, str]] | None = None,
@@ -2275,6 +2317,7 @@ def _asset_plot_constraints(
         ("action", "Action budget", (bottleneck_sources[0], *bottleneck_sources[3:])),
     )
     written: list[Path] = []
+    observation_panels = []
     for suffix, _figure_title, sources in figures:
         try:
             _asset_require_suite_dirs([source.suite_dir for source in sources])
@@ -2288,6 +2331,14 @@ def _asset_plot_constraints(
             _ASSET_MATCHED_POLICIES,
             r2_summary=r2_summary,
         )
+        if suffix in {"snr", "asymmetry"}:
+            combined_sources = tuple(
+                _ExperimentSuiteSource(source.exp_id,
+                                       "Biased" if source.exp_id == "gated_duffing_asymmetric" else source.label,
+                                       source.suite_dir)
+                for source in sources
+            )
+            observation_panels.append((combined_sources, metric_rows))
         bar_path = output_path.with_name(f"{output_path.stem}_{suffix}{output_path.suffix}")
         curves_path = output_path.with_name(
             f"{output_path.stem}_{suffix}_recovery{output_path.suffix}"
@@ -2316,6 +2367,10 @@ def _asset_plot_constraints(
                 r2_summary=r2_summary,
             )
         )
+    if len(observation_panels) == 2:
+        written.append(_asset_plot_constraints_combined(
+            output_path, panels=observation_panels, r2_summary=r2_summary,
+        ))
     return written
 
 

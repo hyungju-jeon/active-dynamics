@@ -515,11 +515,13 @@ def test_asset_subsets_report_absent_experiments(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(assets, "_asset_method_metric_rows", lambda *a, **k: [])
     monkeypatch.setattr(assets, "_asset_plot_final_bar", lambda path, **k: path)
     monkeypatch.setattr(assets, "_asset_plot_recovery_curves", lambda path, **k: path)
+    monkeypatch.setattr(assets, "_asset_plot_constraints_combined", lambda path, **k: path)
     skipped = []
     written = assets._asset_plot_constraints(tmp_path / "constraints.pdf",
                                              r2_summary="mean_sem", skipped=skipped)
     assert [p.stem for p in written] == ["constraints_snr", "constraints_snr_recovery",
-                                        "constraints_asymmetry", "constraints_asymmetry_recovery"]
+                                        "constraints_asymmetry", "constraints_asymmetry_recovery",
+                                        "constraints"]
     assert len(skipped) == 1 and "action_bottleneck" in skipped[0][1]
     # No suite has FLEX rows: report the missing data instead of drawing empty panels.
     skipped = []
