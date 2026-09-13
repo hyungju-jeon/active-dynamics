@@ -525,6 +525,8 @@ def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Pa
         axes[0, idx].yaxis.labelpad = 1.0
         if idx == 0:
             axes[0, idx].set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
+            # Place the label beside the spine, not outside the widest tick label.
+            axes[0, idx].yaxis.set_label_coords(-0.105, 0.5)
         axes[0, idx].annotate(
             chr(65 + idx), (0, 1), xycoords="axes fraction",
             xytext=(-7.2, 1.2), textcoords="offset points", ha="left", va="bottom",
@@ -548,7 +550,7 @@ def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Pa
         labelspacing=0.2,
     )
     fig.supxlabel("Environment steps", y=0.045, fontsize=_ASSET_LABEL_SIZE)
-    fig.subplots_adjust(left=0.15, right=0.995, bottom=0.24, top=0.78, wspace=0.045)
+    fig.subplots_adjust(left=0.085, right=0.995, bottom=0.24, top=0.78, wspace=0.045)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
