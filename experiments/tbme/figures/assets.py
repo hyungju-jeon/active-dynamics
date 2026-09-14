@@ -124,7 +124,7 @@ _POLICY_LABELS = {
     "prbs": "PRBS",
     "random": "Random",
     "active_fully_observable": "Unatten.",
-    "active_state_information": "State info",
+    "active_state_information": "s-EIG",
     "active_dynamics": "Dyn. sens.",
     "active_e_optimality": "E-opt.",
     "active_observation_variance": "Obs. var.",
@@ -134,7 +134,7 @@ _POLICY_LABELS = {
     "flex_true": "FLEX upstream / true",
     "flex_rollback": "FLEX",
     "rhc": "RHC-US",
-    "off_policy": "Off-policy",
+    "off_policy": "Uncontrolled",
 }
 _ASSET_MATCHED_POLICIES = [
     "adaptive",
@@ -1673,7 +1673,7 @@ _ASSET_TRI_GATE_LABELS = {
     "compound_active_planning": "PALDI",
     "compound_active_fully_observable": "Unatten.",
     "compound_active_e_optimality": "E-opt.",
-    "compound_active_state_information": "State info",
+    "compound_active_state_information": "s-EIG",
     "compound_active_dynamics": "Dyn. sens. (trace)",
     "compound_active_dynamics_logdet": "Dyn. sens.",
     "compound_active_observation_variance": "Obs. var.",
@@ -2249,6 +2249,43 @@ def _asset_plot_flex_comparison(
     return written
 
 
+def _asset_plot_flex_combined(output_path: Path, *, r2_summary: str) -> Path:
+    """Six-condition FLEX recovery panel from the configured saved summaries."""
+    sources = [source for _, group in _asset_flex_groups() for source in group
+               if source.exp_id != "gated_duffing_challenging"]
+    _asset_require_suite_dirs([source.suite_dir for source in sources])
+    plt = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt.subplots(2, 3, figsize=(516 / 72.27, 4.4))
+    for idx, (ax, source) in enumerate(zip(axes.flat, sources, strict=True)):
+        curves = _asset_r2_curve_rows(source.suite_dir, r2_summary=r2_summary)
+        for policy in _ASSET_FLEX_POLICIES:
+            rows = curves.get(policy, [])
+            if not rows:
+                raise RuntimeError(f"Missing {policy} curves in {source.suite_dir}")
+            steps = [row["step"] for row in rows]
+            color = _asset_baseline_policy_color(policy)
+            ax.plot(steps, [row["center"] for row in rows], color=color,
+                    linewidth=.9, label=_ASSET_FLEX_LABELS[policy])
+            ax.fill_between(steps, [row["lower"] for row in rows],
+                            [row["upper"] for row in rows], color=color,
+                            alpha=.1, linewidth=0)
+        ax.set_yscale("symlog", linthresh=.1)
+        ax.set_xlim(left=0)
+        ax.set_xlabel("Environment steps")
+        if idx % 3 == 0:
+            ax.set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
+        ax.set_title(chr(65 + idx), loc="left", fontweight="bold")
+        ax.set_title(source.label, fontsize=_ASSET_TITLE_SIZE)
+        _style_experiment_axis(ax)
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3,
+               fontsize=_ASSET_TICK_SIZE)
+    fig.tight_layout(rect=(0, 0, 1, .94), w_pad=.8, h_pad=.8)
+    return save_figure(fig, output_path, plt_module=plt)
+
+
 def _asset_plot_constraints_combined(
     output_path: Path, *,
     panels: Sequence[tuple[Sequence[_ExperimentSuiteSource], Sequence[Mapping[str, Any]]]],
@@ -2549,6 +2586,12 @@ def assets_main(argv: list[str] | None = None) -> int:
                     {"flex_comparison"},
                     _asset_plot_flex_comparison,
                     {**kwargs, "skipped": skipped},
+                ),
+                (
+                    r2_output_dir / "tbme_fig_flex_comparison_combined.pdf",
+                    {"flex_comparison"},
+                    _asset_plot_flex_combined,
+                    kwargs,
                 ),
                 (
                     r2_output_dir / "tbme_fig_gate_diagnostic.pdf",

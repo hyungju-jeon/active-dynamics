@@ -52,7 +52,7 @@ OBJECTIVE_DEFINITIONS = [
     },
     {
         "policy_id": "active_state_information",
-        "objective_name": "State information",
+        "objective_name": "s-EIG",
         "objective_formula": (
             r"$J(u_{0:H-1})=\sum_{i=0}^{H-1}\gamma^i "
             r"\log\det\operatorname{chol}(I+P_i^- I_{z,i})$"

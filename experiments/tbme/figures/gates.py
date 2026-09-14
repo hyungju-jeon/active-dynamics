@@ -70,7 +70,7 @@ COMPOUND_POLICY_LABELS = {
     "compound_active_planning": "PALDI",
     "compound_active_fully_observable": "Unattenuated p-EIG",
     "compound_active_e_optimality": "E-optimality",
-    "compound_active_state_information": "State information",
+    "compound_active_state_information": "s-EIG",
     "compound_active_dynamics": "Dynamics sensitivity",
     "compound_active_dynamics_logdet": "Dynamics sensitivity (logdet)",
     "compound_active_observation_variance": "Observation variance",

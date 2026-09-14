@@ -323,8 +323,8 @@ def build_figure(
     axes[0].set_ylim(panel_a_min, panel_a_max)
     axes[0].set_xticks([0, 2, 4, 6])
     axes[0].set_yticks([0, 2, 4, 6])
-    axes[0].set_xlabel(r"$z_t$")
-    axes[0].set_ylabel(r"$z_{t+1}$")
+    axes[0].set_xlabel(r"$z_k$")
+    axes[0].set_ylabel(r"$z_{k+1}$")
     _panel_label(axes[0], "A")
 
     # Panel B unrolls each candidate in time: the rate it induces above the state
@@ -336,7 +336,7 @@ def build_figure(
         axis_rate.plot(time_full, np.exp(c * path + b), color=color, linewidth=0.95)
         axes[1].plot(time_full, path, color=color, linewidth=0.95)
     axis_rate.set_ylim(bottom=0.0)
-    axis_rate.set_ylabel(r"Rate $\lambda_t$")
+    axis_rate.set_ylabel(r"Rate $\lambda_k$")
     axis_rate.tick_params(axis="x", labelbottom=False)
     # Drop the bottom rate tick: with no gap it would sit on the state panel's
     # top tick label.
@@ -345,8 +345,8 @@ def build_figure(
 
     axes[1].set_xlim(0.0, float(horizon))
     axes[1].set_xticks(time_full)
-    axes[1].set_xlabel(r"Future step $t$")
-    axes[1].set_ylabel(r"State $z_t$")
+    axes[1].set_xlabel(r"Future step $k$")
+    axes[1].set_ylabel(r"State $z_k$")
 
     info_floor = 1e-8
     state_info = curve["state_information_steps"][:, candidate_indices]
@@ -374,9 +374,9 @@ def build_figure(
             color=color,
             linewidth=0.95,
         )
-    axes[2].set_xlabel(r"Future step $t$")
+    axes[2].set_xlabel(r"Future step $k$")
     # The expression rides as a title so C and D keep no left margin for a label.
-    axes[2].set_title(r"$\frac{1}{2}\log(1+P_t^-I_{z,t})$", loc="center", pad=3.0)
+    axes[2].set_title(r"$\frac{1}{2}\log(1+P_k^-I_{z,k})$", loc="center", pad=3.0)
     axes[2].set_yscale("log")
     _panel_label(axes[2], "C")
 
@@ -421,8 +421,8 @@ def build_figure(
         s=11,
         zorder=4,
     )
-    axes[3].set_xlabel(r"Future step $t$")
-    axes[3].set_title(r"$\frac{1}{2}\log(1+\sigma_\theta^2 I_{\theta,t})$", loc="center", pad=3.0)
+    axes[3].set_xlabel(r"Future step $k$")
+    axes[3].set_title(r"$\frac{1}{2}\log(1+\sigma_\theta^2 I_{\theta,k})$", loc="center", pad=3.0)
     axes[3].set_yscale("log")
     _panel_label(axes[3], "D")
 
@@ -478,7 +478,7 @@ def build_figure(
     colorbar.outline.set_linewidth(0.4)
     axes[4].set_ylim(float(np.min(z_probe)), float(np.max(z_probe)))
     axes[4].set_xlim(float(steps_axis[0]), float(steps_axis[-1]))
-    axes[4].set_xlabel(r"Planning horizon $k$")
+    axes[4].set_xlabel(r"Planning horizon $H$")
     axes[4].set_ylabel(r"Candidate initial state $z_0$")
     _panel_label(axes[4], "E")
     axes[4].set_xticks(steps_axis)
