@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import shutil
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
 
 from actdyn.utils.experiment_runtime import read_trace_csv, safe_float as _safe_float
-from actdyn.utils.figure_io import load_plotting, save_figure
+from actdyn.utils.figure_io import load_plotting
 
 from ...experiment_io import (
     find_nested_metadata_paths,
@@ -56,7 +59,6 @@ from .theme import (
 from .groups import (
     REPO_ROOT as _REPO_ROOT,
     RESULTS_ROOT as _RESULTS_ROOT,
-    latest_session as _latest_session,
 )
 from ..tbme_io import (
     load_planned_trace,
@@ -65,6 +67,54 @@ from ..tbme_io import (
 )
 
 # Manuscript asset assembly
+def save_figure(fig: Any, output_path: Path, *, plt_module: Any) -> Path:
+    """Export both vectors without cropping away the intended physical size."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    texts = list(fig.texts)
+    for legend in fig.legends:
+        texts.extend(legend.get_texts())
+    for ax in fig.axes:
+        if not ax.get_visible():
+            continue
+        texts.extend([ax.xaxis.label, ax.yaxis.label, ax.title])
+        # Locators also create ticks outside the limits; those are not rendered.
+        for locations, labels, limits in (
+            (ax.get_xticks(), ax.get_xticklabels(), ax.get_xlim()),
+            (ax.get_yticks(), ax.get_yticklabels(), ax.get_ylim()),
+        ):
+            lo, hi = sorted(limits)
+            texts.extend(label for value, label in zip(locations, labels) if lo <= value <= hi)
+        texts.extend(ax.texts)
+        if ax.get_legend() is not None:
+            texts.extend(ax.get_legend().get_texts())
+    outside = []
+    for text in texts:
+        if text.get_visible() and text.get_text():
+            box = text.get_window_extent(renderer)
+            if box.x0 < -1 or box.y0 < -1 or box.x1 > fig.bbox.width + 1 or box.y1 > fig.bbox.height + 1:
+                outside.append(text.get_text())
+    if outside:
+        raise RuntimeError(f"Text outside figure canvas in {output_path}: {outside}")
+    output_path.with_suffix('.audit.json').write_text(json.dumps({
+        'size_inches': fig.get_size_inches().tolist(), 'axes': len(fig.axes),
+        'r2_axes': [dict(ylabel=ax.get_ylabel(), ylim=list(ax.get_ylim()),
+                         references=[dict(label=line.get_label(), value=float(line.get_ydata()[0]),
+                                          linestyle=line.get_linestyle())
+                                     for line in ax.lines
+                                     if line.get_label().startswith('true-model reference')])
+                    for ax in fig.axes if ax.get_gid() == 'vf-roll-r2'],
+        'text_outside_canvas': outside,
+    }, indent=2))
+    with plt_module.rc_context({"savefig.bbox": None}):
+        fig.savefig(output_path, bbox_inches=None)
+        if output_path.suffix != ".svg":
+            fig.savefig(output_path.with_suffix(".svg"), bbox_inches=None)
+    plt_module.close(fig)
+    return output_path
+
+
 _POLICY_LABELS = {
     "adaptive": "PALDI",
     "adaptive_async_anytime": "Async PALDI(anytime)",
@@ -73,8 +123,8 @@ _POLICY_LABELS = {
     "active_myopic": "Myopic",
     "prbs": "PRBS",
     "random": "Random",
-    "active_fully_observable": "Full obs.",
-    "active_state_information": "State info",
+    "active_fully_observable": "Unatten.",
+    "active_state_information": "State Information",
     "active_dynamics": "Dyn. sens.",
     "active_e_optimality": "E-opt.",
     "active_observation_variance": "Obs. var.",
@@ -84,7 +134,7 @@ _POLICY_LABELS = {
     "flex_true": "FLEX upstream / true",
     "flex_rollback": "FLEX",
     "rhc": "RHC-US",
-    "off_policy": "Off-policy",
+    "off_policy": "Uncontrolled",
 }
 _ASSET_MATCHED_POLICIES = [
     "adaptive",
@@ -104,9 +154,9 @@ _ASSET_FLEX_LABELS = {
     "flex_filter": "FLEX (EKF)",
     "flex_rollback": "FLEX (EKF+stable)",
 }
-# FLEX variants lose whole seeds to the unguarded update, so their bars need room
-# below zero; whiskers past this floor are drawn as clipped.
-_ASSET_FLEX_BAR_YLIM = (-1.0, 1.0)
+# Values and whiskers below the requested display range retain their CSV values
+# and receive a clipping marker at the lower axis limit.
+_ASSET_FLEX_BAR_YLIM = (0.25, 1.0)
 
 
 def _asset_policy_label(
@@ -151,8 +201,8 @@ _ASSET_PANEL_LABEL_SIZE = 10.0
 _ASSET_TITLE_SIZE = 8.0
 _ASSET_LABEL_SIZE = 8.0
 _ASSET_TICK_SIZE = 6.0
-_ASSET_PREDICTIVE_R2_LABEL = "Predictive R²"
-_ASSET_FINAL_R2_LABEL = "Final predictive R²"
+_ASSET_PREDICTIVE_R2_LABEL = r"$R^2_{\mathrm{VF}\text{-}\mathrm{roll}}$"
+_ASSET_FINAL_R2_LABEL = _ASSET_PREDICTIVE_R2_LABEL
 _ASSET_SINGLE_COLUMN_WIDTH = 3.5
 
 
@@ -252,7 +302,11 @@ def _asset_true_model_r2_ceiling(
     true_embedding = np.asarray(true_embedding_raw, dtype=np.float32).reshape(-1)
     if true_embedding.size == 0:
         return None
-    state_noise = _safe_float(metadata.get("state_noise"))
+    state_noise = _safe_float(metadata.get("trajectory_eval_state_noise"))
+    if state_noise is None:
+        state_noise = env_preset.trajectory_eval_state_noise
+    if state_noise is None:
+        state_noise = _safe_float(metadata.get("state_noise"))
     if state_noise is None:
         state_noise = float(env_preset.state_noise)
     if state_noise <= 0.0:
@@ -295,6 +349,12 @@ def _asset_true_model_r2_ceiling(
         rng=np.random.default_rng(104729),
         device="cpu",
         state_noise=state_noise,
+        state_dim=len(metadata.get("state_low") or env_preset.state_low),
+        state_low=metadata.get("trajectory_eval_state_low", env_preset.trajectory_eval_state_low),
+        state_high=metadata.get("trajectory_eval_state_high", env_preset.trajectory_eval_state_high),
+        state_indices=metadata.get("trajectory_eval_state_indices", env_preset.trajectory_eval_state_indices),
+        coordinate_balanced=bool(metadata.get("trajectory_eval_coordinate_balanced",
+                                             env_preset.trajectory_eval_coordinate_balanced)),
     )
     finite = r2_values[np.isfinite(r2_values)]
     if finite.size == 0:
@@ -353,6 +413,8 @@ def _asset_plot_r2_curves(
     show_inset: bool = False,
     xlabel: bool = True,
     policy_labels: Mapping[str, str] | None = None,
+    ylim: tuple[float, float] = (0.25, 1.0),
+    title_pad: float = 3.0,
 ) -> None:
     from matplotlib.ticker import FixedLocator, FormatStrFormatter, NullFormatter
 
@@ -403,14 +465,17 @@ def _asset_plot_r2_curves(
             curve_ax.axhline(
                 r2_ceiling,
                 color=_experiment_C_NEUTRAL_LIGHT,
-                linestyle="--",
+                linestyle=":",
                 linewidth=0.65,
-                label="true-model max" if ylabel and labels else None,
+                zorder=5,
+                clip_on=False,
+                label="true-model reference",
             )
         curve_ax.set_xlim(left=0.0)
         curve_ax.set_yscale("log", nonpositive="clip")
-        curve_ax.set_ylim(0.25, 1.05)
-        curve_ax.yaxis.set_major_locator(FixedLocator([0.25, 1.0]))
+        curve_ax.set_ylim(*ylim)
+        curve_ax.set_gid("vf-roll-r2")
+        curve_ax.yaxis.set_major_locator(FixedLocator([ylim[0], 1.0]))
         curve_ax.yaxis.set_major_formatter(FormatStrFormatter("%g"))
         curve_ax.yaxis.set_minor_formatter(NullFormatter())
         _style_experiment_axis(curve_ax)
@@ -418,9 +483,9 @@ def _asset_plot_r2_curves(
         inset.set_xlim(0.0, 250.0)
         inset.tick_params(axis="both", labelsize=5.2, pad=1.0)
     ax.set_title(
-        panel_label, loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
+        panel_label, loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=title_pad
     )
-    ax.set_title(title, loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+    ax.set_title(title, loc="center", fontsize=_ASSET_TITLE_SIZE, pad=title_pad)
     if xlabel:
         ax.set_xlabel("Environment steps")
     if ylabel:
@@ -429,42 +494,63 @@ def _asset_plot_r2_curves(
 
 def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Path:
     sources = [
-        _ExperimentSuiteSource(ref.suite_id, ref.label, ref.session_root / "tracks" / ref.suite_id)
+        _ExperimentSuiteSource(ref.suite_id, ref.label, ref.results_root / "tracks" / ref.suite_id)
         for ref in _groups_mod.groups()["simple_system_identification"]
     ]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
     plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(1, len(sources), figsize=(7.25, 2.35), squeeze=False)
-    display_titles = {
-        "duffing oscillator": "Duffing",
-        "damped pendulum": "Damped Pendulum",
-        "Gated Duffing": "Gated Duffing",
-    }
+    fig, axes = plt_module.subplots(
+        1, len(sources), figsize=(252.0 / 72.27, 1.55), squeeze=False, sharey=True
+    )
     for idx, source in enumerate(sources):
-        title = display_titles.get(source.label, source.label)
         _asset_plot_r2_curves(
             axes[0, idx],
             source.suite_dir,
             _ASSET_MATCHED_POLICIES,
-            title=title,
-            panel_label=chr(65 + idx),
+            title="",
+            panel_label="",
             ylabel=idx == 0,
+            xlabel=False,
             r2_summary=r2_summary,
+            ylim=(0.25, 1.0),
+            title_pad=1.0,
+        )
+        axes[0, idx].set_xticks([0, 1000, 2000])
+        # Keep endpoint labels inside each panel to allow narrower gaps.
+        axes[0, idx].get_xticklabels()[0].set_ha("left")
+        axes[0, idx].get_xticklabels()[-1].set_ha("right")
+        axes[0, idx].tick_params(axis="both", which="both", pad=1.0)
+        axes[0, idx].yaxis.labelpad = 1.0
+        if idx == 0:
+            axes[0, idx].set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
+            # Place the label beside the spine, not outside the widest tick label.
+            axes[0, idx].yaxis.set_label_coords(-0.105, 0.5)
+        axes[0, idx].annotate(
+            chr(65 + idx), (0, 1), xycoords="axes fraction",
+            xytext=(-7.2, 1.2), textcoords="offset points", ha="left", va="bottom",
+            fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold",
         )
     handles, labels = axes[0, 0].get_legend_handles_labels()
+    labels = ["true" if label == "true-model reference" else label for label in labels]
     fig.legend(
         handles,
         labels,
-        loc="upper center",
-        bbox_to_anchor=(0.5, 1.01),
-        ncol=len(_ASSET_MATCHED_POLICIES) + 1,
+        loc="upper left",
+        bbox_to_anchor=(0.01, 0.985, 0.98, 0.0),
+        mode="expand",
+        ncol=len(handles),
         fontsize=_ASSET_TICK_SIZE,
-        columnspacing=0.9,
-        handlelength=1.5,
+        columnspacing=0.5,
+        handlelength=0.9,
+        handletextpad=0.3,
+        borderaxespad=0.0,
+        borderpad=0.1,
+        labelspacing=0.2,
     )
-    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.90), w_pad=0.75)
+    fig.supxlabel("Environment steps", y=0.045, fontsize=_ASSET_LABEL_SIZE)
+    fig.subplots_adjust(left=0.085, right=0.995, bottom=0.24, top=0.78, wspace=0.045)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
@@ -525,9 +611,10 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
 
     phase_presets = [get_environment_preset(env_id) for env_id, _ in _DYNAMICS_FULL_PHASE_ENVS]
 
-    fig = plt_module.figure(figsize=(7.52, 2.56))
+    fig = plt_module.figure(figsize=(516.0 / 72.27, 2.56))
     outer = fig.add_gridspec(
-        2, 1, height_ratios=[1.0, 1.0], hspace=0.32, left=0.045, right=0.985, top=0.91, bottom=0.11
+        2, 1, height_ratios=[1.0, 1.0], hspace=0.48,
+        left=0.045, right=0.925, top=0.85, bottom=0.18
     )
     # Top row as one grid so the A and B maps share an identical cell size and
     # inter-panel gap (3 A cells | spacer | 3 B cells | colorbar).
@@ -624,6 +711,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     cbar = fig.colorbar(im_sens, cax=cbar_ax)
     cbar.ax.tick_params(labelsize=6.0, width=0.4, length=2.0)
     cbar.outline.set_linewidth(0.4)
+    cbar.set_label(r"$\|\partial\mathbf{v}/\partial\theta\|_F$", fontsize=7.0)
 
     # Panel C: state Fisher information (per-map log scale) with loading-vector insets.
     from matplotlib.colors import LogNorm
@@ -780,7 +868,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     fig.text(
         0.5 * (b_left + b_right),
         b_top + 0.045,
-        r"$\|df/d\theta\|_F$",
+        "Parameter sensitivity",
         ha="center",
         va="bottom",
         fontsize=8.0,
@@ -788,7 +876,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     fig.text(
         0.5 * (c_left + c_right),
         c_top + 0.045,
-        "State Fisher Information",
+        "State Fisher determinant",
         ha="center",
         va="bottom",
         fontsize=8.0,
@@ -1345,7 +1433,7 @@ def _asset_plot_recovery_curves(
         handles,
         labels,
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.01),
+        bbox_to_anchor=(0.5, 0.995),
         ncol=legend_ncol,
         fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
@@ -1364,9 +1452,11 @@ def _asset_plot_final_bar(
     metric_rows: Sequence[Mapping[str, Any]],
     single_column: bool = False,
     short: bool = False,
-    ylim: tuple[float, float] = (0.0, 1.0),
+    ylim: tuple[float, float] = (0.25, 1.0),
+    r2_summary: str = "mean_sem",
     policy_labels: Mapping[str, str] | None = None,
     policy_legend: bool = True,
+    ax: Any | None = None,
 ) -> Path:
     """Standalone final-performance bars, colored by policy with per-condition shade.
 
@@ -1397,15 +1487,19 @@ def _asset_plot_final_bar(
 
     # Without the policy legend the x tick labels carry the policy names, so the
     # condition legend takes the strip above the axes instead of sitting inside it.
-    n_legend = n_policy if policy_legend else n_cond
-    legend_ncol = min(n_legend, 4) if single_column else n_legend
+    n_legend = n_policy if policy_legend else n_cond + 1
+    legend_ncol = min(n_legend, 4 if policy_legend else 2) if single_column else n_legend
     legend_rows = int(np.ceil(n_legend / max(legend_ncol, 1)))
     fig_width = _ASSET_SINGLE_COLUMN_WIDTH if single_column else 1.6 + 0.5 * max(n_policy, 1)
     # A wrapped policy legend needs its own strip above the axes, not axes height.
     # One row reserves 8% of the default figure, matching the unwrapped layout.
     legend_height = 0.188 + 0.16 * (legend_rows - 1)
     fig_height = (1.55 if short else 2.35) + 0.16 * (legend_rows - 1)
-    fig, ax = plt_module.subplots(figsize=(fig_width, fig_height))
+    standalone = ax is None
+    if standalone:
+        fig, ax = plt_module.subplots(figsize=(fig_width, fig_height))
+    else:
+        fig = ax.figure
     y_floor, y_top = float(ylim[0]), float(ylim[1])
     x = np.arange(n_policy, dtype=np.float64)
     bar_width = 0.8 / max(n_cond, 1)
@@ -1436,14 +1530,22 @@ def _asset_plot_final_bar(
             capsize=1.6,
             error_kw={"elinewidth": 0.6, "capthick": 0.6},
         )
+        reference = _asset_true_model_r2_ceiling(source.suite_dir, r2_summary=r2_summary)
+        if reference is not None:
+            ax.axhline(reference, color=_experiment_C_NEUTRAL_LIGHT,
+                       alpha=float(cond_alpha[cond_idx]), linestyle=":", linewidth=0.8,
+                       zorder=5, clip_on=False,
+                       label=f"true-model reference ({source.label})")
 
     ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
+    ax.set_gid("vf-roll-r2")
     ax.set_ylim(y_floor, y_top)
     if y_floor < 0.0:
         ax.set_yticks(np.arange(y_floor, y_top + 1e-9, 0.5))
         ax.axhline(0.0, color=_experiment_C_STROKE, linewidth=0.5)
         # Carets mark bars whose value or lower band runs past the axis floor;
         # the exact numbers stay in the companion CSV.
+    if clipped_x:
         ax.plot(
             clipped_x,
             np.full(len(clipped_x), y_floor),
@@ -1470,27 +1572,32 @@ def _asset_plot_final_bar(
         for cond_idx in range(n_cond)
     ]
     cond_labels = [source.label for source in sources]
+    if any(line.get_label().startswith("true-model reference") for line in ax.lines):
+        cond_handles.append(Line2D([0], [0], color=_experiment_C_NEUTRAL_LIGHT,
+                                   linestyle=":", linewidth=0.8))
+        cond_labels.append("true-model reference")
     if policy_legend:
         policy_handles = [
             Line2D([0], [0], color=_asset_baseline_policy_color(policy_id), linewidth=1.6)
             for policy_id in active_policies
         ]
-        fig.legend(
-            policy_handles,
-            [_asset_policy_label(policy_id, policy_labels) for policy_id in active_policies],
-            loc="upper center",
-            bbox_to_anchor=(0.5, 1.02),
-            ncol=legend_ncol,
-            fontsize=_ASSET_TICK_SIZE,
-            columnspacing=1.0,
-            handlelength=1.4,
-        )
+        if standalone:
+            fig.legend(
+                policy_handles,
+                [_asset_policy_label(policy_id, policy_labels) for policy_id in active_policies],
+                loc="upper center",
+                bbox_to_anchor=(0.5, 0.995),
+                ncol=legend_ncol,
+                fontsize=_ASSET_TICK_SIZE,
+                columnspacing=1.0,
+                handlelength=1.4,
+            )
         ax.legend(
             cond_handles,
             cond_labels,
             loc="upper left",
             fontsize=_ASSET_TICK_SIZE,
-            ncol=min(n_cond, 3),
+            ncol=min(len(cond_handles), max(1, int(fig_width / 1.5))),
             handlelength=1.2,
             borderpad=0.3,
             columnspacing=1.0,
@@ -1500,24 +1607,30 @@ def _asset_plot_final_bar(
             cond_handles,
             cond_labels,
             loc="upper center",
-            bbox_to_anchor=(0.5, 1.02),
+            bbox_to_anchor=(0.5, 0.995),
             ncol=legend_ncol,
             fontsize=_ASSET_TICK_SIZE,
             columnspacing=1.0,
             handlelength=1.2,
         )
+    if not standalone:
+        return output_path
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 1.0 - legend_height / fig_height))
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
 def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> list[Path]:
-    """Single-column ablation assets: final-R2 bars plus a stacked recovery figure."""
+    """Default/asymmetric ablation assets: final-R2 bars and recovery curves."""
+    condition_labels = {
+        "gated_duffing": "Default",
+        "gated_duffing_asymmetric": "Asymmetric",
+    }
     sources = [
-        _ExperimentSuiteSource(source.exp_id, label, source.suite_dir)
-        for source, label in zip(
-            _experiment_objective_sources(),
-            ("Default", "Asymmetric", "Challenging"),
+        _ExperimentSuiteSource(
+            source.exp_id, condition_labels[source.exp_id], source.suite_dir
         )
+        for source in _experiment_objective_sources()
+        if source.exp_id in condition_labels
     ]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
     metric_rows = _asset_method_metric_rows(
@@ -1537,7 +1650,9 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> lis
             sources=sources,
             policy_ids=_experiment_OBJECTIVE_POLICIES,
             metric_rows=metric_rows,
+            r2_summary=r2_summary,
             single_column=True,
+            ylim=(0.0, 1.0),
         ),
         _asset_plot_recovery_curves(
             recovery_path,
@@ -1550,15 +1665,15 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> lis
 
 
 # Designed three-gate objective diagnostic (compact Poisson observations).
-# The suite lives in the shared session tracks (objective_ablation group); the
+# The suite lives in the shared result tracks (objective_ablation group); the
 # asset reads the raw run traces because its panels need per-seed occupancy and
 # final-value quantiles that the suite summary does not carry.
 _ASSET_TRI_GATE_EXP_ID = "three_gate_diagnostic"
 _ASSET_TRI_GATE_LABELS = {
     "compound_active_planning": "PALDI",
-    "compound_active_fully_observable": "Full obs.",
+    "compound_active_fully_observable": "Unatten.",
     "compound_active_e_optimality": "E-opt.",
-    "compound_active_state_information": "State info",
+    "compound_active_state_information": "State Information",
     "compound_active_dynamics": "Dyn. sens. (trace)",
     "compound_active_dynamics_logdet": "Dyn. sens.",
     "compound_active_observation_variance": "Obs. var.",
@@ -1575,13 +1690,13 @@ _ASSET_TRI_GATE_EXCLUDED_POLICIES = frozenset(
     {"prbs", "compound_active_dynamics"}
 )
 # Exemplar seed for the trajectory panels, chosen by ranking matched seeds on
-# occupancy contrast: PALDI holds gate F while the fully observed objective
+# occupancy contrast: PALDI holds gate F while the unattenuated objective
 # abandons F for gate N, with every panel showing its policy's modal behavior.
 # Population occupancy statistics live in the main diagnostic figure.
 _ASSET_TRI_GATE_EXEMPLAR_SEED = 90
 _ASSET_TRI_GATE_REST_CENTER = -1.0
 _ASSET_TRI_GATE_REST_CUTOFF = -0.75
-_ASSET_TRI_GATE_R2_YLIM = (-0.2, 1.0)
+_ASSET_TRI_GATE_R2_YLIM = (0.25, 1.0)
 # Gate identity colors couple the occupancy stacks (panel B) to the selector
 # traces (panel C); they are deliberately darker than the pastel policy palette.
 _ASSET_TRI_GATE_GATE_COLORS = (
@@ -1643,8 +1758,12 @@ def _asset_plot_gate_diagnostic(
     r2_summary: str,
     result_roots: Sequence[Path],
     exemplar_seed: int = _ASSET_TRI_GATE_EXEMPLAR_SEED,
+    exp_id: str = _ASSET_TRI_GATE_EXP_ID,
 ) -> Path:
     """Manuscript figure for the designed three-gate objective diagnostic.
+
+    ``exp_id`` selects the suite whose runs are read (``three_gate_diagnostic``
+    or a retuned variant such as ``three_gate_tradeoff`` sharing its gates).
 
     Single row: (A) final rollout R2 per objective, (B) selector occupancy, (C)
     every objective's exemplar selector trace overlaid on the gate assignment
@@ -1653,11 +1772,11 @@ def _asset_plot_gate_diagnostic(
     "Dyn. sens.").
     """
     _asset_parse_r2_summaries(r2_summary)
-    records = _compound_trace_records(result_roots, exp_id=_ASSET_TRI_GATE_EXP_ID)
+    records = _compound_trace_records(result_roots, exp_id=exp_id)
     if not records:
         roots_text = ", ".join(str(root) for root in result_roots)
         raise RuntimeError(
-            f"No trajectory R2 curves available for {_ASSET_TRI_GATE_EXP_ID} in {roots_text}"
+            f"No trajectory R2 curves available for {exp_id} in {roots_text}"
         )
     plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt_module is None:
@@ -1700,9 +1819,22 @@ def _asset_plot_gate_diagnostic(
         for record in records
         if record.seed == int(exemplar_seed)
     }
+    line_styles = {
+        "compound_active_planning": "-",
+        "compound_active_fully_observable": "--",
+        "compound_active_e_optimality": "-.",
+        "compound_active_state_information": ":",
+        "compound_active_dynamics_logdet": (0, (5, 1, 1, 1)),
+        "compound_active_observation_variance": (0, (3, 1, 1, 1, 1, 1)),
+        "compound_active_state_variance": (0, (2, 2)),
+        "random": (0, (6, 3)),
+    }
 
+    # IEEEtran journal text width is 43 picas (516 TeX points).
+    manuscript_width_in = 516.0 / 72.27
     fig, axis_grid = plt_module.subplots(
-        1, 3, figsize=(7.25, 2.1), gridspec_kw={"width_ratios": (2.5, 2.5, 5.0)}
+        1, 3, figsize=(manuscript_width_in, 2.1),
+        gridspec_kw={"width_ratios": (2.5, 2.5, 5.0)},
     )
     axes = list(axis_grid.ravel())
     x = np.arange(len(summary_rows), dtype=np.float64)
@@ -1751,20 +1883,44 @@ def _asset_plot_gate_diagnostic(
         rotation=30,
         ha="right",
     )
-    ax.set_ylim(0.0, _ASSET_TRI_GATE_R2_YLIM[1])
+    reference = _asset_true_model_r2_ceiling(records[0].run_dir.parents[2], r2_summary=r2_summary)
+    if reference is not None:
+        ax.axhline(reference, color=_experiment_C_NEUTRAL_LIGHT, linestyle=":",
+                   linewidth=0.8, zorder=5, clip_on=False, label="true-model reference")
+    lower = r2_center - (r2_yerr[0] if r2_yerr.ndim == 2 else r2_yerr)
+    clipped = lower < _ASSET_TRI_GATE_R2_YLIM[0]
+    if clipped.any():
+        ax.plot(x[clipped], np.full(clipped.sum(), _ASSET_TRI_GATE_R2_YLIM[0]),
+                marker="v", linestyle="none", markersize=2.2,
+                color=_experiment_C_STROKE, clip_on=False)
+    ax.set_ylim(*_ASSET_TRI_GATE_R2_YLIM)
+    ax.set_gid("vf-roll-r2")
     ax.set_ylabel(_ASSET_FINAL_R2_LABEL)
     _style_experiment_axis(ax)
     ax.set_title(
         "A", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
-    ax.set_title("Rollout recovery", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
     # B: selector occupancy stacks, one per objective.
     ax = axes[1]
     bottom = np.zeros(len(summary_rows), dtype=np.float64)
-    for key, _label, color in _ASSET_TRI_GATE_GATE_COLORS:
+    for key, label, color in _ASSET_TRI_GATE_GATE_COLORS:
         value = np.asarray([row[key] for row in summary_rows], dtype=np.float64)
         ax.bar(x, value, bottom=bottom, width=0.72, color=color)
+        # Direct labels keep the occupancy comparison readable in grayscale.
+        for column, fraction in enumerate(value):
+            if fraction >= 0.25:
+                is_rest = key == "rest_fraction"
+                ax.text(
+                    x[column],
+                    bottom[column] + fraction / 2,
+                    "rest" if is_rest else label.split(":")[0],
+                    ha="center",
+                    va="center",
+                    fontsize=_ASSET_TICK_SIZE,
+                    color=_experiment_C_STROKE if is_rest else "white",
+                    rotation=90 if is_rest else 0,
+                )
         bottom += value
     ax.set_xticks(x)
     ax.set_xticklabels(
@@ -1778,7 +1934,6 @@ def _asset_plot_gate_diagnostic(
     ax.set_title(
         "B", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
-    ax.set_title("Selector occupancy", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
     # C: every objective's exemplar selector trace overlaid on the gate bands,
     # so dwell-at-N, dwell-at-B, and reach-and-hold-F behaviors read against the
@@ -1809,6 +1964,7 @@ def _asset_plot_gate_diagnostic(
             np.arange(selector.size, dtype=np.float64),
             selector,
             color=_asset_tri_gate_policy_color(policy_id),
+            linestyle=line_styles[policy_id],
             linewidth=1.1 if is_paldi else 0.5,
             alpha=1.0 if is_paldi else 0.7,
             zorder=3 if is_paldi else 2,
@@ -1845,23 +2001,27 @@ def _asset_plot_gate_diagnostic(
     ax.set_title(
         "C", loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=3.0
     )
-    ax.set_title("Exemplar selector traces", loc="center", fontsize=_ASSET_TITLE_SIZE, pad=3.0)
 
     from matplotlib.lines import Line2D
 
     legend_policies = [str(row["policy_id"]) for row in summary_rows]
     fig.legend(
         [
-            Line2D([0], [0], color=_asset_tri_gate_policy_color(policy_id), linewidth=1.6)
+            Line2D(
+                [0], [0],
+                color=_asset_tri_gate_policy_color(policy_id),
+                linestyle=line_styles[policy_id],
+                linewidth=1.6,
+            )
             for policy_id in legend_policies
         ],
         [_ASSET_TRI_GATE_LABELS[policy_id] for policy_id in legend_policies],
         loc="upper center",
-        bbox_to_anchor=(0.5, 1.02),
+        bbox_to_anchor=(0.5, 0.995),
         ncol=len(legend_policies),
         fontsize=_ASSET_TICK_SIZE,
         columnspacing=0.9,
-        handlelength=1.4,
+        handlelength=2.6,
     )
     fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.9), w_pad=1.1)
     return save_figure(fig, output_path, plt_module=plt_module)
@@ -1872,6 +2032,7 @@ def _asset_plot_gate_diagnostic_trajectories(
     *,
     result_roots: Sequence[Path],
     exemplar_seed: int = _ASSET_TRI_GATE_EXEMPLAR_SEED,
+    exp_id: str = _ASSET_TRI_GATE_EXP_ID,
 ) -> Path:
     """Appendix companion: one exemplar selector trace per acquisition objective.
 
@@ -1881,13 +2042,13 @@ def _asset_plot_gate_diagnostic_trajectories(
     """
     records = [
         record
-        for record in _compound_trace_records(result_roots, exp_id=_ASSET_TRI_GATE_EXP_ID)
+        for record in _compound_trace_records(result_roots, exp_id=exp_id)
         if record.seed == int(exemplar_seed)
     ]
     if not records:
         roots_text = ", ".join(str(root) for root in result_roots)
         raise RuntimeError(
-            f"No trajectory R2 curves available for {_ASSET_TRI_GATE_EXP_ID} "
+            f"No trajectory R2 curves available for {exp_id} "
             f"seed {exemplar_seed} in {roots_text}"
         )
     by_policy = {record.policy_id: record for record in records}
@@ -1944,8 +2105,8 @@ def _asset_plot_gate_diagnostic_trajectories(
         ax.tick_params(axis="both", labelsize=5.2, pad=1.0)
     for idx in range(len(policy_ids), n_row * n_col):
         axes[idx // n_col, idx % n_col].set_visible(False)
-    # Gate letters ride the right edge of the last column, keyed by band color.
-    right_ax = axes[0, n_col - 1]
+    # Keep gate labels on a visible panel when fewer than three policies exist.
+    right_ax = axes[0, min(n_col, len(policy_ids)) - 1]
     for (_key, label, color), center in zip(
         _ASSET_TRI_GATE_GATE_COLORS[1:], _ASSET_TRI_GATE_CENTERS, strict=True
     ):
@@ -1991,7 +2152,7 @@ def _asset_flex_groups() -> tuple[tuple[str, tuple[_ExperimentSuiteSource, ...]]
         ref.suite_id: _ExperimentSuiteSource(
             ref.suite_id,
             display_titles.get(ref.suite_id, ref.label),
-            ref.session_root / "tracks" / ref.suite_id,
+            ref.results_root / "tracks" / ref.suite_id,
         )
         for ref in _groups_mod.groups()["flex_comparison"]
     }
@@ -2022,7 +2183,10 @@ def _asset_flex_groups() -> tuple[tuple[str, tuple[_ExperimentSuiteSource, ...]]
     )
 
 
-def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> list[Path]:
+def _asset_plot_flex_comparison(
+    output_path: Path, *, r2_summary: str,
+    skipped: list[tuple[str, str]] | None = None,
+) -> list[Path]:
     """FLEX state-source/update variants: short final-R2 bars plus recovery curves.
 
     One bar figure and one recovery figure per condition group, matching how the
@@ -2030,6 +2194,17 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> list[P
     """
     written: list[Path] = []
     for suffix, sources in _asset_flex_groups():
+        if skipped is not None:
+            available = []
+            for source in sources:
+                rows = read_trace_csv(source.suite_dir / "summary" / "metrics.csv")
+                if any(row.get("policy_id") in _ASSET_FLEX_POLICIES for row in rows):
+                    available.append(source)
+                else:
+                    skipped.append((str(source.suite_dir), "No FLEX runs; condition omitted from FLEX assets"))
+            sources = tuple(available)
+            if not sources:
+                continue
         _asset_require_suite_dirs([source.suite_dir for source in sources])
         metric_rows = _asset_method_metric_rows(
             sources,
@@ -2053,6 +2228,7 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> list[P
                 sources=sources,
                 policy_ids=_ASSET_FLEX_POLICIES,
                 metric_rows=metric_rows,
+                r2_summary=r2_summary,
                 single_column=True,
                 short=True,
                 ylim=_ASSET_FLEX_BAR_YLIM,
@@ -2067,12 +2243,95 @@ def _asset_plot_flex_comparison(output_path: Path, *, r2_summary: str) -> list[P
                 policy_ids=_ASSET_FLEX_POLICIES,
                 r2_summary=r2_summary,
                 policy_labels=_ASSET_FLEX_LABELS,
+                single_column=len(sources) == 1,
             )
         )
     return written
 
 
-def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]:
+def _asset_plot_flex_combined(output_path: Path, *, r2_summary: str) -> Path:
+    """Six-condition FLEX recovery panel from the configured saved summaries."""
+    sources = [source for _, group in _asset_flex_groups() for source in group
+               if source.exp_id != "gated_duffing_challenging"]
+    _asset_require_suite_dirs([source.suite_dir for source in sources])
+    plt = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt.subplots(2, 3, figsize=(516 / 72.27, 4.4))
+    for idx, (ax, source) in enumerate(zip(axes.flat, sources, strict=True)):
+        curves = _asset_r2_curve_rows(source.suite_dir, r2_summary=r2_summary)
+        for policy in _ASSET_FLEX_POLICIES:
+            rows = curves.get(policy, [])
+            if not rows:
+                raise RuntimeError(f"Missing {policy} curves in {source.suite_dir}")
+            steps = [row["step"] for row in rows]
+            color = _asset_baseline_policy_color(policy)
+            ax.plot(steps, [row["center"] for row in rows], color=color,
+                    linewidth=.9, label=_ASSET_FLEX_LABELS[policy])
+            ax.fill_between(steps, [row["lower"] for row in rows],
+                            [row["upper"] for row in rows], color=color,
+                            alpha=.1, linewidth=0)
+        ax.set_yscale("symlog", linthresh=.1)
+        ax.set_xlim(left=0)
+        ax.set_xlabel("Environment steps")
+        if idx % 3 == 0:
+            ax.set_ylabel(_ASSET_PREDICTIVE_R2_LABEL)
+        ax.set_title(chr(65 + idx), loc="left", fontweight="bold")
+        ax.set_title(source.label, fontsize=_ASSET_TITLE_SIZE)
+        _style_experiment_axis(ax)
+    handles, labels = axes.flat[0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="upper center", ncol=3,
+               fontsize=_ASSET_TICK_SIZE)
+    fig.tight_layout(rect=(0, 0, 1, .94), w_pad=.8, h_pad=.8)
+    return save_figure(fig, output_path, plt_module=plt)
+
+
+def _asset_plot_constraints_combined(
+    output_path: Path, *,
+    panels: Sequence[tuple[Sequence[_ExperimentSuiteSource], Sequence[Mapping[str, Any]]]],
+    r2_summary: str,
+) -> Path:
+    """Draw SNR and loading panels at the manuscript's 516 pt text width."""
+    from matplotlib.lines import Line2D
+
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt_module.subplots(1, 2, figsize=(516.0 / 72.27, 1.65))
+    fig.subplots_adjust(left=0.075, right=0.995, bottom=0.25, top=0.84, wspace=0.14)
+    for ax, label, (sources, rows) in zip(axes, ("A", "B"), panels):
+        _asset_plot_final_bar(
+            output_path, sources=sources, policy_ids=_ASSET_MATCHED_POLICIES,
+            metric_rows=rows, r2_summary=r2_summary, ylim=(0.0, 1.0), ax=ax,
+        )
+        legend = ax.get_legend()
+        ax.legend(legend.legend_handles,
+                  [text.get_text().replace("true-model reference", "True model")
+                   for text in legend.get_texts()],
+                  loc="upper left", ncol=len(legend.legend_handles),
+                  fontsize=_ASSET_TICK_SIZE, handlelength=1.0,
+                  borderpad=0.3, columnspacing=0.8)
+        ax.set_yticks(np.linspace(0.0, 1.0, 6))
+        ax.text(-0.085, 1.10, label, transform=ax.transAxes,
+                fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
+    axes[1].set_ylabel("")
+    fig.legend(
+        [Line2D([0], [0], color=_asset_baseline_policy_color(policy), linewidth=1.6)
+         for policy in _ASSET_MATCHED_POLICIES],
+        [_asset_policy_label(policy) for policy in _ASSET_MATCHED_POLICIES],
+        loc="upper left", bbox_to_anchor=(0.075, 1.015), ncol=6,
+        fontsize=_ASSET_TICK_SIZE, columnspacing=1.0, handlelength=1.4,
+    )
+    _asset_write_method_csv(output_path.with_suffix(".csv"),
+                            [row for _, rows in panels for row in rows],
+                            r2_summary=r2_summary)
+    return save_figure(fig, output_path, plt_module=plt_module)
+
+
+def _asset_plot_constraints(
+    output_path: Path, *, r2_summary: str,
+    skipped: list[tuple[str, str]] | None = None,
+) -> list[Path]:
     bottleneck_sources = _asset_bottleneck_sources()
     figures = (
         ("snr", "Observation SNR", tuple(bottleneck_sources[:3])),
@@ -2095,13 +2354,28 @@ def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]
         ("action", "Action budget", (bottleneck_sources[0], *bottleneck_sources[3:])),
     )
     written: list[Path] = []
+    observation_panels = []
     for suffix, _figure_title, sources in figures:
-        _asset_require_suite_dirs([source.suite_dir for source in sources])
+        try:
+            _asset_require_suite_dirs([source.suite_dir for source in sources])
+        except FileNotFoundError as exc:
+            if skipped is None:
+                raise
+            skipped.append((str(output_path.with_stem(f"{output_path.stem}_{suffix}")), str(exc)))
+            continue
         metric_rows = _asset_method_metric_rows(
             sources,
             _ASSET_MATCHED_POLICIES,
             r2_summary=r2_summary,
         )
+        if suffix in {"snr", "asymmetry"}:
+            combined_sources = tuple(
+                _ExperimentSuiteSource(source.exp_id,
+                                       "Biased" if source.exp_id == "gated_duffing_asymmetric" else source.label,
+                                       source.suite_dir)
+                for source in sources
+            )
+            observation_panels.append((combined_sources, metric_rows))
         bar_path = output_path.with_name(f"{output_path.stem}_{suffix}{output_path.suffix}")
         curves_path = output_path.with_name(
             f"{output_path.stem}_{suffix}_recovery{output_path.suffix}"
@@ -2119,6 +2393,7 @@ def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]
                 sources=sources,
                 policy_ids=bar_policies,
                 metric_rows=metric_rows,
+                r2_summary=r2_summary,
             )
         )
         written.append(
@@ -2129,18 +2404,46 @@ def _asset_plot_constraints(output_path: Path, *, r2_summary: str) -> list[Path]
                 r2_summary=r2_summary,
             )
         )
+    if len(observation_panels) == 2:
+        written.append(_asset_plot_constraints_combined(
+            output_path, panels=observation_panels, r2_summary=r2_summary,
+        ))
     return written
 
 
-def _asset_plot_eig_components(output_path: Path) -> list[Path]:
-    """Write the EIG components figure at both manuscript column widths."""
-    from experiments.eig_1d_example import main as _eig_1d_main
+def _asset_plot_eig_components(output_path: Path, *, results_dir: Path) -> list[Path]:
+    """Render both column widths from the saved scalar arrays and parameters."""
+    from experiments.eig_1d_example import _apply_eig_style, build_figure
 
-    single_path = output_path.with_name(f"{output_path.stem}_single{output_path.suffix}")
-    return [
-        _eig_1d_main(["--output", str(output_path), "--column", "double"]),
-        _eig_1d_main(["--output", str(single_path), "--column", "single"]),
-    ]
+    results_dir = results_dir.resolve()
+    array_path = results_dir / "figure_mechanistic.npz"
+    metadata_path = results_dir / "figure_mechanistic.json"
+    metadata = json.loads(metadata_path.read_text())
+    with np.load(array_path, allow_pickle=False) as saved:
+        curve = {key: saved[key] for key in saved.files}
+    inputs = {str(path): hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in (array_path, metadata_path)}
+    plt = load_plotting(output_path, apply_style=_apply_eig_style,
+                        path_is_file=True, use_agg=True)
+    if plt is None:
+        raise RuntimeError("Matplotlib is required for the mechanistic figure")
+    written = []
+    for column in ("double", "single"):
+        path = (output_path if column == "double" else
+                output_path.with_stem(f"{output_path.stem}_single"))
+        fig = build_figure(curve, **{key: metadata[key] for key in
+                           ("theta_mean", "theta_var", "c", "b", "dt")},
+                           plt=plt, single_column=column == "single")
+        written.append(save_figure(fig, path, plt_module=plt))
+        shutil.copyfile(array_path, path.with_suffix(".npz"))
+        path.with_suffix(".json").write_text(json.dumps(
+            metadata | {"output": str(path), "column": column,
+                        "source_sha256": inputs, "rendered_from_saved_arrays": True},
+            indent=2) + "\n")
+        caption = results_dir / "caption.tex"
+        if caption.is_file():
+            shutil.copyfile(caption, path.with_suffix(".caption.tex"))
+    return written
 
 
 def _assets_build_parser() -> argparse.ArgumentParser:
@@ -2158,7 +2461,12 @@ def _assets_build_parser() -> argparse.ArgumentParser:
         "--results-dir",
         type=Path,
         default=None,
-        help="TBME results root. Defaults to results/tbme.",
+        help="Result folder containing tracks/ directly; assets/ is written here by default.",
+    )
+    parser.add_argument(
+        "--mechanistic-results-dir", type=Path,
+        default=_RESULTS_ROOT / "scalar_final_q005_20260912",
+        help="Saved scalar result folder containing figure_mechanistic.npz and .json.",
     )
     parser.add_argument(
         "--output-dir",
@@ -2182,8 +2490,20 @@ def _assets_build_parser() -> argparse.ArgumentParser:
         help=(
             "Root holding the SimpleTriGate diagnostic runs (searched "
             f"recursively). Defaults to the {_ASSET_TRI_GATE_EXP_ID} suite in "
-            "the session tracks."
+            "the result tracks."
         ),
+    )
+    parser.add_argument(
+        "--tri-gate-exp-id",
+        type=str,
+        default=_ASSET_TRI_GATE_EXP_ID,
+        help="Suite id of the three-gate runs under --tri-gate-root (same gate geometry).",
+    )
+    parser.add_argument(
+        "--tri-gate-exemplar-seed",
+        type=int,
+        default=_ASSET_TRI_GATE_EXEMPLAR_SEED,
+        help="Seed drawn in the three-gate exemplar selector panels.",
     )
     return parser
 
@@ -2203,22 +2523,27 @@ def assets_main(argv: list[str] | None = None) -> int:
     tri_gate_root = (
         Path(args.tri_gate_root)
         if args.tri_gate_root is not None
-        else _suite_dir("objective_ablation", _ASSET_TRI_GATE_EXP_ID)
+        else _suite_dir("objective_ablation", str(args.tri_gate_exp_id))
     )
 
+    tri_gate_kwargs = {
+        "exp_id": str(args.tri_gate_exp_id),
+        "exemplar_seed": int(args.tri_gate_exemplar_seed),
+    }
     output_dir = (
         Path(args.output_dir)
         if args.output_dir is not None
-        else _groups_mod.session_root() / "assets"
+        else _groups_mod.results_dir() / "assets"
     ).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     selected_groups = set(group_ids)
+    skipped: list[tuple[str, str]] = []
     asset_specs: list[tuple[Path, set[str], Any, dict[str, str]]] = [
         (
             output_dir / "tbme_fig_mechanistic.pdf",
             set(),
             _asset_plot_eig_components,
-            {},
+            {"results_dir": args.mechanistic_results_dir},
         ),
         (
             output_dir / "tbme_fig_dynamics_full.pdf",
@@ -2230,7 +2555,7 @@ def assets_main(argv: list[str] | None = None) -> int:
             output_dir / "tbme_fig_gate_diagnostic_trajectories.pdf",
             {"objective_ablation"},
             _asset_plot_gate_diagnostic_trajectories,
-            {"result_roots": (tri_gate_root,)},
+            {"result_roots": (tri_gate_root,), **tri_gate_kwargs},
         ),
     ]
     for r2_summary in r2_summaries:
@@ -2248,7 +2573,7 @@ def assets_main(argv: list[str] | None = None) -> int:
                     r2_output_dir / "tbme_fig_constraints.pdf",
                     {"simple_system_identification", "observation_action_bottleneck"},
                     _asset_plot_constraints,
-                    kwargs,
+                    {**kwargs, "skipped": skipped},
                 ),
                 (
                     r2_output_dir / "tbme_fig_objective_ablation.pdf",
@@ -2260,18 +2585,23 @@ def assets_main(argv: list[str] | None = None) -> int:
                     r2_output_dir / "tbme_fig_flex_comparison.pdf",
                     {"flex_comparison"},
                     _asset_plot_flex_comparison,
+                    {**kwargs, "skipped": skipped},
+                ),
+                (
+                    r2_output_dir / "tbme_fig_flex_comparison_combined.pdf",
+                    {"flex_comparison"},
+                    _asset_plot_flex_combined,
                     kwargs,
                 ),
                 (
                     r2_output_dir / "tbme_fig_gate_diagnostic.pdf",
                     {"objective_ablation"},
                     _asset_plot_gate_diagnostic,
-                    {**kwargs, "result_roots": (tri_gate_root,)},
+                    {**kwargs, "result_roots": (tri_gate_root,), **tri_gate_kwargs},
                 ),
             ]
         )
     written: list[Path] = []
-    skipped: list[tuple[str, str]] = []
     for output_path, required_groups, plotter, kwargs in asset_specs:
         if not required_groups.issubset(selected_groups):
             missing = required_groups - selected_groups
@@ -2293,6 +2623,11 @@ def assets_main(argv: list[str] | None = None) -> int:
     lines = [
         "TBME manuscript asset assembly",
         "",
+        f"Result folder: {_groups_mod.results_dir()}",
+        f"Three-gate input: {tri_gate_root.resolve()}",
+        f"Three-gate experiment: {args.tri_gate_exp_id}",
+        f"Mechanistic input: {args.mechanistic_results_dir.resolve()}",
+        "",
         "Generated assets:",
         *[_asset_display_path(path) for path in written],
         "",
@@ -2306,7 +2641,7 @@ def assets_main(argv: list[str] | None = None) -> int:
     lines.append("Component roots:")
     for group_id in group_ids:
         for ref in _groups_mod.groups()[group_id]:
-            suite_dir = ref.session_root / "tracks" / ref.suite_id
+            suite_dir = ref.results_root / "tracks" / ref.suite_id
             lines.append(_asset_display_path(suite_dir / "summary" / "figures"))
             lines.append(_asset_display_path(suite_dir / "experiment" / "figures"))
     manifest = output_dir / "tbme_assets_manifest.txt"

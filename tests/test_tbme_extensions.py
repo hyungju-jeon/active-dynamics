@@ -331,3 +331,41 @@ def test_three_gate_diagnostic_fixed_gate_rankings_and_full_rank_main_gate():
     )
     assert nuisance_ratio == pytest.approx(5.0, abs=1e-4)
     assert torch.linalg.svdvals(main_param)[2] > 0.73
+
+
+def test_three_gate_tradeoff_matches_retuned_equation_and_catalog():
+    from actdyn.environment.vectorfield import vf_from_string
+    from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
+    from experiments.experiment_definitions import configure_catalogs
+    from experiments.tbme.exp_objective_ablation import EXPERIMENT_SUITES
+
+    states = torch.tensor([
+        [-0.5, 0.2, -0.1, 0.3, 0.4],
+        [-0.1, 0.2, -0.1, 0.3, 0.4],
+        [0.3, 0.2, -0.1, 0.3, 0.4],
+    ], dtype=torch.float64)
+    theta = torch.tensor([0.7, 1.2, -0.3], dtype=torch.float64)
+    gates = torch.exp(-0.5 * ((states[:, :1] - states.new_tensor([-.5, -.1, .3])) / .1) ** 2)
+    for system, balanced, main, nuisance_ratio in (
+        ("three_gate_tradeoff", .6, .4, 15.),
+        ("three_gate_diagnostic", 1., .75, 5.),
+    ):
+        expected = torch.zeros_like(states)
+        expected[:, 0] = -(states[:, 0] + 1.)
+        expected[:, 1:4] = (-4. * states[:, 1:4]
+            + gates[:, 1:2] * balanced * theta
+            + gates[:, 2:3] * states.new_tensor([5., 5., main]) * theta)
+        expected[:, 1] += 20. * gates[:, 0] * (theta[0] + nuisance_ratio * states[:, 4])
+        actual = vf_from_string[system](dyn_param=theta).compute(states)
+        torch.testing.assert_close(actual, expected)
+    try:
+        bundle = configure_tbme_catalogs()
+        suite = EXPERIMENT_SUITES["three_gate_tradeoff"]
+        preset = bundle.environment_presets[suite["env_preset_id"]]
+        original = bundle.environment_presets["tbme_three_gate_diagnostic"]
+        assert preset.resolved_dynamics_type() == "three_gate_tradeoff"
+        assert (preset.latent_dim, preset.action_dim, preset.embedding_dim) == (5, 1, 3)
+        assert preset.observation_loading_gains == original.observation_loading_gains
+        assert preset.trajectory_eval_state_indices == original.trajectory_eval_state_indices
+    finally:
+        configure_catalogs()

@@ -8,6 +8,7 @@ DEFAULT_EXP_IDS = (
     # Designed three-gate diagnostic; lives in the shared session tracks like
     # the gated-Duffing suites and backs the manuscript gate-diagnostic figure.
     "three_gate_diagnostic",
+    "three_gate_tradeoff",
 )
 
 MODEL_IDS = [
@@ -91,6 +92,23 @@ EXPERIMENT_SUITES = {
     "three_gate_diagnostic": {
         **SHARED_EXP_ARGS,
         "env_preset_id": "tbme_three_gate_diagnostic",
+        "model_ids": [
+            "compound_active_planning",
+            "compound_active_fully_observable",
+            "compound_active_e_optimality",
+            "compound_active_state_information",
+            "compound_active_dynamics",
+            "compound_active_dynamics_logdet",
+            "compound_active_observation_variance",
+            "compound_active_state_variance",
+            "prbs",
+            "random",
+        ],
+        "total_steps": 2000,
+    },
+    "three_gate_tradeoff": {
+        **SHARED_EXP_ARGS,
+        "env_preset_id": "tbme_three_gate_tradeoff",
         "model_ids": [
             "compound_active_planning",
             "compound_active_fully_observable",

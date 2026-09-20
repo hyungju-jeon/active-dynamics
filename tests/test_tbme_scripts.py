@@ -17,6 +17,69 @@ from actdyn.utils.experiment_runtime import read_trace_csv, write_trace_csv
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_figure_roots_use_tracks_directly(tmp_path: Path, monkeypatch) -> None:
+    from experiments.tbme.figures import groups, summary, diagnostics
+
+    # A leftover session folder must not redirect a selected result cohort.
+    (tmp_path / "session_99" / "tracks").mkdir(parents=True)
+    expected = tmp_path / "tracks" / "duffing"
+    expected.mkdir(parents=True)
+    monkeypatch.setattr(groups, "_results_dir", tmp_path)
+    monkeypatch.setattr(groups, "_groups", groups._build_groups(tmp_path))
+    assert groups.suite_dir("simple_system_identification", "duffing") == expected
+    paths, _ = summary._parse_selection("duffing:random")
+    assert paths == [expected]
+    assert diagnostics._default_output_dir() == tmp_path / "diagnostics"
+    assert all(ref.results_root == tmp_path for refs in groups.groups().values()
+               for ref in refs)
+
+
+def test_figure_cli_forwards_saved_asset_inputs(tmp_path: Path) -> None:
+    from experiments.tbme import generate_figures
+    from experiments.tbme.figures.assets import _assets_build_parser
+
+    args = generate_figures.build_parser().parse_args([
+        "assets", "--results-dir", str(tmp_path),
+        "--mechanistic-results-dir", str(tmp_path / "scalar"),
+        "--tri-gate-exp-id", "three_gate_tradeoff", "--tri-gate-exemplar-seed", "90",
+    ])
+    forwarded = _assets_build_parser().parse_args(generate_figures._assets_args(args))
+    assert forwarded.results_dir == tmp_path
+    assert forwarded.mechanistic_results_dir == tmp_path / "scalar"
+    assert forwarded.tri_gate_exp_id == "three_gate_tradeoff"
+    assert forwarded.tri_gate_exemplar_seed == 90
+
+
+def test_mechanistic_assets_render_saved_arrays(tmp_path: Path, monkeypatch) -> None:
+    from experiments import eig_1d_example as scalar
+    from experiments.tbme.figures.assets import _asset_plot_eig_components
+
+    source = tmp_path / "scalar"
+    source.mkdir()
+    parameters = dict(theta_mean=0.9, theta_var=1.7, c=-1.6, b=0., dt=1.,
+                      state_var=.03, state_noise=.07, horizon=5)
+    curve = scalar.compute_eig_curve(
+        np.unique(np.r_[np.linspace(0., 4.8, 101), scalar._CANDIDATE_Z]), **parameters)
+    arrays = source / "figure_mechanistic.npz"
+    np.savez_compressed(arrays, **curve)
+    (source / "figure_mechanistic.json").write_text(json.dumps(parameters))
+
+    def no_recomputation(*args, **kwargs):
+        raise AssertionError("Asset rendering must use the saved scalar result")
+
+    monkeypatch.setattr(scalar, "compute_eig_curve", no_recomputation)
+    outputs = _asset_plot_eig_components(tmp_path / "assets" / "mechanistic.pdf",
+                                         results_dir=source)
+    assert len(outputs) == 2
+    for output in outputs:
+        assert output.is_file() and output.with_suffix(".svg").is_file()
+        assert output.with_suffix(".npz").read_bytes() == arrays.read_bytes()
+        metadata = json.loads(output.with_suffix(".json").read_text())
+        assert metadata["state_noise"] == .07
+        assert metadata["rendered_from_saved_arrays"]
+        assert str(arrays) in metadata["source_sha256"]
+
+
 def _load_module(name: str, rel_path: str):
     module_path = REPO_ROOT / rel_path
     spec = importlib.util.spec_from_file_location(name, module_path)
@@ -54,6 +117,10 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
             "0,10",
             "--base-dir",
             "results/tbme",
+            "--planning-rollout",
+            "measurement_conditioned",
+            "--learning-sensitivity",
+            "measurement_corrected",
         ]
     )
 
@@ -75,6 +142,10 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
             "tbme_tracks",
             "--mode",
             "summary",
+            "--planning-rollout",
+            "measurement_conditioned",
+            "--learning-sensitivity",
+            "measurement_corrected",
         ]
     )
 
@@ -126,6 +197,39 @@ def test_asset_true_model_r2_ceiling_reflects_process_noise(
 
     assert ceiling is not None
     assert ceiling < 1.0
+
+
+def test_true_reference_uses_evaluation_noise_and_coordinates(tmp_path: Path, monkeypatch) -> None:
+    from experiments.tbme.figures import assets
+    from actdyn.utils import validation
+
+    _write_r2_ceiling_metadata(tmp_path, state_noise=.8)
+    path = next(tmp_path.rglob("run_metadata.json"))
+    metadata = json.loads(path.read_text())
+    metadata.update(trajectory_eval_state_noise=0.0)
+    path.write_text(json.dumps(metadata))
+    assert assets._asset_true_model_r2_ceiling(tmp_path) == 1.0
+
+    metadata.update(trajectory_eval_state_noise=.03, state_low=[-1.] * 5,
+                    trajectory_eval_state_low=[-.2] * 5,
+                    trajectory_eval_state_high=[.2] * 5,
+                    trajectory_eval_state_indices=[1, 2, 3],
+                    trajectory_eval_coordinate_balanced=True)
+    path.write_text(json.dumps(metadata))
+    captured = {}
+
+    def evaluate(**kwargs):
+        captured.update(kwargs)
+        return np.array([.7, .8, .95])
+
+    monkeypatch.setattr(validation, "trajectory_r2_vectorfield_many", evaluate)
+    assert assets._asset_true_model_r2_ceiling(tmp_path, r2_summary="median_iqr") == .8
+    assert captured["state_noise"] == .03
+    assert captured["state_dim"] == 5
+    assert captured["state_low"] == [-.2] * 5
+    assert captured["state_high"] == [.2] * 5
+    assert captured["state_indices"] == [1, 2, 3]
+    assert captured["coordinate_balanced"] is True
 
 
 def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
@@ -231,13 +335,25 @@ def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
     ) == bar_path
     assert recovery_path.exists()
     assert bar_path.exists()
+    for path in (recovery_path, bar_path):
+        axes = json.loads(path.with_suffix(".audit.json").read_text())["r2_axes"]
+        assert len(axes) == 1
+        assert axes[0]["ylim"] == [.25, 1.]
+        assert axes[0]["ylabel"] == module._ASSET_PREDICTIVE_R2_LABEL
+
+    monkeypatch.setattr(module, "_asset_true_model_r2_ceiling",
+                        lambda path, *, r2_summary: .9 if r2_summary == "median_iqr" else .8)
+    module._asset_plot_final_bar(bar_path, sources=[source], policy_ids=["adaptive"],
+                                metric_rows=metric_rows, r2_summary="median_iqr")
+    reference = json.loads(bar_path.with_suffix(".audit.json").read_text())["r2_axes"][0]["references"]
+    assert reference == [dict(label="true-model reference (Condition)", value=.9, linestyle=":")]
 
 
 def test_asset_r2_summary_selection_is_explicit() -> None:
     from experiments.tbme.figures import assets as module
 
-    assert module._ASSET_PREDICTIVE_R2_LABEL == "Predictive R²"
-    assert module._ASSET_FINAL_R2_LABEL == "Final predictive R²"
+    assert module._ASSET_PREDICTIVE_R2_LABEL == r"$R^2_{\mathrm{VF}\text{-}\mathrm{roll}}$"
+    assert module._ASSET_FINAL_R2_LABEL == module._ASSET_PREDICTIVE_R2_LABEL
     assert module._asset_parse_r2_summaries("mean_sem,median_iqr") == [
         "mean_sem",
         "median_iqr",
@@ -325,7 +441,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
             SimpleNamespace(
                 suite_id=exp_id,
                 label=f"Condition {idx}",
-                session_root=tmp_path,
+                results_root=tmp_path,
             )
         )
 
@@ -375,6 +491,44 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     assert failed_row["n_r2"] == "1"
     assert failed_row["n_r2_nonfinite"] == "1"
     assert failed_row["r2_nonfinite_rate"] == "0.5"
+    # The matched cohort has no Challenging FLEX runs. Its remaining single
+    # condition still needs enough width for the legend and must pass the audit.
+    (tmp_path / "tracks/gated_duffing_challenging/summary/metrics.csv").unlink()
+    hard_group = next(group for group in module._asset_flex_groups() if group[0] == "hard")
+    monkeypatch.setattr(module, "_asset_flex_groups", lambda: (hard_group,))
+    skipped = []
+    subset = module._asset_plot_flex_comparison(
+        tmp_path / "subset" / "flex.pdf", r2_summary="mean_sem", skipped=skipped)
+    assert len(subset) == 2 and all(path.exists() for path in subset)
+    assert len(skipped) == 1 and "gated_duffing_challenging" in skipped[0][0]
+
+
+def test_asset_subsets_report_absent_experiments(tmp_path: Path, monkeypatch) -> None:
+    from experiments.tbme.figures import assets, groups
+
+    monkeypatch.setattr(groups, "_groups", groups._build_groups(tmp_path))
+    suites = ["gated_duffing", "gated_duffing_asymmetric",
+              "gated_duffing_observation_bottleneck_mild",
+              "gated_duffing_observation_bottleneck_strong"]
+    for suite in suites:
+        (tmp_path / "tracks" / suite).mkdir(parents=True)
+    monkeypatch.setattr(assets, "_asset_method_metric_rows", lambda *a, **k: [])
+    monkeypatch.setattr(assets, "_asset_plot_final_bar", lambda path, **k: path)
+    monkeypatch.setattr(assets, "_asset_plot_recovery_curves", lambda path, **k: path)
+    monkeypatch.setattr(assets, "_asset_plot_constraints_combined", lambda path, **k: path)
+    skipped = []
+    written = assets._asset_plot_constraints(tmp_path / "constraints.pdf",
+                                             r2_summary="mean_sem", skipped=skipped)
+    assert [p.stem for p in written] == ["constraints_snr", "constraints_snr_recovery",
+                                        "constraints_asymmetry", "constraints_asymmetry_recovery",
+                                        "constraints"]
+    assert len(skipped) == 1 and "action_bottleneck" in skipped[0][1]
+    # No suite has FLEX rows: report the missing data instead of drawing empty panels.
+    skipped = []
+    assert assets._asset_plot_flex_comparison(tmp_path / "flex.pdf",
+                                             r2_summary="mean_sem", skipped=skipped) == []
+    assert len(skipped) == 7
+    assert all("No FLEX runs" in reason for _, reason in skipped)
 
 
 def _write_tri_gate_run(
@@ -439,8 +593,12 @@ def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None
 
     assert written == output_path
     assert output_path.exists()
+    audit = json.loads(output_path.with_suffix(".audit.json").read_text())["r2_axes"]
+    assert audit[0]["ylim"] == [.25, 1.]
+    assert audit[0]["references"][0]["value"] == 1.
+    assert audit[0]["references"][0]["linestyle"] == ":"
     # The suite ships with the objective_ablation group, so the assets CLI can
-    # resolve its session tracks directory as the default result root.
+    # resolve its result tracks directory as the default result root.
     assert any(
         ref.suite_id == module._ASSET_TRI_GATE_EXP_ID
         for ref in __import__("experiments.tbme.figures.groups", fromlist=["groups"]).groups()["objective_ablation"]
@@ -939,16 +1097,16 @@ def test_exact_rhc_core_plans_and_updates_one_episode():
 
     first_info = policy.update(
         {
-            "env_state": torch.tensor([[[0.0]]], dtype=torch.float32),
-            "next_env_state": torch.tensor([[[0.1]]], dtype=torch.float32),
+            "model_state": torch.tensor([[[0.0]]], dtype=torch.float32),
+            "next_model_state": torch.tensor([[[0.1]]], dtype=torch.float32),
             "env_action": action_seq[:, :1],
         }
     )
     assert first_info["parameter_posterior_updated"] is False
     info = policy.update(
         {
-            "env_state": torch.tensor([[[0.1]]], dtype=torch.float32),
-            "next_env_state": torch.tensor([[[0.15]]], dtype=torch.float32),
+            "model_state": torch.tensor([[[0.1]]], dtype=torch.float32),
+            "next_model_state": torch.tensor([[[0.15]]], dtype=torch.float32),
             "env_action": action_seq[:, 1:2],
         }
     )
@@ -957,6 +1115,94 @@ def test_exact_rhc_core_plans_and_updates_one_episode():
     assert policy._internal_model.prior_precision == pytest.approx(1e-8)
     assert info["parameter_posterior_updated"] is True
     assert info["rhc_episode_index"] == 1.0
+
+
+def test_rhc_agent_uses_filtered_states_and_fits_each_transition_once(monkeypatch):
+    pytest.importorskip('casadi')
+    from actdyn.policy.baseline_rhc import RecedingHorizonCuriosityPolicy
+    from actdyn.policy.rhc_planner import RhcMultipleShootingPlanner
+
+    from actdyn.core.agent import Agent
+
+    class FilteredModel:
+        def __init__(self):
+            self.device = torch.device('cpu')
+            self.k_theta = 1
+            self._theta_block_steps = 0
+
+        def get_state(self):
+            return self._state.clone()
+
+        def reset(self, obs):
+            self._state = torch.tensor([[[10.0, 20.0]]])
+            return None, {'latent_state': self._state.clone()}
+
+        def update(self, recent, update_theta=True):
+            self._state += torch.tensor([0.25, -0.5])
+            return {'env_action': torch.zeros((1, 1, 2)),
+                    'latent_state': self._state.clone()}
+
+    class BatchedEnv:
+        def __init__(self):
+            self.action_space = gym.spaces.Box(low=-1., high=1., shape=(2,), dtype=float)
+
+        def reset(self, seed=None):
+            self.step_index = 0
+            obs = torch.zeros(1, 1, 2)
+            return obs, {'latent_state': obs.clone()}
+
+        def step(self, action):
+            self.step_index += 1
+            obs = torch.full((1, 1, 2), float(self.step_index))
+            return obs, 0., False, False, {'latent_state': obs.clone(), 'env_action': action}
+
+    planned_states = []
+
+    def plan(planner, *, x0, objective):
+        planned_states.append(x0.copy())
+        return SimpleNamespace(actions=np.tile([0.2, -0.3], (2, 1)), cost=0.0)
+
+    monkeypatch.setattr(RhcMultipleShootingPlanner, 'plan', plan)
+    env = BatchedEnv()
+    policy = RecedingHorizonCuriosityPolicy(
+        action_space=env.action_space, horizon=2, num_features=8,
+        optimize_hyperparams=False, device='cpu', seed=0,
+    )
+    agent = Agent(env=env, model=FilteredModel(), policy=policy,
+                  buffer_length=2, device='cpu')
+    agent.reset(seed=0)
+    for step in range(1, 5):
+        agent.step(agent.plan())
+        assert policy.last_update_info['model_samples'] == (step // 2) * 2
+        assert policy.last_update_info['episode_updates'] == step // 2
+
+    np.testing.assert_allclose(planned_states, [[10., 20.], [10.5, 19.]])
+    expected_states = np.array([[10., 20.], [10.25, 19.5],
+                                [10.5, 19.], [10.75, 18.5]])
+    np.testing.assert_allclose(policy._internal_model._X[:, :2], expected_states)
+    np.testing.assert_allclose(policy._internal_model._X[:, 2:],
+                               np.tile([0.2, -0.3], (4, 1)))
+    np.testing.assert_allclose(policy._internal_model._Y,
+                               np.tile([0.25, -0.5], (4, 1)))
+
+    with pytest.raises(ValueError, match='requires model_state'):
+        policy.update({'env_state': torch.zeros(1, 1, 2),
+                       'next_env_state': torch.ones(1, 1, 2),
+                       'env_action': torch.zeros(1, 1, 2)})
+
+
+def test_rhc_rejects_existing_results_without_fixed_revision(tmp_path, monkeypatch):
+    pytest.importorskip('casadi')
+    from experiments import run as runner
+
+    monkeypatch.setattr(runner, 'get_experiment_spec', lambda _: SimpleNamespace(total_steps=2000))
+    monkeypatch.setattr(runner, 'get_policy_spec', lambda _: SimpleNamespace(policy_type='rhc'))
+    monkeypatch.setattr(runner, 'experiment_run_dir', lambda *args, **kwargs: tmp_path)
+    (tmp_path / 'run_metadata.json').write_text(json.dumps({'status': 'completed'}))
+    args = SimpleNamespace(total_steps=None, skip_existing=True)
+    with pytest.raises(ValueError, match='RHC implementation revision mismatch'):
+        runner._run_one(exp_id='duffing', policy_id='rhc', seed=0, repeat=1,
+                        base_dir=tmp_path, args=args)
 
 
 def test_tbme_family_scripts_define_expected_suite_sets():

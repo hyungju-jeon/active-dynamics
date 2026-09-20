@@ -772,6 +772,34 @@ class ThreeGateDiagnostic(VectorField):
         )
 
 
+
+class ThreeGateTradeoff(ThreeGateDiagnostic):
+    r"""Three-gate diagnostic retuned for measurement-corrected learning.
+
+    Same state ``z=(r,s_1,s_2,s_3,h)``, parameters, gates, action, and Poisson
+    observation model as :class:`ThreeGateDiagnostic`; only three loadings change:
+
+    .. math::
+
+        \dot s = -4s + 20g_A(r)(\theta_1+15h,0,0)^\top
+          + 0.6\,g_B(r)\theta + g_M(r)\operatorname{diag}(5,5,0.4)\theta.
+
+    Gate ``B`` keeps the largest weakest parameter direction (0.6 > 0.4), so
+    E-optimality still dwells there, but its total information is 0.36 of the
+    original and learning there is slower. Gate ``M`` keeps two strong
+    directions and a weak but nonzero ``theta_3`` direction. The gate-A nuisance
+    ratio 15 (was 5) makes the confounded decoy less attractive to the
+    attenuated p-EIG under prediction-only planning while keeping it a trap for
+    unattenuated and variance objectives. Selected on development seeds
+    3000-3009 and validated on seeds 4000-4019 (results/tbme/three_gate_redesign_variantB_20260911).
+
+    Shapes and dtypes follow the parent class.
+    """
+
+    AMBIGUITY_NUISANCE_RATIO = 15.0
+    BALANCED_SENSITIVITY = (0.6, 0.6, 0.6)
+    MAIN_SENSITIVITY = (5.0, 5.0, 0.4)
+
 class MultiStable(VectorField):
     """Gaussian-well multistable dynamics with local contraction and swirl.
 

@@ -1,9 +1,8 @@
 """Suite/group resolution for TBME figures.
 
-Owns the GROUPS table: which result suites exist per group, resolved against
-the newest ``session_*`` directory under the results root. The table is built
-lazily from the experiment catalog and rebuilt when ``set_results_dir`` points
-at a different root (the ``--results-dir`` CLI override).
+Owns the GROUPS table, with suites at ``<results-dir>/tracks/<suite>``.
+The table is rebuilt when ``set_results_dir`` selects a result folder.
+There is no session discovery or fallback to another result folder.
 """
 
 from __future__ import annotations
@@ -24,7 +23,7 @@ _groups: dict[str, list["SuiteRef"]] | None = None
 class SuiteRef:
     suite_id: str
     label: str
-    session_root: Path
+    results_root: Path
     slug: str
     policy_ids: tuple[str, ...] = ()
 
@@ -40,17 +39,6 @@ class SuiteSource:
     family: str | None = None
 
 
-def latest_session(base: Path) -> Path:
-    sessions = [
-        path
-        for path in base.glob("session_*")
-        if path.is_dir() and path.name.removeprefix("session_").isdigit()
-    ]
-    if not sessions:
-        return base / "session_1"
-    return max(sessions, key=lambda path: int(path.name.removeprefix("session_")))
-
-
 def _suite_label(env_preset_id: str) -> str:
     from ...experiment_definitions import get_environment_preset
 
@@ -63,7 +51,6 @@ def _build_groups(results_dir: Path) -> dict[str, list[SuiteRef]]:
     from ..run_tbme_experiments import configure_tbme_catalogs, shared_tbme_group_suites
 
     configure_tbme_catalogs()
-    session_root = latest_session(results_dir)
     groups_table: dict[str, list[SuiteRef]] = {}
     for group_name, entries in shared_tbme_group_suites().items():
         refs: list[SuiteRef] = []
@@ -73,7 +60,7 @@ def _build_groups(results_dir: Path) -> dict[str, list[SuiteRef]]:
                 SuiteRef(
                     str(entry["suite_id"]),
                     _suite_label(env_preset_id),
-                    session_root,
+                    results_dir,
                     experiment_env_slug(env_preset_id),
                     tuple(str(policy_id) for policy_id in entry["policy_ids"]),
                 )
@@ -99,14 +86,10 @@ def set_results_dir(new_results_dir: Path | str) -> None:
     _groups = _build_groups(_results_dir)
 
 
-def session_root() -> Path:
-    return latest_session(_results_dir)
-
-
 def suite_dir(group_name: str, suite_id: str) -> Path:
     for ref in groups()[group_name]:
         if ref.suite_id == suite_id:
-            return ref.session_root / "tracks" / ref.suite_id
+            return ref.results_root / "tracks" / ref.suite_id
     raise KeyError(f"Unknown suite {group_name}/{suite_id}")
 
 

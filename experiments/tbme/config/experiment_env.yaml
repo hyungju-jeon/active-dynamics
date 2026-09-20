@@ -401,6 +401,14 @@ environments:
     information_boundary_visibility_enabled: false
     boundary_radius: 3.0
 
+  # Variant-B (corrected learning, prediction-only planning) retuning of the
+  # three-gate diagnostic: B loading 0.6, M loading (5,5,0.4), A nuisance ratio 15.
+  tbme_three_gate_tradeoff:
+    extends: tbme_three_gate_diagnostic
+    system_id: three_gate_tradeoff
+    system_label: Three-gate tradeoff / compact Poisson observations
+    dynamics_type: three_gate_tradeoff
+
   tbme_gated_duffing_state_noise_mild:
     extends: tbme_gated_duffing
     system_label: Gated Duffing / mild state noise

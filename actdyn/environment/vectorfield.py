@@ -24,6 +24,7 @@ from actdyn.utils.vectorfields_eqn import (
     RankImbalancedGate,
     CompoundTriGate,
     ThreeGateDiagnostic,
+    ThreeGateTradeoff,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence, Callable
 from actdyn.utils.plotting import plot_vector_field
@@ -42,6 +43,7 @@ vf_from_string = {
     "rank_imbalanced_gate": RankImbalancedGate,
     "compound_tri_gate": CompoundTriGate,
     "three_gate_diagnostic": ThreeGateDiagnostic,
+    "three_gate_tradeoff": ThreeGateTradeoff,
     # Legacy alias: archived runs recorded this system as simple_tri_gate.
     "simple_tri_gate": ThreeGateDiagnostic,
     "multi_stable": MultiStable,

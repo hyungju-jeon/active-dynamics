@@ -12,6 +12,7 @@ from actdyn.models.dynamics import RBFDynamics
 from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from .base import BaseMetric
+from .planning import planning_measurement_update
 from torch.nn.functional import softplus
 from actdyn.utils.torch_utils import (
     attenuated_state_information,
@@ -325,7 +326,14 @@ class DOptimality(FisherInformationMetric):
 
 
 class EmbeddingFisherMetric(BaseMetric):
-    """Metric that computes information gain in the embedding space."""
+    """Parameter EIG with prediction-only or measurement-conditioned planning.
+
+    Every ablation uses the selected measurement step. Unattenuated scoring
+    removes only information attenuation; frozen-covariance scoring uses the
+    initial P in the score, while the actual rollout covariance still updates.
+    The diagonal ablation projects P+ to its diagonal; no-sensitivity propagation
+    resets S before each prediction.
+    """
 
     def __init__(
         self,
@@ -339,6 +347,7 @@ class EmbeddingFisherMetric(BaseMetric):
         no_sensitivity_propagation: bool = False,
         fully_observed: bool = False,
         diagonal_covariance: bool = False,
+        planning_rollout: str = "prediction_only",
         **kwargs,
     ):
         super().__init__(compute_type, device)
@@ -346,6 +355,8 @@ class EmbeddingFisherMetric(BaseMetric):
         self.Fe_net = Fe_net
         self.Fz_net = Fz_net
         self.model = model
+        self.planning_rollout = planning_rollout
+        self._measurement_update = planning_measurement_update(planning_rollout)
         # Backward-compatible alias from existing config fields.
         legacy_gamma = kwargs.get("met_discount_factor")
         if gamma is None:
@@ -414,16 +425,28 @@ class EmbeddingFisherMetric(BaseMetric):
         Fz_net: Callable,
         decoder: Optional[Decoder] = None,
     ) -> torch.Tensor:
-        """Compute the discounted EIG for one nominal model used in planning."""
+        """Compute discounted EIG using information at each transition's destination.
+
+        Rollout states have shape (batch, horizon, latent_dim): ``model_state``
+        supplies transition Jacobians and ``next_model_state`` supplies
+        observation curvature. Score predictive covariance and sensitivity first,
+        then apply the selected measurement step before the next transition.
+        Returns one EIG per batch member; parameter beliefs remain fixed.
+        """
         e_bel = self.model.e
         z_bel = self.model.z
         decoder = self.model.decoder if decoder is None else decoder
 
         z = rollout["model_state"].to(self.device).float()
+        z_next = rollout["next_model_state"].to(self.device).float()
+        if z_next.ndim != 3:
+            z_next = z_next.unsqueeze(0)
 
         if len(z.shape) != 3:
             z = z.unsqueeze(0)  # Ensure z is (batch, T, d_latent)
         assert len(z.shape) == 3, "z must be a tensor of shape (batch, T, d_latent)"
+        if z_next.shape != z.shape:
+            raise ValueError("model_state and next_model_state must have matching shapes")
         batch, T, d_latent = z.shape
         d_embedding = e_bel["m"].shape[-1]
         dt = float(getattr(self.model, "dt", 1.0))
@@ -483,7 +506,7 @@ class EmbeddingFisherMetric(BaseMetric):
             P_diag = _cov_diag(P_pred)
             Q_diag = _cov_diag(Q)
 
-        _, I_z_all, _, _ = diagonal_observation_information(decoder, z)
+        _, I_z_all, _, _ = diagonal_observation_information(decoder, z_next)
         I_z_all = I_z_all.to(self.device)
 
         # Discounted accumulation of predicted parameter information.
@@ -500,22 +523,29 @@ class EmbeddingFisherMetric(BaseMetric):
             else:
                 S_sens = dfdz @ S_sens + dfde
 
+            # Score the next observation with next-state sensitivity and covariance.
+            if self.diagonal_covariance:
+                P_diag = (dfdz.square() * P_diag.unsqueeze(1)).sum(dim=-1) + Q_diag
+                P_diag = torch.nan_to_num(
+                    P_diag, nan=0.0, posinf=1e6, neginf=0.0
+                ).clamp_min(0.0)
+            else:
+                P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)
+
             # I_z = H^T R^{-1} H (Fisher approximation in state space).
             I_z = I_z_all[:, i]
 
             # DeltaLambda = S^T I_z (I + P^- I_z)^{-1} S.
+            P_for_gain = torch.diag_embed(P_diag) if self.diagonal_covariance else P_pred
             if self.fully_observed:
                 atten_Iz = I_z
             else:
-                if self.diagonal_covariance:
-                    P_for_gain = torch.diag_embed(P_diag)
-                else:
-                    P_for_gain = P_pred_initial if self.freeze_covariance else P_pred
-                atten_Iz = attenuated_state_information(P_for_gain, I_z)
+                P_for_score = P_pred_initial if self.freeze_covariance else P_for_gain
+                atten_Iz = attenuated_state_information(P_for_score, I_z)
             info_step = symmetrize(S_sens.transpose(-1, -2) @ atten_Iz @ S_sens)
             if self.boundary_visibility_enabled:
                 visibility = boundary_visibility(
-                    z[:, i],
+                    z_next[:, i],
                     boundary_type=self.boundary_type,
                     radius=self.boundary_radius,
                     margin=self.boundary_margin,
@@ -524,13 +554,14 @@ class EmbeddingFisherMetric(BaseMetric):
                 info_step = visibility.square().view(batch, 1, 1) * info_step
             J += discounts[i] * info_step
 
+            # Condition both P and S, or carry both unchanged in prediction-only mode.
+            posterior_cov, S_sens = self._measurement_update(
+                P_for_gain, S_sens, I_z
+            )
             if self.diagonal_covariance:
-                P_diag = (dfdz.square() * P_diag.unsqueeze(1)).sum(dim=-1) + Q_diag
-                P_diag = torch.nan_to_num(
-                    P_diag, nan=0.0, posinf=1e6, neginf=0.0
-                ).clamp_min(0.0)
-            elif not (self.freeze_covariance or self.fully_observed):
-                P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)
+                P_diag = _cov_diag(posterior_cov)
+            else:
+                P_pred = posterior_cov
 
         P_theta = e_bel["P"].to(self.device)
         if P_theta.dim() == 2:

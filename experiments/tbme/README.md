@@ -481,6 +481,98 @@ Common forwarded arguments include:
 - `--q-theta`
 - `--parameter-prior-covariance`
 - `--eig-gamma`
+- `--planning-rollout {prediction_only,measurement_conditioned}`
+- `--learning-sensitivity {dynamics_only,measurement_corrected}`
+
+`prediction_only` is the default and carries state covariance and parameter
+effects forward without conditioning on planned measurements.
+`measurement_conditioned` scores each future observation using predictive
+covariance and sensitivity, then carries forward both
+`P+ = (P-^{-1} + I_z)^{-1}` and `S+ = P+ P-^{-1} S- = (I-KC) S-`.
+The latter is a local Gaussian, zero-innovation approximation with the nominal
+observation held fixed for the parameter derivative. It omits gain/curvature
+derivatives and covariance contributions to Fisher information. Parameter mean
+and covariance stay fixed throughout either planning rollout; there is no
+parameter covariance inflation during planning.
+
+The argument applies to every active objective: p-EIG (including shrinkage,
+ambiguity, unattenuated, and covariance variants), E-optimality, state
+information, dynamics trace/logdet, and observation/state variance. Each scores
+the destination prediction before the common measurement correction. State
+information only needs covariance; objectives that use parameter sensitivity
+also correct that sensitivity. Unattenuated p-EIG removes only the information
+attenuation in its score. Frozen-covariance p-EIG uses the initial covariance
+only in its score; its rollout covariance and sensitivity still update. The
+diagonal variant projects the corrected covariance to its diagonal.
+
+For variance objectives, parameter draws remain fixed. Each predictive sample
+is scored first, then its deviation from the nominal state is transformed by
+`M = P+ P-^{-1}` before the next prediction. This is the same local,
+fixed-observation correction as `S+ = M S-`, applied to finite sample deviations;
+it is exact for the conditional means of a linear Gaussian model and is a local
+approximation for nonlinear dynamics and Poisson observations. These scores
+retain their original sample-variance scalarizations. The dynamics score has no
+explicit observation-information weighting, although its corrected rollout now
+uses observations. Random and PRBS have no planning belief rollout.
+
+Learning sensitivity is selected independently of planning:
+
+- `measurement_corrected` (default) uses `S-` for the current observation's
+  parameter score and information, then carries `S+ = P+ P-^{-1} S-` to the
+  next prediction within the block.
+- `dynamics_only` carries `S-` unchanged after the observation. Combine it with
+  `--planning-rollout prediction_only` to retain the original learning and
+  planning sensitivity rules.
+
+The requested combination of corrected learning and prediction-only planning is:
+
+```bash
+python -m experiments.tbme.exp_objective_ablation \
+  --mode run --exp-ids three_gate_diagnostic \
+  --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
+  --learning-sensitivity measurement_corrected \
+  --planning-rollout prediction_only --base-dir /tmp/tbme_corrected_learning
+```
+
+Both learning modes retain the real state measurement update and reset
+sensitivity at parameter block boundaries. The option applies when
+`FilteringEmbedding` owns parameter learning, including Random and PRBS;
+policies that update their own parameters keep their existing learner.
+The parameter update rule and block triggers are unchanged, although the
+information used by adaptive triggers can change with sensitivity.
+
+The corrected sensitivity is exact for a linear Gaussian filter with
+parameter-independent covariance matrices. For nonlinear dynamics and Poisson
+observations, it is a local approximation with the observation held fixed;
+gain and covariance derivatives are omitted, including the Poisson residual
+term `(dP+/dtheta_j) s_z`. The state covariance update itself is unchanged.
+
+`learning_sensitivity` and `learning_sensitivity_revision=fixed_observation_v1`
+are saved in every session and run. A different learning mode or a different
+or unrecorded revision cannot be resumed or reused with `--skip-existing`.
+The first runs with this revision predate the mode field and used corrected
+learning; a missing mode with this matching revision therefore means
+`measurement_corrected`. Earlier results remain separate.
+
+Use separate output roots for the two versions. The mode and `planning_rollout_revision=all_objectives_v2` are saved in session
+and run metadata; runs with a different or unrecorded mode cannot be overwritten or
+reused with `--skip-existing`. Earlier revisions with only some objectives
+corrected also require separate output roots. Previous covariance-only contraction results have
+no recorded mode and must remain separate from these two versions.
+
+For example, run a one-step smoke check in each mode from the worktree:
+
+```bash
+python -m experiments.tbme.exp_objective_ablation \
+  --mode run --exp-ids three_gate_diagnostic \
+  --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
+  --planning-rollout prediction_only --base-dir /tmp/tbme_prediction_only
+
+python -m experiments.tbme.exp_objective_ablation \
+  --mode run --exp-ids three_gate_diagnostic \
+  --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
+  --planning-rollout measurement_conditioned --base-dir /tmp/tbme_measurement_conditioned
+```
 
 Use `--help` on the TBME entrypoints to inspect the current parser. Prefer these entrypoints because they install the TBME catalog stack before calling the generic runner:
 
@@ -498,7 +590,7 @@ Runs write one session under the selected `--base-dir`. A typical run contains:
 - `tracks/<env>/<policy_id>/seed_<seed>/repeat_<repeat>/run_metadata.json`: per-run metadata.
 - Trace CSV files such as `parameter_error_trace.csv`, `trajectory_r2_trace.csv`, `embedding_estimate_trace.csv`, `information_trace.csv`, and `state_action_trace.csv`.
 - Summary artifacts when `--mode summary` or `--mode all` is used.
-- Figure assets and diagnostics default to `assets/` and `diagnostics/` under the same `session_<n>` root.
+- Figure assets and diagnostics default to `assets/` and `diagnostics/` directly under the selected result folder.
 
 ## Figure Generation
 
@@ -506,12 +598,11 @@ Use `generate_figures.py` as the single figure entrypoint:
 
 ```bash
 ./.venv/bin/python -m experiments.tbme.generate_figures --help
-./.venv/bin/python -m experiments.tbme.generate_figures summary
-./.venv/bin/python -m experiments.tbme.generate_figures experiment
-./.venv/bin/python -m experiments.tbme.generate_figures assets
+./.venv/bin/python -m experiments.tbme.generate_figures summary --help
+./.venv/bin/python -m experiments.tbme.generate_figures experiment --help
+./.venv/bin/python -m experiments.tbme.generate_figures assets --results-dir results/tbme/20260911_corrected_learning --groups simple_system_identification,observation_action_bottleneck,objective_ablation,flex_comparison --tri-gate-exp-id three_gate_tradeoff --tri-gate-exemplar-seed 90 --mechanistic-results-dir results/scalar_final_q005_20260912
 ./.venv/bin/python -m experiments.tbme.generate_figures diagnostics
-./.venv/bin/python -m experiments.tbme.generate_figures all
-./.venv/bin/python -m experiments.tbme.tbme_figures_assets --help
+./.venv/bin/python -m experiments.tbme.figures.assets --help
 ```
 
 Asset generation writes the existing mean/SEM R2 figures in `assets/` and the
@@ -520,7 +611,28 @@ parallel median/IQR R2 figures in `assets/median_iqr/`. Use
 set. Regenerate suite summaries once after upgrading so
 `trajectory_r2_over_steps.csv` contains the median and quartile columns.
 
-The figure code keeps TBME result-group definitions in `tbme_figures.py`. If result roots are renamed, update the `GROUPS` table there before relying on the figure commands.
+Predictive and final R2 asset panels use the label `R^2_{VF-roll}` and display
+limits 0.25–1. Dotted lines show the true-model reference under the saved
+evaluation noise and coordinate settings, using the selected mean or median.
+Final-value bars below the display range receive a clipping marker; CSV values
+and uncertainty summaries are unchanged. Figure audits record the R2 limits,
+labels, and reference values.
+
+Figure inputs use `<results-dir>/tracks/<suite>` directly. There is no
+`session_#` discovery. Select one cohort with `--results-dir`; do not pass the
+parent directory containing multiple cohorts. Use the same asset command with
+`--results-dir results/tbme/20260911_corrected_learning_plannig` for the corrected
+learning-and-planning cohort (this is the stored directory spelling).
+
+The catalog group mapping lives in `figures/groups.py`. Renaming a result
+folder only requires changing `--results-dir`. The three-gate override affects
+only the gate figures; other empirical assets use the selected cohort's tracks
+and summaries. The mechanistic figure is rendered from the saved scalar NPZ
+and JSON, with both column widths, a copied caption, and input SHA-256 hashes.
+It is the same saved scalar illustration in both cohorts, not an additional
+learning/planning experiment. The asset manifest records these input roots.
+Missing action-budget suites and conditions without FLEX runs are listed in
+the manifest and omitted from those asset families.
 The diagnostics command does not require completed runs. The top-level `generate_figures diagnostics` entrypoint uses the fixed core environment list in `generate_figures.py`.
 
 ## Reproducibility Checklist
