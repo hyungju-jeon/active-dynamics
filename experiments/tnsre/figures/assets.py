@@ -554,349 +554,176 @@ def _asset_plot_active_vs_baselines(output_path: Path, *, r2_summary: str) -> Pa
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
-def _asset_nice_ceiling(value: float) -> float:
-    import math
-
-    v = float(value)
-    if not np.isfinite(v) or v <= 0.0:
-        return 10.0
-    return float(math.ceil(v / 10.0) * 10.0)
-
-
-# Environment groupings for the composite dynamics/observation figure.
-_DYNAMICS_FULL_PHASE_ENVS = (
-    ("tbme_duffing", "Duffing"),
-    ("tbme_damped_pendulum", "Damped Pendulum"),
-    ("tbme_gated_duffing", "Gated Duffing"),
+# Presets of the benchmark geometry figures (Wilson-Cowan: `wilson_cowan.py`).
+_MECHANICAL_ENVS = (
+    ("tbme_duffing", "duffing", "Duffing"),
+    ("tbme_damped_pendulum", "damped_pendulum", "Damped Pendulum"),
 )
-_DYNAMICS_FULL_FISHER_ENVS = (
-    "tbme_gated_duffing",
-    "tbme_gated_duffing_asymmetric",
-)
-_DYNAMICS_FULL_SNR_ENVS = (
-    "tbme_gated_duffing",
-    "tbme_gated_duffing_observation_bottleneck_strong",
-)
-_DYNAMICS_FULL_TRAJ_COLORS = ("#E8963A", "#D1382C", "#2E6FB0")
+_TRAJ_COLORS = ("#E8963A", "#D1382C", "#2E6FB0")
+# Grid sizes, example rollouts (no input), and the NeuroFisherSNR loading calibration.
+_GEOMETRY = {
+    "n_grid_field": 41,
+    "n_grid_map": 81,
+    "steps": 500,
+    "n_trajectories": 3,
+    "seed": 0,
+    "snr_trajectories": 100,
+    "snr_trajectory_length": 200,
+}
 
 
-def _asset_plot_dynamics_full(output_path: Path) -> Path:
-    """Composite dynamics/observation diagnostics figure (manuscript figure 2)."""
+def _style_map_axis(ax: Any) -> None:
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+
+
+def _draw_phase_portrait(ax: Any, preset: Any) -> None:
+    """True vector field of ``preset`` with example trajectories without input."""
     from actdyn.utils.plotting import plot_vector_field
-    from experiments.experiment_definitions import get_environment_preset
-    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
-    from .diagnostics import (
-        finite_limits as _finite_limits,
-        loading_model as _loading_model,
-        parameter_sensitivity_grid as _parameter_sensitivity_grid,
-        rate_hz as _rate_hz,
-        simulate_trajectories as _simulate_trajectories,
-        state_information_grid as _state_information_grid,
-        true_dynamics as _true_dynamics,
+    from .diagnostics import simulate_trajectories, true_dynamics
+
+    plot_lim = float(preset.resolved_plot_limit())
+    plot_vector_field(
+        true_dynamics(preset),
+        ax=ax,
+        x_range=plot_lim,
+        n_grid=_GEOMETRY["n_grid_field"],
+        is_residual=True,
+        device="cpu",
+        streamplot_kwargs={"arrowsize": 0.35, "linewidth": 0.22},
     )
-
-    configure_tbme_catalogs(suite_entries={})
-    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
-    if plt_module is None:
-        raise RuntimeError("Matplotlib is unavailable")
-
-    n_grid_field = 41
-    n_grid_map = 81
-    steps = 500
-    n_trajectories = 3
-    seed = 0
-    snr_trajectories = 100
-    snr_trajectory_length = 200
-
-    phase_presets = [get_environment_preset(env_id) for env_id, _ in _DYNAMICS_FULL_PHASE_ENVS]
-
-    fig = plt_module.figure(figsize=(516.0 / 72.27, 2.56))
-    outer = fig.add_gridspec(
-        2, 1, height_ratios=[1.0, 1.0], hspace=0.48,
-        left=0.045, right=0.925, top=0.85, bottom=0.18
+    trajectories = simulate_trajectories(
+        preset,
+        n_trajectories=_GEOMETRY["n_trajectories"],
+        steps=_GEOMETRY["steps"],
+        seed=_GEOMETRY["seed"],
     )
-    # Top row as one grid so the A and B maps share an identical cell size and
-    # inter-panel gap (3 A cells | spacer | 3 B cells | colorbar).
-    top = outer[0].subgridspec(
-        1,
-        8,
-        width_ratios=[1.0, 1.0, 1.0, 0.55, 1.0, 1.0, 1.0, 0.08],
-        wspace=0.16,
-    )
-    a_cols = (0, 1, 2)
-    b_cols = (4, 5, 6)
-    b_cbar_col = 7
-    # Keep C compact (left) and let D run wider across the bottom row.
-    bottom = outer[1].subgridspec(1, 2, width_ratios=[0.9, 1.62], wspace=0.13)
+    for idx, traj in enumerate(trajectories):
+        color = _TRAJ_COLORS[idx % len(_TRAJ_COLORS)]
+        ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=1.15, alpha=0.92,
+                solid_capstyle="round", zorder=3)
+        ax.scatter(traj[0, 0], traj[0, 1], s=11, color=color, edgecolor="white", linewidth=0.3, zorder=4)
+    ax.set_xlim(-plot_lim, plot_lim)
+    ax.set_ylim(-plot_lim, plot_lim)
+    ax.set_aspect("equal", adjustable="box")
+    _style_map_axis(ax)
 
-    # Panel A: phase portraits with executed trajectories.
-    a_axes = []
-    for col, preset in enumerate(phase_presets):
-        ax = fig.add_subplot(top[0, a_cols[col]])
+
+def _draw_sensitivity_maps(fig: Any, axes: Sequence[Any], cbar_ax: Any, presets: Sequence[Any]) -> None:
+    """Parameter-sensitivity magnitude ||dv/dtheta||_F of each preset, one shared color scale."""
+    from .diagnostics import finite_limits, parameter_sensitivity_grid
+
+    maps = []
+    for preset in presets:
         plot_lim = float(preset.resolved_plot_limit())
-        dynamics = _true_dynamics(preset)
-        plot_vector_field(
-            dynamics,
-            ax=ax,
-            x_range=plot_lim,
-            n_grid=n_grid_field,
-            is_residual=True,
-            device="cpu",
-            streamplot_kwargs={"arrowsize": 0.35, "linewidth": 0.22},
-        )
-        trajectories = _simulate_trajectories(
-            preset,
-            n_trajectories=n_trajectories,
-            steps=steps,
-            seed=seed,
-        )
-        for idx, traj in enumerate(trajectories):
-            color = _DYNAMICS_FULL_TRAJ_COLORS[idx % len(_DYNAMICS_FULL_TRAJ_COLORS)]
-            ax.plot(
-                traj[:, 0],
-                traj[:, 1],
-                color=color,
-                linewidth=1.15,
-                alpha=0.92,
-                solid_capstyle="round",
-                zorder=3,
-            )
-            ax.scatter(
-                traj[0, 0],
-                traj[0, 1],
-                s=11,
-                color=color,
-                edgecolor="white",
-                linewidth=0.3,
-                zorder=4,
-            )
-        ax.set_xlim(-plot_lim, plot_lim)
-        ax.set_ylim(-plot_lim, plot_lim)
-        ax.set_aspect("equal", adjustable="box")
-        ax.set_xticks([])
-        ax.set_yticks([])
-        ax.set_title(_DYNAMICS_FULL_PHASE_ENVS[col][1], fontsize=8.0, pad=2.5)
-        for spine in ax.spines.values():
-            spine.set_linewidth(0.5)
-        a_axes.append(ax)
-
-    # Panel B: parameter-sensitivity heatmaps sharing one colorbar.
-    sens_maps = []
-    for preset in phase_presets:
-        plot_lim = float(preset.resolved_plot_limit())
-        _sx, _sy, sens = _parameter_sensitivity_grid(preset, plot_lim=plot_lim, n_grid=n_grid_map)
-        sens_maps.append((sens, plot_lim))
-    svmin, svmax = _finite_limits(np.concatenate([s.reshape(-1) for s, _ in sens_maps]))
-    b_axes = []
-    im_sens = None
-    for col, (sens, plot_lim) in enumerate(sens_maps):
-        ax = fig.add_subplot(top[0, b_cols[col]])
-        im_sens = ax.imshow(
-            sens,
-            origin="lower",
-            extent=[-plot_lim, plot_lim, -plot_lim, plot_lim],
-            cmap="magma",
-            vmin=svmin,
-            vmax=svmax,
-            interpolation="bilinear",
-            aspect="equal",
-        )
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_linewidth(0.5)
-        b_axes.append(ax)
-    cbar_ax = fig.add_subplot(top[0, b_cbar_col])
-    cbar = fig.colorbar(im_sens, cax=cbar_ax)
-    cbar.ax.tick_params(labelsize=6.0, width=0.4, length=2.0)
+        _sx, _sy, sens = parameter_sensitivity_grid(preset, plot_lim=plot_lim, n_grid=_GEOMETRY["n_grid_map"])
+        maps.append((sens, plot_lim))
+    vmin, vmax = finite_limits(np.concatenate([sens.reshape(-1) for sens, _ in maps]))
+    image = None
+    for ax, (sens, plot_lim) in zip(axes, maps):
+        image = ax.imshow(sens, origin="lower", extent=[-plot_lim, plot_lim, -plot_lim, plot_lim],
+                          cmap="magma", vmin=vmin, vmax=vmax, interpolation="bilinear", aspect="equal")
+        _style_map_axis(ax)
+    cbar = fig.colorbar(image, cax=cbar_ax)
+    cbar.ax.tick_params(labelsize=_ASSET_TICK_SIZE, width=0.4, length=2.0)
     cbar.outline.set_linewidth(0.4)
-    cbar.set_label(r"$\|\partial\mathbf{v}/\partial\theta\|_F$", fontsize=7.0)
+    cbar.set_label(r"$\|\partial\mathbf{v}/\partial\theta\|_F$", fontsize=_ASSET_LABEL_SIZE)
 
-    # Panel C: state Fisher information (per-map log scale) with loading-vector insets.
-    from matplotlib.colors import LogNorm
 
-    c_gs = bottom[0].subgridspec(1, 5, width_ratios=[1.0, 0.05, 0.16, 1.0, 0.05], wspace=0.10)
-    c_map_cols = (0, 3)
-    c_axes = []
-    for idx, env_id in enumerate(_DYNAMICS_FULL_FISHER_ENVS):
-        preset = get_environment_preset(env_id)
-        plot_lim = float(preset.resolved_plot_limit())
-        weights, bias, dt = _loading_model(
-            preset,
-            snr_trajectories=snr_trajectories,
-            snr_trajectory_length=snr_trajectory_length,
-        )
-        _ix, _iy, info = _state_information_grid(
-            weights,
-            bias,
-            dt=dt,
-            plot_lim=plot_lim,
-            n_grid=n_grid_map,
-        )
-        # `_state_information_grid` returns log-det; exponentiate for a log-scale colorbar.
-        det = np.exp(np.clip(info, -50.0, 50.0))
-        finite_det = det[np.isfinite(det) & (det > 0.0)]
-        vmin = float(np.percentile(finite_det, 1.0))
-        vmax = float(np.percentile(finite_det, 99.0))
-        if vmax <= vmin:
-            vmax = vmin * 10.0 + 1e-12
-        ax = fig.add_subplot(c_gs[0, c_map_cols[idx]])
-        im_info = ax.imshow(
-            det,
-            origin="lower",
-            extent=[-plot_lim, plot_lim, -plot_lim, plot_lim],
-            cmap="plasma",
-            norm=LogNorm(vmin=vmin, vmax=vmax),
-            interpolation="bilinear",
-            aspect="equal",
-        )
-        ax.set_xticks([])
-        ax.set_yticks([])
-        for spine in ax.spines.values():
-            spine.set_linewidth(0.5)
-        inset = ax.inset_axes([0.62, 0.05, 0.34, 0.34])
-        inset.axhline(0.0, color="#8A8A8A", linewidth=0.4, zorder=1)
-        inset.axvline(0.0, color="#8A8A8A", linewidth=0.4, zorder=1)
-        for row in weights:
-            inset.plot(
-                [0.0, row[0]],
-                [0.0, row[1]],
-                color="#606060",
-                alpha=0.30,
-                linewidth=0.3,
-                zorder=2,
-            )
-        inset.scatter(
-            weights[:, 0],
-            weights[:, 1],
-            c=np.linspace(0.15, 0.95, weights.shape[0]),
-            cmap="magma",
-            s=6,
-            alpha=0.95,
-            linewidths=0.0,
-            zorder=3,
-        )
-        span = 1.12 * float(np.max(np.abs(weights))) if weights.size else 1.0
-        inset.set_xlim(-span, span)
-        inset.set_ylim(-span, span)
-        inset.set_xticks([])
-        inset.set_yticks([])
-        inset.set_facecolor("white")
-        for spine in inset.spines.values():
-            spine.set_linewidth(0.4)
-        cbar_ax = fig.add_subplot(c_gs[0, c_map_cols[idx] + 1])
-        cbar = fig.colorbar(im_info, cax=cbar_ax)
-        cbar.ax.tick_params(labelsize=6.0, width=0.4, length=2.0)
-        cbar.outline.set_linewidth(0.4)
-        c_axes.append(ax)
+def _block_span(axes: Sequence[Any]) -> tuple[float, float, float]:
+    """Left, right, and top edges (figure fraction) of a group of axes, after a draw."""
+    positions = [ax.get_position() for ax in axes]
+    return min(pos.x0 for pos in positions), max(pos.x1 for pos in positions), max(pos.y1 for pos in positions)
 
-    # Panel D: observation rates + spike rasters at two SNR levels.
-    d_gs = bottom[1].subgridspec(1, 2, wspace=0.24)
-    d_rate_axes = []
-    for col, env_id in enumerate(_DYNAMICS_FULL_SNR_ENVS):
-        preset = get_environment_preset(env_id)
-        weights, bias, dt = _loading_model(
-            preset,
-            snr_trajectories=snr_trajectories,
-            snr_trajectory_length=snr_trajectory_length,
-        )
-        traj = _simulate_trajectories(preset, n_trajectories=1, steps=steps, seed=seed)[0]
-        rate_hz = _rate_hz(traj, weights=weights, bias=bias)
-        mean_counts = np.clip(rate_hz * dt, 1e-8, 1e8)
-        observations = np.random.default_rng(int(seed)).poisson(mean_counts).astype(np.float32)
 
-        stack = d_gs[0, col].subgridspec(2, 1, height_ratios=[1.0, 3.0], hspace=0.10)
-        ax_rate = fig.add_subplot(stack[0, 0])
-        ax_rast = fig.add_subplot(stack[1, 0], sharex=ax_rate)
-        time = np.arange(rate_hz.shape[0])
-        for neuron_idx in range(rate_hz.shape[1]):
-            ax_rate.plot(time, rate_hz[:, neuron_idx], linewidth=0.4, alpha=0.7)
-        ymax = _asset_nice_ceiling(float(np.nanmax(rate_hz)))
-        ax_rate.set_xlim(0.0, float(steps))
-        ax_rate.set_ylim(0.0, ymax)
-        ax_rate.set_yticks([0.0, ymax])
-        ax_rate.set_yticklabels(["0", f"{int(ymax)} Hz"], fontsize=6.0)
-        ax_rate.tick_params(axis="x", labelbottom=False)
-        target_snr = getattr(preset, "loading_target_snr_db", None)
-        snr_title = "SNR" if target_snr is None else f"SNR : {int(round(float(target_snr)))} dB"
-        ax_rate.set_title(snr_title, fontsize=8.0, pad=3.0)
-        for spine in ax_rate.spines.values():
-            spine.set_linewidth(0.5)
-
-        spike_steps, spike_neurons = np.nonzero(observations > 0)
-        if spike_steps.size:
-            ax_rast.vlines(
-                spike_steps.astype(np.float32),
-                spike_neurons.astype(np.float32) - 0.4,
-                spike_neurons.astype(np.float32) + 0.4,
-                color="#222222",
-                linewidth=0.3,
-            )
-        ax_rast.set_xlim(0.0, float(steps))
-        ax_rast.set_ylim(-0.5, observations.shape[1] - 0.5)
-        ax_rast.set_xticks([0.0, float(steps)])
-        ax_rast.set_xticklabels(["0", str(int(steps))], fontsize=6.0)
-        ax_rast.set_xlabel("step", fontsize=8.0)
-        ax_rast.set_yticks([])
-        if col == 0:
-            ax_rast.set_ylabel("neuron", fontsize=8.0)
-        for spine in ax_rast.spines.values():
-            spine.set_linewidth(0.5)
-        d_rate_axes.append(ax_rate)
-
-    # `aspect="equal"` squares (and centers) the image axes only at draw time, so
-    # render once before reading positions to place titles/letters on the real boxes.
+def _draw_for_positions(fig: Any) -> None:
+    # `aspect="equal"` squares (and centers) image axes only at draw time; draw once
+    # before reading positions to place titles and letters on the real boxes.
     try:
         fig.draw_without_rendering()
     except AttributeError:
         fig.canvas.draw()
 
-    # Group titles and bold panel letters, positioned from axis geometry.
-    def _block_span(axes: Sequence[Any]) -> tuple[float, float, float]:
-        positions = [ax.get_position() for ax in axes]
-        left = min(pos.x0 for pos in positions)
-        right = max(pos.x1 for pos in positions)
-        top_edge = max(pos.y1 for pos in positions)
-        return left, right, top_edge
 
+def _figure_letter(fig: Any, letter: str, x: float, y: float) -> None:
+    fig.text(x, y, letter, ha="left", va="bottom", fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
+
+
+def _r2_legend_entries(ax: Any) -> tuple[list[Any], list[str]]:
+    handles, labels = ax.get_legend_handles_labels()
+    return handles, ["true" if label == "true-model reference" else label for label in labels]
+
+
+def _asset_plot_wilson_cowan_benchmark(output_path: Path) -> Path:
+    """Wilson-Cowan benchmark figure of the main text (Fig. 3); see `wilson_cowan.py`."""
+    from .wilson_cowan import generate_wilson_cowan_figure
+
+    return generate_wilson_cowan_figure(output_path)
+
+
+def _asset_plot_mechanical_benchmarks(output_path: Path, *, r2_summary: str) -> Path:
+    """Duffing and damped-pendulum benchmarks of the Supplementary.
+
+    (A) vector fields with example trajectories; (B) parameter sensitivity on one
+    shared color scale; (C) R2_VF-roll against environment steps for the matched
+    policies, center and band given by ``r2_summary``.
+    """
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    configure_tbme_catalogs(suite_entries={})
+    suites = [_suite_dir("simple_system_identification", suite_id) for _env, suite_id, _label in _MECHANICAL_ENVS]
+    _asset_require_suite_dirs(suites)
+    presets = [get_environment_preset(env_id) for env_id, _suite, _label in _MECHANICAL_ENVS]
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+
+    fig = plt_module.figure(figsize=(516.0 / 72.27, 1.70))
+    map_width = 0.11
+    map_height = map_width * fig.get_figwidth() / fig.get_figheight()
+    y = 0.21
+
+    a_axes = [fig.add_axes([left, y, map_width, map_height]) for left in (0.03, 0.155)]
+    for ax, preset, (_env, _suite, label) in zip(a_axes, presets, _MECHANICAL_ENVS):
+        _draw_phase_portrait(ax, preset)
+        ax.set_title(label, fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+    b_axes = [fig.add_axes([left, y, map_width, map_height]) for left in (0.33, 0.455)]
+    _draw_sensitivity_maps(fig, b_axes, fig.add_axes([0.455 + map_width + 0.006, y, 0.010, map_height]), presets)
+    for ax, (_env, _suite, label) in zip(b_axes, _MECHANICAL_ENVS):
+        ax.set_title(label, fontsize=_ASSET_TITLE_SIZE, pad=3.0)
+
+    c_axes = []
+    for idx, (left, suite, (_env, _suite, label)) in enumerate(zip((0.705, 0.855), suites, _MECHANICAL_ENVS)):
+        ax = fig.add_axes([left, y, 0.135, map_height], sharey=c_axes[0] if c_axes else None)
+        _asset_plot_r2_curves(ax, suite, _ASSET_MATCHED_POLICIES, title=label, panel_label="", ylabel=idx == 0,
+                              xlabel=False, r2_summary=r2_summary, ylim=(0.25, 1.0), title_pad=3.0)
+        ax.title.set_size(8.0)
+        ax.set_xticks([0, 1000, 2000])
+        ax.get_xticklabels()[0].set_ha("left")
+        ax.get_xticklabels()[-1].set_ha("right")
+        if idx > 0:
+            ax.tick_params(axis="y", labelleft=False)
+        c_axes.append(ax)
+    fig.text(0.5 * (c_axes[0].get_position().x0 + c_axes[-1].get_position().x1), 0.015, "Environment steps",
+             ha="center", va="bottom", fontsize=_ASSET_TITLE_SIZE)
+    fig.legend(*_r2_legend_entries(c_axes[0]), loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=7,
+               frameon=False, fontsize=_ASSET_TICK_SIZE, handlelength=1.0, handletextpad=0.3,
+               columnspacing=0.8, borderaxespad=0.1)
+
+    _draw_for_positions(fig)
     a_left, a_right, a_top = _block_span(a_axes)
     b_left, b_right, b_top = _block_span(b_axes)
-    c_left, c_right, c_top = _block_span(c_axes)
-    d_left, d_right, d_top = _block_span(d_rate_axes)
-
-    fig.text(
-        0.5 * (b_left + b_right),
-        b_top + 0.045,
-        "Parameter sensitivity",
-        ha="center",
-        va="bottom",
-        fontsize=8.0,
-    )
-    fig.text(
-        0.5 * (c_left + c_right),
-        c_top + 0.045,
-        "State Fisher determinant",
-        ha="center",
-        va="bottom",
-        fontsize=8.0,
-    )
-    for letter, left, top_edge in (
-        ("A", a_left, a_top),
-        ("B", b_left, b_top),
-        ("C", c_left, c_top),
-        ("D", d_left, d_top),
-    ):
-        fig.text(
-            left - 0.028,
-            top_edge + 0.04,
-            letter,
-            ha="left",
-            va="bottom",
-            fontsize=10.0,
-            fontweight="bold",
-        )
-
+    c_left, _c_right, c_top = _block_span(c_axes)
+    fig.text(0.5 * (a_left + a_right), a_top + 0.11, "Vector Field", ha="center", va="bottom", fontsize=_ASSET_TITLE_SIZE)
+    fig.text(0.5 * (b_left + b_right), b_top + 0.11, "Parameter Sensitivity", ha="center", va="bottom",
+             fontsize=_ASSET_TITLE_SIZE)
+    for letter, x, top_edge in (("A", a_left - 0.025, a_top), ("B", b_left - 0.025, b_top),
+                                ("C", c_left - 0.05, c_top)):
+        _figure_letter(fig, letter, x, top_edge + 0.11)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
@@ -2754,9 +2581,9 @@ def assets_main(argv: list[str] | None = None) -> int:
             {"results_dir": args.mechanistic_results_dir},
         ),
         (
-            output_dir / "tbme_fig_dynamics_full.pdf",
+            output_dir / "tbme_fig_wilson_cowan_benchmark.pdf",
             set(),
-            _asset_plot_dynamics_full,
+            _asset_plot_wilson_cowan_benchmark,
             {},
         ),
         (
@@ -2775,6 +2602,12 @@ def assets_main(argv: list[str] | None = None) -> int:
                     r2_output_dir / "tbme_fig_active_vs_baselines.pdf",
                     {"simple_system_identification"},
                     _asset_plot_active_vs_baselines,
+                    kwargs,
+                ),
+                (
+                    r2_output_dir / "tbme_fig_mechanical_benchmarks.pdf",
+                    {"simple_system_identification"},
+                    _asset_plot_mechanical_benchmarks,
                     kwargs,
                 ),
                 (
