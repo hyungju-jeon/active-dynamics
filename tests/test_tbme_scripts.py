@@ -534,7 +534,8 @@ def test_asset_subsets_report_absent_experiments(tmp_path: Path, monkeypatch) ->
     assert [p.stem for p in written] == ["constraints_snr", "constraints_snr_recovery",
                                         "constraints_asymmetry", "constraints_asymmetry_recovery",
                                         "constraints"]
-    assert len(skipped) == 1 and "action_bottleneck" in skipped[0][1]
+    # Fig. 4 needs only the default, SNR, and asymmetric suites; action suites are unused.
+    assert skipped == []
     # No suite has FLEX rows: report the missing data instead of drawing empty panels.
     skipped = []
     assert assets._asset_plot_flex_comparison(tmp_path / "flex.pdf",

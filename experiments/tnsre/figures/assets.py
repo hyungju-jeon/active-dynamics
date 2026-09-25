@@ -751,16 +751,6 @@ def _asset_bottleneck_sources() -> list[_ExperimentSuiteSource]:
                 "wilson_cowan_observation_bottleneck_strong",
             ),
         ),
-        _ExperimentSuiteSource(
-            "wilson_cowan_action_bottleneck_mild",
-            "Act. 0.75",
-            _suite_dir("observation_action_bottleneck", "wilson_cowan_action_bottleneck_mild"),
-        ),
-        _ExperimentSuiteSource(
-            "wilson_cowan_action_bottleneck_strong",
-            "Act. 0.50",
-            _suite_dir("observation_action_bottleneck", "wilson_cowan_action_bottleneck_strong"),
-        ),
     ]
 
 
@@ -2196,7 +2186,7 @@ def _asset_plot_constraints(
 ) -> list[Path]:
     bottleneck_sources = _asset_bottleneck_sources()
     figures = (
-        ("snr", "Observation SNR", tuple(bottleneck_sources[:3])),
+        ("snr", "Observation SNR", tuple(bottleneck_sources)),
         (
             "asymmetry",
             "Asymmetry",
@@ -2213,7 +2203,6 @@ def _asset_plot_constraints(
                 ),
             ),
         ),
-        ("action", "Action budget", (bottleneck_sources[0], *bottleneck_sources[3:])),
     )
     written: list[Path] = []
     observation_panels = []
