@@ -218,6 +218,7 @@ def _apply_asset_style(plt_module: Any | None = None) -> None:
             "font.family": "sans-serif",
             "font.sans-serif": list(_ASSET_FONT_STACK),
             "mathtext.fontset": "dejavusans",
+            "font.size": _ASSET_TICK_SIZE,
             "axes.titlesize": _ASSET_TITLE_SIZE,
             "axes.labelsize": _ASSET_LABEL_SIZE,
             "xtick.labelsize": _ASSET_TICK_SIZE,
@@ -481,7 +482,7 @@ def _asset_plot_r2_curves(
         _style_experiment_axis(curve_ax)
     if inset is not None:
         inset.set_xlim(0.0, 250.0)
-        inset.tick_params(axis="both", labelsize=5.2, pad=1.0)
+        inset.tick_params(axis="both", labelsize=_ASSET_TICK_SIZE, pad=1.0)
     ax.set_title(
         panel_label, loc="left", fontweight="bold", fontsize=_ASSET_PANEL_LABEL_SIZE, pad=title_pad
     )
@@ -885,7 +886,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     cbar = fig.colorbar(im, ax=ax, fraction=0.047, pad=0.02)
     cbar.set_label(r"$\log\det I_z$")
     cbar.outline.set_linewidth(0.45)
-    ax.legend(loc="lower right", fontsize=5.8, framealpha=0.78, borderpad=0.25)
+    ax.legend(loc="lower right", fontsize=_ASSET_TICK_SIZE, framealpha=0.78, borderpad=0.25)
 
     ax = axes[0, 1]
     event_specs = [
@@ -935,7 +936,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
         linewidths=0.85,
     )
     ax.set_yticks(np.arange(len(event_specs), dtype=np.float64))
-    ax.set_yticklabels([label for _field, _value, label, _color in event_specs], fontsize=6.3)
+    ax.set_yticklabels([label for _field, _value, label, _color in event_specs], fontsize=_ASSET_TICK_SIZE)
     ax.set_xlim(0.0, 2000.0)
     ax.set_ylim(-0.65, len(event_specs) - 0.35)
     ax.set_title("B. Adaptive cadence event timeline")
@@ -965,7 +966,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     ax.set_title("C. Mismatch raises tracking error")
     ax.set_xlabel("Environment step")
     ax.set_ylabel("State-tracking error")
-    ax.legend(loc="upper right", fontsize=6.0)
+    ax.legend(loc="upper right", fontsize=_ASSET_TICK_SIZE)
     _style_experiment_axis(ax)
 
     ax = axes[1, 1]
@@ -1004,7 +1005,7 @@ def _asset_plot_mechanism(output_path: Path) -> Path:
     ax.set_xticklabels([label.replace(" mismatch", "\nmis.") for label, _color in mismatch_specs])
     ax.set_title("D. Mismatch-triggered adaptation")
     ax.set_ylabel("Trigger count")
-    ax.legend(loc="upper left", fontsize=5.9)
+    ax.legend(loc="upper left", fontsize=_ASSET_TICK_SIZE)
     _style_manuscript_axis(ax, grid_axis="y")
 
     fig.tight_layout(w_pad=0.95, h_pad=0.95)
@@ -1841,7 +1842,7 @@ def _asset_plot_gate_diagnostic(
         transform=ax.get_yaxis_transform(),
         ha="left",
         va="center",
-        fontsize=5.2,
+        fontsize=_ASSET_TICK_SIZE,
         color=_experiment_C_STROKE,
     )
     ax.set_xlabel("Environment steps")
@@ -1951,7 +1952,7 @@ def _asset_plot_gate_diagnostic_trajectories(
             _ASSET_TRI_GATE_LABELS[policy_id], fontsize=_ASSET_TITLE_SIZE, pad=2.0
         )
         _style_experiment_axis(ax)
-        ax.tick_params(axis="both", labelsize=5.2, pad=1.0)
+        ax.tick_params(axis="both", labelsize=_ASSET_TICK_SIZE, pad=1.0)
     for idx in range(len(policy_ids), n_row * n_col):
         axes[idx // n_col, idx % n_col].set_visible(False)
     # Keep gate labels on a visible panel when fewer than three policies exist.
@@ -1977,7 +1978,7 @@ def _asset_plot_gate_diagnostic_trajectories(
         transform=right_ax.get_yaxis_transform(),
         ha="left",
         va="center",
-        fontsize=5.2,
+        fontsize=_ASSET_TICK_SIZE,
         color=_experiment_C_STROKE,
     )
     axes[n_row - 1, n_col // 2].set_xlabel("Environment steps")
