@@ -401,6 +401,8 @@ class EmbeddingFisherMetric(BaseMetric):
         self.boundary_visibility_enabled = bool(
             kwargs.get("boundary_visibility_enabled", False)
         )
+        # State variance after a decision-session reset (set by a session-aware planner).
+        self.session_reset_variance = float(kwargs.get("session_reset_variance", 0.01))
         self.boundary_type = str(kwargs.get("boundary_type", "none"))
         self.boundary_radius = kwargs.get("boundary_radius")
         self.boundary_margin = float(kwargs.get("boundary_margin", 1.0))
@@ -459,11 +461,56 @@ class EmbeddingFisherMetric(BaseMetric):
     ) -> torch.Tensor:
         """Compute discounted EIG using information at each transition's destination.
 
+        Returns ``0.5 log det(I + L^T J L)`` per batch member, with ``J`` from
+        :meth:`_rollout_parameter_information` and ``L L^T`` the parameter
+        covariance; parameter beliefs remain fixed.
+        """
+        J = self._rollout_parameter_information(rollout, Fe_net, Fz_net, decoder)
+        batch, d_embedding = J.shape[0], J.shape[-1]
+        eye_embedding = (
+            torch.eye(d_embedding, device=self.device, dtype=J.dtype)
+            .unsqueeze(0)
+            .expand(batch, -1, -1)
+        )
+
+        def _spd_cholesky(
+            M: torch.Tensor, eye: torch.Tensor, min_eig: float = 1e-9
+        ) -> torch.Tensor:
+            M = torch.nan_to_num(M.float(), nan=0.0, posinf=1e6, neginf=-1e6)
+            M = symmetrize(M)
+            return safe_cholesky(M + max(float(min_eig), 1e-8) * eye)
+
+        P_theta = self.model.e["P"].to(self.device)
+        if P_theta.dim() == 2:
+            P_theta = P_theta.unsqueeze(0)
+        if P_theta.shape[0] == 1 and batch > 1:
+            P_theta = P_theta.expand(batch, -1, -1)
+
+        chol_theta = _spd_cholesky(P_theta, eye_embedding)
+        scaled_info = symmetrize(
+            eye_embedding + chol_theta.transpose(-1, -2) @ J @ chol_theta
+        )
+        chol_mat = _spd_cholesky(scaled_info, eye_embedding)
+        chol_diag = torch.diagonal(chol_mat, dim1=-2, dim2=-1).clamp_min(eps)
+        logabsdet = 2.0 * torch.log(chol_diag).sum(dim=-1)
+        return 0.5 * logabsdet
+
+    def _rollout_parameter_information(
+        self,
+        rollout: Union[Rollout, RolloutBuffer, Dict],
+        Fe_net: Callable,
+        Fz_net: Callable,
+        decoder: Optional[Decoder] = None,
+    ) -> torch.Tensor:
+        """Discounted predicted parameter information ``J``, shape (batch, d_e, d_e).
+
         Rollout states have shape (batch, horizon, latent_dim): ``model_state``
         supplies transition Jacobians and ``next_model_state`` supplies
         observation curvature. Score predictive covariance and sensitivity first,
-        then apply the selected measurement step before the next transition.
-        Returns one EIG per batch member; parameter beliefs remain fixed.
+        then apply the selected measurement step before the next transition. An
+        optional ``session_reset_after`` mask (batch, horizon, 1) restarts the
+        sensitivity at zero and the covariance at ``session_reset_variance`` after
+        the marked steps.
         """
         e_bel = self.model.e
         z_bel = self.model.z
@@ -487,11 +534,6 @@ class EmbeddingFisherMetric(BaseMetric):
             .unsqueeze(0)
             .expand(batch, -1, -1)
         )
-        eye_embedding = (
-            torch.eye(d_embedding, device=self.device, dtype=z.dtype)
-            .unsqueeze(0)
-            .expand(batch, -1, -1)
-        )
 
         def _to_batch_latent_cov(P_in: torch.Tensor) -> torch.Tensor:
             if P_in.dim() == 4:  # (B,1,d,d)
@@ -501,13 +543,6 @@ class EmbeddingFisherMetric(BaseMetric):
             if P_in.shape[0] == 1 and batch > 1:
                 P_in = P_in.expand(batch, -1, -1)
             return symmetrize(P_in)
-
-        def _spd_cholesky(
-            M: torch.Tensor, eye: torch.Tensor, min_eig: float = 1e-9
-        ) -> torch.Tensor:
-            M = torch.nan_to_num(M.float(), nan=0.0, posinf=1e6, neginf=-1e6)
-            M = symmetrize(M)
-            return safe_cholesky(M + max(float(min_eig), 1e-8) * eye)
 
         def _cov_diag(P: torch.Tensor) -> torch.Tensor:
             return torch.diagonal(P, dim1=-2, dim2=-1).clamp_min(0.0)
@@ -542,6 +577,13 @@ class EmbeddingFisherMetric(BaseMetric):
 
         _, I_z_all, _, _ = diagonal_observation_information(decoder, z_next)
         I_z_all = I_z_all.to(self.device)
+
+        # Decision sessions: after a reset the state is known (small variance) and no
+        # longer depends on the parameters, so the sensitivity restarts at zero.
+        session_reset = _optional_rollout_field(rollout, "session_reset_after")
+        if session_reset is not None:
+            session_reset = session_reset.to(self.device).reshape(batch, T) > 0.5
+            reset_cov = self.session_reset_variance * eye_latent
 
         # Discounted accumulation of predicted parameter information.
         discounts = self.gamma ** torch.arange(T, device=self.device, dtype=z.dtype)
@@ -596,21 +638,15 @@ class EmbeddingFisherMetric(BaseMetric):
                 P_diag = _cov_diag(posterior_cov)
             else:
                 P_pred = posterior_cov
+            if session_reset is not None and bool(session_reset[:, i].any()):
+                reset_i = session_reset[:, i].view(batch, 1, 1)
+                S_sens = torch.where(reset_i, torch.zeros_like(S_sens), S_sens)
+                if self.diagonal_covariance:
+                    P_diag = torch.where(reset_i[:, :, 0], _cov_diag(reset_cov), P_diag)
+                else:
+                    P_pred = torch.where(reset_i, reset_cov, P_pred)
 
-        P_theta = e_bel["P"].to(self.device)
-        if P_theta.dim() == 2:
-            P_theta = P_theta.unsqueeze(0)
-        if P_theta.shape[0] == 1 and batch > 1:
-            P_theta = P_theta.expand(batch, -1, -1)
-
-        chol_theta = _spd_cholesky(P_theta, eye_embedding)
-        scaled_info = symmetrize(
-            eye_embedding + chol_theta.transpose(-1, -2) @ J @ chol_theta
-        )
-        chol_mat = _spd_cholesky(scaled_info, eye_embedding)
-        chol_diag = torch.diagonal(chol_mat, dim1=-2, dim2=-1).clamp_min(eps)
-        logabsdet = 2.0 * torch.log(chol_diag).sum(dim=-1)
-        return 0.5 * logabsdet
+        return J
 
     def compute_stepwise(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
         EIG = self._compute_member_eig(

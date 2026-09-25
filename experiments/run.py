@@ -1318,6 +1318,10 @@ def _run_single_parameter_identification(
         mpc_num_samples=24,
         mpc_num_elite=6,
     )
+    # Decision sessions: planners simulate the environment's decide-wait-reset rule.
+    session_rule = getattr(true_vec_env, "session_rule", None)
+    if session_rule is not None and hasattr(policy, "session_rule"):
+        policy.session_rule = session_rule
 
     exp_config = _build_runtime_experiment_config(
         run_dir=run_dir,
@@ -1372,6 +1376,9 @@ def _run_single_parameter_identification(
             "cpu_time_sec": cpu_time_sec,
             "cov_diag_mean": cov_diag_mean,
         }
+        if session_rule is not None:
+            emb_row["session_index"] = int(transition.get("session_index", 0))
+            emb_row["session_end"] = bool(transition.get("session_end", False))
         e_vec = e_est.reshape(-1)
         embedding_dim_active = int(e_vec.numel())
         emb_row["embedding_dim"] = embedding_dim_active
@@ -1686,6 +1693,12 @@ def _run_single_parameter_identification(
             "loop_plan_executed": loop_plan_executed,
             "loop_plan_reason": loop_plan_reason,
         }
+        if session_rule is not None:
+            state_action_row.update(
+                session_index=int(transition.get("session_index", 0)),
+                session_end=as_bool(transition.get("session_end", False)),
+                session_decision=int(transition.get("session_decision", 0)),
+            )
         for prefix, value in (
             ("true_z", env_state),
             ("model_z", model_state),
@@ -1789,6 +1802,7 @@ def _run_single_parameter_identification(
         [
             "step",
             "cpu_time_sec",
+            *(("session_index", "session_end") if session_rule is not None else ()),
             "embedding_dim",
             "full_param_dim",
             *emb_value_fields,
@@ -1864,6 +1878,11 @@ def _run_single_parameter_identification(
         [
             "step",
             "cpu_time_sec",
+            *(
+                ("session_index", "session_end", "session_decision")
+                if session_rule is not None
+                else ()
+            ),
             "true_x",
             "true_v",
             "model_x",

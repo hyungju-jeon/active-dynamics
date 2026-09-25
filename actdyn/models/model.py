@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
+import numpy as np
 import torch
 from einops import rearrange, repeat, einsum
 from torch.nn.functional import softplus
@@ -1006,6 +1007,22 @@ class FilteringEmbedding(BaseModel):
         if self.input_dependent_dynamics and u is not None:
             return self.Fe(z, e, u=u)
         return self.Fe(z, e)
+
+    def reset_session_state(self, mean: torch.Tensor | np.ndarray, variance: float) -> None:
+        """Known session reset: the latent jumps to ``mean`` (shape (d,)).
+
+        The state belief becomes N(mean, variance I). The parameter belief and the
+        accumulated parameter-information block are kept. The sensitivity of the
+        state to the parameters restarts at zero, because the reset state does not
+        depend on the parameters.
+        """
+        batch = int(self.e["m"].shape[0])
+        m = torch.as_tensor(np.asarray(mean), dtype=torch.float32, device=self.device).reshape(1, 1, -1)
+        m = m.expand(batch, 1, self.latent_dim).clone()
+        eye = torch.eye(self.latent_dim, device=self.device).reshape(1, 1, self.latent_dim, self.latent_dim)
+        self._state = m
+        self.z = {"m": m.clone(), "P": (float(variance) * eye).expand(batch, 1, -1, -1).clone()}
+        self._theta_sensitivity = torch.zeros_like(self._theta_sensitivity)
 
     @property
     def embedding(self):

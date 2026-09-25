@@ -147,6 +147,11 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         self._episode_inputs = []
         self._episode_deltas = []
 
+    def on_session_reset(self, state: torch.Tensor) -> None:
+        """Plan again from the reset state; the collected transitions stay valid."""
+        self.count = 0
+        self.action_list = []
+
     def get_action(self, state: torch.Tensor, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
         x0 = _to_numpy_vector(state)
         if x0.size == 0:
