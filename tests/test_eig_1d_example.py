@@ -218,3 +218,13 @@ def test_conditioned_information_matches_joint_gaussian_likelihood() -> None:
             joint_cov, joint_mean_derivative)
         np.testing.assert_allclose(curve["theta_fisher"][i], joint_information,
                                    rtol=1e-12, atol=1e-12)
+
+
+def test_parameter_information_factors_into_sensitivity_and_attenuated_information() -> None:
+    from experiments.eig_1d_example import attenuated_state_information
+
+    curve = compute_eig_curve(np.array([.2, 1.5, 3., 4.5]), theta_mean=1., theta_var=2.,
+                              c=-1.6, b=0., state_var=.02, state_noise=.05, dt=1., horizon=5)
+    np.testing.assert_allclose(
+        curve["sensitivity_path"][1:] ** 2 * attenuated_state_information(curve),
+        curve["theta_information_steps"], rtol=1e-12)

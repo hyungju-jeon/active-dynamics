@@ -348,14 +348,15 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         plt.setp(ax_r.get_xticklabels(), visible=False)
         plt.setp(ax_z.get_xticklabels(), visible=False)
         if col == 0:
-            ax_r.set_ylabel("Pool", fontsize=_ASSET_LABEL_SIZE)
-            ax_z.set_ylabel("latent", fontsize=_ASSET_LABEL_SIZE)
-            ax_u.set_ylabel("input", fontsize=_ASSET_LABEL_SIZE)
+            for axis, label in zip((ax_r, ax_z, ax_u), ("Pool", "latent", "input")):
+                axis.tick_params(axis="y", pad=1.0)
+                axis.set_ylabel(label, fontsize=_ASSET_LABEL_SIZE, labelpad=1.0)
             _panel_label(ax_r, "C", dx=-34)
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.8, label="network")
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.55, ls="--", label="filtered")
             ax_z.legend(loc="upper left", fontsize=_ASSET_TICK_SIZE, frameon=False, ncol=2,
                         handlelength=1.4, borderaxespad=0.1)
+    fig.align_ylabels(shared_y)
     # (D) held-out R2 after each identification session.
     ax = fig.add_subplot(row[1])
     by = _r2_by_session(r2_rows)
@@ -445,7 +446,7 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     ex = dict(np.load(eval_dir / "examples" / "example_sessions.npz"))
     ex_rows = {(r["task"], r["controller"]): r for r in _read(eval_dir / "examples" / "example_sessions.csv")}
     _seed, budget = EXAMPLES["sessions"][task]
-    sub = cell.subgridspec(3, 1, height_ratios=[0.55, 1.5, 1.0], hspace=0.1)
+    sub = cell.subgridspec(3, 1, height_ratios=[0.8, 1.5, 1.0], hspace=0.1)
     ax_t = fig.add_subplot(sub[0])
     ax_l = fig.add_subplot(sub[1], sharex=ax_t)
     ax_u = fig.add_subplot(sub[2], sharex=ax_t)
@@ -463,13 +464,13 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     window_ms = float(PROTOCOL["window"][task]) * 5.0
 
     # Timeline of this session: evidence and control window; the success window ends below.
-    ax_t.add_patch(Rectangle((0.0, 1.1), evidence_ms, 0.8, facecolor=NEUTRAL_LIGHT, edgecolor="none"))
-    ax_t.text(20.0, 1.5, "evidence 6 pA", ha="left", va="center", fontsize=_ASSET_TICK_SIZE)
-    ax_t.add_patch(Rectangle((onset_ms, 0.1), window_ms, 0.8, facecolor=CONTROL_SHADE,
+    ax_t.add_patch(Rectangle((0.0, 1.275), evidence_ms, 0.95, facecolor=NEUTRAL_LIGHT, edgecolor="none"))
+    ax_t.text(20.0, 1.75, "evidence 6 pA", ha="left", va="center", fontsize=_ASSET_TICK_SIZE)
+    ax_t.add_patch(Rectangle((onset_ms, 0.075), window_ms, 0.95, facecolor=CONTROL_SHADE,
                              edgecolor="none"))
-    ax_t.text(onset_ms + 0.5 * window_ms, 0.5, "control input (at most 2 s)", ha="center", va="center",
+    ax_t.text(onset_ms + 0.5 * window_ms, 0.55, "control input (at most 2 s)", ha="center", va="center",
               fontsize=_ASSET_TICK_SIZE)
-    ax_t.set_ylim(0.0, 2.8)
+    ax_t.set_ylim(0.0, 2.4)
     ax_t.axis("off")
 
     for name, st in styles.items():
@@ -488,7 +489,7 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     t_ms = np.arange(u.shape[0]) * 5.0
     ax_u.plot(t_ms, u[:, target], color=POOL_COLORS[1], lw=0.8, label="to losing pool")
     ax_u.plot(t_ms, u[:, 1 - target], color=POOL_COLORS[0], lw=0.8, label="to winning pool")
-    ax_t.axvline(onset_ms, ymax=0.72, color=STROKE_COLOR, lw=0.6, ls="--")
+    ax_t.axvline(onset_ms, ymax=0.94, color=STROKE_COLOR, lw=0.6, ls="--")
     for a in (ax_l, ax_u):
         a.axvline(onset_ms, color=STROKE_COLOR, lw=0.6, ls="--")
         style_experiment_axis(a)
@@ -516,10 +517,11 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
 
 
 def _control_legend(fig: Any, plt: Any) -> None:
+    reference_labels = {"reduced_fit": "Fitted", "spread": "Uniform", "front": "Full"}
     handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0, label=_asset_policy_label(p))
                for p in POLICIES]
     handles += [plt.Line2D([], [], color=s["color"], ls=s["linestyle"], marker=s["marker"], ms=2.4, lw=0.8,
-                           label=s["label"]) for s in REFERENCE_STYLE.values()]
+                           label=reference_labels[name]) for name, s in REFERENCE_STYLE.items()]
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=len(handles),
                fontsize=_ASSET_TICK_SIZE, columnspacing=0.9, handlelength=1.4, handletextpad=0.3, frameon=False)
 
@@ -542,7 +544,7 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
     ax = fig.add_subplot(row[0])
     _draw_budget_panel(ax, look, task, [float(b) for b in PROTOCOL["budgets"][task]], ylabel=True)
     _panel_label(ax, "A", dx=-28)  # left of the tick labels: the title is wider than this narrow panel
-    ax = fig.add_subplot(row[1])
+    ax = fig.add_subplot(row[1], sharey=ax)
     _draw_session_panel(ax, look, task, checkpoints, ylabel=False)
     _panel_label(ax, "B")
     _panel_label(_draw_example_session(fig, row[2], eval_dir, task), "C", dx=-30)

@@ -8,13 +8,14 @@ Left block, the latent dynamics:
   stable states and saddle, the saddle's stable manifold (separatrix) with the down-state
   basin shaded, the region of R2 start states, the region that holds 90% of passive
   (no-input) activity, and the example trajectory of (F).
-* (C) per-weight parameter sensitivity ||dv/dw|| on one color scale, with the passive region.
+* (C) per-weight parameter sensitivity ||dv/dw|| on one color scale, with the passive region
+  and separatrix from (B).
 
 Right block, one column per observation condition of the degraded-observation study
 (uniform loading at -5 dB "Default", uniform at -10 dB, biased at -5 dB):
 
 * (D) loading directions (rows of C), one compass per condition on one scale.
-* (E) det of the local state Fisher information, one log color scale.
+* (E) det of the local state Fisher information, one log color scale, with the same separatrix.
 * (F) spike trains of the 20 neurons (sorted by loading angle) along the trajectory in
   (B); shading marks the input pulse that switches it from the down to the up state.
 
@@ -37,7 +38,7 @@ from .assets import (
     _apply_asset_style,
     save_figure,
 )
-from .spiking_sessions import POOL_COLORS, PROBE_SHADE
+from .spiking_sessions import POOL_COLORS
 from .theme import NEUTRAL_FILL, STROKE_COLOR, style_experiment_axis
 
 ENV_DEFAULT = "tbme_wilson_cowan"  # uniform loading, -5 dB
@@ -47,16 +48,16 @@ CONDITIONS = ((ENV_DEFAULT, "Default"), (ENV_LOW_SNR, "SNR -10"), (ENV_BIASED, "
 E_COLOR, I_COLOR = POOL_COLORS[1], POOL_COLORS[0]
 WEIGHT_LABELS = (r"$w_{EE}$", r"$w_{EI}$", r"$w_{IE}$", r"$w_{II}$")
 MAP_CMAP = "magma"
-MAP_LIM = 2.5  # latent map extent; z = -2 and 2 are rates 0 and 1
-PHASE_LIM = 3.0  # include the full pulse-driven path, whose minimum is z_2 = -2.88
+PULSE_SHADE = "#C6C0B8"
+MAP_LIM = 3.0  # shared B/C/E domain includes the full path; z = -2 and 2 are rates 0 and 1
 FIGURE_WIDTH = 516.0 / 72.27
 FIGURE_HEIGHT = 3.1
 # Layout in inches. Left block: A and B on top, the C strip below. Right block: a 3 x 3 matrix
 # with one column per observation condition and rows D (loadings), E (Fisher), F (spikes).
 LEFT = {"top": 2.89, "a_left": 0.15, "a_width": 1.5, "b_left": 2.12, "b_size": 1.4,
         "c_bottom": 0.42, "c_size": 0.7}
-RIGHT = {"x0": 4.10, "col": 0.88, "gap": 0.06, "d": (2.49, 0.40), "e": (1.45, 0.88),
-         "f_raster": (0.42, 0.60)}
+RIGHT = {"x0": 4.10, "col": 0.88, "gap": 0.06, "d": (2.42, 0.50), "e": (1.36, 0.88),
+         "f_raster": (0.28, 0.60)}
 # Example trajectory of (B) and (F): start in the down state; (start, stop, u_E, u_I) pulses.
 # From the down state this pulse reaches the up state in 40 of 40 noise seeds (checked 2026-09-25).
 # 600 steps keep single spikes visible in (F); longer windows merge into solid bands.
@@ -66,7 +67,7 @@ EXAMPLE = {
     "pulses": ((150, 250, 2.0, -2.0),),
 }
 PASSIVE = {"n_trajectories": 50, "steps": 3000, "mass": 0.9}
-GRID = {"field": 41, "map": 101, "basin": 161}
+GRID = {"field": 41, "map": 121, "basin": 161}  # retain 0.05 spacing on the wider maps
 LOADING_SNR = {"snr_trajectories": 100, "snr_trajectory_length": 200}
 
 
@@ -187,7 +188,7 @@ def _passive_density(model: _Model) -> tuple[np.ndarray, np.ndarray, float]:
         z = np.clip(model.step(z, np.zeros_like(z)) + rng.normal(scale=noise, size=z.shape), -model.clip, model.clip)
         samples.append(z.copy())
     samples = np.concatenate(samples)
-    edges = np.linspace(-MAP_LIM, MAP_LIM, 101)
+    edges = np.linspace(-MAP_LIM, MAP_LIM, GRID["map"])
     hist, _, _ = np.histogram2d(samples[:, 0], samples[:, 1], bins=[edges, edges])
     density = gaussian_filter(hist.T, sigma=1.5)
     ordered = np.sort(density.ravel())[::-1]
@@ -235,10 +236,13 @@ def _map_axis(ax: Any, *, xlabels: bool = True, ylabels: bool = True, limit: flo
     ax.set_xlim(-limit, limit)
     ax.set_ylim(-limit, limit)
     ax.set_aspect("equal")
-    ax.set_xticks([-2, 0, 2])
-    ax.set_yticks([-2, 0, 2])
+    ax.set_xticks([-limit, 0, limit])
+    ax.set_yticks([-limit, 0, limit])
     ax.tick_params(labelsize=_ASSET_TICK_SIZE, length=2.0, width=0.4, pad=1.5,
                    labelbottom=xlabels, labelleft=ylabels)
+    ticks = ax.xaxis.get_major_ticks()
+    ticks[0].label1.set_ha("left")
+    ticks[-1].label1.set_ha("right")
     for spine in ax.spines.values():
         spine.set_linewidth(0.5)
 
@@ -253,6 +257,16 @@ def _mark_fixed_points(ax: Any, fixed: list[tuple[np.ndarray, bool]], *, size: f
 def _map_label(ax: Any, text: str) -> None:
     ax.text(0.04, 0.96, text, transform=ax.transAxes, ha="left", va="top", fontsize=_ASSET_TICK_SIZE,
             color="white", zorder=7)
+
+
+def _map_separatrix(ax: Any, branches: list[np.ndarray]) -> None:
+    """Overlay the phase portrait's stable manifold with contrast on dark and light maps."""
+    from matplotlib import patheffects
+
+    for branch in branches:
+        ax.plot(branch[:, 0], branch[:, 1], color=STROKE_COLOR, lw=0.65, ls="--", zorder=5,
+                gid="separatrix", path_effects=[patheffects.Stroke(linewidth=1.35, foreground="white"),
+                                               patheffects.Normal()])
 
 
 def _colorbar(fig: Any, image: Any, cax: Any, label: str, *, log: bool = False) -> Any:
@@ -329,6 +343,7 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     model = _Model(_preset(ENV_DEFAULT))
     fixed = _fixed_points(model)
     saddle = next(z for z, stable in fixed if not stable)
+    separatrix = _separatrix(model, saddle, limit=MAP_LIM)
     down = min((z for z, stable in fixed if stable), key=lambda z: z[0])
     up = max((z for z, stable in fixed if stable), key=lambda z: z[0])
     traj, _u = _example(model, down)
@@ -349,16 +364,16 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     # (B) phase portrait.
     b_left = LEFT["b_left"]
     ax = _inch_axes(fig, b_left, top - b_size, b_size, b_size)
-    axis, basin = _down_basin(model, limit=PHASE_LIM)
+    axis, basin = _down_basin(model, limit=MAP_LIM)
     ax.contourf(axis, axis, basin.astype(float), levels=[0.5, 1.5], colors=[NEUTRAL_FILL], zorder=0)
-    field_axis = np.linspace(-PHASE_LIM, PHASE_LIM, GRID["field"])
+    field_axis = np.linspace(-MAP_LIM, MAP_LIM, GRID["field"])
     fx, fy = np.meshgrid(field_axis, field_axis, indexing="xy")
     v = model.drift(np.stack([fx.ravel(), fy.ravel()], axis=1)).reshape(*fx.shape, 2)
     ax.streamplot(field_axis, field_axis, v[..., 0], v[..., 1], color="#B3ADA6", linewidth=0.35, density=0.8,
                   arrowsize=0.45, zorder=1)
     ax.contour(field_axis, field_axis, v[..., 0], levels=[0.0], colors=[E_COLOR], linewidths=0.9, zorder=2)
     ax.contour(field_axis, field_axis, v[..., 1], levels=[0.0], colors=[I_COLOR], linewidths=0.9, zorder=2)
-    for branch in _separatrix(model, saddle, limit=PHASE_LIM):
+    for branch in separatrix:
         ax.plot(branch[:, 0], branch[:, 1], color=STROKE_COLOR, lw=0.7, ls="--", zorder=3)
     low, high = np.asarray(preset.trajectory_eval_state_low), np.asarray(preset.trajectory_eval_state_high)
     ax.plot([low[0], high[0], high[0], low[0], low[0]], [low[1], low[1], high[1], high[1], low[1]],
@@ -377,7 +392,7 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
                                 (up, "up", -0.2, -0.3, "right")):
         ax.text(z[0] + dx, z[1] + dy, text, ha=ha, va="center", fontsize=_ASSET_TICK_SIZE, zorder=7,
                 bbox=dict(boxstyle="round,pad=0.1", facecolor="white", edgecolor="none", alpha=0.8))
-    _map_axis(ax, limit=PHASE_LIM)
+    _map_axis(ax)
     ax.set_xlabel(r"$z_1$ (E)", fontsize=_ASSET_LABEL_SIZE, labelpad=1.0)
     ax.set_ylabel(r"$z_2$ (I)", fontsize=_ASSET_LABEL_SIZE, labelpad=0.5)
     _letter(fig, "B", b_left - 0.4, top + 0.05)
@@ -398,6 +413,7 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
         image = ax.imshow(sens[j], origin="lower", extent=[-MAP_LIM, MAP_LIM, -MAP_LIM, MAP_LIM], cmap=MAP_CMAP,
                           vmin=0.0, vmax=vmax, interpolation="bilinear")
         _passive_contour(ax, centers, density, level, "white")
+        _map_separatrix(ax, separatrix)
         _mark_fixed_points(ax, fixed, size=2.4, edge="white")
         _map_axis(ax, ylabels=j == 0)
         _map_label(ax, WEIGHT_LABELS[j])
@@ -434,11 +450,11 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
         ax.set_xticks([])
         ax.set_yticks([])
         ax.text(1.1 * reach, 0.0, r"$z_1$", ha="left", va="center", fontsize=_ASSET_TICK_SIZE)
-        ax.text(0.12 * reach, 0.80 * reach, r"$z_2$", ha="left", va="bottom", fontsize=_ASSET_TICK_SIZE)
-        _title(fig, label, cols[k], cols[k] + RIGHT["col"], d_bottom + d_height + 0.05)
+        ax.text(0.12 * reach, 0.72 * reach, r"$z_2$", ha="left", va="bottom", fontsize=_ASSET_TICK_SIZE)
+        _title(fig, label, cols[k], cols[k] + RIGHT["col"], top + 0.05)
     fig.text((r_left - 0.2) / FIGURE_WIDTH, (d_bottom + 0.5 * d_height) / FIGURE_HEIGHT, "loadings",
              ha="center", va="center", rotation=90, fontsize=_ASSET_LABEL_SIZE)
-    _letter(fig, "D", letter_x, d_bottom + d_height + 0.05)
+    _letter(fig, "D", letter_x, top + 0.05)
 
     # (E) state Fisher information.
     from matplotlib.colors import LinearSegmentedColormap, LogNorm
@@ -458,8 +474,10 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
         image = ax.imshow(det, origin="lower", extent=[-MAP_LIM, MAP_LIM, -MAP_LIM, MAP_LIM], cmap=fisher_cmap,
                           norm=norm, interpolation="nearest")
         _passive_contour(ax, centers, density, level, "white")
+        _map_separatrix(ax, separatrix)
         _mark_fixed_points(ax, fixed, size=2.8, edge="white")
         _map_axis(ax, ylabels=k == 0)
+        ax.tick_params(pad=0.8)
         if k == 0:
             ax.set_ylabel(r"$z_2$ (I)", fontsize=_ASSET_LABEL_SIZE, labelpad=0.5)
     cax = _inch_axes(fig, r_right + 0.02, e_bottom, 0.03, e_size)
@@ -472,9 +490,9 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     # vertical label at the page edge.
     cax.set_ylabel(r"State Fisher information $\det\mathbf{I}_z$", rotation=0)
     cax.yaxis.set_label_coords(0.5 * (r_left + r_right) / FIGURE_WIDTH,
-                             (e_bottom + e_size + 0.05) / FIGURE_HEIGHT, transform=fig.transFigure)
+                             (e_bottom + e_size + 0.04) / FIGURE_HEIGHT, transform=fig.transFigure)
     cax.yaxis.label.set(ha="center", va="bottom")
-    _letter(fig, "E", letter_x, e_bottom + e_size + 0.05)
+    _letter(fig, "E", letter_x, e_bottom + e_size + 0.04)
 
     # (F) spike trains along the shared trajectory drawn prominently in (B).
     fr_bottom, fr_height = RIGHT["f_raster"]
@@ -490,16 +508,17 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
             ax_r.sharey(raster_axes[0])
         raster_axes.append(ax_r)
         steps, neurons = np.nonzero(counts[:, order] > 0)
-        ax_r.vlines(steps, neurons - 0.4, neurons + 0.4, color=STROKE_COLOR, lw=0.3, rasterized=True)
+        ax_r.vlines(steps, neurons - 0.28, neurons + 0.28, color=STROKE_COLOR, lw=0.18, rasterized=True)
         ax_r.set_ylim(-0.5, weights.shape[0] - 0.5)
         ax_r.set_yticks([0, weights.shape[0] - 1], labels=["1", str(weights.shape[0])])
         for start, stop, _ue, _ui in EXAMPLE["pulses"]:
-            ax_r.axvspan(start, stop, color=PROBE_SHADE, lw=0, zorder=0)
+            ax_r.axvspan(start, stop, color=PULSE_SHADE, lw=0, zorder=0)
             ax_r.plot([start, stop], [1.025, 1.025], color=STROKE_COLOR, lw=2,
                       transform=ax_r.get_xaxis_transform(), clip_on=False)
             ax_r.text(0.5 * (start + stop), 1.055, "pulse", ha="center", va="bottom",
                       transform=ax_r.get_xaxis_transform(), fontsize=_ASSET_TICK_SIZE)
         style_experiment_axis(ax_r)
+        ax_r.tick_params(pad=1.0)
         ax_r.set_xlim(0, traj.shape[0])
         ax_r.set_xticks([0, 300, 600])
         # Edge labels point inward so neighbouring columns' "600" and "0" do not meet.
@@ -513,8 +532,8 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
             ax_r.xaxis.label.set(ha="center", va="bottom")
         else:
             ax_r.tick_params(labelleft=False)
-    _letter(fig, "F", letter_x, fr_bottom + fr_height + 0.18)
-    _title(fig, "Spike trains", r_left, r_right, fr_bottom + fr_height + 0.18)
+    _letter(fig, "F", letter_x, fr_bottom + fr_height + 0.16)
+    _title(fig, "Spike trains", r_left, r_right, fr_bottom + fr_height + 0.16)
     return save_figure(fig, output, plt_module=plt)
 
 

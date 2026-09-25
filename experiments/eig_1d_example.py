@@ -226,8 +226,9 @@ def build_figure(
     """Build the 1D planning figure from arrays returned by ``compute_eig_curve``.
 
     Args:
-        single_column: Use the compact trajectory/information-table layout at the
-            manuscript's 252 TeX point column width. The full diagnostic
+        single_column: Use the compact trajectory, information-factor, and
+            cumulative-information layout at the manuscript's 252 TeX point
+            column width. The full diagnostic
             layout uses the 516 TeX point text width.
     """
     if single_column:
@@ -498,110 +499,143 @@ def build_figure(
     return fig
 
 
+def attenuated_state_information(curve: dict[str, np.ndarray]) -> np.ndarray:
+    """Return I_{z,k}/(1+P_k^- I_{z,k}) with shape ``(horizon, n)``.
+
+    This is the attenuated state Fisher information of the p-EIG increment
+    (Supplementary A.6), so ``sensitivity_path[1:]**2`` times it equals
+    ``theta_information_steps``.
+    """
+    state_information = curve["state_information_steps"]
+    return state_information / (1.0 + curve["state_variance_path"][1:] * state_information)
+
+
 def build_compact_figure(
     curve: dict[str, np.ndarray], *, theta_mean: float, theta_var: float,
     plt,
 ):
-    """Show trajectories and the information available at each future step.
+    """Show why the preferred initial state changes with the planning horizon.
 
-    Inputs are the saved arrays from ``compute_eig_curve``. No observations
-    are sampled. Rows of the table are initial states; columns are future
-    steps. With the same parameter variance, summing the first H columns gives
-    the same ranking as cumulative p-EIG. Winner margins use the unrounded
-    p-EIG scores in nats, not the rounded Fisher information printed in cells.
+    Inputs are the saved arrays from ``compute_eig_curve``. No observations are
+    sampled. (A) Nominal trajectories. (B) Squared sensitivity S_k^2. (C) Attenuated
+    state Fisher information, so that B times C is the per-step parameter
+    information I_theta,k. (D) Cumulative information over the first
+    H steps, with the gain I_theta,H in parentheses; shading encodes the gain.
+    The outline marks the maximizer of 0.5 log(1 + P_theta * cumulative), the
+    p-EIG choice. Printed values are rounded; rankings use unrounded values.
     """
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.patches import Rectangle
+    from matplotlib.ticker import FixedLocator, MaxNLocator
+
     indices = [int(np.argmin(abs(curve["z_probe"] - z))) for z in _CANDIDATE_Z]
     paths = curve["z_path"][:, indices]
-    info = curve["theta_information_steps"][:, indices].T
-    scores = 0.5 * np.log1p(theta_var * np.cumsum(info, axis=1))
-    winners = scores.argmax(axis=0)
-    ordered_scores = np.sort(scores, axis=0)
-    margins = ordered_scores[-1] - ordered_scores[-2]
-    horizon = info.shape[1]
-    steps = np.arange(horizon + 1)
-    colors = _C_STEP[:len(indices)]
+    sensitivity_sq = curve["sensitivity_path"][1:, indices] ** 2
+    attenuated_information = attenuated_state_information(curve)[:, indices]
+    gain = curve["theta_information_steps"][:, indices].T
+    cumulative = np.cumsum(gain, axis=1)
+    winners = (0.5 * np.log1p(theta_var * cumulative)).argmax(axis=0)
+    n_candidates, horizon = gain.shape
+    colors = _C_STEP[:n_candidates]
     markers = ("o", "s", "^", "D")
-    fig = plt.figure(figsize=(252 / 72.27, 3.0))
-    state = fig.add_axes([0.20, 0.70, 0.75, 0.25])
-    table = fig.add_axes([0.20, 0.31, 0.75, 0.19])
-    choices = fig.add_axes([0.20, 0.135, 0.75, 0.06])
+    # z0=3 is drawn last so it stays visible where candidates coincide.
+    draw_order = (0, 1, 3, 2)
 
-    for i, (color, marker) in enumerate(zip(colors, markers, strict=True)):
-        state.plot(steps, paths[:, i], color=color, marker=marker,
-                   markersize=2.6, markeredgecolor="white", markeredgewidth=0.3,
-                   linewidth=1)
+    width, height = 252 / 72.27, 2.5
+    fig = plt.figure(figsize=(width, height))
+
+    def axes_at(x0, y0, dx, dy):
+        """Place axes by physical position in inches."""
+        return fig.add_axes([x0 / width, y0 / height, dx / width, dy / height])
+
+    state = axes_at(0.27, 1.55, 0.86, 0.66)
+    sensitivity = axes_at(1.43, 1.55, 0.86, 0.66)
+    observation = axes_at(2.58, 1.55, 0.86, 0.66)
+    table = axes_at(0.50, 0.08, 2.94, 0.74)
+
+    def trace(ax, steps, values, title):
+        for i in draw_order:
+            ax.plot(steps, values[:, i], color=colors[i], marker=markers[i],
+                    markersize=2.6, markeredgecolor="white", markeredgewidth=0.3,
+                    linewidth=1)
+        ax.set_title(title, fontsize=_ASSET_LABEL_SIZE, pad=3, loc="left")
+        ax.set_xticks(steps)
+        ax.tick_params(pad=1.2)
+        ax.grid(axis="y", alpha=0.15)
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.5)
+
+    steps = np.arange(horizon + 1)
+    trace(state, steps, paths, r"State $z_k$")
     state_upper = max(4.85, float(paths.max()) * 1.07)
     if theta_mean > 0 and np.pi / theta_mean < state_upper:
-        equilibrium = np.pi / theta_mean
-        state.axhline(equilibrium, color=".35", lw=0.6, ls="--", zorder=0)
-        state.annotate(
-            r"$z=\pi$" if theta_mean == 1 else r"$z=\pi/\hat\theta$",
-            (horizon - 0.1, equilibrium), xytext=(0, 5),
-            textcoords="offset points", ha="right", fontsize=_ASSET_TICK_SIZE,
-        )
-    state.set(
-        xlim=(-0.1, horizon + 0.1), ylim=(-0.12, state_upper), xticks=steps,
-        yticks=[0, 2, 4], xlabel=r"Future step $k$", ylabel=r"State $z_k$",
-    )
-    state.tick_params(pad=1.2)
-    state.xaxis.labelpad = 2
-    state.grid(axis="y", alpha=0.15)
-    for spine in state.spines.values():
-        spine.set_linewidth(0.5)
-    fig.text(0.03, 0.965, "A", fontsize=_ASSET_PANEL_LABEL_SIZE,
-             weight="bold", va="top")
+        state.axhline(np.pi / theta_mean, color=".35", lw=0.6, ls="--", zorder=0)
+    state.set(xlim=(-0.2, horizon + 0.2), ylim=(-0.12, state_upper), yticks=[0, 2, 4])
 
-    # Color is redundant with the numeric cell values, on one shared scale.
-    info_max = max(0.1, float(np.ceil(info.max() * 10) / 10))
+    trace(sensitivity, steps[1:], sensitivity_sq, r"Sensitivity $S_k^2$")
+    sensitivity_upper = 1.08 * float(sensitivity_sq.max())
+    sensitivity.set(xlim=(0.8, horizon + 0.2),
+                    ylim=(-0.035 * sensitivity_upper, sensitivity_upper))
+    sensitivity.yaxis.set_major_locator(MaxNLocator(nbins=3))
+
+    trace(observation, steps[1:], attenuated_information,
+          r"Attenuated $\tilde I_{z,k}$")
+    observation.set_yscale("log")
+    low, high = float(attenuated_information.min()), float(attenuated_information.max())
+    observation.set(xlim=(0.8, horizon + 0.2), ylim=(0.8 * low, 1.8 * high))
+    decades = 10.0 ** np.arange(np.floor(np.log10(low)), np.ceil(np.log10(high)) + 1)
+    observation.yaxis.set_major_locator(FixedLocator(decades))
+    observation.set_yticklabels([f"{value:g}" for value in decades])
+    observation.minorticks_off()
+    fig.text(1.86 / width, 1.27 / height, r"Future step $k$", ha="center",
+             fontsize=_ASSET_LABEL_SIZE)
+
+    # Shading encodes the gain at step H; cell text leads with the cumulative sum.
+    gain_max = max(0.1, float(np.ceil(gain.max() * 10) / 10))
     table.imshow(
-        info, vmin=0, vmax=info_max, cmap="Blues", aspect="auto",
-        interpolation="nearest", extent=(0.5, horizon + 0.5, len(indices) - 0.5, -0.5),
+        gain, vmin=0, vmax=gain_max, aspect="auto", interpolation="nearest",
+        cmap=LinearSegmentedColormap.from_list("gain", ["#FFFFFF", "#4A4A4A"]),
+        extent=(0.5, horizon + 0.5, n_candidates - 0.5, -0.5),
     )
     table.set(
-        xticks=steps[1:], xticklabels=[rf"$k={k}$" for k in steps[1:]],
-        yticks=np.arange(len(indices)),
+        xlim=(0.5, horizon + 0.5), ylim=(n_candidates - 0.5, -0.5),
+        xticks=steps[1:], xticklabels=[rf"$H={h}$" for h in steps[1:]],
+        yticks=np.arange(n_candidates),
         yticklabels=[rf"$z_0={z:g}$" for z in _CANDIDATE_Z],
     )
     table.xaxis.tick_top()
-    table.tick_params(axis="both", length=0, pad=3)
+    table.tick_params(axis="both", length=0, pad=2)
     for label, color in zip(table.get_yticklabels(), colors, strict=True):
         label.set_color(color)
-    for row in range(len(indices)):
+
+    def rounded(value):
+        return f"{value:.2f}" if value >= 0.01 else f"{value:.3f}"
+
+    for row in range(n_candidates):
         for col in range(horizon):
-            value = info[row, col]
-            label = f"{value:.2f}" if value >= 0.01 else f"{value:.3f}"
-            table.text(col + 1, row, label, ha="center", va="center",
-                       fontsize=_ASSET_TICK_SIZE,
-                       color="white" if value / info_max > 0.575 else "#222222")
+            table.text(col + 1, row,
+                       f"{rounded(cumulative[row, col])} (+{rounded(gain[row, col])})",
+                       ha="center", va="center", fontsize=_ASSET_TICK_SIZE,
+                       color="white" if gain[row, col] / gain_max > 0.6 else "#222222")
+    # Unclipped so the edge lines are not cut in half at the axes border.
     for edge in np.arange(0.5, horizon + 0.6, 1):
-        table.axvline(edge, color="white", lw=1)
-    for edge in np.arange(-0.5, len(indices), 1):
-        table.axhline(edge, color="white", lw=1)
+        table.axvline(edge, color="white", lw=1, clip_on=False)
+    for edge in np.arange(-0.5, n_candidates, 1):
+        table.axhline(edge, color="white", lw=1, clip_on=False)
     for spine in table.spines.values():
         spine.set_visible(False)
-    fig.text(0.03, 0.56, "B", fontsize=_ASSET_PANEL_LABEL_SIZE, weight="bold")
-    fig.text(0.20, 0.56, r"Information at each step $I_{\theta,k}$",
-             fontsize=_ASSET_LABEL_SIZE)
-    fig.text(0.20, 0.26, "Sum columns 1 through $H$ to rank candidates.",
-             fontsize=_ASSET_TICK_SIZE)
+    for h, winner in enumerate(winners, start=1):
+        table.add_patch(Rectangle((h - 0.47, winner - 0.44), 0.94, 0.88, fill=False,
+                                  edgecolor=colors[int(winner)], lw=1.6, zorder=5,
+                                  clip_on=False))
+    fig.text(0.50 / width, 0.99 / height,
+             r"Cumulative information $\Sigma_{k\leq H}\, I_{\theta,k}$ (gain at step $H$)",
+             fontsize=_ASSET_LABEL_SIZE, va="bottom")
 
-    choices.set(xlim=(0.5, horizon + 0.5), ylim=(0, 1))
-    choices.text(-0.055, 0.52, "Best $z_0$", transform=choices.transAxes,
-                 ha="right", va="center", fontsize=_ASSET_LABEL_SIZE)
-    for k, winner in enumerate(winners, start=1):
-        choices.axvspan(k - 0.44, k + 0.44, color=colors[int(winner)],
-                        alpha=0.25, ymin=0.12, ymax=0.88, linewidth=0)
-        choices.text(k, 0.5, f"{_CANDIDATE_Z[int(winner)]:g}", ha="center",
-                     va="center", fontsize=_ASSET_TICK_SIZE, color="#222222")
-        choices.text(k, -0.7, f"{margins[k - 1]:.3f}", ha="center",
-                     va="center", fontsize=_ASSET_TICK_SIZE, color="#222222")
-        choices.text(k, 1.2, rf"$H={k}$", ha="center", va="bottom",
-                     fontsize=_ASSET_TICK_SIZE)
-    choices.text(-0.055, -0.7, "Margin (nats)", transform=choices.transAxes,
-                 ha="right", va="center", fontsize=_ASSET_TICK_SIZE)
-    fig.text(0.575, 0.025, "Best of these four initial states", ha="center",
-             fontsize=_ASSET_TICK_SIZE)
-    choices.set_axis_off()
+    for x, y, letter in ((0.0, height - 0.01, "A"), (1.18, height - 0.01, "B"),
+                         (2.33, height - 0.01, "C"), (0.0, 1.16, "D")):
+        fig.text(x / width, y / height, letter, fontsize=_ASSET_PANEL_LABEL_SIZE,
+                 weight="bold", va="top")
     return fig
 
 
