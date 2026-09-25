@@ -30,7 +30,7 @@ from experiments.experiment_io import (
     load_json,
     reconstruct_loglinear_rate_model,
 )
-from experiments.tbme.tbme_io import (
+from experiments.tnsre.tbme_io import (
     dynamics_from_metadata,
     load_planned_trace,
     planned_xy_cycle_for_step,
@@ -39,20 +39,20 @@ from experiments.tbme.tbme_io import (
     trace_path,
     true_dynamics_from_metadata,
 )
-from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
+from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
 configure_tbme_catalogs()
 
-DEFAULT_ASSET_DIR = REPO_ROOT / "results/tbme/assets"
+DEFAULT_ASSET_DIR = REPO_ROOT / "results/tnsre/assets"
 # Reference commands for the 60 fps vector-field error videos:
-# ./.venv/bin/python experiments/tbme/render_exp02_gated_duffing_behavior.py \
+# ./.venv/bin/python experiments/tnsre/render_exp02_gated_duffing_behavior.py \
 #     --mode video --policy active_planning --seed 0 --fps 60 \
 #     --stride 1 --inferred-panel error --error-vmax 4.275478363037109 \
-#     --output results/tbme/assets/exp02_hard_gated_duffing_session4_seed0_active_planning_behavior_vf_error_every_step_60fps.mp4
-# ./.venv/bin/python experiments/tbme/render_exp02_gated_duffing_behavior.py \
+#     --output results/tnsre/assets/exp02_hard_gated_duffing_session4_seed0_active_planning_behavior_vf_error_every_step_60fps.mp4
+# ./.venv/bin/python experiments/tnsre/render_exp02_gated_duffing_behavior.py \
 #     --mode video --policy random --seed 0 --fps 60 --stride 1 --planned off \
 #     --inferred-panel error --error-vmax 4.275478363037109 \
-#     --output results/tbme/assets/exp02_hard_gated_duffing_session4_seed0_random_behavior_vf_error_every_step_60fps.mp4
+#     --output results/tnsre/assets/exp02_hard_gated_duffing_session4_seed0_random_behavior_vf_error_every_step_60fps.mp4
 VECTOR_FIELD_GRID_SIZE = 50
 ERROR_CMAP = plt.get_cmap("hot_r")
 ERROR_CMAP_MAX = 1.0
@@ -64,7 +64,7 @@ def _resolve_run_dir(args: argparse.Namespace) -> Path:
         return args.run_dir.resolve()
     return (
         REPO_ROOT
-        / "results/tbme"
+        / "results/tnsre"
         / args.experiment
         / f"session_{int(args.session)}"
         / args.environment

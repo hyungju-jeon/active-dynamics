@@ -27,18 +27,18 @@ from actdyn.utils.experiment_runtime import seed_range_csv
 from experiments.experiment_io import experiment_env_slug
 
 
-TBME_TRACKS_BASE_DIR = "results/tbme"
+TBME_TRACKS_BASE_DIR = "results/tnsre"
 DEFAULT_SHARED_SEED_COUNT = 100
 SHARED_TBME_GROUP_MODULES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("simple_system_identification", ("experiments.tbme.exp_simple_system_identification",)),
-    ("observation_action_bottleneck", ("experiments.tbme.exp_observation_action_bottleneck",)),
+    ("simple_system_identification", ("experiments.tnsre.exp_simple_system_identification",)),
+    ("observation_action_bottleneck", ("experiments.tnsre.exp_observation_action_bottleneck",)),
     (
         "model_mismatch",
-        ("experiments.tbme.exp_model_mismatch",),
+        ("experiments.tnsre.exp_model_mismatch",),
     ),
-    ("objective_ablation", ("experiments.tbme.exp_objective_ablation",)),
-    ("scheduling", ("experiments.tbme.exp_scheduling",)),
-    ("flex_comparison", ("experiments.tbme.exp_flex_comparison",)),
+    ("objective_ablation", ("experiments.tnsre.exp_objective_ablation",)),
+    ("scheduling", ("experiments.tnsre.exp_scheduling",)),
+    ("flex_comparison", ("experiments.tnsre.exp_flex_comparison",)),
 )
 
 
@@ -63,7 +63,7 @@ def _load_suite_module(module_ref: str) -> ModuleType:
     if not module_name:
         raise ValueError("TBME suite module name is empty")
     if "." not in module_name:
-        module_name = f"experiments.tbme.{module_name}"
+        module_name = f"experiments.tnsre.{module_name}"
     return importlib.import_module(module_name)
 
 
@@ -288,7 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "suite_module",
-        help="Suite module, for example exp_simple_system_identification or experiments.tbme.exp_simple_system_identification.",
+        help="Suite module, for example exp_simple_system_identification or experiments.tnsre.exp_simple_system_identification.",
     )
     return _add_entrypoint_arguments(parser)
 

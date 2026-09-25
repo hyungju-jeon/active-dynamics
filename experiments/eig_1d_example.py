@@ -724,7 +724,7 @@ def main(argv: list[str] | None = None) -> Path:
             single_column=args.column == "single",
         )
     # Preserve the audited physical width and export an SVG with the PDF.
-    from experiments.tbme.figures.assets import save_figure
+    from experiments.tnsre.figures.assets import save_figure
 
     with plt.rc_context({"savefig.dpi": 300}):
         output = save_figure(fig, args.output, plt_module=plt)

@@ -2,19 +2,19 @@ from __future__ import annotations
 
 DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
+    "duffing",
+    "damped_pendulum",
     "gated_duffing",
+    "gated_duffing_asymmetric",
     "gated_duffing_challenging",
+    "gated_duffing_observation_bottleneck_mild",
+    "gated_duffing_observation_bottleneck_strong",
 )
 MODEL_IDS = [
-    "active_planning_u1_r1_h40",
-    "active_planning_u5_r5_h40",
-    "active_planning_u5_r10_h40",
-    "active_planning_u10_r10_h40",
-    "active_planning_u5_r20_h40",
-    "active_planning_u10_r20_h40",
-    "active_planning",
-    "adaptive",
-    "adaptive_async_anytime",
+    "flex",
+    "flex_filter",
+    "flex_true",
+    "flex_rollback",
 ]
 SHARED_EXP_ARGS = {
     "experiment_kind": "parameter",
@@ -25,17 +25,15 @@ SHARED_EXP_ARGS = {
 }
 
 EXPERIMENT_SUITES = {
-    "gated_duffing_challenging": {
+    exp_id: {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing_challenging",
-    },
-    "gated_duffing": {
-        **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing",
-    },
+        "env_preset_id": f"tbme_{exp_id}",
+    }
+    for exp_id in DEFAULT_EXP_IDS
 }
 
-from experiments.tbme.run_tbme_experiments import run_experiment_entrypoint
+
+from experiments.tnsre.run_tbme_experiments import run_experiment_entrypoint
 
 
 def main(argv: list[str] | None = None) -> int:

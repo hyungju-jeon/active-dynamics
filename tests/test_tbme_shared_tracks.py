@@ -16,12 +16,12 @@ from experiments.summarize import (
     collect_track_records,
     main as summarize_main,
 )
-from experiments.tbme.figures import summary as tbme_summary
-from experiments.tbme.figures.summary import (
+from experiments.tnsre.figures import summary as tbme_summary
+from experiments.tnsre.figures.summary import (
     SUMMARY_POLICY_FAMILIES,
     _get_policy_families,
 )
-from experiments.tbme.run_tbme_experiments import (
+from experiments.tnsre.run_tbme_experiments import (
     _shared_tbme_data,
     configure_tbme_catalogs,
 )

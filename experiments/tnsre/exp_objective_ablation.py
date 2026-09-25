@@ -125,7 +125,7 @@ EXPERIMENT_SUITES = {
     },
 }
 
-from experiments.tbme.run_tbme_experiments import run_experiment_entrypoint
+from experiments.tnsre.run_tbme_experiments import run_experiment_entrypoint
 
 
 def main(argv: list[str] | None = None) -> int:

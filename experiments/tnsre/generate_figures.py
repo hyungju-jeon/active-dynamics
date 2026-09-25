@@ -13,12 +13,12 @@ if __package__ in {None, ""}:
     if str(repo_root) not in sys.path:
         sys.path.insert(0, str(repo_root))
 
-from experiments.tbme.figures import assets as tbme_assets
-from experiments.tbme.figures import cli as tbme_experiment_cli
-from experiments.tbme.figures import diagnostics as tbme_diagnostics
-from experiments.tbme.figures import groups as tbme_groups
-from experiments.tbme.figures import summary as tbme_summary
-from experiments.tbme.run_tbme_experiments import SHARED_TBME_GROUP_MODULES
+from experiments.tnsre.figures import assets as tbme_assets
+from experiments.tnsre.figures import cli as tbme_experiment_cli
+from experiments.tnsre.figures import diagnostics as tbme_diagnostics
+from experiments.tnsre.figures import groups as tbme_groups
+from experiments.tnsre.figures import summary as tbme_summary
+from experiments.tnsre.run_tbme_experiments import SHARED_TBME_GROUP_MODULES
 
 
 EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {

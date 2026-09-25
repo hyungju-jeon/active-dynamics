@@ -13,7 +13,7 @@ from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 RESULTS_ROOT = REPO_ROOT / "results"
-DEFAULT_RESULTS_DIR = RESULTS_ROOT / "tbme"
+DEFAULT_RESULTS_DIR = RESULTS_ROOT / "tnsre"
 
 _results_dir: Path = DEFAULT_RESULTS_DIR
 _groups: dict[str, list["SuiteRef"]] | None = None

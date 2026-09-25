@@ -20,7 +20,7 @@ def test_current_tbme_catalog_configures_initial_parameter_distribution():
 
     env_paths = [
         REPO_ROOT / "experiments" / "experiment_env.yaml",
-        REPO_ROOT / "experiments" / "tbme" / "config" / "experiment_env.yaml",
+        REPO_ROOT / "experiments" / "tnsre" / "config" / "experiment_env.yaml",
     ]
     configure_catalogs(
         env_catalog_paths=env_paths,
@@ -335,9 +335,9 @@ def test_three_gate_diagnostic_fixed_gate_rankings_and_full_rank_main_gate():
 
 def test_three_gate_tradeoff_matches_retuned_equation_and_catalog():
     from actdyn.environment.vectorfield import vf_from_string
-    from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
     from experiments.experiment_definitions import configure_catalogs
-    from experiments.tbme.exp_objective_ablation import EXPERIMENT_SUITES
+    from experiments.tnsre.exp_objective_ablation import EXPERIMENT_SUITES
 
     states = torch.tensor([
         [-0.5, 0.2, -0.1, 0.3, 0.4],

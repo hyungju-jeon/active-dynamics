@@ -28,13 +28,13 @@ from actdyn.utils.figure_io import load_plotting, parse_figure_formats, save_fig
 from actdyn.visualize import apply_manuscript_figure_style, plot_vector_field
 from experiments.experiment_definitions import EnvironmentPreset, get_environment_preset
 from experiments.experiment_io import experiment_env_slug, parse_csv_list
-from experiments.tbme.run_tbme_experiments import (
+from experiments.tnsre.run_tbme_experiments import (
     configure_tbme_catalogs,
     shared_tbme_experiment_suites,
 )
 
 
-from experiments.tbme.figures import groups as _groups
+from experiments.tnsre.figures import groups as _groups
 
 
 DEFAULT_ENV_IDS = ("all",)

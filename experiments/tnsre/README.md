@@ -3,7 +3,7 @@
 This directory contains the TBME experiment definitions, TBME-specific catalogs, and TBME figure entrypoints. The experiment execution path is intentionally thin:
 
 1. A suite module declares one manuscript experiment family through `EXPERIMENT_SUITES`.
-2. `experiments.tbme.run_tbme_experiments` installs the TBME catalogs and injects those suite definitions.
+2. `experiments.tnsre.run_tbme_experiments` installs the TBME catalogs and injects those suite definitions.
 3. `experiments.run` performs the actual run and summary work.
 
 There is no TBME suite YAML file in the current structure. Suite definitions live next to the experiment they describe.
@@ -47,8 +47,8 @@ The shared experiment runtime remains outside this directory:
 
 TBME runs use both the base experiment catalogs and the TBME catalogs:
 
-- environments: `experiments/experiment_env.yaml`, then `experiments/tbme/config/experiment_env.yaml`
-- models/policies: `experiments/experiment_model.yaml`, then `experiments/tbme/config/experiment_model.yaml`
+- environments: `experiments/experiment_env.yaml`, then `experiments/tnsre/config/experiment_env.yaml`
+- models/policies: `experiments/experiment_model.yaml`, then `experiments/tnsre/config/experiment_model.yaml`
 - suites: injected from the selected suite module, with file-backed suite catalogs disabled
 
 When the same model or policy id appears in both model catalog files, the later TBME catalog entry overrides the base entry as a whole. This is not a deep merge. Current duplicated ids include `active_myopic`, `active_planning`, and `random`.
@@ -58,10 +58,10 @@ When the same model or policy id appears in both model catalog files, the later 
 The default TBME entrypoint is the shared tracks family:
 
 ```bash
-./.venv/bin/python -m experiments.tbme.run_tbme_experiments all --mode all --skip-existing
+./.venv/bin/python -m experiments.tnsre.run_tbme_experiments all --mode all --skip-existing
 ```
 
-It writes to `results/tbme/session_<n>/tracks` and deduplicates repeated
+It writes to `results/tnsre/session_<n>/tracks` and deduplicates repeated
 environment-method pairs in this order:
 
 | Shared group | Source modules |
@@ -364,17 +364,17 @@ not an unrestricted extreme chosen after the fact.
 Reproduce the audit with:
 
 ```bash
-./.venv/bin/python -m experiments.tbme.exp_objective_ablation \
+./.venv/bin/python -m experiments.tnsre.exp_objective_ablation \
   --mode run \
   --exp-ids three_gate_diagnostic \
   --seeds 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41,42,43,44,45,46,47,48,49,50,51,52,53,54,55,56,57,58,59,60,61,62,63,64,65,66,67,68,69,70,71,72,73,74,75,76,77,78,79,80,81,82,83,84,85,86,87,88,89,90,91,92,93,94,95,96,97,98,99 \
   --total-steps 2000 \
-  --base-dir results/tbme/session_4 \
+  --base-dir results/tnsre/session_4 \
   --skip-existing
-./.venv/bin/python -m experiments.tbme.exp_objective_ablation \
+./.venv/bin/python -m experiments.tnsre.exp_objective_ablation \
   --mode summary \
   --exp-ids three_gate_diagnostic \
-  --base-dir results/tbme/session_4
+  --base-dir results/tnsre/session_4
 ```
 
 Add mechanism-off controls, not just easier noise settings:
@@ -399,10 +399,10 @@ a replacement for the 100-seed manuscript acceptance run.
 Reproduce that audit from the repository root with:
 
 ```bash
-./.venv/bin/python -m experiments.tbme.exp_objective_ablation \
+./.venv/bin/python -m experiments.tnsre.exp_objective_ablation \
   --exp-ids confounded_gate,rank_imbalanced_gate \
   --seeds 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 \
-  --base-dir results/tbme/paldi_objective_ablation_audit \
+  --base-dir results/tnsre/paldi_objective_ablation_audit \
   --mode all
 ```
 
@@ -427,13 +427,13 @@ added to the experiment catalog as evidence for the full objective.
 Run experiment modules from the repository root with `./.venv/bin/python -m`. This keeps the package import path explicit and uses the project environment. If your shell already activates the project environment, plain `python -m` is equivalent.
 
 ```bash
-./.venv/bin/python -m experiments.tbme.exp_simple_system_identification --mode run --seeds 0 --skip-existing
+./.venv/bin/python -m experiments.tnsre.exp_simple_system_identification --mode run --seeds 0 --skip-existing
 ```
 
 Run all shared tracks, including summaries:
 
 ```bash
-./.venv/bin/python -m experiments.tbme.run_tbme_experiments all \
+./.venv/bin/python -m experiments.tnsre.run_tbme_experiments all \
   --mode all \
   --seeds 0,10,20 \
   --skip-existing
@@ -442,7 +442,7 @@ Run all shared tracks, including summaries:
 Run a small one-policy smoke test:
 
 ```bash
-./.venv/bin/python -m experiments.tbme.exp_simple_system_identification \
+./.venv/bin/python -m experiments.tnsre.exp_simple_system_identification \
   --mode run \
   --exp-ids duffing \
   --policy-ids random \
@@ -455,20 +455,20 @@ Run a small one-policy smoke test:
 The helper can also run a family by module name:
 
 ```bash
-./.venv/bin/python -m experiments.tbme.run_tbme_experiments exp_objective_ablation \
+./.venv/bin/python -m experiments.tnsre.run_tbme_experiments exp_objective_ablation \
   --mode summary \
   --exp-ids gated_duffing \
   --seeds 0
 ```
 
-Do not prefer direct file execution such as `./.venv/bin/python experiments/tbme/exp_simple_system_identification.py`. The current entrypoints use package imports and are meant to be run with `./.venv/bin/python -m` from the repository root.
+Do not prefer direct file execution such as `./.venv/bin/python experiments/tnsre/exp_simple_system_identification.py`. The current entrypoints use package imports and are meant to be run with `./.venv/bin/python -m` from the repository root.
 
 ## Common Arguments
 
 Each suite module accepts these TBME-level defaults and forwards all other arguments to `experiments.run`:
 
 - `--exp-ids`: comma-separated suite ids; defaults to that experiment family's suites.
-- `--base-dir`: output root; defaults to `results/tbme`.
+- `--base-dir`: output root; defaults to `results/tnsre`.
 - `--seeds`: comma-separated integer seeds; defaults to the family seed range.
 
 Common forwarded arguments include:
@@ -527,7 +527,7 @@ Learning sensitivity is selected independently of planning:
 The requested combination of corrected learning and prediction-only planning is:
 
 ```bash
-python -m experiments.tbme.exp_objective_ablation \
+python -m experiments.tnsre.exp_objective_ablation \
   --mode run --exp-ids three_gate_diagnostic \
   --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
   --learning-sensitivity measurement_corrected \
@@ -563,12 +563,12 @@ no recorded mode and must remain separate from these two versions.
 For example, run a one-step smoke check in each mode from the worktree:
 
 ```bash
-python -m experiments.tbme.exp_objective_ablation \
+python -m experiments.tnsre.exp_objective_ablation \
   --mode run --exp-ids three_gate_diagnostic \
   --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
   --planning-rollout prediction_only --base-dir /tmp/tbme_prediction_only
 
-python -m experiments.tbme.exp_objective_ablation \
+python -m experiments.tnsre.exp_objective_ablation \
   --mode run --exp-ids three_gate_diagnostic \
   --policy-ids compound_active_planning --seeds 0 --total-steps 1 \
   --planning-rollout measurement_conditioned --base-dir /tmp/tbme_measurement_conditioned
@@ -577,8 +577,8 @@ python -m experiments.tbme.exp_objective_ablation \
 Use `--help` on the TBME entrypoints to inspect the current parser. Prefer these entrypoints because they install the TBME catalog stack before calling the generic runner:
 
 ```bash
-./.venv/bin/python -m experiments.tbme.exp_simple_system_identification --help
-./.venv/bin/python -m experiments.tbme.run_tbme_experiments --help
+./.venv/bin/python -m experiments.tnsre.exp_simple_system_identification --help
+./.venv/bin/python -m experiments.tnsre.run_tbme_experiments --help
 ```
 
 ## Outputs
@@ -597,12 +597,12 @@ Runs write one session under the selected `--base-dir`. A typical run contains:
 Use `generate_figures.py` as the single figure entrypoint:
 
 ```bash
-./.venv/bin/python -m experiments.tbme.generate_figures --help
-./.venv/bin/python -m experiments.tbme.generate_figures summary --help
-./.venv/bin/python -m experiments.tbme.generate_figures experiment --help
-./.venv/bin/python -m experiments.tbme.generate_figures assets --results-dir results/tbme/20260911_corrected_learning --groups simple_system_identification,observation_action_bottleneck,objective_ablation,flex_comparison --tri-gate-exp-id three_gate_tradeoff --tri-gate-exemplar-seed 90 --mechanistic-results-dir results/scalar_final_q005_20260912
-./.venv/bin/python -m experiments.tbme.generate_figures diagnostics
-./.venv/bin/python -m experiments.tbme.figures.assets --help
+./.venv/bin/python -m experiments.tnsre.generate_figures --help
+./.venv/bin/python -m experiments.tnsre.generate_figures summary --help
+./.venv/bin/python -m experiments.tnsre.generate_figures experiment --help
+./.venv/bin/python -m experiments.tnsre.generate_figures assets --results-dir results/tnsre/20260911_corrected_learning --groups simple_system_identification,observation_action_bottleneck,objective_ablation,flex_comparison --tri-gate-exp-id three_gate_tradeoff --tri-gate-exemplar-seed 90 --mechanistic-results-dir results/scalar_final_q005_20260912
+./.venv/bin/python -m experiments.tnsre.generate_figures diagnostics
+./.venv/bin/python -m experiments.tnsre.figures.assets --help
 ```
 
 Asset generation writes the existing mean/SEM R2 figures in `assets/` and the
@@ -621,7 +621,7 @@ labels, and reference values.
 Figure inputs use `<results-dir>/tracks/<suite>` directly. There is no
 `session_#` discovery. Select one cohort with `--results-dir`; do not pass the
 parent directory containing multiple cohorts. Use the same asset command with
-`--results-dir results/tbme/20260911_corrected_learning_plannig` for the corrected
+`--results-dir results/tnsre/20260911_corrected_learning_plannig` for the corrected
 learning-and-planning cohort (this is the stored directory spelling).
 
 The catalog group mapping lives in `figures/groups.py`. Renaming a result

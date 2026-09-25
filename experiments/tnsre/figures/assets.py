@@ -584,7 +584,7 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
     """Composite dynamics/observation diagnostics figure (manuscript figure 2)."""
     from actdyn.utils.plotting import plot_vector_field
     from experiments.experiment_definitions import get_environment_preset
-    from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
     from .diagnostics import (
         finite_limits as _finite_limits,
