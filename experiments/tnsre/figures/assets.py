@@ -1539,12 +1539,12 @@ _ASSET_TRI_GATE_REST_CENTER = -1.0
 _ASSET_TRI_GATE_REST_CUTOFF = -0.75
 _ASSET_TRI_GATE_R2_YLIM = (0.25, 1.0)
 # Gate identity colors couple the occupancy stacks (panel B) to the selector
-# traces (panel C); they are deliberately darker than the pastel policy palette.
+# traces (panel C); muted tones of the manuscript palette, labeled in dark text.
 _ASSET_TRI_GATE_GATE_COLORS = (
-    ("rest_fraction", "Rest", "#C8CDD1"),
-    ("gate_A_fraction", "N: confounded", "#2F7D5B"),
-    ("gate_B_fraction", "B: weak, balanced", "#6C5FB8"),
-    ("gate_M_fraction", "F: full rank", "#C4564E"),
+    ("rest_fraction", "Rest", "#D5CFC6"),
+    ("gate_A_fraction", "N: confounded", "#6FAE97"),
+    ("gate_B_fraction", "B: weak, balanced", "#9A8BCB"),
+    ("gate_M_fraction", "F: full rank", "#DD8F85"),
 )
 
 
@@ -1565,21 +1565,29 @@ def _asset_tri_gate_assignment_bands(top: float) -> list[tuple[float, float, str
     ]
 
 
-# Dedicated qualitative palette for the tri-gate objectives: the shared
-# manuscript colors put two objectives in near-identical greens, so this figure
-# spreads the hues for legibility when eight traces overlay in one panel. PALDI
-# keeps its warm identity; Random keeps a neutral gray.
+# Tri-gate objective colors from the shared pastel manuscript palette. The shared
+# unattenuated green is near the state-variance green, so the unattenuated
+# objective takes the palette's blue; the state-information yellow is one step
+# darker so its trace stays visible on white.
 _ASSET_TRI_GATE_POLICY_COLORS = {
-    "compound_active_planning": "#D1495B",
-    "compound_active_fully_observable": "#2E6FB8",
-    "compound_active_e_optimality": "#944FC7",
-    "compound_active_state_information": "#E8A33D",
-    "compound_active_dynamics": "#AA4499",
-    "compound_active_dynamics_logdet": "#17A398",
-    "compound_active_observation_variance": "#8C5A3B",
-    "compound_active_state_variance": "#4CAF50",
-    "random": "#7C868D",
+    "compound_active_planning": "#F1948A",
+    "compound_active_fully_observable": "#5DADE2",
+    "compound_active_e_optimality": "#BB8FCE",
+    "compound_active_state_information": "#EBC237",
+    "compound_active_dynamics": "#A3E4D7",
+    "compound_active_dynamics_logdet": "#76D7C4",
+    "compound_active_observation_variance": "#D2B48C",
+    "compound_active_state_variance": "#58D68D",
+    "random": "#9EA7AD",
 }
+
+
+def _asset_shade(color: str, factor: float = 0.72) -> tuple[float, float, float]:
+    """Darker shade of ``color``: RGB scaled by ``factor`` (lines and edges on pastel fills)."""
+    import matplotlib.colors as mcolors
+
+    r, g, b = mcolors.to_rgb(color)
+    return (r * factor, g * factor, b * factor)
 
 
 def _asset_tri_gate_policy_color(policy_id: str) -> str:
@@ -1713,8 +1721,8 @@ def _asset_plot_gate_diagnostic(
         r2_center,
         yerr=r2_yerr,
         color=bar_colors,
-        edgecolor=bar_colors,
-        linewidth=0.6,
+        edgecolor=[_asset_shade(color) for color in bar_colors],
+        linewidth=0.7,
         capsize=1.6,
         error_kw={"elinewidth": 0.6, "capthick": 0.6},
     )
@@ -1747,7 +1755,7 @@ def _asset_plot_gate_diagnostic(
     bottom = np.zeros(len(summary_rows), dtype=np.float64)
     for key, label, color in _ASSET_TRI_GATE_GATE_COLORS:
         value = np.asarray([row[key] for row in summary_rows], dtype=np.float64)
-        ax.bar(x, value, bottom=bottom, width=0.72, color=color)
+        ax.bar(x, value, bottom=bottom, width=0.72, color=color, edgecolor="white", linewidth=0.4)
         # Direct labels keep the occupancy comparison readable in grayscale.
         for column, fraction in enumerate(value):
             if fraction >= 0.25:
@@ -1759,7 +1767,7 @@ def _asset_plot_gate_diagnostic(
                     ha="center",
                     va="center",
                     fontsize=_ASSET_TICK_SIZE,
-                    color=_experiment_C_STROKE if is_rest else "white",
+                    color=_experiment_C_STROKE,
                     rotation=90 if is_rest else 0,
                 )
         bottom += value
@@ -1783,10 +1791,10 @@ def _asset_plot_gate_diagnostic(
     rest_color = _ASSET_TRI_GATE_GATE_COLORS[0][2]
     y_bottom, y_top = -1.2, 0.62
     ax.axhspan(
-        y_bottom, _ASSET_TRI_GATE_REST_CUTOFF, color=rest_color, alpha=0.22, linewidth=0.0
+        y_bottom, _ASSET_TRI_GATE_REST_CUTOFF, color=rest_color, alpha=0.16, linewidth=0.0
     )
     for low, high, color in _asset_tri_gate_assignment_bands(y_top):
-        ax.axhspan(low, high, color=color, alpha=0.14, linewidth=0.0)
+        ax.axhspan(low, high, color=color, alpha=0.13, linewidth=0.0)
     ax.axhline(
         _ASSET_TRI_GATE_REST_CENTER, color=rest_color, linestyle="--", linewidth=0.6
     )
@@ -1804,10 +1812,10 @@ def _asset_plot_gate_diagnostic(
         ax.plot(
             np.arange(selector.size, dtype=np.float64),
             selector,
-            color=_asset_tri_gate_policy_color(policy_id),
+            color=_asset_shade(_asset_tri_gate_policy_color(policy_id), 0.9 if is_paldi else 0.8),
             linestyle=line_styles[policy_id],
-            linewidth=1.1 if is_paldi else 0.5,
-            alpha=1.0 if is_paldi else 0.7,
+            linewidth=1.4 if is_paldi else 0.75,
+            alpha=1.0 if is_paldi else 0.9,
             zorder=3 if is_paldi else 2,
         )
     ax.set_ylim(y_bottom, y_top)
@@ -1824,7 +1832,7 @@ def _asset_plot_gate_diagnostic(
             va="center",
             fontsize=_ASSET_TICK_SIZE,
             fontweight="bold",
-            color=color,
+            color=_asset_shade(color, 0.75),
         )
     ax.text(
         1.02,
@@ -1850,7 +1858,7 @@ def _asset_plot_gate_diagnostic(
         [
             Line2D(
                 [0], [0],
-                color=_asset_tri_gate_policy_color(policy_id),
+                color=_asset_shade(_asset_tri_gate_policy_color(policy_id), 0.8),
                 linestyle=line_styles[policy_id],
                 linewidth=1.6,
             )
