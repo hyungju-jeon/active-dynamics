@@ -33,8 +33,7 @@ EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
     "scheduling": (),
     "flex_comparison": (),
     "neural_circuits": ("true_dynamics_neural",),
-    "neural_circuits": (),
-    "spiking_decision": (),
+    "spiking_sessions": (),
 }
 
 DEFAULT_GROUPS = ",".join(tbme_groups.groups())
@@ -44,7 +43,6 @@ DIAGNOSTIC_ENV_IDS = (
     "tbme_wilson_cowan",
     "tbme_wilson_cowan_asymmetric",
     "tbme_wilson_cowan_observation_bottleneck_strong",
-    "tbme_wilson_cowan",
     "tbme_wong_wang",
 )
 

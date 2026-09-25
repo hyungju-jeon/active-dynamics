@@ -43,7 +43,6 @@ ENV_ALIASES = {
     "damped_pendulum": "tbme_damped_pendulum",
     "wilson_cowan": "tbme_wilson_cowan",
     "tbme_wilson_cowan": "tbme_wilson_cowan",
-    "wilson_cowan": "tbme_wilson_cowan",
     "wong_wang": "tbme_wong_wang",
 }
 

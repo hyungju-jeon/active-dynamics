@@ -50,6 +50,18 @@ def test_figure_cli_forwards_saved_asset_inputs(tmp_path: Path) -> None:
     assert forwarded.tri_gate_exemplar_seed == 90
 
 
+def test_figure_cli_registry_covers_every_group() -> None:
+    from experiments.tnsre import generate_figures
+    from experiments.tnsre.figures import cli, groups
+
+    assert set(generate_figures.EXPERIMENT_PLOTS_BY_GROUP) == set(groups.groups())
+    plot_ids = generate_figures._experiment_plot_ids(generate_figures.DEFAULT_GROUPS)
+    assert set(plot_ids) <= set(cli.EXPERIMENT_PLOTS)
+    assert "true_dynamics_neural" in plot_ids
+    env_ids = generate_figures.DIAGNOSTIC_ENV_IDS
+    assert len(env_ids) == len(set(env_ids))
+
+
 def test_mechanistic_assets_render_saved_arrays(tmp_path: Path, monkeypatch) -> None:
     from experiments import eig_1d_example as scalar
     from experiments.tnsre.figures.assets import _asset_plot_eig_components
