@@ -206,6 +206,86 @@ class FlexMultiStableModel(_FlexVectorFieldModel):
         return self.alpha * field + u
 
 
+class FlexWilsonCowanModel(_FlexVectorFieldModel):
+    """Wilson-Cowan drift in centered latent coordinates.
+
+    Mirrors ``actdyn.utils.vectorfields_eqn.WilsonCowan``: rates r = z / s + 1/2,
+    gains act on the centered rates, and the learned parameters are the four
+    synaptic weights (w_EE, w_EI, w_IE, w_II). Fixed constants match that class.
+    """
+
+    def __init__(
+        self,
+        *args,
+        state_scale: float = 4.0,
+        beta: float = 6.0,
+        h_e: float = -0.05,
+        h_i: float = -0.35,
+        tau_e: float = 1.0,
+        tau_i: float = 1.0,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.state_scale = float(state_scale)
+        self.beta = float(beta)
+        self.h_e = float(h_e)
+        self.h_i = float(h_i)
+        self.tau_e = float(tau_e)
+        self.tau_i = float(tau_i)
+
+    def forward(self, z):
+        params = self._full_params(dtype=z.dtype, device=z.device)
+        w_ee, w_ei, w_ie, w_ii = params[0], params[1], params[2], params[3]
+        c_e = z[:, 0] / self.state_scale
+        c_i = z[:, 1] / self.state_scale
+        u = z[:, 2:4]
+        gain_e = torch.sigmoid(self.beta * (w_ee * c_e - w_ei * c_i + self.h_e))
+        gain_i = torch.sigmoid(self.beta * (w_ie * c_e - w_ii * c_i + self.h_i))
+        d_rate_e = (-(c_e + 0.5) + gain_e) / self.tau_e
+        d_rate_i = (-(c_i + 0.5) + gain_i) / self.tau_i
+        drift = torch.stack((self.state_scale * d_rate_e, self.state_scale * d_rate_i), dim=1)
+        return self.alpha * drift + u
+
+
+class FlexWongWangModel(_FlexVectorFieldModel):
+    """Two-pool Wong-Wang drift in centered latent coordinates.
+
+    Mirrors ``actdyn.utils.vectorfields_eqn.WongWang``: gating s = z / scale + 1/2,
+    gains act on the centered gating, and the learned parameters are the
+    self-excitation and cross-inhibition weights (w_+, w_-).
+    """
+
+    def __init__(
+        self,
+        *args,
+        state_scale: float = 4.0,
+        beta: float = 6.0,
+        h: float = 0.0,
+        gamma: float = 1.0,
+        tau: float = 1.0,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.state_scale = float(state_scale)
+        self.beta = float(beta)
+        self.h = float(h)
+        self.gamma = float(gamma)
+        self.tau = float(tau)
+
+    def forward(self, z):
+        params = self._full_params(dtype=z.dtype, device=z.device)
+        w_plus, w_minus = params[0], params[1]
+        c1 = z[:, 0] / self.state_scale
+        c2 = z[:, 1] / self.state_scale
+        u = z[:, 2:4]
+        gain_1 = torch.sigmoid(self.beta * (w_plus * c1 - w_minus * c2 + self.h))
+        gain_2 = torch.sigmoid(self.beta * (w_plus * c2 - w_minus * c1 + self.h))
+        d_s1 = (-(c1 + 0.5) + (0.5 - c1) * self.gamma * gain_1) / self.tau
+        d_s2 = (-(c2 + 0.5) + (0.5 - c2) * self.gamma * gain_2) / self.tau
+        drift = torch.stack((self.state_scale * d_s1, self.state_scale * d_s2), dim=1)
+        return self.alpha * drift + u
+
+
 def build_flex_model(
     *,
     env_preset: Any,
@@ -233,6 +313,10 @@ def build_flex_model(
         return FlexAsymmetricBasinModel(**kwargs)
     if dynamics_type == "multi_stable":
         return FlexMultiStableModel(**kwargs)
+    if dynamics_type == "wilson_cowan":
+        return FlexWilsonCowanModel(**kwargs)
+    if dynamics_type == "wong_wang":
+        return FlexWongWangModel(**kwargs)
     raise ValueError(f"Official FLEX wrapper does not support dynamics_type={dynamics_type!r}")
 
 

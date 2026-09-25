@@ -25,6 +25,8 @@ from actdyn.utils.vectorfields_eqn import (
     CompoundTriGate,
     ThreeGateDiagnostic,
     ThreeGateTradeoff,
+    WilsonCowan,
+    WongWang,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence, Callable
 from actdyn.utils.plotting import plot_vector_field
@@ -52,6 +54,8 @@ vf_from_string = {
     "fitzhugh_nagumo": FitzHughNagumo,
     "hopf": Hopf,
     "snowman": SnowMan,
+    "wilson_cowan": WilsonCowan,
+    "wong_wang": WongWang,
 }
 
 
