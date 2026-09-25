@@ -1284,6 +1284,9 @@ def _asset_plot_final_bar(
     policy_labels: Mapping[str, str] | None = None,
     policy_legend: bool = True,
     ax: Any | None = None,
+    cond_alphas: Sequence[float] | None = None,
+    cond_hatches: Sequence[str] | None = None,
+    cond_linestyles: Sequence[str] | None = None,
 ) -> Path:
     """Standalone final-performance bars, colored by policy with per-condition shade.
 
@@ -1291,6 +1294,9 @@ def _asset_plot_final_bar(
     3.5 in manuscript column instead, and ``short`` trims the axes to the flatter
     manuscript proportion. Bars and whiskers past ``ylim`` are drawn clipped, with
     a caret at the floor marking the ones that run off the bottom.
+    ``cond_alphas``, ``cond_hatches``, and ``cond_linestyles`` override the
+    per-condition face shade and add hatching or a dashed edge, for conditions
+    that vary along different axes in one panel.
     """
     import matplotlib.colors as mcolors
     from matplotlib.lines import Line2D
@@ -1311,6 +1317,10 @@ def _asset_plot_final_bar(
     n_cond = len(sources)
     n_policy = len(active_policies)
     cond_alpha = np.linspace(1.0, 0.32, n_cond) if n_cond > 1 else np.array([1.0], dtype=np.float64)
+    if cond_alphas is not None:
+        cond_alpha = np.asarray(cond_alphas, dtype=np.float64)
+    hatches = list(cond_hatches) if cond_hatches is not None else [""] * n_cond
+    edge_styles = list(cond_linestyles) if cond_linestyles is not None else ["-"] * n_cond
 
     # Without the policy legend the x tick labels carry the policy names, so the
     # condition legend takes the strip above the axes instead of sitting inside it.
@@ -1353,7 +1363,9 @@ def _asset_plot_final_bar(
             yerr=np.asarray([lower_errors, upper_errors], dtype=np.float64),
             color=faces,
             edgecolor=edges,
-            linewidth=0.6,
+            hatch=hatches[cond_idx] or None,
+            linestyle=edge_styles[cond_idx],
+            linewidth=0.6 if edge_styles[cond_idx] == "-" else 0.9,
             capsize=1.6,
             error_kw={"elinewidth": 0.6, "capthick": 0.6},
         )
@@ -1394,7 +1406,9 @@ def _asset_plot_final_bar(
         Patch(
             facecolor=mcolors.to_rgba(_experiment_C_STROKE, alpha=float(cond_alpha[cond_idx])),
             edgecolor=_experiment_C_STROKE,
-            linewidth=0.5,
+            hatch=hatches[cond_idx] or None,
+            linestyle=edge_styles[cond_idx],
+            linewidth=0.5 if edge_styles[cond_idx] == "-" else 0.8,
         )
         for cond_idx in range(n_cond)
     ]
@@ -1479,7 +1493,7 @@ def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> lis
             metric_rows=metric_rows,
             r2_summary=r2_summary,
             single_column=True,
-            ylim=(0.0, 1.0),
+            ylim=(0.0, 1.18),  # headroom for the condition legend above the bars
         ),
         _asset_plot_recovery_curves(
             recovery_path,
@@ -2115,33 +2129,47 @@ def _asset_plot_flex_combined(output_path: Path, *, r2_summary: str) -> Path:
 
 def _asset_plot_constraints_combined(
     output_path: Path, *,
-    panels: Sequence[tuple[Sequence[_ExperimentSuiteSource], Sequence[Mapping[str, Any]]]],
+    curve_source: _ExperimentSuiteSource,
+    bar_sources: Sequence[_ExperimentSuiteSource],
+    bar_rows: Sequence[Mapping[str, Any]],
     r2_summary: str,
 ) -> Path:
-    """Draw SNR and loading panels at the manuscript's 516 pt text width."""
+    """Wilson-Cowan identification at the manuscript's 516 pt text width.
+
+    (A) R2_VF-roll against environment steps under the default observations;
+    (B) final R2_VF-roll at the default, lower SNR, and biased loading, one panel:
+    SNR levels shaded dark to light, biased loading as a diagonal-hatch fill.
+    """
     from matplotlib.lines import Line2D
 
     plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt_module is None:
         raise RuntimeError("Matplotlib is unavailable")
-    fig, axes = plt_module.subplots(1, 2, figsize=(516.0 / 72.27, 1.65))
-    fig.subplots_adjust(left=0.075, right=0.995, bottom=0.25, top=0.84, wspace=0.14)
-    for ax, label, (sources, rows) in zip(axes, ("A", "B"), panels):
-        _asset_plot_final_bar(
-            output_path, sources=sources, policy_ids=_ASSET_MATCHED_POLICIES,
-            metric_rows=rows, r2_summary=r2_summary, ylim=(0.0, 1.0), ax=ax,
-        )
-        legend = ax.get_legend()
-        ax.legend(legend.legend_handles,
-                  [text.get_text().replace("true-model reference", "True model")
-                   for text in legend.get_texts()],
-                  loc="upper left", ncol=len(legend.legend_handles),
-                  fontsize=_ASSET_TICK_SIZE, handlelength=1.0,
-                  borderpad=0.3, columnspacing=0.8)
-        ax.set_yticks(np.linspace(0.0, 1.0, 6))
-        ax.text(-0.085, 1.10, label, transform=ax.transAxes,
-                fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
-    axes[1].set_ylabel("")
+    fig, axes = plt_module.subplots(1, 2, figsize=(516.0 / 72.27, 1.8),
+                                    gridspec_kw={"width_ratios": [0.62, 1.55]})
+    fig.subplots_adjust(left=0.075, right=0.995, bottom=0.23, top=0.79, wspace=0.16)
+    _asset_plot_r2_curves(axes[0], curve_source.suite_dir, _ASSET_MATCHED_POLICIES, title="", panel_label="",
+                          ylabel=True, xlabel=True, r2_summary=r2_summary, ylim=(0.25, 1.0), title_pad=1.0)
+    axes[0].set_xticks([0, 1000, 2000])
+    axes[0].xaxis.labelpad = 1.0
+    axes[0].yaxis.labelpad = 0.0
+    axes[0].text(-0.2, 1.10, "A", transform=axes[0].transAxes, fontsize=_ASSET_PANEL_LABEL_SIZE,
+                 fontweight="bold")
+    ax = axes[1]
+    _asset_plot_final_bar(
+        output_path, sources=bar_sources, policy_ids=_ASSET_MATCHED_POLICIES,
+        metric_rows=bar_rows, r2_summary=r2_summary, ylim=(0.0, 1.0), ax=ax,
+        cond_alphas=(1.0, 0.55, 0.22, 0.0), cond_hatches=("", "", "", "//////"),
+    )
+    legend = ax.get_legend()
+    ax.legend(legend.legend_handles,
+              [text.get_text().replace("true-model reference", "True model")
+               for text in legend.get_texts()],
+              loc="lower right", bbox_to_anchor=(1.0, 1.0), ncol=len(legend.legend_handles), frameon=False,
+              fontsize=_ASSET_TICK_SIZE, handlelength=1.0, borderpad=0.1, borderaxespad=0.1, columnspacing=0.8)
+    ax.set_yticks(np.linspace(0.0, 1.0, 6))
+    ax.set_ylabel("")
+    ax.text(-0.06, 1.10, "B", transform=ax.transAxes, fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
     fig.legend(
         [Line2D([0], [0], color=_asset_baseline_policy_color(policy), linewidth=1.6)
          for policy in _ASSET_MATCHED_POLICIES],
@@ -2149,9 +2177,7 @@ def _asset_plot_constraints_combined(
         loc="upper left", bbox_to_anchor=(0.075, 1.015), ncol=6,
         fontsize=_ASSET_TICK_SIZE, columnspacing=1.0, handlelength=1.4,
     )
-    _asset_write_method_csv(output_path.with_suffix(".csv"),
-                            [row for _, rows in panels for row in rows],
-                            r2_summary=r2_summary)
+    _asset_write_method_csv(output_path.with_suffix(".csv"), bar_rows, r2_summary=r2_summary)
     return save_figure(fig, output_path, plt_module=plt_module)
 
 
@@ -2196,13 +2222,7 @@ def _asset_plot_constraints(
             r2_summary=r2_summary,
         )
         if suffix in {"snr", "asymmetry"}:
-            combined_sources = tuple(
-                _ExperimentSuiteSource(source.exp_id,
-                                       "Biased" if source.exp_id == "gated_duffing_asymmetric" else source.label,
-                                       source.suite_dir)
-                for source in sources
-            )
-            observation_panels.append((combined_sources, metric_rows))
+            observation_panels.append((sources, metric_rows))
         bar_path = output_path.with_name(f"{output_path.stem}_{suffix}{output_path.suffix}")
         curves_path = output_path.with_name(
             f"{output_path.stem}_{suffix}_recovery{output_path.suffix}"
@@ -2232,8 +2252,14 @@ def _asset_plot_constraints(
             )
         )
     if len(observation_panels) == 2:
+        # One bar panel: default and lower SNR, then biased loading (the default is shared).
+        (snr_sources, snr_rows), (asym_sources, asym_rows) = observation_panels
+        biased = [source for source in asym_sources if source.exp_id == "wilson_cowan_asymmetric"]
+        bar_sources = [*snr_sources, *(_ExperimentSuiteSource(s.exp_id, "Biased", s.suite_dir) for s in biased)]
+        bar_rows = [*snr_rows, *(row for row in asym_rows if row["experiment"] == "wilson_cowan_asymmetric")]
         written.append(_asset_plot_constraints_combined(
-            output_path, panels=observation_panels, r2_summary=r2_summary,
+            output_path, curve_source=bottleneck_sources[0], bar_sources=bar_sources, bar_rows=bar_rows,
+            r2_summary=r2_summary,
         ))
     return written
 
