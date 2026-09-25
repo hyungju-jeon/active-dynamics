@@ -616,3 +616,61 @@ environments:
     system_label: Wilson-Cowan / strong observation mismatch
     observation_loading_direction_mismatch_max_deg: 30.0
     observation_loading_gain_mismatch_max_factor: 1.5
+
+
+  # Wang (2002) spiking decision circuit as the environment, run as decision sessions.
+  # A session starts in the quiet state; a decision is made when |z1 - z2| > 2, and
+  # 200 ms later (or after 2 s without a decision) the circuit resets to z = (-2, -2).
+  # Agents know the rule and the reset state; no evidence is given in identification
+  # sessions. Control bin 5 ms = dt 0.05 in units of tau_NMDA.
+  # The learner's drift is Wong-Wang with the input inside the transfer function
+  # (wong_wang_inside_gain). Parameters (w_+, w_-, h_raw, gamma_raw, g_raw); h = h_raw /
+  # beta, gamma and g are softplus of the raw values. The network has no true
+  # parameters: true_params is the reduced model fitted to network data
+  # (results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json), a reference only. Prior: unit
+  # Gaussian around (0, 0, 0, 1.5, 0), i.e. a generic gain scale gamma ~ 1.7 (Wong &
+  # Wang 2006 give ~2.6).
+  tbme_wong_wang_snn_sessions_m2:
+    extends: tbme_wong_wang
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions
+    environment_kind: spiking_decision
+    dt: 0.05
+    observation_dim: 80
+    spiking_observed_per_pool: 40
+    spiking_stim_gain_pa: 20.0
+    spiking_calibration_steps: 800
+    spiking_calibration_hold_steps: 50
+    state_noise: 0.1
+    initial_parameter_variance: 1.0
+    loading_target_snr_db: null
+    spiking_sessions: 20
+    spiking_decision_gap: 2.0
+    spiking_post_decision_bins: 40
+    spiking_max_session_bins: 400
+    spiking_reset_variance: 0.01
+    filter_initial_state_mean:
+    - -2.0
+    - -2.0
+    state_init_uncertainty: 0.01
+    dynamics_type: wong_wang_inside_gain
+    estimator_dynamics_type: wong_wang_inside_gain
+    true_params:
+    - 1.444
+    - 0.586
+    - -1.278
+    - 2.447
+    - -1.599
+    estimator_true_params:
+    - 1.444
+    - 0.586
+    - -1.278
+    - 2.447
+    - -1.599
+    embedding_dim: 5
+    min_embedding_dim: 5
+    initial_parameter_mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.5
+    - 0.0

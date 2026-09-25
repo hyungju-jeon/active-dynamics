@@ -1218,6 +1218,7 @@ def test_tbme_family_scripts_define_expected_suite_sets():
         "scheduling",
         "flex_comparison",
         "neural_circuits",
+        "spiking_sessions",
     }
     assert [entry["suite_id"] for entry in groups["simple_system_identification"]] == [
         "duffing",

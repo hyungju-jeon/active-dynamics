@@ -72,6 +72,7 @@ environment-method pairs in this order:
 | `objective_ablation` | `exp_objective_ablation.py` |
 | `scheduling` | `exp_scheduling.py` |
 | `neural_circuits` | `exp_neural_circuits.py` (Wilson-Cowan, Wong-Wang rate circuits) |
+| `spiking_sessions` | `exp_spiking_sessions.py` (Wong-Wang learner, input inside the gain, identified against the Wang 2002 Brian2 spiking network over 20 decision sessions; see `actdyn/environment/spiking_decision.py`, `actdyn/environment/session.py`) |
 
 The default seed counts are manuscript-scale defaults. For smoke tests or debugging, always pass an explicit small `--seeds` value.
 
@@ -422,6 +423,59 @@ An exploratory two-state local-amplifier design was rejected during this work:
 after deterministic planner seeding, fully-observable EIG and observation
 variance could exploit the same informative region as PALDI.  It should not be
 added to the experiment catalog as evidence for the full objective.
+
+## Spiking-network decision experiment
+
+The `spiking_sessions` suite identifies the Wang (2002) spiking decision network
+(`actdyn/environment/spiking_decision.py`; 1,600 excitatory and 400 inhibitory
+LIF neurons, 40 neurons per selective pool observed in 5 ms bins) with a reduced
+model, preset `tbme_wong_wang_snn_sessions_m2`.
+
+- **Learner.** `wong_wang_inside_gain`
+  (`actdyn.utils.vectorfields_eqn.WongWangInsideGain`): Wong-Wang gating
+  dynamics with the input inside the sigmoid gain, dz/dt = f(z, u; theta).
+  Parameters (w_+, w_-, h_raw, gamma_raw, g_raw), h = h_raw / beta, gamma and g
+  softplus of the raw values; prior a unit Gaussian around (0, 0, 0, 1.5, 0).
+  Vector fields declare `input_dependent`; the forward step, the filter and
+  sensitivity Jacobians, the EIG metric (the rollout's `env_action`), and FLEX
+  (`FlexWongWangInsideGainModel`) pass the input to such drifts. The observation
+  model is a Poisson log-linear readout calibrated once per seed.
+- **Identification.** 20 decision sessions (`actdyn/environment/session.py`): a
+  decision when `|z1 - z2| > 2`, a reset 200 ms later or after 2 s. The agents
+  know the rule: the filter jumps to the reset state, and the planners and the
+  EIG simulate resets inside their rollouts.
+- **Evaluation** (`eval_spiking_sessions.py`): held-out rollout R2 after every
+  session, and closed-loop task sessions after k in {0, 1, 2, 5, 20} sessions:
+  *force* (make the other pool win the first decision under 6 pA of evidence;
+  1 s of input, budgets 0.5 and 1) and *overturn* (flip the uncontrolled
+  decision; 2 s of input, budgets 10 and 12). The agent filters the spikes with
+  its frozen estimate and replans with iCEM every 100 ms (force) or 200 ms
+  (overturn), maximizing the model-predicted probability of the task's success
+  rule. Controllers: `fresh` (replans seeded with simple pushes) and `warm`
+  (also seeded with the rest of the previous plan; `--checkpoints 20,0,-1`).
+  References on the same sessions: no input, an even push, a full push from
+  onset, and the model fitted to network data
+  (`results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json`).
+- **Diagnosis** (`diag_control_gap.py`): overturn sessions with parameters
+  exchanged between a learned model and the fit, with the planner and the filter
+  on different models, and R2 on network trajectories of the control regime.
+
+```bash
+RUNS=results/tnsre/20260924_snn_sessions_m2/tracks/wong_wang_snn_sessions_m2; E=results/tnsre/20260924_snn_sessions_m2/eval
+./.venv/bin/python -m experiments.tnsre.exp_spiking_sessions --mode run --seeds 0 --base-dir results/tnsre/20260924_snn_sessions_m2
+./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage test_data --out results/tnsre/20260924_snn_sessions_m2/data
+./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage r2 --out $E --runs-root $RUNS
+./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage task --out $E --runs-root $RUNS --worker-index 0 --n-workers 1
+./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage score --out $E
+./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage examples --out $E/examples --runs-root $RUNS
+./.venv/bin/python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20260924_snn_sessions_m2 --figure all
+./.venv/bin/python -m experiments.tnsre.diag_control_gap --stage task --out results/tnsre/20260924_snn_sessions_m2/diagnostics/control_gap
+```
+
+The task stages shard by `--worker-index` / `--n-workers` and resume from any
+worker's CSV. The R2 stage sums in float32 with torch's default threads; a
+single-threaded run differs by at most 1e-7. Launch scripts and the record of
+earlier attempts are in `results/tnsre/20260924_snn_sessions_m2/provenance/`.
 
 ## Running Experiments
 

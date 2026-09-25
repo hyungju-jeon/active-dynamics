@@ -34,6 +34,7 @@ EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
     "flex_comparison": (),
     "neural_circuits": ("true_dynamics_neural",),
     "neural_circuits": (),
+    "spiking_decision": (),
 }
 
 DEFAULT_GROUPS = ",".join(tbme_groups.groups())

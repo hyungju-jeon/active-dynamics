@@ -40,6 +40,7 @@ SHARED_TBME_GROUP_MODULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("scheduling", ("experiments.tnsre.exp_scheduling",)),
     ("flex_comparison", ("experiments.tnsre.exp_flex_comparison",)),
     ("neural_circuits", ("experiments.tnsre.exp_neural_circuits",)),
+    ("spiking_sessions", ("experiments.tnsre.exp_spiking_sessions",)),
 )
 
 
