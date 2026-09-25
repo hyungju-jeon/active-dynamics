@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 DEFAULT_SEED_COUNT = 100
-DEFAULT_EXP_IDS = ("duffing", "damped_pendulum", "gated_duffing")
+DEFAULT_EXP_IDS = ("duffing", "damped_pendulum", "wilson_cowan")
 MODEL_IDS = [
     "adaptive",
     "adaptive_async_anytime",
@@ -32,9 +32,9 @@ EXPERIMENT_SUITES = {
         **SHARED_EXP_ARGS,
         "env_preset_id": "tbme_damped_pendulum",
     },
-    "gated_duffing": {
+    "wilson_cowan": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing",
+        "env_preset_id": "tbme_wilson_cowan",
     },
 }
 

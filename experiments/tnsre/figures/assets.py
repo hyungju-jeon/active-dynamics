@@ -903,35 +903,35 @@ def _asset_plot_dynamics_full(output_path: Path) -> Path:
 def _asset_bottleneck_sources() -> list[_ExperimentSuiteSource]:
     return [
         _ExperimentSuiteSource(
-            "gated_duffing",
+            "wilson_cowan",
             "Default",
-            _suite_dir("simple_system_identification", "gated_duffing"),
+            _suite_dir("simple_system_identification", "wilson_cowan"),
         ),
         _ExperimentSuiteSource(
-            "gated_duffing_observation_bottleneck_mild",
+            "wilson_cowan_observation_bottleneck_mild",
             "SNR -10",
             _suite_dir(
                 "observation_action_bottleneck",
-                "gated_duffing_observation_bottleneck_mild",
+                "wilson_cowan_observation_bottleneck_mild",
             ),
         ),
         _ExperimentSuiteSource(
-            "gated_duffing_observation_bottleneck_strong",
+            "wilson_cowan_observation_bottleneck_strong",
             "SNR -15",
             _suite_dir(
                 "observation_action_bottleneck",
-                "gated_duffing_observation_bottleneck_strong",
+                "wilson_cowan_observation_bottleneck_strong",
             ),
         ),
         _ExperimentSuiteSource(
-            "gated_duffing_action_bottleneck_mild",
+            "wilson_cowan_action_bottleneck_mild",
             "Act. 0.75",
-            _suite_dir("observation_action_bottleneck", "gated_duffing_action_bottleneck_mild"),
+            _suite_dir("observation_action_bottleneck", "wilson_cowan_action_bottleneck_mild"),
         ),
         _ExperimentSuiteSource(
-            "gated_duffing_action_bottleneck_strong",
+            "wilson_cowan_action_bottleneck_strong",
             "Act. 0.50",
-            _suite_dir("observation_action_bottleneck", "gated_duffing_action_bottleneck_strong"),
+            _suite_dir("observation_action_bottleneck", "wilson_cowan_action_bottleneck_strong"),
         ),
     ]
 
@@ -1622,8 +1622,8 @@ def _asset_plot_final_bar(
 def _asset_plot_objective_ablation(output_path: Path, *, r2_summary: str) -> list[Path]:
     """Default/asymmetric ablation assets: final-R2 bars and recovery curves."""
     condition_labels = {
-        "gated_duffing": "Default",
-        "gated_duffing_asymmetric": "Asymmetric",
+        "wilson_cowan": "Default",
+        "wilson_cowan_asymmetric": "Asymmetric",
     }
     sources = [
         _ExperimentSuiteSource(
@@ -2142,11 +2142,11 @@ def _asset_flex_groups() -> tuple[tuple[str, tuple[_ExperimentSuiteSource, ...]]
     display_titles = {
         "duffing": "Duffing",
         "damped_pendulum": "Damped Pendulum",
-        "gated_duffing": "Gated Duffing",
-        "gated_duffing_asymmetric": "Asymmetric",
-        "gated_duffing_challenging": "Challenging",
-        "gated_duffing_observation_bottleneck_mild": "SNR -10 dB",
-        "gated_duffing_observation_bottleneck_strong": "SNR -15 dB",
+        "wilson_cowan": "Wilson-Cowan",
+        "wilson_cowan_asymmetric": "Asymmetric",
+        "wilson_cowan_challenging": "Challenging",
+        "wilson_cowan_observation_bottleneck_mild": "SNR -10 dB",
+        "wilson_cowan_observation_bottleneck_strong": "SNR -15 dB",
     }
     sources = {
         ref.suite_id: _ExperimentSuiteSource(
@@ -2157,13 +2157,13 @@ def _asset_flex_groups() -> tuple[tuple[str, tuple[_ExperimentSuiteSource, ...]]
         for ref in _groups_mod.groups()["flex_comparison"]
     }
     grouped = (
-        ("baseline", ("duffing", "damped_pendulum", "gated_duffing")),
-        ("hard", ("gated_duffing_asymmetric", "gated_duffing_challenging")),
+        ("baseline", ("duffing", "damped_pendulum", "wilson_cowan")),
+        ("hard", ("wilson_cowan_asymmetric", "wilson_cowan_challenging")),
         (
             "snr",
             (
-                "gated_duffing_observation_bottleneck_mild",
-                "gated_duffing_observation_bottleneck_strong",
+                "wilson_cowan_observation_bottleneck_mild",
+                "wilson_cowan_observation_bottleneck_strong",
             ),
         ),
     )
@@ -2252,7 +2252,7 @@ def _asset_plot_flex_comparison(
 def _asset_plot_flex_combined(output_path: Path, *, r2_summary: str) -> Path:
     """Six-condition FLEX recovery panel from the configured saved summaries."""
     sources = [source for _, group in _asset_flex_groups() for source in group
-               if source.exp_id != "gated_duffing_challenging"]
+               if source.exp_id != "wilson_cowan_challenging"]
     _asset_require_suite_dirs([source.suite_dir for source in sources])
     plt = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
     if plt is None:
@@ -2340,14 +2340,14 @@ def _asset_plot_constraints(
             "Asymmetry",
             (
                 _ExperimentSuiteSource(
-                    "gated_duffing",
+                    "wilson_cowan",
                     "Default",
-                    _suite_dir("simple_system_identification", "gated_duffing"),
+                    _suite_dir("simple_system_identification", "wilson_cowan"),
                 ),
                 _ExperimentSuiteSource(
-                    "gated_duffing_asymmetric",
+                    "wilson_cowan_asymmetric",
                     "Asymmetric",
-                    _suite_dir("observation_action_bottleneck", "gated_duffing_asymmetric"),
+                    _suite_dir("observation_action_bottleneck", "wilson_cowan_asymmetric"),
                 ),
             ),
         ),
@@ -2444,6 +2444,214 @@ def _asset_plot_eig_components(output_path: Path, *, results_dir: Path) -> list[
         if caption.is_file():
             shutil.copyfile(caption, path.with_suffix(".caption.tex"))
     return written
+
+
+# Neural-circuit benchmarks (Wilson-Cowan, Wong-Wang): identification curves plus
+# the Wong-Wang decision-reversal score from basin_switch_*_over_steps.csv.
+_NEURAL_SUITES = (("wilson_cowan", "Wilson-Cowan"), ("wong_wang", "Wong-Wang"))
+_NEURAL_POLICIES = ("adaptive", "active_myopic", "prbs", "random")
+_NEURAL_TRAJ_POLICIES = ("adaptive", "active_myopic", "random")
+_NEURAL_TRAJ_STEPS = 2000
+# Third seed of the suite: the Wilson-Cowan trial that starts in the down-state basin.
+_NEURAL_TRAJ_SEED_INDEX = 2
+_NEURAL_PHASE_LIM = 2.5
+_NEURAL_R2_YLIM = (0.1, 1.0)
+
+
+def _asset_switch_curve_rows(
+    suite_dir: Path, value_col: str
+) -> dict[str, list[tuple[float, float, float]]]:
+    """Read (step, mean, sem) rows of one basin-switch summary column per policy."""
+    grouped: dict[str, list[tuple[float, float, float]]] = {}
+    for row in read_trace_csv(suite_dir / "summary" / f"{value_col}_over_steps.csv"):
+        policy_id = str(row.get("policy_id", ""))
+        step = _safe_float(row.get("step"))
+        center = _safe_float(row.get(f"{value_col}_mean"))
+        sem = _safe_float(row.get("value_sem"))
+        if not policy_id or step is None or center is None:
+            continue
+        grouped.setdefault(policy_id, []).append((step, center, 0.0 if sem is None else sem))
+    for rows in grouped.values():
+        rows.sort(key=lambda item: item[0])
+    return grouped
+
+
+def _asset_plot_neural_phase(
+    ax: Any,
+    suite_dir: Path,
+    *,
+    title: str,
+    panel_label: str,
+    markers: Sequence[tuple[np.ndarray, str]] = (),
+) -> None:
+    """Neutral vector field with executed latent trajectories of two policies."""
+    from .diagnostics import true_dynamics as _true_dynamics
+    from .records import collect_records as _collect_records
+
+    metadata = _asset_first_suite_metadata(suite_dir)
+    if metadata is None:
+        raise RuntimeError(f"No run metadata found under {suite_dir}")
+    env_preset = get_environment_preset_from_metadata(metadata)
+    plot_neutral_vector_field(
+        ax,
+        _true_dynamics(env_preset),
+        grid_lim=_NEURAL_PHASE_LIM,
+        n_grid=41,
+        arrowsize=0.35,
+        stroke_color=_experiment_C_STROKE,
+    )
+    for policy_id in _NEURAL_TRAJ_POLICIES:
+        records = _collect_records(suite_dir, [policy_id], completed_only=True)
+        if len(records) <= _NEURAL_TRAJ_SEED_INDEX:
+            continue
+        record = records[_NEURAL_TRAJ_SEED_INDEX]
+        traj = _experiment_load_xy_trace(record)[: _NEURAL_TRAJ_STEPS]
+        if traj.shape[0] == 0:
+            continue
+        color = _asset_baseline_policy_color(policy_id)
+        ax.plot(traj[:, 0], traj[:, 1], color=color, linewidth=0.45, alpha=0.85, zorder=3,
+                solid_capstyle="round")
+        ax.scatter(traj[0, 0], traj[0, 1], s=9, color=color, edgecolor="white",
+                   linewidth=0.3, zorder=4)
+    for point, label in markers:
+        ax.scatter(point[0], point[1], s=16, marker="s", facecolor="white",
+                   edgecolor=_experiment_C_STROKE, linewidth=0.6, zorder=5)
+        ax.annotate(label, (point[0], point[1]), xytext=(3.0, 2.0), textcoords="offset points",
+                    fontsize=_ASSET_TICK_SIZE, color=_experiment_C_STROKE, zorder=6)
+    ax.set_xlim(-_NEURAL_PHASE_LIM, _NEURAL_PHASE_LIM)
+    ax.set_ylim(-_NEURAL_PHASE_LIM, _NEURAL_PHASE_LIM)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xticks([])
+    ax.set_yticks([])
+    for spine in ax.spines.values():
+        spine.set_linewidth(0.5)
+    ax.set_title(title, fontsize=_ASSET_TITLE_SIZE, pad=2.5)
+    ax.annotate(
+        panel_label, (0, 1), xycoords="axes fraction",
+        xytext=(-7.2, 1.2), textcoords="offset points", ha="left", va="bottom",
+        fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold",
+    )
+
+
+def _asset_plot_neural_circuits(output_path: Path, *, r2_summary: str) -> Path:
+    """Neural-circuit benchmark figure: phase portraits, R2 curves, decision reversal.
+
+    Panels A/C draw the true vector fields with the executed latent trajectory
+    of the seed at index ``_NEURAL_TRAJ_SEED_INDEX`` for PALDI, Myopic, and Random over
+    the first ``_NEURAL_TRAJ_STEPS`` steps. Panels B/D reuse the manuscript R2 curves. Panel E reads the
+    Wong-Wang basin-switch summaries: control energy ``dt * sum ||u_t||^2`` of
+    the input planned on the current estimate (mean +/- SEM over seeds), the
+    same quantity planned on the true parameters (dotted), and the fraction of
+    seeds whose planned input reversed the decision (top strip).
+    """
+    from matplotlib.ticker import FixedLocator, FormatStrFormatter
+
+    suite_dirs = {
+        "wilson_cowan": _suite_dir("simple_system_identification", "wilson_cowan"),
+        "wong_wang": _suite_dir("neural_circuits", "wong_wang"),
+    }
+    _asset_require_suite_dirs(list(suite_dirs.values()))
+    ww_dir = suite_dirs["wong_wang"]
+    ww_metadata = _asset_first_suite_metadata(ww_dir)
+    ww_preset = get_environment_preset_from_metadata(ww_metadata)
+    source = np.asarray(ww_preset.basin_switch_source, dtype=np.float64)
+    target = np.asarray(ww_preset.basin_switch_target, dtype=np.float64)
+
+    plt_module = load_plotting(output_path, apply_style=_apply_asset_style, path_is_file=True)
+    if plt_module is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig = plt_module.figure(figsize=(516.0 / 72.27, 1.95))
+    gs = fig.add_gridspec(
+        1, 5, width_ratios=[1.0, 1.05, 1.0, 1.05, 1.05], wspace=0.32,
+        left=0.045, right=0.985, top=0.80, bottom=0.20,
+    )
+    ax_a = fig.add_subplot(gs[0, 0])
+    ax_b = fig.add_subplot(gs[0, 1])
+    ax_c = fig.add_subplot(gs[0, 2])
+    ax_d = fig.add_subplot(gs[0, 3], sharey=ax_b)
+    e_gs = gs[0, 4].subgridspec(2, 1, height_ratios=[0.32, 1.0], hspace=0.12)
+    ax_e_top = fig.add_subplot(e_gs[0, 0])
+    ax_e = fig.add_subplot(e_gs[1, 0], sharex=ax_e_top)
+
+    _asset_plot_neural_phase(ax_a, suite_dirs["wilson_cowan"], title="Wilson-Cowan", panel_label="A")
+    _asset_plot_neural_phase(
+        ax_c, ww_dir, title="Wong-Wang", panel_label="C",
+        markers=((source, "choice 1"), (target, "choice 2")),
+    )
+    for ax, suite_id, label, ylabel in ((ax_b, "wilson_cowan", "B", True), (ax_d, "wong_wang", "D", False)):
+        _asset_plot_r2_curves(
+            ax, suite_dirs[suite_id], _NEURAL_POLICIES, title="", panel_label="",
+            ylabel=ylabel, xlabel=True, r2_summary=r2_summary, ylim=_NEURAL_R2_YLIM, title_pad=1.0,
+            show_inset=suite_id == "wong_wang",
+        )
+        ax.set_xticks([0, 1000, 2000])
+        ax.tick_params(axis="both", which="both", pad=1.0)
+        ax.annotate(
+            label, (0, 1), xycoords="axes fraction",
+            xytext=(-7.2, 1.2), textcoords="offset points", ha="left", va="bottom",
+            fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold",
+        )
+    ax_d.tick_params(axis="y", labelleft=False)
+    ax_b.yaxis.labelpad = 1.0
+
+    # Panel E: decision reversal planned on the running estimate.
+    energy = _asset_switch_curve_rows(ww_dir, "basin_switch_energy")
+    success = _asset_switch_curve_rows(ww_dir, "basin_switch_success")
+    oracle = _asset_switch_curve_rows(ww_dir, "basin_switch_energy_oracle")
+    if not energy:
+        raise RuntimeError(f"No basin-switch summary under {ww_dir / 'summary'}")
+    for policy_id in _NEURAL_POLICIES:
+        rows = energy.get(policy_id, [])
+        if not rows:
+            continue
+        steps = np.asarray([r[0] for r in rows]); center = np.asarray([r[1] for r in rows])
+        sem = np.asarray([r[2] for r in rows])
+        color = _asset_baseline_policy_color(policy_id)
+        ax_e.plot(steps, center, color=color, linewidth=0.95, marker="o", markersize=1.8)
+        ax_e.fill_between(steps, center - sem, center + sem, color=color, alpha=0.10, linewidth=0.0)
+        s_rows = success.get(policy_id, [])
+        if s_rows:
+            ax_e_top.plot(
+                [r[0] for r in s_rows], [r[1] for r in s_rows],
+                color=color, linewidth=0.95, drawstyle="steps-post",
+            )
+    oracle_values = [r[1] for rows in oracle.values() for r in rows]
+    if oracle_values:
+        ax_e.axhline(
+            float(np.mean(oracle_values)), color=_experiment_C_NEUTRAL_LIGHT, linestyle=":",
+            linewidth=0.65, zorder=5, label="true-model reference",
+        )
+    ax_e.set_xlim(left=0.0)
+    ax_e.set_xticks([0, 1000, 2000])
+    ax_e.set_ylim(bottom=0.0)
+    ax_e.set_ylabel("Switch energy")
+    ax_e.set_xlabel("Environment steps")
+    ax_e.tick_params(axis="both", which="both", pad=1.0)
+    ax_e.yaxis.labelpad = 1.0
+    _style_experiment_axis(ax_e)
+    ax_e_top.set_ylim(-0.08, 1.08)
+    ax_e_top.yaxis.set_major_locator(FixedLocator([0.0, 1.0]))
+    ax_e_top.yaxis.set_major_formatter(FormatStrFormatter("%g"))
+    ax_e_top.set_ylabel("Success", fontsize=_ASSET_TICK_SIZE)
+    ax_e_top.yaxis.labelpad = 1.0
+    ax_e_top.tick_params(axis="x", labelbottom=False, length=0)
+    ax_e_top.tick_params(axis="y", pad=1.0)
+    _style_experiment_axis(ax_e_top)
+    ax_e_top.annotate(
+        "E", (0, 1), xycoords="axes fraction",
+        xytext=(-7.2, 1.2), textcoords="offset points", ha="left", va="bottom",
+        fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold",
+    )
+
+    handles, labels = ax_b.get_legend_handles_labels()
+    labels = ["true" if label == "true-model reference" else label for label in labels]
+    fig.legend(
+        handles, labels, loc="upper center",
+        bbox_to_anchor=(0.5, 1.0), ncol=len(handles),
+        fontsize=_ASSET_TICK_SIZE, columnspacing=0.6, handlelength=0.9, handletextpad=0.3,
+        borderaxespad=0.0, borderpad=0.1, labelspacing=0.2,
+    )
+    return save_figure(fig, output_path, plt_module=plt_module)
 
 
 def _assets_build_parser() -> argparse.ArgumentParser:
@@ -2567,6 +2775,12 @@ def assets_main(argv: list[str] | None = None) -> int:
                     r2_output_dir / "tbme_fig_active_vs_baselines.pdf",
                     {"simple_system_identification"},
                     _asset_plot_active_vs_baselines,
+                    kwargs,
+                ),
+                (
+                    r2_output_dir / "tbme_fig_neural_circuits.pdf",
+                    {"neural_circuits"},
+                    _asset_plot_neural_circuits,
                     kwargs,
                 ),
                 (

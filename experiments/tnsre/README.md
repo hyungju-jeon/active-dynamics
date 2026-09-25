@@ -7,14 +7,14 @@ This directory contains the TBME experiment definitions, TBME-specific catalogs,
 3. `experiments.run` performs the actual run and summary work.
 
 There is no TBME suite YAML file in the current structure. Suite definitions live next to the experiment they describe.
-Suite ids use clean environment slugs such as `duffing` and `gated_duffing`, not old `exp##_` prefixes.
+Suite ids use clean environment slugs such as `duffing` and `wilson_cowan`, not old `exp##_` prefixes.
 
 ## Directory Layout
 
 - `config/experiment_env.yaml`: TBME environment presets.
 - `config/experiment_model.yaml`: TBME policy, objective, and schedule presets.
 - `exp_simple_system_identification.py`: base-environment policy comparisons.
-- `exp_observation_action_bottleneck.py`: gated-Duffing bottleneck experiments.
+- `exp_observation_action_bottleneck.py`: Wilson-Cowan bottleneck experiments.
 - `exp_model_mismatch.py`: nominal model-mismatch experiments.
 - `exp_parameter_mismatch_stress.py`: mild and strong parameter-mismatch stress tests.
 - `exp_observation_tuning_mismatch.py`: observation-tuning mismatch experiments.
@@ -71,6 +71,7 @@ environment-method pairs in this order:
 | `model_mismatch` | `exp_model_mismatch.py`, `exp_parameter_mismatch_stress.py`, `exp_observation_tuning_mismatch.py` |
 | `objective_ablation` | `exp_objective_ablation.py` |
 | `scheduling` | `exp_scheduling.py` |
+| `neural_circuits` | `exp_neural_circuits.py` (Wilson-Cowan, Wong-Wang rate circuits) |
 
 The default seed counts are manuscript-scale defaults. For smoke tests or debugging, always pass an explicit small `--seeds` value.
 
@@ -457,7 +458,7 @@ The helper can also run a family by module name:
 ```bash
 ./.venv/bin/python -m experiments.tnsre.run_tbme_experiments exp_objective_ablation \
   --mode summary \
-  --exp-ids gated_duffing \
+  --exp-ids wilson_cowan \
   --seeds 0
 ```
 

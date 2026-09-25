@@ -2,9 +2,9 @@ from __future__ import annotations
 
 DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "gated_duffing",
-    "gated_duffing_asymmetric",
-    "gated_duffing_challenging",
+    "wilson_cowan",
+    "wilson_cowan_asymmetric",
+    "wilson_cowan_challenging",
     # Designed three-gate diagnostic; lives in the shared session tracks like
     # the gated-Duffing suites and backs the manuscript gate-diagnostic figure.
     "three_gate_diagnostic",
@@ -31,17 +31,17 @@ SHARED_EXP_ARGS = {
 }
 
 EXPERIMENT_SUITES = {
-    "gated_duffing": {
+    "wilson_cowan": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing",
+        "env_preset_id": "tbme_wilson_cowan",
     },
-    "gated_duffing_asymmetric": {
+    "wilson_cowan_asymmetric": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing_asymmetric",
+        "env_preset_id": "tbme_wilson_cowan_asymmetric",
     },
-    "gated_duffing_challenging": {
+    "wilson_cowan_challenging": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing_challenging",
+        "env_preset_id": "tbme_wilson_cowan_challenging",
     },
     "confounded_gate": {
         **SHARED_EXP_ARGS,

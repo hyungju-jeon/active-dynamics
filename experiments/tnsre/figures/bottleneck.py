@@ -26,51 +26,51 @@ BOTTLENECK_POLICIES = [
 ]
 
 REQUIRED_SUITES = (
-    ("simple_system_identification", "gated_duffing"),
-    ("observation_action_bottleneck", "gated_duffing_observation_bottleneck_mild"),
-    ("observation_action_bottleneck", "gated_duffing_observation_bottleneck_strong"),
-    ("observation_action_bottleneck", "gated_duffing_action_bottleneck_mild"),
-    ("observation_action_bottleneck", "gated_duffing_action_bottleneck_strong"),
+    ("simple_system_identification", "wilson_cowan"),
+    ("observation_action_bottleneck", "wilson_cowan_observation_bottleneck_mild"),
+    ("observation_action_bottleneck", "wilson_cowan_observation_bottleneck_strong"),
+    ("observation_action_bottleneck", "wilson_cowan_action_bottleneck_mild"),
+    ("observation_action_bottleneck", "wilson_cowan_action_bottleneck_strong"),
 )
 
 
 def bottleneck_sources() -> list[SuiteSource]:
     return [
         SuiteSource(
-            "gated_duffing",
+            "wilson_cowan",
             "Default",
-            suite_dir("simple_system_identification", "gated_duffing"),
+            suite_dir("simple_system_identification", "wilson_cowan"),
         ),
         SuiteSource(
-            "gated_duffing_observation_bottleneck_mild",
+            "wilson_cowan_observation_bottleneck_mild",
             "Obs. mild",
             suite_dir(
                 "observation_action_bottleneck",
-                "gated_duffing_observation_bottleneck_mild",
+                "wilson_cowan_observation_bottleneck_mild",
             ),
         ),
         SuiteSource(
-            "gated_duffing_observation_bottleneck_strong",
+            "wilson_cowan_observation_bottleneck_strong",
             "Obs. strong",
             suite_dir(
                 "observation_action_bottleneck",
-                "gated_duffing_observation_bottleneck_strong",
+                "wilson_cowan_observation_bottleneck_strong",
             ),
         ),
         SuiteSource(
-            "gated_duffing_action_bottleneck_mild",
+            "wilson_cowan_action_bottleneck_mild",
             "Action mild",
             suite_dir(
                 "observation_action_bottleneck",
-                "gated_duffing_action_bottleneck_mild",
+                "wilson_cowan_action_bottleneck_mild",
             ),
         ),
         SuiteSource(
-            "gated_duffing_action_bottleneck_strong",
+            "wilson_cowan_action_bottleneck_strong",
             "Action strong",
             suite_dir(
                 "observation_action_bottleneck",
-                "gated_duffing_action_bottleneck_strong",
+                "wilson_cowan_action_bottleneck_strong",
             ),
         ),
     ]

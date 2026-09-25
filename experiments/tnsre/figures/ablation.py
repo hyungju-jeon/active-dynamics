@@ -103,28 +103,28 @@ OBJECTIVE_DEFINITIONS = [
 ]
 
 REQUIRED_SUITES = (
-    ("objective_ablation", "gated_duffing"),
-    ("objective_ablation", "gated_duffing_asymmetric"),
-    ("objective_ablation", "gated_duffing_challenging"),
+    ("objective_ablation", "wilson_cowan"),
+    ("objective_ablation", "wilson_cowan_asymmetric"),
+    ("objective_ablation", "wilson_cowan_challenging"),
 )
 
 
 def objective_sources() -> list[SuiteSource]:
     return [
         SuiteSource(
-            "gated_duffing",
-            "Default gated Duffing",
-            suite_dir("objective_ablation", "gated_duffing"),
+            "wilson_cowan",
+            "Default Wilson-Cowan",
+            suite_dir("objective_ablation", "wilson_cowan"),
         ),
         SuiteSource(
-            "gated_duffing_asymmetric",
+            "wilson_cowan_asymmetric",
             "Asymmetric loading",
-            suite_dir("objective_ablation", "gated_duffing_asymmetric"),
+            suite_dir("objective_ablation", "wilson_cowan_asymmetric"),
         ),
         SuiteSource(
-            "gated_duffing_challenging",
-            "Challenging gated Duffing",
-            suite_dir("objective_ablation", "gated_duffing_challenging"),
+            "wilson_cowan_challenging",
+            "Challenging Wilson-Cowan",
+            suite_dir("objective_ablation", "wilson_cowan_challenging"),
         ),
     ]
 
@@ -370,7 +370,7 @@ def generate() -> list[Path]:
     figure_paths = artifacts.artifact_paths(
         suite_dirs,
         subdir="figures",
-        filename="tbme_experiment_objective_ablation_gated_duffing.pdf",
+        filename="tbme_experiment_objective_ablation_wilson_cowan.pdf",
     )
     figure_path = plot_objective_ablation(
         figure_paths[0],

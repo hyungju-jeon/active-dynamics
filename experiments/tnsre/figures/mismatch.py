@@ -28,7 +28,7 @@ DOSE_POLICIES = [
 # Dose grid the figure understands; suites are matched against the catalog so
 # retired doses/families simply drop out instead of failing suite resolution.
 _DOSES = (("mild", "Mild"), ("", "Medium"), ("strong", "Strong"))
-_FAMILIES = (("duffing", "Duffing"), ("gated_duffing", "Gated Duffing"))
+_FAMILIES = (("duffing", "Duffing"), ("wilson_cowan", "Wilson-Cowan"))
 
 
 def _catalog_suite_ids(group_name: str) -> set[str]:

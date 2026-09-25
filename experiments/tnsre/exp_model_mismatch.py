@@ -2,10 +2,10 @@ from __future__ import annotations
 
 DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "gated_duffing_parameter_mismatch_mild",
-    "gated_duffing_parameter_mismatch_strong",
-    "gated_duffing_observation_mismatch_mild",
-    "gated_duffing_observation_mismatch_strong",
+    "wilson_cowan_parameter_mismatch_mild",
+    "wilson_cowan_parameter_mismatch_strong",
+    "wilson_cowan_observation_mismatch_mild",
+    "wilson_cowan_observation_mismatch_strong",
 )
 MODEL_IDS = [
     "adaptive",
@@ -27,21 +27,21 @@ SHARED_EXP_ARGS = {
 }
 
 EXPERIMENT_SUITES = {
-    "gated_duffing_parameter_mismatch_mild": {
+    "wilson_cowan_parameter_mismatch_mild": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing_parameter_mismatch_mild",
+        "env_preset_id": "tbme_wilson_cowan_parameter_mismatch_mild",
     },
-    "gated_duffing_parameter_mismatch_strong": {
+    "wilson_cowan_parameter_mismatch_strong": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing_parameter_mismatch_strong",
+        "env_preset_id": "tbme_wilson_cowan_parameter_mismatch_strong",
     },
-    "gated_duffing_observation_mismatch_mild": {
+    "wilson_cowan_observation_mismatch_mild": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing_observation_mismatch_mild",
+        "env_preset_id": "tbme_wilson_cowan_observation_mismatch_mild",
     },
-    "gated_duffing_observation_mismatch_strong": {
+    "wilson_cowan_observation_mismatch_strong": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing_observation_mismatch_strong",
+        "env_preset_id": "tbme_wilson_cowan_observation_mismatch_strong",
     },
 }
 

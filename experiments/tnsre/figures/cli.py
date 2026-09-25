@@ -20,6 +20,7 @@ _PLOTS = (
     "objective_ablation",
     "mismatch_dose_response",
     "true_dynamics_all",
+    "true_dynamics_neural",
     "per_parameter_recovery",
 )
 EXPERIMENT_PLOTS = _PLOTS
@@ -130,6 +131,7 @@ def experiment_main(argv: list[str] | None = None) -> int:
     }
     figure_only_plotters = {
         "true_dynamics_all": lambda: _true_dynamics.generate(output_suite_dirs),
+        "true_dynamics_neural": lambda: _true_dynamics.generate_neural(output_suite_dirs),
         "per_parameter_recovery": lambda: _recovery.generate(
             max_seeds=max_seeds
         ),

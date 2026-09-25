@@ -1,21 +1,17 @@
 from __future__ import annotations
 
+"""Wong-Wang decision-circuit suite.
+
+Wilson-Cowan is one of the three main benchmark systems and lives in the
+shared suites. Wong-Wang shares their observation model, interaction budget,
+and policy set, and its preset carries the basin-switch evaluation used to
+score how cheaply an identified model can reverse a committed decision.
+"""
+
+from experiments.tnsre.exp_simple_system_identification import MODEL_IDS
+
 DEFAULT_SEED_COUNT = 100
-DEFAULT_EXP_IDS = (
-    "duffing",
-    "damped_pendulum",
-    "wilson_cowan",
-    "wilson_cowan_asymmetric",
-    "wilson_cowan_challenging",
-    "wilson_cowan_observation_bottleneck_mild",
-    "wilson_cowan_observation_bottleneck_strong",
-)
-MODEL_IDS = [
-    "flex",
-    "flex_filter",
-    "flex_true",
-    "flex_rollback",
-]
+DEFAULT_EXP_IDS = ("wong_wang",)
 SHARED_EXP_ARGS = {
     "experiment_kind": "parameter",
     "total_steps": 2000,
@@ -31,7 +27,6 @@ EXPERIMENT_SUITES = {
     }
     for exp_id in DEFAULT_EXP_IDS
 }
-
 
 from experiments.tnsre.run_tbme_experiments import run_experiment_entrypoint
 

@@ -39,6 +39,7 @@ SHARED_TBME_GROUP_MODULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("objective_ablation", ("experiments.tnsre.exp_objective_ablation",)),
     ("scheduling", ("experiments.tnsre.exp_scheduling",)),
     ("flex_comparison", ("experiments.tnsre.exp_flex_comparison",)),
+    ("neural_circuits", ("experiments.tnsre.exp_neural_circuits",)),
 )
 
 

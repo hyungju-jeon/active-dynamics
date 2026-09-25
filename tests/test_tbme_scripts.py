@@ -154,7 +154,7 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
     assert sorted(captured["suite_entries"]) == [
         "damped_pendulum",
         "duffing",
-        "gated_duffing",
+        "wilson_cowan",
     ]
 
 
@@ -374,11 +374,11 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
         (
             "duffing",
             "damped_pendulum",
-            "gated_duffing",
-            "gated_duffing_asymmetric",
-            "gated_duffing_challenging",
-            "gated_duffing_observation_bottleneck_mild",
-            "gated_duffing_observation_bottleneck_strong",
+            "wilson_cowan",
+            "wilson_cowan_asymmetric",
+            "wilson_cowan_challenging",
+            "wilson_cowan_observation_bottleneck_mild",
+            "wilson_cowan_observation_bottleneck_strong",
         )
     ):
         suite_dir = tmp_path / "tracks" / exp_id
@@ -419,7 +419,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
                     "status": "completed",
                     "trajectory_r2_final_mean": (
                         ""
-                        if exp_id == "gated_duffing"
+                        if exp_id == "wilson_cowan"
                         and policy_id == "flex_filter"
                         and seed == 1
                         else 0.75 + 0.01 * seed
@@ -484,7 +484,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     failed_row = next(
         row
         for row in mean_rows
-        if row["experiment"] == "gated_duffing" and row["policy_id"] == "flex_filter"
+        if row["experiment"] == "wilson_cowan" and row["policy_id"] == "flex_filter"
     )
     assert failed_row["policy_label"] == "FLEX (EKF)"
     assert failed_row["n_total"] == "2"
@@ -493,23 +493,23 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     assert failed_row["r2_nonfinite_rate"] == "0.5"
     # The matched cohort has no Challenging FLEX runs. Its remaining single
     # condition still needs enough width for the legend and must pass the audit.
-    (tmp_path / "tracks/gated_duffing_challenging/summary/metrics.csv").unlink()
+    (tmp_path / "tracks/wilson_cowan_challenging/summary/metrics.csv").unlink()
     hard_group = next(group for group in module._asset_flex_groups() if group[0] == "hard")
     monkeypatch.setattr(module, "_asset_flex_groups", lambda: (hard_group,))
     skipped = []
     subset = module._asset_plot_flex_comparison(
         tmp_path / "subset" / "flex.pdf", r2_summary="mean_sem", skipped=skipped)
     assert len(subset) == 2 and all(path.exists() for path in subset)
-    assert len(skipped) == 1 and "gated_duffing_challenging" in skipped[0][0]
+    assert len(skipped) == 1 and "wilson_cowan_challenging" in skipped[0][0]
 
 
 def test_asset_subsets_report_absent_experiments(tmp_path: Path, monkeypatch) -> None:
     from experiments.tnsre.figures import assets, groups
 
     monkeypatch.setattr(groups, "_groups", groups._build_groups(tmp_path))
-    suites = ["gated_duffing", "gated_duffing_asymmetric",
-              "gated_duffing_observation_bottleneck_mild",
-              "gated_duffing_observation_bottleneck_strong"]
+    suites = ["wilson_cowan", "wilson_cowan_asymmetric",
+              "wilson_cowan_observation_bottleneck_mild",
+              "wilson_cowan_observation_bottleneck_strong"]
     for suite in suites:
         (tmp_path / "tracks" / suite).mkdir(parents=True)
     monkeypatch.setattr(assets, "_asset_method_metric_rows", lambda *a, **k: [])
@@ -823,8 +823,8 @@ def test_tbme_catalog_define_expected_matrices():
     )
     assert "baseline_prbs" not in duffing.policy_ids
     assert "active_planning_u5_r5_h40" not in duffing.policy_ids
-    assert "active_e_optimality" in bundle.experiment_specs["gated_duffing"].policy_ids
-    objective_ablation = bundle.experiment_specs["gated_duffing_asymmetric"]
+    assert "active_e_optimality" in bundle.experiment_specs["wilson_cowan"].policy_ids
+    objective_ablation = bundle.experiment_specs["wilson_cowan_asymmetric"]
     assert "active_observation_variance" in objective_ablation.policy_ids
     assert "active_state_variance" in objective_ablation.policy_ids
     confounded_suite = _load_module(
@@ -1023,11 +1023,11 @@ def test_flex_comparison_suite_has_requested_environments_and_models() -> None:
     assert tuple(suite.EXPERIMENT_SUITES) == (
         "duffing",
         "damped_pendulum",
-        "gated_duffing",
-        "gated_duffing_asymmetric",
-        "gated_duffing_challenging",
-        "gated_duffing_observation_bottleneck_mild",
-        "gated_duffing_observation_bottleneck_strong",
+        "wilson_cowan",
+        "wilson_cowan_asymmetric",
+        "wilson_cowan_challenging",
+        "wilson_cowan_observation_bottleneck_mild",
+        "wilson_cowan_observation_bottleneck_strong",
     )
     assert suite.MODEL_IDS == ["flex", "flex_filter", "flex_true", "flex_rollback"]
     assert all(
@@ -1217,22 +1217,23 @@ def test_tbme_family_scripts_define_expected_suite_sets():
         "objective_ablation",
         "scheduling",
         "flex_comparison",
+        "neural_circuits",
     }
     assert [entry["suite_id"] for entry in groups["simple_system_identification"]] == [
         "duffing",
         "damped_pendulum",
-        "gated_duffing",
+        "wilson_cowan",
     ]
-    assert "gated_duffing_parameter_mismatch_mild" in suites
-    assert "gated_duffing_observation_bottleneck_mild" in suites
+    assert "wilson_cowan_parameter_mismatch_mild" in suites
+    assert "wilson_cowan_observation_bottleneck_mild" in suites
     assert [entry["suite_id"] for entry in groups["flex_comparison"]] == [
         "duffing",
         "damped_pendulum",
-        "gated_duffing",
-        "gated_duffing_asymmetric",
-        "gated_duffing_challenging",
-        "gated_duffing_observation_bottleneck_mild",
-        "gated_duffing_observation_bottleneck_strong",
+        "wilson_cowan",
+        "wilson_cowan_asymmetric",
+        "wilson_cowan_challenging",
+        "wilson_cowan_observation_bottleneck_mild",
+        "wilson_cowan_observation_bottleneck_strong",
     ]
     assert all(
         entry["policy_ids"] == ("flex_filter", "flex_true", "flex_rollback")

@@ -138,7 +138,7 @@ def plot_per_parameter_recovery(
 
 def generate(max_seeds: int) -> list[Path]:
     """Aggregate embedding traces and render the recovery figure."""
-    suite_dir_path = suite_dir("simple_system_identification", "gated_duffing")
+    suite_dir_path = suite_dir("simple_system_identification", "wilson_cowan")
     traces, true_params = aggregate_parameter_traces(
         suite_dir_path,
         RECOVERY_POLICIES,
@@ -150,7 +150,7 @@ def generate(max_seeds: int) -> list[Path]:
     figure_paths = artifacts.artifact_paths(
         [suite_dir_path],
         subdir="figures",
-        filename="tbme_experiment_gated_duffing_parameter_recovery.pdf",
+        filename="tbme_experiment_wilson_cowan_parameter_recovery.pdf",
     )
     figure_path = plot_per_parameter_recovery(
         figure_paths[0],

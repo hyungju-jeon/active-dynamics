@@ -32,15 +32,19 @@ EXPERIMENT_PLOTS_BY_GROUP: dict[str, tuple[str, ...]] = {
     "objective_ablation": ("objective_ablation",),
     "scheduling": (),
     "flex_comparison": (),
+    "neural_circuits": ("true_dynamics_neural",),
+    "neural_circuits": (),
 }
 
 DEFAULT_GROUPS = ",".join(tbme_groups.groups())
 DIAGNOSTIC_ENV_IDS = (
     "tbme_duffing",
     "tbme_damped_pendulum",
-    "tbme_gated_duffing",
-    "tbme_gated_duffing_asymmetric",
-    "tbme_gated_duffing_observation_bottleneck_strong",
+    "tbme_wilson_cowan",
+    "tbme_wilson_cowan_asymmetric",
+    "tbme_wilson_cowan_observation_bottleneck_strong",
+    "tbme_wilson_cowan",
+    "tbme_wong_wang",
 )
 
 

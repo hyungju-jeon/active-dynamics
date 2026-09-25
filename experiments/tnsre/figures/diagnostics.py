@@ -41,8 +41,10 @@ DEFAULT_ENV_IDS = ("all",)
 ENV_ALIASES = {
     "duffing": "tbme_duffing",
     "damped_pendulum": "tbme_damped_pendulum",
-    "gated_duffing": "tbme_gated_duffing",
-    "tbme_gated_duffing": "tbme_gated_duffing",
+    "wilson_cowan": "tbme_wilson_cowan",
+    "tbme_wilson_cowan": "tbme_wilson_cowan",
+    "wilson_cowan": "tbme_wilson_cowan",
+    "wong_wang": "tbme_wong_wang",
 }
 
 
@@ -56,10 +58,10 @@ def _resolve_env_id(raw: str) -> str:
         raise ValueError("empty environment id")
     if value in ENV_ALIASES:
         return ENV_ALIASES[value]
-    if value.startswith("gated_duffing_"):
-        return f"tbme_gated_duffing_{value.removeprefix('gated_duffing_')}"
-    if value.startswith("tbme_gated_duffing_"):
-        return f"tbme_gated_duffing_{value.removeprefix('tbme_gated_duffing_')}"
+    if value.startswith("wilson_cowan_"):
+        return f"tbme_wilson_cowan_{value.removeprefix('wilson_cowan_')}"
+    if value.startswith("tbme_wilson_cowan_"):
+        return f"tbme_wilson_cowan_{value.removeprefix('tbme_wilson_cowan_')}"
     if value.startswith("tbme_"):
         return value
     return f"tbme_{value}"

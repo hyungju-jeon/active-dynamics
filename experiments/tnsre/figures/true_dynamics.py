@@ -17,16 +17,45 @@ from . import artifacts, theme
 PANEL_SPECS = [
     ("tbme_duffing", "Duffing"),
     ("tbme_damped_pendulum", "Damped pendulum"),
-    ("tbme_gated_duffing", "Gated Duffing"),
+    ("tbme_wilson_cowan", "Wilson-Cowan"),
+]
+NEURAL_PANEL_SPECS = [
+    ("tbme_wilson_cowan", "Wilson-Cowan"),
+    ("tbme_wong_wang", "Wong-Wang"),
 ]
 
 
 def generate(suite_dirs: Sequence[Path]) -> list[Path]:
     """Plot the true vector fields for the TBME synthetic systems."""
+    return _generate(
+        suite_dirs,
+        panel_specs=PANEL_SPECS,
+        filename="tbme_experiment_true_dynamics_all.pdf",
+        grid_lim=6.0,
+    )
+
+
+def generate_neural(suite_dirs: Sequence[Path]) -> list[Path]:
+    """Plot the true vector fields for the neural-circuit systems."""
+    return _generate(
+        suite_dirs,
+        panel_specs=NEURAL_PANEL_SPECS,
+        filename="tbme_experiment_true_dynamics_neural.pdf",
+        grid_lim=2.5,
+    )
+
+
+def _generate(
+    suite_dirs: Sequence[Path],
+    *,
+    panel_specs: Sequence[tuple[str, str]],
+    filename: str,
+    grid_lim: float,
+) -> list[Path]:
     figure_paths = artifacts.artifact_paths(
         suite_dirs,
         subdir="figures",
-        filename="tbme_experiment_true_dynamics_all.pdf",
+        filename=filename,
     )
     output_path = figure_paths[0]
     plt_module = load_plotting(output_path, apply_style=theme.apply_style, path_is_file=True)
@@ -35,9 +64,9 @@ def generate(suite_dirs: Sequence[Path]) -> list[Path]:
     from matplotlib.cm import ScalarMappable
     from matplotlib.colors import Normalize
 
-    grid_lim = 6.0
+    n_panels = len(panel_specs)
     fields = []
-    for preset_id, title in PANEL_SPECS:
+    for preset_id, title in panel_specs:
         env_preset = get_environment_preset(preset_id)
         theta_true = env_preset.true_embedding_vector()
         dynamics = ResidualDynamicsCallable(
@@ -67,19 +96,15 @@ def generate(suite_dirs: Sequence[Path]) -> list[Path]:
     panel_title_size = 12.0
     label_size = 10.0
 
-    fig = plt_module.figure(figsize=(7.25, 2.35))
+    fig = plt_module.figure(figsize=(0.25 + 2.35 * n_panels, 2.35))
     gs = fig.add_gridspec(
         1,
-        4,
+        n_panels + 1,
         wspace=0.05,
-        width_ratios=[1, 1, 1, 0.08],
+        width_ratios=[1] * n_panels + [0.08],
     )
-    axes = [
-        fig.add_subplot(gs[0, 0]),
-        fig.add_subplot(gs[0, 1]),
-        fig.add_subplot(gs[0, 2]),
-    ]
-    cax = fig.add_subplot(gs[0, 3])
+    axes = [fig.add_subplot(gs[0, idx]) for idx in range(n_panels)]
+    cax = fig.add_subplot(gs[0, n_panels])
     for panel_idx, (ax, (title, x_np, y_np, u_np, v_np, log_speed)) in enumerate(zip(axes, fields)):
         ax.pcolormesh(
             x_np,
@@ -115,8 +140,8 @@ def generate(suite_dirs: Sequence[Path]) -> list[Path]:
         ax.title.set_fontsize(panel_title_size)
         ax.xaxis.label.set_fontsize(label_size)
         ax.yaxis.label.set_fontsize(label_size)
-        ax.set_xticks([-6, 0, 6])
-        ax.set_yticks([-6, 0, 6])
+        ax.set_xticks([-grid_lim, 0, grid_lim])
+        ax.set_yticks([-grid_lim, 0, grid_lim])
         ax.tick_params(labelbottom=False, labelleft=False)
 
     sm = ScalarMappable(norm=norm, cmap="viridis")

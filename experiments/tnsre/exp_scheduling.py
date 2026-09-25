@@ -2,8 +2,8 @@ from __future__ import annotations
 
 DEFAULT_SEED_COUNT = 100
 DEFAULT_EXP_IDS = (
-    "gated_duffing",
-    "gated_duffing_challenging",
+    "wilson_cowan",
+    "wilson_cowan_challenging",
 )
 MODEL_IDS = [
     "active_planning_u1_r1_h40",
@@ -25,13 +25,13 @@ SHARED_EXP_ARGS = {
 }
 
 EXPERIMENT_SUITES = {
-    "gated_duffing_challenging": {
+    "wilson_cowan_challenging": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing_challenging",
+        "env_preset_id": "tbme_wilson_cowan_challenging",
     },
-    "gated_duffing": {
+    "wilson_cowan": {
         **SHARED_EXP_ARGS,
-        "env_preset_id": "tbme_gated_duffing",
+        "env_preset_id": "tbme_wilson_cowan",
     },
 }
 
