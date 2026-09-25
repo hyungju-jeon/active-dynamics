@@ -2535,7 +2535,7 @@ def _assets_build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--mechanistic-results-dir", type=Path,
-        default=_RESULTS_ROOT / "scalar_final_q005_20260912",
+        default=_RESULTS_ROOT / "00_update" / "20260912_scalar_final_q005",
         help="Saved scalar result folder containing figure_mechanistic.npz and .json.",
     )
     parser.add_argument(
@@ -2701,6 +2701,10 @@ def assets_main(argv: list[str] | None = None) -> int:
             if "No trajectory R2 curves available" not in str(exc):
                 raise
             skipped.append((_asset_display_path(output_path), str(exc)))
+        except FileNotFoundError as exc:
+            # Saved inputs of a scalar figure (mechanistic) may be absent in a
+            # result folder that only holds tracks; report instead of aborting.
+            skipped.append((_asset_display_path(output_path), f"missing input: {exc}"))
 
     lines = [
         "TBME manuscript asset assembly",
