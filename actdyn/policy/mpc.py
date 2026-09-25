@@ -428,7 +428,7 @@ class MpcICem(BaseMPC):
         rollout.add_dict(
             {
                 "action": actions,
-                "encoded_action": a_enc,
+                "env_action": a_enc,
                 "model_state": simulated_paths[:, :-1],
                 "next_model_state": simulated_paths[:, 1:],
             }

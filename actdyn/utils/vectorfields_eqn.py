@@ -29,9 +29,16 @@ class VectorField:
         self.alpha = alpha
         self.xy = None
 
+    # True when the input acts inside the drift, dz/dt = f(z, u); otherwise dz/dt = f(z) + u.
+    input_dependent = False
+
     @torch.no_grad()
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("compute method must be implemented in subclasses.")
+
+    def compute_with_input(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Drift with the input, shape (..., d): ``f(x) + u`` unless a subclass acts on u inside f."""
+        return self.compute(x) + u
 
     def set_params(self, *dyn_params: torch.Tensor | list[float] | Dict[str, float]):
         """Set model parameters from a tensor, list, dict, or expanded arguments."""
@@ -1217,3 +1224,56 @@ class WongWang(VectorField):
         U = self.alpha * self.state_scale * d_s1
         V = self.alpha * self.state_scale * d_s2
         return torch.stack([U, V], dim=-1)
+
+
+class WongWangInsideGain(WongWang):
+    """Two-pool decision circuit with the input inside the transfer function.
+
+    Equation (gating variables, c_i = s_i - 1/2, latent z = 4 c):
+        ds_i/dt = (-s_i + (1 - s_i) gamma S(beta (w_+ c_i - w_- c_j + h + g u_i))) / tau
+        dz/dt   = 4 ds/dt
+    The input u (units of 20 pA per selective pool) changes the pool's synaptic
+    drive, so its effect saturates with the gain and depends on the state.
+
+    Learned parameters: (w_+, w_-, h_raw, gamma_raw, g_raw), with h = h_raw / beta,
+    gamma = softplus(gamma_raw) and g = softplus(g_raw). A Gaussian belief over the raw
+    values keeps gamma, g > 0; the scaling of h makes a unit change of h_raw a unit
+    change of the sigmoid argument, so a unit prior does not saturate the gain.
+    beta, tau and the state scale are fixed as in :class:`WongWang`. The defaults are
+    the reduced model fitted to Wang (2002) network data
+    (``results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json``).
+    """
+
+    input_dependent = True
+
+    def __init__(self, dyn_param=None, device: str = "cpu", **kwargs):
+        if dyn_param is None:
+            dyn_param = [1.444, 0.586, -1.278, 2.447, -1.599]
+        super().__init__(dyn_param=dyn_param, device=device, **kwargs)
+
+    def _set_params(self, w_plus=1.444, w_minus=0.586, h_raw=-1.278, gamma_raw=2.447, g_raw=-1.599):
+        self.w_plus = w_plus
+        self.w_minus = w_minus
+        self.h_raw = h_raw
+        self.gamma_raw = gamma_raw
+        self.g_raw = g_raw
+
+    def compute_with_input(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Latent drift for state and input of shape (..., 2)."""
+        w_plus = self._broadcast_param(self.w_plus, x)
+        w_minus = self._broadcast_param(self.w_minus, x)
+        h = self._broadcast_param(self.h_raw, x) / self.beta
+        gamma = torch.nn.functional.softplus(self._broadcast_param(self.gamma_raw, x))
+        g = torch.nn.functional.softplus(self._broadcast_param(self.g_raw, x))
+        u = torch.as_tensor(u, dtype=x.dtype, device=x.device).expand_as(x)
+        c1 = x[..., 0] / self.state_scale
+        c2 = x[..., 1] / self.state_scale
+        gain_1 = torch.sigmoid(self.beta * (w_plus * c1 - w_minus * c2 + h + g * u[..., 0]))
+        gain_2 = torch.sigmoid(self.beta * (w_plus * c2 - w_minus * c1 + h + g * u[..., 1]))
+        d_s1 = (-(c1 + 0.5) + (0.5 - c1) * gamma * gain_1) / self.tau
+        d_s2 = (-(c2 + 0.5) + (0.5 - c2) * gamma * gain_2) / self.tau
+        return torch.stack([self.alpha * self.state_scale * d_s1, self.alpha * self.state_scale * d_s2], dim=-1)
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        """Latent drift without input, shape (..., 2)."""
+        return self.compute_with_input(x, torch.zeros_like(x))

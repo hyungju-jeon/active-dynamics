@@ -11,6 +11,8 @@ from actdyn.metrics.base import BaseMetric
 from actdyn.metrics.information import (
     AmbiguityAwareEmbeddingFisherMetric,
     EmbeddingFisherMetric,
+    drift_jacobians,
+    planned_inputs,
 )
 from actdyn.models.model import FilteringEmbedding
 from actdyn.models.decoder import diagonal_observation_information
@@ -169,8 +171,10 @@ class EOptimalityMetric(BaseMetric):
         else:
             e_rep = e_m
         e_rep_time = e_rep.unsqueeze(1).expand(batch, steps, -1)
-        Fe = self.Fe_net(z, e_rep_time).detach()
-        Fz = self.Fz_net(z, e_rep_time).detach()
+        u_plan = planned_inputs(self.model, rollout)
+        if u_plan is not None:
+            u_plan = u_plan.to(self.device).float().reshape(batch, steps, -1)
+        Fe, Fz = drift_jacobians(self.Fe_net, self.Fz_net, z, e_rep_time, u_plan)
 
         p_pred = z_bel["P"].to(self.device)
         if p_pred.ndim == 4:
@@ -293,8 +297,10 @@ class _FilteringObjectiveBase(BaseMetric):
         batch, steps, latent_dim = z.shape
         mean = self.model.e["m"].to(z).reshape(-1, self.model.e["m"].shape[-1])
         mean = mean.expand(batch, -1).unsqueeze(1).expand(batch, steps, -1)
-        fe = self.Fe_net(z, mean).detach()
-        fz = self.Fz_net(z, mean).detach()
+        u_plan = planned_inputs(self.model, rollout)
+        if u_plan is not None:
+            u_plan = u_plan.to(z).reshape(batch, steps, -1)
+        fe, fz = drift_jacobians(self.Fe_net, self.Fz_net, z, mean, u_plan)
         p = self.model.z["P"].to(z).reshape(-1, latent_dim, latent_dim).expand(batch, -1, -1)
         q = softplus(self.model.dynamics.logvar).to(z).reshape(-1, latent_dim).diag_embed()
         q = q.expand(batch, -1, -1) * float(self.model.dt)
@@ -466,7 +472,10 @@ class ObservationVarianceMetric(BaseMetric):
             raise ValueError("Nominal states and actions must have matching candidate/time axes")
         mean = self.model.e["m"].to(z).reshape(-1, theta_samples.shape[-1])
         mean = mean.expand(batch, -1).unsqueeze(1).expand(batch, steps, -1)
-        fz = self.Fz_net(z, mean).detach()
+        if bool(getattr(self.model, "input_dependent_dynamics", False)):
+            fz = self.Fz_net(z, mean, u=encoded_actions.to(z)).detach()
+        else:
+            fz = self.Fz_net(z, mean).detach()
         _, information, _, _ = diagonal_observation_information(self.model.decoder, z_next)
         p = self.model.z["P"].to(z).reshape(-1, dim, dim).expand(batch, -1, -1)
         dt = float(self.model.dt)

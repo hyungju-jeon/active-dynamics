@@ -151,7 +151,7 @@ class _EnvJacobianEmbedding:
         self.min_embedding_dim = int(min_embedding_dim)
         self.dynamics_alpha = float(dynamics_alpha)
 
-    def __call__(self, z: Any, e: Any):
+    def __call__(self, z: Any, e: Any, u: Any = None):
         return jacobian_embedding_torch(
             self.dynamics_type,
             z,
@@ -159,6 +159,7 @@ class _EnvJacobianEmbedding:
             full_params=self.full_params,
             min_embedding_dim=self.min_embedding_dim,
             dynamics_alpha=self.dynamics_alpha,
+            u=u,
         )
 
 
@@ -178,7 +179,7 @@ class _EnvJacobianState:
         self.min_embedding_dim = int(min_embedding_dim)
         self.dynamics_alpha = float(dynamics_alpha)
 
-    def __call__(self, z: Any, e: Any):
+    def __call__(self, z: Any, e: Any, u: Any = None):
         return jacobian_state_torch(
             self.dynamics_type,
             z,
@@ -188,6 +189,7 @@ class _EnvJacobianState:
                 min_embedding_dim=self.min_embedding_dim,
             ),
             dynamics_alpha=self.dynamics_alpha,
+            u=u,
         )
 
 

@@ -286,6 +286,38 @@ class FlexWongWangModel(_FlexVectorFieldModel):
         return self.alpha * drift + u
 
 
+class FlexWongWangInsideGainModel(FlexWongWangModel):
+    """Wong-Wang drift with the input inside the gain (``WongWangInsideGain``).
+
+    Learned parameters (w_+, w_-, h_raw, gamma_raw, g_raw); h = h_raw / beta, and gamma
+    and g are the softplus of the raw values. The input matrix df/du depends on the
+    state, so ``get_B`` differentiates the drift instead of returning the identity.
+    """
+
+    def forward(self, z):
+        params = self._full_params(dtype=z.dtype, device=z.device)
+        w_plus, w_minus, h = params[0], params[1], params[2] / self.beta
+        gamma = torch.nn.functional.softplus(params[3])
+        g = torch.nn.functional.softplus(params[4])
+        c1 = z[:, 0] / self.state_scale
+        c2 = z[:, 1] / self.state_scale
+        u = z[:, 2:4]
+        gain_1 = torch.sigmoid(self.beta * (w_plus * c1 - w_minus * c2 + h + g * u[:, 0]))
+        gain_2 = torch.sigmoid(self.beta * (w_plus * c2 - w_minus * c1 + h + g * u[:, 1]))
+        d_s1 = (-(c1 + 0.5) + (0.5 - c1) * gamma * gain_1) / self.tau
+        d_s2 = (-(c2 + 0.5) + (0.5 - c2) * gamma * gain_2) / self.tau
+        return self.alpha * torch.stack((self.state_scale * d_s1, self.state_scale * d_s2), dim=1)
+
+    def get_B(self, x):
+        """d f / d u at state ``x`` and u = 0, shape (d, m)."""
+        with torch.enable_grad():
+            x_t = torch.as_tensor(x, dtype=torch.float32).detach().reshape(1, self.d)
+            u = torch.zeros(1, self.m, requires_grad=True)
+            y = self.forward(torch.cat([x_t, u], dim=1))
+            rows = [torch.autograd.grad(y[0, i], u, retain_graph=True)[0][0] for i in range(self.d)]
+        return torch.stack(rows).detach().numpy().astype(np.float64)
+
+
 def build_flex_model(
     *,
     env_preset: Any,
@@ -317,6 +349,8 @@ def build_flex_model(
         return FlexWilsonCowanModel(**kwargs)
     if dynamics_type == "wong_wang":
         return FlexWongWangModel(**kwargs)
+    if dynamics_type == "wong_wang_inside_gain":
+        return FlexWongWangInsideGainModel(**kwargs)
     raise ValueError(f"Official FLEX wrapper does not support dynamics_type={dynamics_type!r}")
 
 

@@ -5,7 +5,7 @@ from actdyn.environment.boundary import boundary_visibility
 import actdyn.models
 from actdyn.models.base import BaseDynamicsEnsemble
 import torch
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from actdyn.models import BaseDynamics, Decoder
 from actdyn.models.decoder import LinearMapping, LogLinearMapping, diagonal_observation_information
 from actdyn.models.dynamics import RBFDynamics
@@ -325,6 +325,38 @@ class DOptimality(FisherInformationMetric):
             pass
 
 
+def _optional_rollout_field(rollout: Union[Rollout, RolloutBuffer, Dict], key: str) -> Optional[torch.Tensor]:
+    """Field of a dict, Rollout, or RolloutBuffer rollout, or None when absent."""
+    if isinstance(rollout, dict) or hasattr(rollout, "get"):
+        return rollout.get(key)
+    if hasattr(rollout, "flat"):
+        return rollout.flat.get(key)
+    return None
+
+
+def planned_inputs(model: Any, rollout: Union[Rollout, RolloutBuffer, Dict]) -> Optional[torch.Tensor]:
+    """Encoded planned inputs (B, T, d_u) for input-dependent drifts, else None.
+
+    With dz/dt = f(z) + u the input does not change the Jacobians, so the
+    metrics evaluate them without it; with dz/dt = f(z, u) they need the input
+    of every rollout step (``env_action``, as the planners store it).
+    """
+    if not bool(getattr(model, "input_dependent_dynamics", False)):
+        return None
+    u = _optional_rollout_field(rollout, "env_action")
+    if u is None:
+        raise ValueError("input-dependent dynamics need the planned inputs ('env_action') in the rollout")
+    return u
+
+
+def drift_jacobians(Fe_net: Callable, Fz_net: Callable, z: torch.Tensor, e: torch.Tensor,
+                    u: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """(d f / d theta, d f / d z) along a rollout; the input enters only when given."""
+    if u is None:
+        return Fe_net(z, e).detach(), Fz_net(z, e).detach()
+    return Fe_net(z, e, u=u).detach(), Fz_net(z, e, u=u).detach()
+
+
 class EmbeddingFisherMetric(BaseMetric):
     """Parameter EIG with prediction-only or measurement-conditioned planning.
 
@@ -490,8 +522,10 @@ class EmbeddingFisherMetric(BaseMetric):
             e_rep = e_m
         e_rep_time = e_rep.unsqueeze(1).expand(batch, T, -1)
 
-        Fe = Fe_net(z, e_rep_time).detach()
-        Fz = Fz_net(z, e_rep_time).detach()
+        u_plan = planned_inputs(self.model, rollout)
+        if u_plan is not None:
+            u_plan = u_plan.to(self.device).float().reshape(batch, T, -1)
+        Fe, Fz = drift_jacobians(Fe_net, Fz_net, z, e_rep_time, u_plan)
         S_sens = torch.zeros(batch, d_latent, d_embedding, device=self.device, dtype=z.dtype)
 
         P_pred = _to_batch_latent_cov(z_bel["P"].to(self.device))
