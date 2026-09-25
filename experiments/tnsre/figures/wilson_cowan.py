@@ -11,13 +11,12 @@ Left block, the latent dynamics:
 * (C) per-weight parameter sensitivity ||dv/dw|| on one color scale, with the passive region.
 
 Right block, one column per observation condition of the degraded-observation study
-(uniform loading at -5 dB "Default", uniform at -15 dB, biased at -5 dB):
+(uniform loading at -5 dB "Default", uniform at -10 dB, biased at -5 dB):
 
 * (D) loading directions (rows of C), one compass per condition on one scale.
 * (E) det of the local state Fisher information, one log color scale.
-* (F) spike trains of the 20 neurons (sorted by loading angle) along one trajectory that an
-  input pulse switches from the down to the up state, with the latent state and its EKF
-  estimate under the true model.
+* (F) spike trains of the 20 neurons (sorted by loading angle) along the trajectory in
+  (B); shading marks the input pulse that switches it from the down to the up state.
 
 All quantities come from the environment presets; no experiment results are read.
 """
@@ -42,20 +41,22 @@ from .spiking_sessions import POOL_COLORS, PROBE_SHADE
 from .theme import NEUTRAL_FILL, STROKE_COLOR, style_experiment_axis
 
 ENV_DEFAULT = "tbme_wilson_cowan"  # uniform loading, -5 dB
-ENV_LOW_SNR = "tbme_wilson_cowan_observation_bottleneck_strong"  # uniform loading, -15 dB
+ENV_LOW_SNR = "tbme_wilson_cowan_observation_bottleneck_mild"  # uniform loading, -10 dB
 ENV_BIASED = "tbme_wilson_cowan_asymmetric"  # biased loading, -5 dB
-CONDITIONS = ((ENV_DEFAULT, "Default"), (ENV_LOW_SNR, "SNR -15"), (ENV_BIASED, "Biased"))
+CONDITIONS = ((ENV_DEFAULT, "Default"), (ENV_LOW_SNR, "SNR -10"), (ENV_BIASED, "Biased"))
 E_COLOR, I_COLOR = POOL_COLORS[1], POOL_COLORS[0]
 WEIGHT_LABELS = (r"$w_{EE}$", r"$w_{EI}$", r"$w_{IE}$", r"$w_{II}$")
 MAP_CMAP = "magma"
 MAP_LIM = 2.5  # latent map extent; z = -2 and 2 are rates 0 and 1
+PHASE_LIM = 3.0  # include the full pulse-driven path, whose minimum is z_2 = -2.88
 FIGURE_WIDTH = 516.0 / 72.27
 FIGURE_HEIGHT = 3.1
 # Layout in inches. Left block: A and B on top, the C strip below. Right block: a 3 x 3 matrix
-# with one column per observation condition and rows D (loadings), E (Fisher), F (spikes, EKF).
-LEFT = {"top": 2.89, "a_width": 1.2, "b_left": 1.72, "b_size": 1.25, "c_bottom": 0.42, "c_size": 0.7}
-RIGHT = {"x0": 4.18, "col": 0.82, "gap": 0.06, "d": (2.47, 0.42), "e": (1.47, 0.82), "f_raster": (0.78, 0.38),
-         "f_latent": (0.36, 0.38)}
+# with one column per observation condition and rows D (loadings), E (Fisher), F (spikes).
+LEFT = {"top": 2.89, "a_left": 0.15, "a_width": 1.5, "b_left": 2.12, "b_size": 1.4,
+        "c_bottom": 0.42, "c_size": 0.7}
+RIGHT = {"x0": 4.10, "col": 0.88, "gap": 0.06, "d": (2.49, 0.40), "e": (1.45, 0.88),
+         "f_raster": (0.42, 0.60)}
 # Example trajectory of (B) and (F): start in the down state; (start, stop, u_E, u_I) pulses.
 # From the down state this pulse reaches the up state in 40 of 40 noise seeds (checked 2026-09-25).
 # 600 steps keep single spikes visible in (F); longer windows merge into solid bands.
@@ -122,7 +123,7 @@ def _fixed_points(model: _Model) -> list[tuple[np.ndarray, bool]]:
     return [(z, bool(np.all(np.linalg.eigvals(model.jacobian(z)).real < 0.0))) for z in found]
 
 
-def _separatrix(model: _Model, saddle: np.ndarray) -> list[np.ndarray]:
+def _separatrix(model: _Model, saddle: np.ndarray, *, limit: float = MAP_LIM) -> list[np.ndarray]:
     """Both branches of the saddle's stable manifold, integrated backward in time (RK4)."""
     evals, evecs = np.linalg.eig(model.jacobian(saddle))
     direction = np.real(evecs[:, int(np.argmin(evals.real))])
@@ -137,15 +138,15 @@ def _separatrix(model: _Model, saddle: np.ndarray) -> list[np.ndarray]:
             k4 = -model.drift(z + 0.005 * k3)
             z = z + 0.005 / 6.0 * (k1 + 2 * k2 + 2 * k3 + k4)
             path.append(z)
-            if np.max(np.abs(z)) > MAP_LIM + 0.2:
+            if np.max(np.abs(z)) > limit + 0.2:
                 break
         branches.append(np.array(path))
     return branches
 
 
-def _down_basin(model: _Model) -> tuple[np.ndarray, np.ndarray]:
+def _down_basin(model: _Model, *, limit: float = MAP_LIM) -> tuple[np.ndarray, np.ndarray]:
     """Grid axis and mask (n, n) of states whose noise-free trajectory ends in the down state."""
-    axis = np.linspace(-MAP_LIM, MAP_LIM, GRID["basin"])
+    axis = np.linspace(-limit, limit, GRID["basin"])
     xx, yy = np.meshgrid(axis, axis, indexing="xy")
     z = np.stack([xx.ravel(), yy.ravel()], axis=1)
     for _ in range(2000):
@@ -225,38 +226,14 @@ def _fisher_det(weights: np.ndarray, bias: np.ndarray, dt: float) -> np.ndarray:
     return np.exp(logdet)
 
 
-def _ekf(model: _Model, weights: np.ndarray, bias: np.ndarray, dt: float, counts: np.ndarray,
-         u: np.ndarray) -> np.ndarray:
-    """State EKF under the true model, as in online inference: Euler prediction with
-    process covariance q dt I, then a Poisson update linearized at the prediction.
-    Starts from mean 0 and covariance I. Returns the filtered means (T, 2)."""
-    m, cov = np.zeros(2), np.eye(2)
-    eye = np.eye(2)
-    out = np.empty((counts.shape[0], 2))
-    for t in range(counts.shape[0]):
-        if t > 0:
-            f = eye + model.dt * model.jacobian(m)
-            m = model.step(m, u[t - 1])
-            cov = f @ cov @ f.T + model.q * model.dt * eye
-        lam = dt * np.exp(weights @ m + bias)
-        h = lam[:, None] * weights
-        s = h @ cov @ h.T + np.diag(lam)
-        gain = np.linalg.solve(s, h @ cov).T
-        m = m + gain @ (counts[t] - lam)
-        a = eye - gain @ h
-        cov = a @ cov @ a.T + gain @ np.diag(lam) @ gain.T
-        out[t] = m
-    return out
-
-
 # ------------------------------------------------------------------ drawing helpers
 def _inch_axes(fig: Any, x: float, y: float, w: float, h: float) -> Any:
     return fig.add_axes([x / FIGURE_WIDTH, y / FIGURE_HEIGHT, w / FIGURE_WIDTH, h / FIGURE_HEIGHT])
 
 
-def _map_axis(ax: Any, *, xlabels: bool = True, ylabels: bool = True) -> None:
-    ax.set_xlim(-MAP_LIM, MAP_LIM)
-    ax.set_ylim(-MAP_LIM, MAP_LIM)
+def _map_axis(ax: Any, *, xlabels: bool = True, ylabels: bool = True, limit: float = MAP_LIM) -> None:
+    ax.set_xlim(-limit, limit)
+    ax.set_ylim(-limit, limit)
     ax.set_aspect("equal")
     ax.set_xticks([-2, 0, 2])
     ax.set_yticks([-2, 0, 2])
@@ -278,7 +255,7 @@ def _map_label(ax: Any, text: str) -> None:
             color="white", zorder=7)
 
 
-def _colorbar(fig: Any, image: Any, cax: Any, label: str, *, log: bool = False) -> None:
+def _colorbar(fig: Any, image: Any, cax: Any, label: str, *, log: bool = False) -> Any:
     cbar = fig.colorbar(image, cax=cax)
     cbar.ax.tick_params(labelsize=_ASSET_TICK_SIZE, width=0.4, length=2.0, pad=1.5)
     cbar.outline.set_linewidth(0.4)
@@ -289,6 +266,7 @@ def _colorbar(fig: Any, image: Any, cax: Any, label: str, *, log: bool = False) 
         cbar.update_ticks()
         cbar.minorticks_off()
     cbar.set_label(label, fontsize=_ASSET_LABEL_SIZE, labelpad=2.0)
+    return cbar
 
 
 def _draw_circuit(ax: Any) -> None:
@@ -353,7 +331,7 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     saddle = next(z for z, stable in fixed if not stable)
     down = min((z for z, stable in fixed if stable), key=lambda z: z[0])
     up = max((z for z, stable in fixed if stable), key=lambda z: z[0])
-    traj, u = _example(model, down)
+    traj, _u = _example(model, down)
     centers, density, level = _passive_density(model)
     loadings = {env: _loading(env) for env, _label in CONDITIONS}
     preset = model.preset
@@ -363,36 +341,43 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     top, b_size = LEFT["top"], LEFT["b_size"]
 
     # (A) circuit.
-    ax = _inch_axes(fig, 0.0, top - 1.45, LEFT["a_width"], 1.5)
+    ax = _inch_axes(fig, LEFT["a_left"], top - 1.45, LEFT["a_width"], 1.5)
     _draw_circuit(ax)
     _letter(fig, "A", 0.02, top + 0.05)
-    _title(fig, "Circuit", 0.1, LEFT["a_width"], top + 0.05)
+    _title(fig, "Circuit", LEFT["a_left"], LEFT["a_left"] + LEFT["a_width"], top + 0.05)
 
     # (B) phase portrait.
     b_left = LEFT["b_left"]
     ax = _inch_axes(fig, b_left, top - b_size, b_size, b_size)
-    axis, basin = _down_basin(model)
+    axis, basin = _down_basin(model, limit=PHASE_LIM)
     ax.contourf(axis, axis, basin.astype(float), levels=[0.5, 1.5], colors=[NEUTRAL_FILL], zorder=0)
-    field_axis = np.linspace(-MAP_LIM, MAP_LIM, GRID["field"])
+    field_axis = np.linspace(-PHASE_LIM, PHASE_LIM, GRID["field"])
     fx, fy = np.meshgrid(field_axis, field_axis, indexing="xy")
     v = model.drift(np.stack([fx.ravel(), fy.ravel()], axis=1)).reshape(*fx.shape, 2)
     ax.streamplot(field_axis, field_axis, v[..., 0], v[..., 1], color="#B3ADA6", linewidth=0.35, density=0.8,
                   arrowsize=0.45, zorder=1)
     ax.contour(field_axis, field_axis, v[..., 0], levels=[0.0], colors=[E_COLOR], linewidths=0.9, zorder=2)
     ax.contour(field_axis, field_axis, v[..., 1], levels=[0.0], colors=[I_COLOR], linewidths=0.9, zorder=2)
-    for branch in _separatrix(model, saddle):
+    for branch in _separatrix(model, saddle, limit=PHASE_LIM):
         ax.plot(branch[:, 0], branch[:, 1], color=STROKE_COLOR, lw=0.7, ls="--", zorder=3)
     low, high = np.asarray(preset.trajectory_eval_state_low), np.asarray(preset.trajectory_eval_state_high)
     ax.plot([low[0], high[0], high[0], low[0], low[0]], [low[1], low[1], high[1], high[1], low[1]],
             color=STROKE_COLOR, lw=0.5, ls=":", zorder=3)
     _passive_contour(ax, centers, density, level, "#8A847C")
-    ax.plot(traj[:, 0], traj[:, 1], color=STROKE_COLOR, lw=0.4, alpha=0.7, zorder=4)
+    # A white outline separates the measured path from the nullclines and flow.
+    from matplotlib import patheffects
+
+    ax.plot(traj[:, 0], traj[:, 1], color="#181818", lw=1.1, zorder=4,
+            path_effects=[patheffects.Stroke(linewidth=2.1, foreground="white"), patheffects.Normal()])
+    for step in (210, 330):
+        ax.annotate("", xy=traj[step + 12], xytext=traj[step], zorder=5,
+                    arrowprops=dict(arrowstyle="-|>", color="#181818", lw=0.9, mutation_scale=6))
     _mark_fixed_points(ax, fixed, size=3.6, edge="white")
     for z, text, dx, dy, ha in ((down, "down", 0.2, -0.32, "left"), (saddle, "saddle", 0.15, -0.38, "left"),
                                 (up, "up", -0.2, -0.3, "right")):
         ax.text(z[0] + dx, z[1] + dy, text, ha=ha, va="center", fontsize=_ASSET_TICK_SIZE, zorder=7,
                 bbox=dict(boxstyle="round,pad=0.1", facecolor="white", edgecolor="none", alpha=0.8))
-    _map_axis(ax)
+    _map_axis(ax, limit=PHASE_LIM)
     ax.set_xlabel(r"$z_1$ (E)", fontsize=_ASSET_LABEL_SIZE, labelpad=1.0)
     ax.set_ylabel(r"$z_2$ (I)", fontsize=_ASSET_LABEL_SIZE, labelpad=0.5)
     _letter(fig, "B", b_left - 0.4, top + 0.05)
@@ -402,8 +387,14 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     sens = _weight_sensitivity(preset)
     vmax = float(np.percentile(sens, 99.5))
     c_left, c_size, c_gap, c_bottom = 0.4, LEFT["c_size"], 0.06, LEFT["c_bottom"]
+    c_right = c_left + 4 * c_size + 3 * c_gap
+    map_axes = []
     for j in range(4):
         ax = _inch_axes(fig, c_left + (c_size + c_gap) * j, c_bottom, c_size, c_size)
+        if map_axes:
+            ax.sharex(map_axes[0])
+            ax.sharey(map_axes[0])
+        map_axes.append(ax)
         image = ax.imshow(sens[j], origin="lower", extent=[-MAP_LIM, MAP_LIM, -MAP_LIM, MAP_LIM], cmap=MAP_CMAP,
                           vmin=0.0, vmax=vmax, interpolation="bilinear")
         _passive_contour(ax, centers, density, level, "white")
@@ -412,9 +403,10 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
         _map_label(ax, WEIGHT_LABELS[j])
         if j == 0:
             ax.set_ylabel(r"$z_2$ (I)", fontsize=_ASSET_LABEL_SIZE, labelpad=0.5)
-    c_right = c_left + 4 * c_size + 3 * c_gap
-    fig.text(0.5 * (c_left + c_right) / FIGURE_WIDTH, 0.03 / FIGURE_HEIGHT, r"$z_1$ (E)", ha="center",
-             va="bottom", fontsize=_ASSET_LABEL_SIZE)
+            ax.set_xlabel(r"$z_1$ (E)", fontsize=_ASSET_LABEL_SIZE)
+            ax.xaxis.set_label_coords(0.5 * (c_left + c_right) / FIGURE_WIDTH, 0.03 / FIGURE_HEIGHT,
+                                     transform=fig.transFigure)
+            ax.xaxis.label.set(ha="center", va="bottom")
     _colorbar(fig, image, _inch_axes(fig, c_right + 0.06, c_bottom, 0.045, c_size),
               r"$\|\partial\mathbf{v}/\partial w\|$")
     _letter(fig, "C", 0.02, c_bottom + c_size + 0.05)
@@ -442,80 +434,87 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
         ax.set_xticks([])
         ax.set_yticks([])
         ax.text(1.1 * reach, 0.0, r"$z_1$", ha="left", va="center", fontsize=_ASSET_TICK_SIZE)
-        ax.text(0.08 * reach, 1.02 * reach, r"$z_2$", ha="left", va="bottom", fontsize=_ASSET_TICK_SIZE)
+        ax.text(0.12 * reach, 0.80 * reach, r"$z_2$", ha="left", va="bottom", fontsize=_ASSET_TICK_SIZE)
         _title(fig, label, cols[k], cols[k] + RIGHT["col"], d_bottom + d_height + 0.05)
     fig.text((r_left - 0.2) / FIGURE_WIDTH, (d_bottom + 0.5 * d_height) / FIGURE_HEIGHT, "loadings",
              ha="center", va="center", rotation=90, fontsize=_ASSET_LABEL_SIZE)
     _letter(fig, "D", letter_x, d_bottom + d_height + 0.05)
 
     # (E) state Fisher information.
-    from matplotlib.colors import LogNorm
+    from matplotlib.colors import LinearSegmentedColormap, LogNorm
 
     e_bottom, e_size = RIGHT["e"]
     dets = [_fisher_det(*loadings[env]) for env, _label in CONDITIONS]
     pooled = np.concatenate([d[np.isfinite(d) & (d > 0)] for d in dets])
     norm = LogNorm(vmin=float(np.percentile(pooled, 1.0)), vmax=float(np.percentile(pooled, 99.0)))
+    # Keep one logarithmic scale; omit magma's near-black end so low information
+    # and the contours remain visible. This does not rescale individual panels.
+    fisher_cmap = LinearSegmentedColormap.from_list(
+        "magma_visible_low", plt.get_cmap(MAP_CMAP)(np.linspace(0.18, 1.0, 256)))
     for k, det in enumerate(dets):
         ax = _inch_axes(fig, cols[k], e_bottom, e_size, e_size)
-        image = ax.imshow(det, origin="lower", extent=[-MAP_LIM, MAP_LIM, -MAP_LIM, MAP_LIM], cmap=MAP_CMAP,
-                          norm=norm, interpolation="bilinear")
+        ax.sharex(map_axes[0])
+        ax.sharey(map_axes[0])
+        image = ax.imshow(det, origin="lower", extent=[-MAP_LIM, MAP_LIM, -MAP_LIM, MAP_LIM], cmap=fisher_cmap,
+                          norm=norm, interpolation="nearest")
         _passive_contour(ax, centers, density, level, "white")
         _mark_fixed_points(ax, fixed, size=2.8, edge="white")
         _map_axis(ax, ylabels=k == 0)
         if k == 0:
             ax.set_ylabel(r"$z_2$ (I)", fontsize=_ASSET_LABEL_SIZE, labelpad=0.5)
-    _colorbar(fig, image, _inch_axes(fig, r_right + 0.05, e_bottom, 0.045, e_size), "", log=True)
+    cax = _inch_axes(fig, r_right + 0.02, e_bottom, 0.03, e_size)
+    cbar = _colorbar(fig, image, cax, "", log=True)
+    # Compact decimal tick labels preserve the logarithmic scale while leaving
+    # more width for the three aligned observation columns.
+    cbar.set_ticks([0.01, 0.1, 1.0], labels=["0.01", "0.1", "1"])
+    cax.tick_params(axis="y", length=1.5, pad=0.5)
+    # Label the colorbar itself, using the shared row title to avoid a second
+    # vertical label at the page edge.
+    cax.set_ylabel(r"State Fisher information $\det\mathbf{I}_z$", rotation=0)
+    cax.yaxis.set_label_coords(0.5 * (r_left + r_right) / FIGURE_WIDTH,
+                             (e_bottom + e_size + 0.05) / FIGURE_HEIGHT, transform=fig.transFigure)
+    cax.yaxis.label.set(ha="center", va="bottom")
     _letter(fig, "E", letter_x, e_bottom + e_size + 0.05)
-    _title(fig, r"State Fisher information $\det\mathbf{I}_z$", r_left, r_right, e_bottom + e_size + 0.05)
 
-    # (F) spike trains, latent, and EKF estimate along the example trajectory.
-    t = np.arange(traj.shape[0])
-    (fr_bottom, fr_height), (fl_bottom, fl_height) = RIGHT["f_raster"], RIGHT["f_latent"]
+    # (F) spike trains along the shared trajectory drawn prominently in (B).
+    fr_bottom, fr_height = RIGHT["f_raster"]
+    raster_axes = []
     for k, (env, _label) in enumerate(CONDITIONS):
         weights, bias, dt = loadings[env]
         rng = np.random.default_rng(int(EXAMPLE["seed"]) + 1 + k)
         counts = rng.poisson(np.clip(dt * np.exp(traj @ weights.T + bias), 0.0, 1e6))
-        estimate = _ekf(model, weights, bias, dt, counts, u)
-        rmse = float(np.sqrt(np.mean((estimate - traj) ** 2)))
         order = np.argsort(np.arctan2(weights[:, 1], weights[:, 0]))
         ax_r = _inch_axes(fig, cols[k], fr_bottom, RIGHT["col"], fr_height)
-        ax_l = _inch_axes(fig, cols[k], fl_bottom, RIGHT["col"], fl_height)
+        if raster_axes:
+            ax_r.sharex(raster_axes[0])
+            ax_r.sharey(raster_axes[0])
+        raster_axes.append(ax_r)
         steps, neurons = np.nonzero(counts[:, order] > 0)
         ax_r.vlines(steps, neurons - 0.4, neurons + 0.4, color=STROKE_COLOR, lw=0.3, rasterized=True)
         ax_r.set_ylim(-0.5, weights.shape[0] - 0.5)
-        ax_r.set_yticks([])
-        for a in (ax_r, ax_l):
-            for start, stop, _ue, _ui in EXAMPLE["pulses"]:
-                a.axvspan(start, stop, color=PROBE_SHADE, lw=0, zorder=0)
-        for i, color in enumerate((E_COLOR, I_COLOR)):
-            ax_l.plot(t, traj[:, i], color=color, lw=0.7)
-            ax_l.plot(t, estimate[:, i], color=color, lw=0.6, ls="--", alpha=0.9)
-        ax_l.set_ylim(-2.7, 3.6)  # headroom for the legend
-        ax_l.set_yticks([-2, 0, 2])
-        ax_l.text(0.97, 0.97, f"RMSE {rmse:.2f}", transform=ax_l.transAxes, ha="right", va="top",
-                  fontsize=_ASSET_TICK_SIZE)
-        for a in (ax_r, ax_l):
-            style_experiment_axis(a)
-            a.set_xlim(0, traj.shape[0])
-            a.set_xticks([0, 300, 600])
-        ax_r.tick_params(labelbottom=False)
+        ax_r.set_yticks([0, weights.shape[0] - 1], labels=["1", str(weights.shape[0])])
+        for start, stop, _ue, _ui in EXAMPLE["pulses"]:
+            ax_r.axvspan(start, stop, color=PROBE_SHADE, lw=0, zorder=0)
+            ax_r.plot([start, stop], [1.025, 1.025], color=STROKE_COLOR, lw=2,
+                      transform=ax_r.get_xaxis_transform(), clip_on=False)
+            ax_r.text(0.5 * (start + stop), 1.055, "pulse", ha="center", va="bottom",
+                      transform=ax_r.get_xaxis_transform(), fontsize=_ASSET_TICK_SIZE)
+        style_experiment_axis(ax_r)
+        ax_r.set_xlim(0, traj.shape[0])
+        ax_r.set_xticks([0, 300, 600])
         # Edge labels point inward so neighbouring columns' "600" and "0" do not meet.
-        ax_l.get_xticklabels()[0].set_ha("left")
-        ax_l.get_xticklabels()[-1].set_ha("right")
+        ax_r.get_xticklabels()[0].set_ha("left")
+        ax_r.get_xticklabels()[-1].set_ha("right")
         if k == 0:
             ax_r.set_ylabel("neuron", fontsize=_ASSET_LABEL_SIZE, labelpad=1.0)
-            ax_l.set_ylabel("latent", fontsize=_ASSET_LABEL_SIZE, labelpad=1.0)
+            ax_r.set_xlabel("Environment steps", fontsize=_ASSET_LABEL_SIZE)
+            ax_r.xaxis.set_label_coords(0.5 * (r_left + r_right) / FIGURE_WIDTH, 0.03 / FIGURE_HEIGHT,
+                                       transform=fig.transFigure)
+            ax_r.xaxis.label.set(ha="center", va="bottom")
         else:
-            ax_l.tick_params(labelleft=False)
-    fig.text(0.5 * (r_left + r_right) / FIGURE_WIDTH, 0.03 / FIGURE_HEIGHT, "Environment steps", ha="center",
-             va="bottom", fontsize=_ASSET_LABEL_SIZE)
-    # The latent panels have no free corner for a legend; it sits beside the x label.
-    fig.legend(handles=[plt.Line2D([], [], color=STROKE_COLOR, lw=0.7, label="true"),
-                        plt.Line2D([], [], color=STROKE_COLOR, lw=0.6, ls="--", label="EKF")],
-               loc="lower right", bbox_to_anchor=(r_right / FIGURE_WIDTH, 0.0), ncol=2, fontsize=_ASSET_TICK_SIZE,
-               frameon=False, handlelength=1.4, columnspacing=0.8, borderaxespad=0.2)
-    _letter(fig, "F", letter_x, fr_bottom + fr_height + 0.05)
-    _title(fig, "Spike trains and EKF estimate", r_left, r_right, fr_bottom + fr_height + 0.05)
+            ax_r.tick_params(labelleft=False)
+    _letter(fig, "F", letter_x, fr_bottom + fr_height + 0.18)
+    _title(fig, "Spike trains", r_left, r_right, fr_bottom + fr_height + 0.18)
     return save_figure(fig, output, plt_module=plt)
 
 
