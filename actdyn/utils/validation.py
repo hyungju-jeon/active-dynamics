@@ -378,3 +378,120 @@ def trajectory_r2_vectorfield_many(
             sst = torch.sum((traj_true - true_mean) ** 2, dim=(1, 2, 3))
             r2 = torch.where(sst <= 1e-12, torch.zeros_like(sst), 1.0 - sse / sst)
     return r2.cpu().numpy()
+
+
+def basin_switch_cost_many(
+    e_estimates: torch.Tensor,
+    *,
+    estimator_dynamics_type: str,
+    estimator_full_params: np.ndarray,
+    estimator_min_embedding_dim: int,
+    e_true: torch.Tensor,
+    true_dynamics_type: str,
+    true_full_params: np.ndarray,
+    true_min_embedding_dim: int,
+    source_state: np.ndarray | list[float] | tuple[float, ...],
+    target_state: np.ndarray | list[float] | tuple[float, ...],
+    dt: float,
+    dynamics_alpha: float,
+    horizon: int,
+    action_max: float,
+    terminal_weight: float = 10.0,
+    iterations: int = 200,
+    learning_rate: float = 0.05,
+    device="cpu",
+) -> dict[str, np.ndarray]:
+    """Score how cheaply each estimated model can switch the true system between basins.
+
+    For each embedding estimate in ``e_estimates`` (shape ``(M, E)``) an
+    open-loop input sequence ``u_{0:H-1}`` with ``|u_t| <= action_max`` is planned
+    on the estimated dynamics ``f_hat`` by minimizing the control cost
+
+        J(u) = dt * sum_t ||u_t||^2 + terminal_weight * ||z_H - z_target||^2,
+        z_{t+1} = z_t + dt * (f_hat(z_t) + u_t),   z_0 = z_source,
+
+    where ``z_H`` is the state after ``horizon`` driven steps followed by
+    ``horizon`` passive steps on ``f_hat``, so the input only has to carry the
+    state across the separatrix and the estimated dynamics finish the switch.
+    The bound is enforced by ``u_t = action_max * tanh(v_t)`` with Adam on ``v``
+    from ``v = 0``. The planned sequence is then applied open loop to the true
+    dynamics from ``z_source`` with the same driven-plus-passive schedule. The
+    switch succeeds when the settled true state is closer to ``z_target`` than
+    to ``z_source``. The computation is deterministic given its arguments (no
+    noise, zero initialization).
+
+    Returns arrays of shape ``(M,)``: ``energy`` (``dt * sum ||u_t||^2`` of the
+    applied input), ``success`` (0/1), and ``terminal_distance`` (distance of the
+    settled true state to ``z_target``).
+    """
+    from actdyn.environment.vectorfield import pad_embedding_to_params, residual_torch
+
+    e_estimates = torch.as_tensor(e_estimates, dtype=torch.float32, device=device)
+    if e_estimates.ndim != 2:
+        raise ValueError(
+            f"e_estimates must have shape (M, E), got {tuple(e_estimates.shape)}."
+        )
+    n_eval = int(e_estimates.shape[0])
+    horizon = int(horizon)
+    if horizon <= 0:
+        raise ValueError(f"horizon must be positive, got {horizon}.")
+    source = torch.as_tensor(np.asarray(source_state, dtype=np.float32), device=device)
+    target = torch.as_tensor(np.asarray(target_state, dtype=np.float32), device=device)
+    state_dim = int(source.shape[-1])
+    est_params = pad_embedding_to_params(
+        e_estimates,
+        full_params=np.asarray(estimator_full_params, dtype=np.float32),
+        min_embedding_dim=int(estimator_min_embedding_dim),
+    )
+    true_params = pad_embedding_to_params(
+        torch.as_tensor(e_true, dtype=torch.float32, device=device).reshape(1, -1),
+        full_params=np.asarray(true_full_params, dtype=np.float32),
+        min_embedding_dim=int(true_min_embedding_dim),
+    ).expand(n_eval, -1)
+
+    def _rollout(
+        inputs: torch.Tensor, *, dynamics_type: str, dyn_params: torch.Tensor, steps: int
+    ) -> torch.Tensor:
+        z = source.reshape(1, state_dim).expand(n_eval, state_dim)
+        for step in range(int(steps)):
+            drift = residual_torch(
+                dynamics_type, z, dyn_params, dynamics_alpha=float(dynamics_alpha)
+            )
+            u = inputs[:, step] if step < inputs.shape[1] else torch.zeros_like(z)
+            z = z + float(dt) * (drift + u)
+        return z
+
+    v = torch.zeros((n_eval, horizon, state_dim), dtype=torch.float32, device=device)
+    v.requires_grad_(True)
+    optimizer = torch.optim.Adam([v], lr=float(learning_rate))
+    with torch.enable_grad():
+        for _ in range(int(iterations)):
+            optimizer.zero_grad()
+            u = float(action_max) * torch.tanh(v)
+            z_end = _rollout(
+                u,
+                dynamics_type=estimator_dynamics_type,
+                dyn_params=est_params,
+                steps=2 * horizon,
+            )
+            energy = float(dt) * torch.sum(u * u, dim=(1, 2))
+            loss = torch.sum(
+                energy + float(terminal_weight) * torch.sum((z_end - target) ** 2, dim=-1)
+            )
+            loss.backward()
+            optimizer.step()
+
+    with torch.no_grad():
+        u = float(action_max) * torch.tanh(v)
+        energy = float(dt) * torch.sum(u * u, dim=(1, 2))
+        z_settled = _rollout(
+            u, dynamics_type=true_dynamics_type, dyn_params=true_params, steps=2 * horizon
+        )
+        dist_target = torch.linalg.norm(z_settled - target, dim=-1)
+        dist_source = torch.linalg.norm(z_settled - source, dim=-1)
+        success = (dist_target < dist_source).to(torch.float32)
+    return {
+        "energy": energy.detach().cpu().numpy().astype(np.float64),
+        "success": success.detach().cpu().numpy().astype(np.float64),
+        "terminal_distance": dist_target.detach().cpu().numpy().astype(np.float64),
+    }

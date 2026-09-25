@@ -63,6 +63,10 @@ class EnvironmentPreset:
     trajectory_eval_state_high: tuple[float, ...] | None = None
     trajectory_eval_state_indices: tuple[int, ...] | None = None
     trajectory_eval_coordinate_balanced: bool = False
+    basin_switch_source: tuple[float, ...] | None = None
+    basin_switch_target: tuple[float, ...] | None = None
+    basin_switch_horizon: int = 300
+    basin_switch_eval_interval: int = 100
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
@@ -702,6 +706,18 @@ def load_catalog_bundle(
             ),
             trajectory_eval_coordinate_balanced=bool(
                 spec.get("trajectory_eval_coordinate_balanced", False)
+            ),
+            basin_switch_source=_as_state_vector(
+                spec.get("basin_switch_source"),
+                label=f"environments.{preset_id}.basin_switch_source",
+            ),
+            basin_switch_target=_as_state_vector(
+                spec.get("basin_switch_target"),
+                label=f"environments.{preset_id}.basin_switch_target",
+            ),
+            basin_switch_horizon=int(spec.get("basin_switch_horizon", 300)),
+            basin_switch_eval_interval=int(
+                spec.get("basin_switch_eval_interval", 100)
             ),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
