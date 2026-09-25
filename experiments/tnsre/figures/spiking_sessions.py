@@ -59,10 +59,11 @@ EXP_ID = "wong_wang_snn_sessions_m2"
 FINAL_SESSIONS = 20
 POOL_COLORS = ("#3E6FB0", "#C9562C")
 # Area shading shared by the spiking figures: identification input (gray), control input in the
-# tasks (green), and the decision with its post-decision hold (salmon). Evidence is NEUTRAL_LIGHT.
+# tasks (green), and the decision with its post-decision hold (purple). Evidence is NEUTRAL_LIGHT.
 PROBE_SHADE, PROBE_TEXT = "#E8E5E0", "#6E6861"
 CONTROL_SHADE = "#DCEBDF"
-DECISION_SHADE, DECISION_TEXT = "#F6CFC7", "#B0584C"
+DECISION_SHADE, DECISION_TEXT = "#DDD2EC", "#745197"
+DECISION_ALPHA = 0.45
 FIGURE_WIDTH = 516.0 / 72.27  # IEEE text width in inches
 REFERENCE_STYLE = {
     "reduced_fit": dict(color="#4A4A4A", linestyle=":", marker="s", label="model fitted to network data"),
@@ -117,37 +118,47 @@ def _draw_circuit(ax: Any) -> None:
     """Two selective pools with recurrent excitation, shared inhibition, inputs, and recordings."""
     from matplotlib.patches import Circle, FancyArrowPatch
 
-    ax.set_xlim(0, 10)
-    ax.set_ylim(0, 10)
-    ax.set_aspect("equal")
+    ax.set_xlim(0, 12)
+    ax.set_ylim(0.95, 6.25)
+    ax.set_aspect("equal", anchor="N")
     ax.axis("off")
     ax.set_xticks([])
     ax.set_yticks([])
-    pools = {1: (2.9, 6.2), 2: (7.1, 6.2)}
-    radius = 1.5
+    # A shallow triangle uses the column width; input and recording leads enter
+    # from the sides, keeping the circuit compact without scaling its text.
+    pools = {1: (3.1, 4.3), 2: (8.9, 4.3)}
+    radius = 1.1
+    pool_patches = {}
     for i, (x, y) in pools.items():
-        ax.add_patch(Circle((x, y), radius, facecolor=POOL_COLORS[i - 1], alpha=0.18, edgecolor=POOL_COLORS[i - 1],
-                            lw=1.0))
+        pool = Circle((x, y), radius, facecolor=POOL_COLORS[i - 1], alpha=0.18,
+                      edgecolor=POOL_COLORS[i - 1], lw=1.0)
+        ax.add_patch(pool)
+        pool_patches[i] = pool
         ax.text(x, y, f"pool {i}", ha="center", va="center", fontsize=_ASSET_TICK_SIZE, color=STROKE_COLOR)
         side = -1 if i == 1 else 1
-        loop = FancyArrowPatch((x + side * 1.3, y + 0.8), (x + side * 1.3, y - 0.8),
-                               connectionstyle=f"arc3,rad={-1.4 * side}", arrowstyle="-|>", mutation_scale=6,
+        loop = FancyArrowPatch((x - 0.7, y + 0.85), (x + 0.7, y + 0.85),
+                               connectionstyle="arc3,rad=-0.9", arrowstyle="-|>", mutation_scale=6,
                                lw=0.8, color=POOL_COLORS[i - 1])
         ax.add_patch(loop)
-        ax.annotate("", xy=(x, y + radius + 0.05), xytext=(x, y + 3.0),
+        ax.annotate("", xy=(x + side * 1.0, y + 0.55), xytext=(x + side * 2.2, y + 1.3),
                     arrowprops=dict(arrowstyle="-|>", lw=1.0, color=STROKE_COLOR, mutation_scale=7))
-        ax.text(x, y + 3.05, f"$u_{i}$", ha="center", va="bottom", fontsize=_ASSET_LABEL_SIZE)
-        ax.plot([x + side * 1.1, x + side * 1.9], [y - 1.05, y - 2.3], color=STROKE_COLOR, lw=0.7)
-        ax.text(x + side * 1.95, y - 2.4, "40 rec.", ha="center", va="top", fontsize=_ASSET_TICK_SIZE,
+        ax.text(x + side * 2.5, y + 1.45, f"$u_{i}$", ha="center", va="center", fontsize=_ASSET_LABEL_SIZE)
+        ax.plot([x + side * 0.95, x + side * 1.9], [y - 0.65, y - 0.7], color=STROKE_COLOR, lw=0.7)
+        ax.text(x + side * 2.1, y - 1.3, "40 rec.", ha="center", va="center", fontsize=_ASSET_TICK_SIZE,
                 color=STROKE_COLOR)
-    ax.add_patch(Circle((5.0, 3.0), 0.9, facecolor=NEUTRAL_LIGHT, alpha=0.5, edgecolor=STROKE_COLOR, lw=0.8))
-    ax.text(5.0, 3.0, "I", ha="center", va="center", fontsize=_ASSET_TICK_SIZE, color=STROKE_COLOR)
-    for x in (2.9, 7.1):
-        ax.annotate("", xy=(5.0 + (x - 5.0) * 0.3, 3.85), xytext=(x + (5.0 - x) * 0.3, 4.95),
-                    arrowprops=dict(arrowstyle="-|>", lw=0.7, color=STROKE_COLOR, mutation_scale=6))
-        ax.annotate("", xy=(x - (x - 5.0) * 0.12, 4.75), xytext=(5.0 + (x - 5.0) * 0.5, 3.55),
-                    arrowprops=dict(arrowstyle="-[", lw=0.7, color=STROKE_COLOR, mutation_scale=3))
-    ax.text(5.0, 0.4, "Wang (2002): 240 E/pool, 400 I", ha="center", va="bottom", fontsize=_ASSET_TICK_SIZE,
+    inhibitory_center = (6.0, 3.1)
+    inhibitory = Circle(inhibitory_center, 0.7, facecolor=NEUTRAL_LIGHT, alpha=0.5,
+                        edgecolor=STROKE_COLOR, lw=0.8)
+    ax.add_patch(inhibitory)
+    ax.text(*inhibitory_center, "I", ha="center", va="center", fontsize=_ASSET_TICK_SIZE, color=STROKE_COLOR)
+    for i, center in pools.items():
+        ax.add_patch(FancyArrowPatch(center, inhibitory_center, patchA=pool_patches[i], patchB=inhibitory,
+                                    connectionstyle="arc3,rad=0.16", arrowstyle="-|>", mutation_scale=6,
+                                    shrinkA=1.5, shrinkB=1.5, lw=0.7, color=STROKE_COLOR))
+        ax.add_patch(FancyArrowPatch(inhibitory_center, center, patchA=inhibitory, patchB=pool_patches[i],
+                                    connectionstyle="arc3,rad=0.16", arrowstyle="-[", mutation_scale=3,
+                                    shrinkA=1.5, shrinkB=1.5, lw=0.7, color=STROKE_COLOR))
+    ax.text(6.0, 1.25, "Wang (2002): 240 E/pool, 400 I", ha="center", va="bottom", fontsize=_ASSET_TICK_SIZE,
             color=STROKE_COLOR)
 
 
@@ -165,7 +176,7 @@ def _draw_session_protocol(ax: Any) -> None:
     second = -1.3 * np.clip((t - t_reset - 0.15) / 0.8, 0.0, None) ** 1.8
     lead = np.where(t < t_reset, np.minimum(first, 2.6), second)
     ax.axvspan(0.0, t_dec, ymin=0.06, ymax=0.8, color=PROBE_SHADE, lw=0)
-    ax.axvspan(t_dec, t_reset, ymin=0.06, ymax=0.8, color=DECISION_SHADE, lw=0)
+    ax.axvspan(t_dec, t_reset, ymin=0.06, ymax=0.8, color=DECISION_SHADE, alpha=DECISION_ALPHA, lw=0)
     ax.plot(t, lead, color=STROKE_COLOR, lw=1.0)
     ax.axhline(2.0, color=STROKE_COLOR, lw=0.5, ls=":")
     ax.axhline(-2.0, color=STROKE_COLOR, lw=0.5, ls=":")
@@ -176,12 +187,13 @@ def _draw_session_protocol(ax: Any) -> None:
     ax.text(t_reset + 0.05, -2.75, "200 ms", ha="left", va="center", fontsize=_ASSET_TICK_SIZE,
             color=DECISION_TEXT)
     ax.text(0.06, -1.0, "input", ha="left", va="center", fontsize=_ASSET_TICK_SIZE, color=PROBE_TEXT)
-    # Arrow markers just above the axes mark the decision and the reset.
-    for t_mark, label, ha, dx in ((t_dec, "decision", "right", -0.05), (t_reset, "reset", "left", 0.05)):
-        ax.plot([t_mark], [1.04], marker="v", ms=3.5, color=STROKE_COLOR, transform=ax.get_xaxis_transform(),
-                clip_on=False)
-        ax.text(t_mark + dx, 1.045, label, ha=ha, va="center", fontsize=_ASSET_TICK_SIZE,
-                transform=ax.get_xaxis_transform())
+    # Separate the labels while keeping the arrow tips at the exact event times.
+    for t_mark, label, dx in ((t_dec, "decision", -0.30), (t_reset, "reset", 0.30)):
+        ax.annotate(label, xy=(t_mark, 1.01), xytext=(t_mark + dx, 1.23),
+                    xycoords=ax.get_xaxis_transform(), textcoords=ax.get_xaxis_transform(),
+                    ha="center", va="bottom", fontsize=_ASSET_TICK_SIZE, annotation_clip=False,
+                    arrowprops=dict(arrowstyle="-|>", lw=0.6, color=STROKE_COLOR,
+                                    mutation_scale=6, shrinkA=3.0, shrinkB=1.0))
     ax.set_xlim(0.0, 2.5)
     ax.set_ylim(-3.8, 4.4)
     ax.set_xticks([0, 1, 2])
@@ -189,7 +201,7 @@ def _draw_session_protocol(ax: Any) -> None:
     ax.set_yticks([-2, 0, 2])
     ax.set_ylabel(r"lead $z_1-z_2$", fontsize=_ASSET_LABEL_SIZE)
     ax.set_xlabel("Time")
-    ax.set_title("Session", fontsize=_ASSET_LABEL_SIZE, pad=10.0)
+    ax.set_title("Session", fontsize=_ASSET_LABEL_SIZE, pad=22.0)
     style_experiment_axis(ax)
 
 
@@ -261,18 +273,25 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     fig = plt.figure(figsize=(FIGURE_WIDTH, 2.7))
     # All columns share one top and one bottom line; the legend runs above them.
     top, bottom = 0.8, 0.15
-    left = fig.add_gridspec(2, 1, height_ratios=[1.6, 1.0], left=0.065, right=0.27, top=top, bottom=bottom,
-                            hspace=0.42)
+    left = fig.add_gridspec(2, 1, height_ratios=[1.1, 1.0], left=0.065, right=0.27, top=top, bottom=bottom,
+                            hspace=0.29)
     row = fig.add_gridspec(1, 2, width_ratios=[2.5, 1.05], left=0.335, right=0.99, top=top, bottom=bottom,
                            wspace=0.3)
 
     ax = fig.add_subplot(left[0])
     _draw_circuit(ax)
     ax_b = fig.add_subplot(left[1])
+    # Reserve space below A's footer for B's title, event labels, and arrows.
+    pos_b = ax_b.get_position()
+    ax_b.set_position([pos_b.x0, pos_b.y0, pos_b.width, 0.49 / fig.get_size_inches()[1]])
     _draw_session_protocol(ax_b)
-    _panel_label(ax_b, "B", dx=-22)
-    fig.text(ax_b.get_position().x0 - 22.0 / 72.0 / FIGURE_WIDTH, ax.get_position().y1, "A", ha="left",
-             va="top", fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
+    fig.text(pos_b.x0 - 22.0 / 72.0 / FIGURE_WIDTH,
+             ax_b.get_position().y1 + 22.0 / 72.0 / fig.get_size_inches()[1],
+             "B", ha="left", va="bottom", fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
+    # Use the same top baseline as C and D, even though the equal-aspect circuit
+    # occupies only part of its grid cell horizontally.
+    fig.text(ax_b.get_position().x0 - 22.0 / 72.0 / FIGURE_WIDTH, top + 3.0 / 72.0 / 2.7,
+             "A", ha="left", va="bottom", fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
 
     # (C) one PALDI run: raster, latent, input in the first and the last session.
     # Column widths follow session length, so all columns share one time scale.
@@ -280,13 +299,17 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     sub = row[0].subgridspec(3, len(bounds), height_ratios=[0.8, 1.25, 0.95], hspace=0.12, wspace=0.1,
                              width_ratios=[b - a for a, b in bounds])
     n_obs = ex["counts"].shape[1]
-    c_axes = []
+    shared_y = []
     for col, (k, (a, b)) in enumerate(zip(sessions_shown, bounds)):
         t_ms = np.arange(b - a) * 5.0
         ax_r = fig.add_subplot(sub[0, col])
         ax_z = fig.add_subplot(sub[1, col], sharex=ax_r)
         ax_u = fig.add_subplot(sub[2, col], sharex=ax_r)
-        c_axes.append(ax_u)
+        if shared_y:
+            for ax, first in zip((ax_r, ax_z, ax_u), shared_y):
+                ax.sharey(first)
+        else:
+            shared_y = [ax_r, ax_z, ax_u]
         counts = ex["counts"][a:b]
         for j in range(n_obs):
             spikes = np.flatnonzero(counts[:, j] > 0)
@@ -298,7 +321,7 @@ def generate_identification(experiment_dir: Path, output: Path, *,
                        color=STROKE_COLOR)
         ax_r.set_ylim(-1, n_obs)
         ax_r.set_yticks([20, 60])
-        ax_r.set_yticklabels(["pool 1", "pool 2"])
+        ax_r.set_yticklabels(["1", "2"])
         for i in range(2):
             ax_z.plot(t_ms, ex["z"][a:b, i], color=POOL_COLORS[i], lw=0.8)
             ax_z.plot(t_ms, ex["m"][a:b, i], color=POOL_COLORS[i], lw=0.55, ls="--", alpha=0.8)
@@ -311,11 +334,13 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         if decided.size:
             for ax in (ax_r, ax_z, ax_u):
                 ax.axvspan(0.0, decided[0] * 5.0, color=PROBE_SHADE, lw=0, zorder=0)
-                ax.axvspan(decided[0] * 5.0, (b - a) * 5.0, color=DECISION_SHADE, lw=0, zorder=0)
+                ax.axvspan(decided[0] * 5.0, (b - a) * 5.0, color=DECISION_SHADE,
+                           alpha=DECISION_ALPHA, lw=0, zorder=0)
                 ax.axvline(decided[0] * 5.0, color=STROKE_COLOR, lw=0.6, ls="--")
         # Ticks every 500 ms, none at the right edge where the next column starts.
         ax_u.set_xlim(0.0, (b - a) * 5.0)
         ax_u.set_xticks(np.arange(0.0, (b - a) * 5.0 - 150.0, 500.0))
+        ax_u.set_xlabel("Session time (ms)")
         for ax in (ax_r, ax_z, ax_u):
             style_experiment_axis(ax)
             if col > 0:
@@ -323,6 +348,7 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         plt.setp(ax_r.get_xticklabels(), visible=False)
         plt.setp(ax_z.get_xticklabels(), visible=False)
         if col == 0:
+            ax_r.set_ylabel("Pool", fontsize=_ASSET_LABEL_SIZE)
             ax_z.set_ylabel("latent", fontsize=_ASSET_LABEL_SIZE)
             ax_u.set_ylabel("input", fontsize=_ASSET_LABEL_SIZE)
             _panel_label(ax_r, "C", dx=-34)
@@ -330,11 +356,6 @@ def generate_identification(experiment_dir: Path, output: Path, *,
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.55, ls="--", label="filtered")
             ax_z.legend(loc="upper left", fontsize=_ASSET_TICK_SIZE, frameon=False, ncol=2,
                         handlelength=1.4, borderaxespad=0.1)
-    # One x label centred under all columns of (C); the label's x is in the first column's axes fraction.
-    pos0, pos1 = c_axes[0].get_position(), c_axes[-1].get_position()
-    c_axes[0].set_xlabel("Time from session start (ms)")
-    c_axes[0].xaxis.label.set_x(((pos0.x0 + pos1.x1) / 2 - pos0.x0) / pos0.width)
-
     # (D) held-out R2 after each identification session.
     ax = fig.add_subplot(row[1])
     by = _r2_by_session(r2_rows)
