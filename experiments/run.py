@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 from datetime import datetime, timezone
 import inspect
 import json
@@ -971,7 +972,22 @@ def _run_single_parameter_identification(
     )
     loading_seed = DEFAULT_LOG_LINEAR_LOADING_SEED
     loading_snr_seed = DEFAULT_LOG_LINEAR_SNR_SEED
-    if observation_model == "linear":
+    environment_kind = str(getattr(env_preset, "environment_kind", "vectorfield"))
+    spiking_diagnostics: dict[str, float] = {}
+    if environment_kind == "spiking_decision":
+        # Wang (2002) spiking network as the environment; spikes come from the
+        # network and the log-linear readout is calibrated, not designed.
+        from actdyn.environment.spiking_decision import build_spiking_environment
+
+        if observation_model != "log_linear":
+            raise ValueError("spiking_decision environments require observation_model='log_linear'.")
+        true_vec_env, obs_model, spiking_diagnostics = build_spiking_environment(
+            env_preset, seed=int(seed), action_max=action_max, device=device
+        )
+        # Calibrated readout, recorded in the run metadata like a designed loading.
+        c = obs_model.network[0].weight.data
+        bias = obs_model.network[0].bias.data
+    elif observation_model == "linear":
         if str(env_preset.observation_noise_type).lower() != "gaussian":
             raise ValueError(
                 "Linear observations require observation_noise_type='gaussian'."
@@ -1041,27 +1057,28 @@ def _run_single_parameter_identification(
             "expected 'log_linear' or 'linear'."
         )
 
-    true_vec_env = actdyn.VectorFieldEnv(
-        env_preset.resolved_dynamics_type(),
-        d_state=dz,
-        d_action=du,
-        x_range=5,
-        dyn_params=None,
-        dt=dt,
-        alpha=alpha,
-        Q=noise_scale,
-        action_bounds=[action_model.action_space.low, action_model.action_space.high],
-        state_bounds=[-5.0, 5.0],
-        initial_state=init_state.tolist(),
-        device=device,
-        **_boundary_env_kwargs(env_preset),
-    )
-    true_vec_env.set_params(
-        torch.as_tensor(
-            env_preset.params_from_embedding(e_true.reshape(-1)),
+    if environment_kind != "spiking_decision":
+        true_vec_env = actdyn.VectorFieldEnv(
+            env_preset.resolved_dynamics_type(),
+            d_state=dz,
+            d_action=du,
+            x_range=5,
+            dyn_params=None,
+            dt=dt,
+            alpha=alpha,
+            Q=noise_scale,
+            action_bounds=[action_model.action_space.low, action_model.action_space.high],
+            state_bounds=[-5.0, 5.0],
+            initial_state=init_state.tolist(),
             device=device,
-        ),
-    )
+            **_boundary_env_kwargs(env_preset),
+        )
+        true_vec_env.set_params(
+            torch.as_tensor(
+                env_preset.params_from_embedding(e_true.reshape(-1)),
+                device=device,
+            ),
+        )
     env = actdyn.environment.EnvWrapper(
         true_vec_env, obs_model, action_model, dt=dt, device=device
     )
@@ -2124,6 +2141,12 @@ def _run_single_parameter_identification(
                 getattr(env_preset, "information_boundary_temperature", 0.15)
             ),
             "initial_state_true": [float(x) for x in init_state.tolist()],
+            "environment_kind": environment_kind,
+            "spiking_diagnostics": spiking_diagnostics,
+            "session_rule": (
+                None if session_rule is None else dataclasses.asdict(session_rule)
+            ),
+            "session_log": list(getattr(true_vec_env, "session_log", []) or []),
             "embedding_true": [float(x) for x in e_true_flat.tolist()],
             "embedding_estimate": [
                 float(x)
@@ -2658,6 +2681,7 @@ def _build_session_experiment_entry(
                 getattr(env_preset, "information_boundary_visibility_enabled", False)
             ),
             "true_embedding": env_summary["true_embedding"],
+            "environment_kind": str(getattr(env_preset, "environment_kind", "vectorfield")),
         },
         "policies": policies,
         "seeds": [int(seed) for seed in seeds],

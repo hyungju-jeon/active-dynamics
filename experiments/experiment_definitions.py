@@ -67,6 +67,25 @@ class EnvironmentPreset:
     basin_switch_target: tuple[float, ...] | None = None
     basin_switch_horizon: int = 300
     basin_switch_eval_interval: int = 100
+    # Spiking-network environment (Wang 2002) instead of the vector-field simulator.
+    environment_kind: str = "vectorfield"
+    spiking_n_e: int = 1600
+    spiking_n_i: int = 400
+    spiking_f_sel: float = 0.15
+    spiking_w_plus: float = 1.7
+    spiking_sim_dt_ms: float = 0.1
+    spiking_stim_gain_pa: float = 20.0
+    spiking_observed_per_pool: int = 40
+    spiking_background_rate_hz: float = 2400.0
+    spiking_calibration_steps: int = 800
+    spiking_calibration_hold_steps: int = 50
+    spiking_codegen_target: str = "cython"
+    # Decision sessions (actdyn.environment.session.SessionRule); None = one continuous trial.
+    spiking_sessions: int | None = None
+    spiking_decision_gap: float = 2.0
+    spiking_post_decision_bins: int = 40
+    spiking_max_session_bins: int = 400
+    spiking_reset_variance: float = 0.01
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
@@ -719,6 +738,23 @@ def load_catalog_bundle(
             basin_switch_eval_interval=int(
                 spec.get("basin_switch_eval_interval", 100)
             ),
+            environment_kind=str(spec.get("environment_kind", "vectorfield")),
+            spiking_n_e=int(spec.get("spiking_n_e", 1600)),
+            spiking_n_i=int(spec.get("spiking_n_i", 400)),
+            spiking_f_sel=float(spec.get("spiking_f_sel", 0.15)),
+            spiking_w_plus=float(spec.get("spiking_w_plus", 1.7)),
+            spiking_sim_dt_ms=float(spec.get("spiking_sim_dt_ms", 0.1)),
+            spiking_stim_gain_pa=float(spec.get("spiking_stim_gain_pa", 20.0)),
+            spiking_observed_per_pool=int(spec.get("spiking_observed_per_pool", 40)),
+            spiking_background_rate_hz=float(spec.get("spiking_background_rate_hz", 2400.0)),
+            spiking_calibration_steps=int(spec.get("spiking_calibration_steps", 800)),
+            spiking_calibration_hold_steps=int(spec.get("spiking_calibration_hold_steps", 50)),
+            spiking_codegen_target=str(spec.get("spiking_codegen_target", "cython")),
+            spiking_sessions=(None if spec.get("spiking_sessions") is None else int(spec["spiking_sessions"])),
+            spiking_decision_gap=float(spec.get("spiking_decision_gap", 2.0)),
+            spiking_post_decision_bins=int(spec.get("spiking_post_decision_bins", 40)),
+            spiking_max_session_bins=int(spec.get("spiking_max_session_bins", 400)),
+            spiking_reset_variance=float(spec.get("spiking_reset_variance", 0.01)),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
             action_dim=int(spec.get("action_dim", 2)),
