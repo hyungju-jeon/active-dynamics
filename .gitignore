@@ -93,6 +93,7 @@ tests/*
 !tests/test_eig_1d_example.py
 !tests/test_flex_safe_policy.py
 !tests/test_planning_rollout_modes.py
+!tests/test_wilson_exploration.py
 
 # Documentation
 docs/_build/
