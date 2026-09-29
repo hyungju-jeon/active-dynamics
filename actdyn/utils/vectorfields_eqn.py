@@ -29,9 +29,16 @@ class VectorField:
         self.alpha = alpha
         self.xy = None
 
+    # True when the input acts inside the drift, dz/dt = f(z, u); otherwise dz/dt = f(z) + u.
+    input_dependent = False
+
     @torch.no_grad()
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError("compute method must be implemented in subclasses.")
+
+    def compute_with_input(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Drift with the input, shape (..., d): ``f(x) + u`` unless a subclass acts on u inside f."""
+        return self.compute(x) + u
 
     def set_params(self, *dyn_params: torch.Tensor | list[float] | Dict[str, float]):
         """Set model parameters from a tensor, list, dict, or expanded arguments."""
@@ -772,6 +779,34 @@ class ThreeGateDiagnostic(VectorField):
         )
 
 
+
+class ThreeGateTradeoff(ThreeGateDiagnostic):
+    r"""Three-gate diagnostic retuned for measurement-corrected learning.
+
+    Same state ``z=(r,s_1,s_2,s_3,h)``, parameters, gates, action, and Poisson
+    observation model as :class:`ThreeGateDiagnostic`; only three loadings change:
+
+    .. math::
+
+        \dot s = -4s + 20g_A(r)(\theta_1+15h,0,0)^\top
+          + 0.6\,g_B(r)\theta + g_M(r)\operatorname{diag}(5,5,0.4)\theta.
+
+    Gate ``B`` keeps the largest weakest parameter direction (0.6 > 0.4), so
+    E-optimality still dwells there, but its total information is 0.36 of the
+    original and learning there is slower. Gate ``M`` keeps two strong
+    directions and a weak but nonzero ``theta_3`` direction. The gate-A nuisance
+    ratio 15 (was 5) makes the confounded decoy less attractive to the
+    attenuated p-EIG under prediction-only planning while keeping it a trap for
+    unattenuated and variance objectives. Selected on development seeds
+    3000-3009 and validated on seeds 4000-4019 (results/tbme/three_gate_redesign_variantB_20260911).
+
+    Shapes and dtypes follow the parent class.
+    """
+
+    AMBIGUITY_NUISANCE_RATIO = 15.0
+    BALANCED_SENSITIVITY = (0.6, 0.6, 0.6)
+    MAIN_SENSITIVITY = (5.0, 5.0, 0.4)
+
 class MultiStable(VectorField):
     """Gaussian-well multistable dynamics with local contraction and swirl.
 
@@ -1065,3 +1100,180 @@ class SnowMan(VectorField):
 if __name__ == "__main__":
     # Example usage with smaller grid size
     vf = VanDerPol(x_range=2.5, n_grid=50)
+
+
+class WilsonCowan(VectorField):
+    """Wilson-Cowan excitatory-inhibitory population in centered latent coordinates.
+
+    Population rates r = (E, I) in [0, 1] are mapped to the latent state
+    z = s (r - 1/2), so the dynamics share the scale of the other benchmark
+    systems. The synaptic weights act on the centered rates, which keeps the
+    gain in its responsive range near the center of state space for any weight
+    estimate; saturation then depends on the state, not on the estimate.
+
+    Equation (rates):
+        dE/dt = (-E + S(w_EE (E - 1/2) - w_EI (I - 1/2) + h_E)) / tau_E
+        dI/dt = (-I + S(w_IE (E - 1/2) - w_II (I - 1/2) + h_I)) / tau_I
+        S(u)  = 1 / (1 + exp(-beta u))
+    Latent drift:
+        dz/dt = s (dE/dt, dI/dt)
+
+    Learned parameters: (w_EE, w_EI, w_IE, w_II). The gain slope beta, the
+    net drives h_E and h_I, the time constants, and the state scale s are fixed
+    constants of the benchmark. The default constants give a bistable regime
+    with a low-activity "down" state and a high-activity "up" state.
+    """
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.state_scale = float(kwargs.get("state_scale", 4.0))
+        self.beta = float(kwargs.get("beta", 6.0))
+        self.h_e = float(kwargs.get("h_e", -0.05))
+        self.h_i = float(kwargs.get("h_i", -0.35))
+        self.tau_e = float(kwargs.get("tau_e", 1.0))
+        self.tau_i = float(kwargs.get("tau_i", 1.0))
+        if dyn_param is None:
+            self.set_params([2.5, 1.0, 1.0, 0.3])
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, w_ee=2.5, w_ei=1.0, w_ie=1.0, w_ii=0.3):
+        self.w_ee = w_ee
+        self.w_ei = w_ei
+        self.w_ie = w_ie
+        self.w_ii = w_ii
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute the latent drift for state shape (..., 2)."""
+
+        w_ee = self._broadcast_param(self.w_ee, x)
+        w_ei = self._broadcast_param(self.w_ei, x)
+        w_ie = self._broadcast_param(self.w_ie, x)
+        w_ii = self._broadcast_param(self.w_ii, x)
+        # Centered rates E - 1/2 and I - 1/2 in latent units.
+        c_e = x[..., 0] / self.state_scale
+        c_i = x[..., 1] / self.state_scale
+        gain_e = torch.sigmoid(self.beta * (w_ee * c_e - w_ei * c_i + self.h_e))
+        gain_i = torch.sigmoid(self.beta * (w_ie * c_e - w_ii * c_i + self.h_i))
+        d_rate_e = (-(c_e + 0.5) + gain_e) / self.tau_e
+        d_rate_i = (-(c_i + 0.5) + gain_i) / self.tau_i
+        U = self.alpha * self.state_scale * d_rate_e
+        V = self.alpha * self.state_scale * d_rate_i
+        return torch.stack([U, V], dim=-1)
+
+
+class WongWang(VectorField):
+    """Two-pool mutual-inhibition decision circuit (reduced Wong-Wang form).
+
+    Synaptic gating variables r = (s_1, s_2) in [0, 1] of two choice-selective
+    pools are mapped to the latent state z = s (r - 1/2). As in ``WilsonCowan``
+    the weights act on the centered gating variables.
+
+    Equation (gating variables):
+        ds_1/dt = (-s_1 + (1 - s_1) gamma S(w_+ (s_1 - 1/2) - w_- (s_2 - 1/2) + h)) / tau
+        ds_2/dt = (-s_2 + (1 - s_2) gamma S(w_+ (s_2 - 1/2) - w_- (s_1 - 1/2) + h)) / tau
+        S(u)    = 1 / (1 + exp(-beta u))
+    Latent drift:
+        dz/dt = s (ds_1/dt, ds_2/dt)
+
+    Learned parameters: (w_+, w_-), the recurrent self-excitation and the
+    cross inhibition. The gain slope beta, the net background drive h, the
+    gain scale gamma, the time constant tau, and the state scale s are fixed.
+    The default constants give two choice attractors separated by a saddle on
+    the symmetric diagonal, with no stable undecided state.
+    """
+
+    def __init__(
+        self,
+        dyn_param: Optional[list[float]] | torch.Tensor = None,
+        device: str = "cpu",
+        **kwargs,
+    ):
+        super().__init__(device=device, **kwargs)
+        self.state_scale = float(kwargs.get("state_scale", 4.0))
+        self.beta = float(kwargs.get("beta", 6.0))
+        self.h = float(kwargs.get("h", 0.0))
+        self.gamma = float(kwargs.get("gamma", 1.0))
+        self.tau = float(kwargs.get("tau", 1.0))
+        if dyn_param is None:
+            self.set_params([1.2, 0.8])
+        else:
+            self.set_params(dyn_param)
+
+    def _set_params(self, w_plus=1.2, w_minus=0.8):
+        self.w_plus = w_plus
+        self.w_minus = w_minus
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute the latent drift for state shape (..., 2)."""
+
+        w_plus = self._broadcast_param(self.w_plus, x)
+        w_minus = self._broadcast_param(self.w_minus, x)
+        # Centered gating variables s_i - 1/2 in latent units.
+        c1 = x[..., 0] / self.state_scale
+        c2 = x[..., 1] / self.state_scale
+        gain_1 = torch.sigmoid(self.beta * (w_plus * c1 - w_minus * c2 + self.h))
+        gain_2 = torch.sigmoid(self.beta * (w_plus * c2 - w_minus * c1 + self.h))
+        d_s1 = (-(c1 + 0.5) + (0.5 - c1) * self.gamma * gain_1) / self.tau
+        d_s2 = (-(c2 + 0.5) + (0.5 - c2) * self.gamma * gain_2) / self.tau
+        U = self.alpha * self.state_scale * d_s1
+        V = self.alpha * self.state_scale * d_s2
+        return torch.stack([U, V], dim=-1)
+
+
+class WongWangInsideGain(WongWang):
+    """Two-pool decision circuit with the input inside the transfer function.
+
+    Equation (gating variables, c_i = s_i - 1/2, latent z = 4 c):
+        ds_i/dt = (-s_i + (1 - s_i) gamma S(beta (w_+ c_i - w_- c_j + h + g u_i))) / tau
+        dz/dt   = 4 ds/dt
+    The input u (units of 20 pA per selective pool) changes the pool's synaptic
+    drive, so its effect saturates with the gain and depends on the state.
+
+    Learned parameters: (w_+, w_-, h_raw, gamma_raw, g_raw), with h = h_raw / beta,
+    gamma = softplus(gamma_raw) and g = softplus(g_raw). A Gaussian belief over the raw
+    values keeps gamma, g > 0; the scaling of h makes a unit change of h_raw a unit
+    change of the sigmoid argument, so a unit prior does not saturate the gain.
+    beta, tau and the state scale are fixed as in :class:`WongWang`. The defaults are
+    the reduced model fitted to Wang (2002) network data
+    (``results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json``).
+    """
+
+    input_dependent = True
+
+    def __init__(self, dyn_param=None, device: str = "cpu", **kwargs):
+        if dyn_param is None:
+            dyn_param = [1.444, 0.586, -1.278, 2.447, -1.599]
+        super().__init__(dyn_param=dyn_param, device=device, **kwargs)
+
+    def _set_params(self, w_plus=1.444, w_minus=0.586, h_raw=-1.278, gamma_raw=2.447, g_raw=-1.599):
+        self.w_plus = w_plus
+        self.w_minus = w_minus
+        self.h_raw = h_raw
+        self.gamma_raw = gamma_raw
+        self.g_raw = g_raw
+
+    def compute_with_input(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Latent drift for state and input of shape (..., 2)."""
+        w_plus = self._broadcast_param(self.w_plus, x)
+        w_minus = self._broadcast_param(self.w_minus, x)
+        h = self._broadcast_param(self.h_raw, x) / self.beta
+        gamma = torch.nn.functional.softplus(self._broadcast_param(self.gamma_raw, x))
+        g = torch.nn.functional.softplus(self._broadcast_param(self.g_raw, x))
+        u = torch.as_tensor(u, dtype=x.dtype, device=x.device).expand_as(x)
+        c1 = x[..., 0] / self.state_scale
+        c2 = x[..., 1] / self.state_scale
+        gain_1 = torch.sigmoid(self.beta * (w_plus * c1 - w_minus * c2 + h + g * u[..., 0]))
+        gain_2 = torch.sigmoid(self.beta * (w_plus * c2 - w_minus * c1 + h + g * u[..., 1]))
+        d_s1 = (-(c1 + 0.5) + (0.5 - c1) * gamma * gain_1) / self.tau
+        d_s2 = (-(c2 + 0.5) + (0.5 - c2) * gamma * gain_2) / self.tau
+        return torch.stack([self.alpha * self.state_scale * d_s1, self.alpha * self.state_scale * d_s2], dim=-1)
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        """Latent drift without input, shape (..., 2)."""
+        return self.compute_with_input(x, torch.zeros_like(x))

@@ -181,6 +181,33 @@ def _parameter_update_happened(model: Any, prev_block_steps: int) -> bool:
     )
 
 
+def _session_fields(env_info: Dict[str, Any]) -> Dict[str, Any]:
+    """Session index, end flag, and decision of an environment step (zeros without sessions)."""
+    return {
+        'session_index': int(env_info.get('session_index', 0)),
+        'session_end': bool(env_info.get('session_end', False)),
+        'session_decision': int(env_info.get('decision', 0)),
+    }
+
+
+def _model_input(action: torch.Tensor | None, env_info: Dict[str, Any]) -> torch.Tensor | None:
+    """Input the model sees for a step: the action plus any known evidence the environment added."""
+    if action is None or 'evidence' not in env_info:
+        return action
+    evidence = torch.as_tensor(env_info['evidence'], dtype=action.dtype, device=action.device)
+    return action + evidence.reshape(action.shape)
+
+
+def _apply_session_reset(model: Any, policy: Any, env_info: Dict[str, Any]) -> None:
+    """Move the state belief to the announced reset state and let the policy restart its plan."""
+    reset_state_belief = getattr(model, 'reset_session_state', None)
+    if callable(reset_state_belief):
+        reset_state_belief(env_info['session_reset_state'], float(env_info['session_reset_variance']))
+    on_session_reset = getattr(policy, 'on_session_reset', None)
+    if callable(on_session_reset):
+        on_session_reset(model.get_state())
+
+
 class Agent:
     """Agent class for active learning in dynamical systems."""
 
@@ -257,6 +284,8 @@ class Agent:
         reset_policy_state = getattr(self.policy, 'reset_policy_state', None)
         if callable(reset_policy_state):
             reset_policy_state(seed=seed)
+        if 'session_context' in info:
+            setattr(self.policy, 'session_context', info['session_context'])
 
         self._env_state = info['latent_state']
         self._model_state = model_info['latent_state']
@@ -303,6 +332,8 @@ class Agent:
         """Take a step in the environment."""
         obs, reward, terminated, truncated, env_info = self.env.step(action)
         done = terminated or truncated
+        policy_action = action
+        action = _model_input(action, env_info)  # the filter and learner see the total drive
 
         policy_owns_theta = bool(getattr(self.policy, 'owns_parameter_estimate', False))
         env_transition = {
@@ -398,7 +429,7 @@ class Agent:
         transition = {
             **env_transition,
             **model_transition,
-            'policy_action': action,
+            'policy_action': policy_action,
             'state_posterior_updated': state_posterior_updated,
             'parameter_posterior_updated': parameter_posterior_updated,
             'window_buffer_length': len(self._window_buffer),
@@ -471,6 +502,18 @@ class Agent:
             'model_update_version': int(self._model_update_version),
             'parameter_update_version': int(self._parameter_update_version),
         }
+
+        # Decision sessions: the reset is applied after the filter and the policy have
+        # used the session's last (pre-reset) transition, so no transition spans a reset.
+        transition.update(_session_fields(env_info))
+        if transition['session_end']:
+            if 'session_pre_reset_state' in env_info:
+                transition['next_env_state'] = torch.as_tensor(
+                    env_info['session_pre_reset_state'], dtype=torch.float32, device=self.device
+                ).reshape(env_info['latent_state'].shape)
+            _apply_session_reset(self.model, self.policy, env_info)
+        if 'session_context' in env_info:
+            setattr(self.policy, 'session_context', env_info['session_context'])
 
         self._observation = obs
         self._env_state = env_info['latent_state']
@@ -560,6 +603,7 @@ class AsyncAgent(Agent):
 
         obs, reward, terminated, truncated, env_info = self.env.step(action)
         done = terminated or truncated
+        action = _model_input(action, env_info)
 
         env_transition = {
             'obs': self._observation,
@@ -587,6 +631,18 @@ class AsyncAgent(Agent):
 
         transition = {**env_transition, **model_transition}
         self.update_policy(self.recent)
+        # Decision sessions: the reset is applied after the filter and the policy have
+        # used the session's last (pre-reset) transition, so no transition spans a reset.
+        transition.update(_session_fields(env_info))
+        if transition['session_end']:
+            if 'session_pre_reset_state' in env_info:
+                transition['next_env_state'] = torch.as_tensor(
+                    env_info['session_pre_reset_state'], dtype=torch.float32, device=self.device
+                ).reshape(env_info['latent_state'].shape)
+            _apply_session_reset(self.model, self.policy, env_info)
+        if 'session_context' in env_info:
+            setattr(self.policy, 'session_context', env_info['session_context'])
+
         self._observation = obs
         self._env_state = env_info['latent_state']
         self._model_state = self.model.get_state()

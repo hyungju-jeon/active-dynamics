@@ -52,6 +52,23 @@ TRAJECTORY_R2_TRACE_FIELDS = [
     "traj_eval_state_indices",
     "traj_eval_coordinate_balanced",
 ]
+BASIN_SWITCH_TRACE_FIELDS = [
+    "step",
+    "cpu_time_sec",
+    "basin_switch_energy",
+    "basin_switch_success",
+    "basin_switch_terminal_distance",
+    "basin_switch_energy_oracle",
+    "basin_switch_success_oracle",
+    "basin_switch_horizon",
+    "basin_switch_action_max",
+    "basin_switch_iterations",
+    "basin_switch_terminal_weight",
+]
+# Open-loop planner settings for the basin-switch score (see
+# actdyn.utils.validation.basin_switch_cost_many). Recorded in every trace row.
+BASIN_SWITCH_ITERATIONS = 200
+BASIN_SWITCH_TERMINAL_WEIGHT = 10.0
 
 
 def collect_track_records(
@@ -535,6 +552,229 @@ def aggregate_trajectory_r2_trace(
     return out_rows
 
 
+def basin_switch_enabled(env_preset: Any) -> bool:
+    """Return True when the preset defines a source/target attractor pair."""
+    return (
+        getattr(env_preset, "basin_switch_source", None) is not None
+        and getattr(env_preset, "basin_switch_target", None) is not None
+    )
+
+
+def _recompute_basin_switch_rows(
+    record: dict[str, Any],
+    *,
+    env_preset: Any,
+    compute_time_cache: dict[Path, dict[int, float]] | None = None,
+) -> list[dict[str, Any]]:
+    """Score the saved embedding trajectory of one run with the basin-switch task.
+
+    Every ``basin_switch_eval_interval`` steps the current embedding estimate
+    plans a bounded open-loop input that should move the true system from
+    ``basin_switch_source`` to ``basin_switch_target``. The true embedding is
+    scored alongside as the oracle.
+    """
+    if not basin_switch_enabled(env_preset):
+        return []
+    interval = int(env_preset.basin_switch_eval_interval)
+    if interval <= 0:
+        return []
+    emb_trace_path = _trace_path(
+        record,
+        metadata_key="embedding_estimate_trace_path",
+        fallback_name="embedding_estimate_trace.csv",
+    )
+    if emb_trace_path is None:
+        return []
+    embedding_rows = read_trace_csv(emb_trace_path)
+    if not embedding_rows:
+        return []
+    compute_time_by_step = _compute_time_by_step(record, compute_time_cache)
+
+    metadata = record["metadata"]
+    true_embedding = metadata.get("embedding_true")
+    final_embedding = metadata.get("embedding_estimate")
+    if not isinstance(true_embedding, list) or not isinstance(final_embedding, list):
+        return []
+    expected_dim = max(len(true_embedding), len(final_embedding))
+    if expected_dim <= 0:
+        return []
+
+    rows: list[tuple[int, float | None, np.ndarray]] = []
+    for row in embedding_rows:
+        step = safe_float(row.get("step"))
+        if step is None:
+            continue
+        step_i = int(step)
+        if step_i % interval != 0:
+            continue
+        embedding = _extract_embedding_vector(row)
+        if embedding is None or embedding.shape[0] < expected_dim:
+            return []
+        rows.append((step_i, _cpu_time_for_step(row, step_i, compute_time_by_step), embedding[:expected_dim]))
+    if not rows:
+        return []
+
+    import torch
+    from actdyn.utils.validation import basin_switch_cost_many
+
+    e_true = np.asarray(true_embedding[:expected_dim], dtype=np.float32)
+    # The oracle (true embedding) is scored as the last batch row.
+    e_all = np.concatenate([np.stack([row[2] for row in rows]), e_true[None, :]], axis=0)
+    horizon = int(env_preset.basin_switch_horizon)
+    action_max = float(env_preset.action_max)
+    scores = basin_switch_cost_many(
+        torch.as_tensor(e_all, dtype=torch.float32),
+        estimator_dynamics_type=str(
+            metadata.get("estimator_dynamics_type")
+            or env_preset.resolved_dynamics_type(estimator=True)
+        ),
+        estimator_full_params=np.asarray(
+            metadata.get("estimator_true_params_full")
+            or env_preset.resolved_true_params(estimator=True),
+            dtype=np.float32,
+        ),
+        estimator_min_embedding_dim=int(
+            metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
+        ),
+        e_true=torch.as_tensor(e_true),
+        true_dynamics_type=str(
+            metadata.get("dynamics_type") or env_preset.resolved_dynamics_type()
+        ),
+        true_full_params=np.asarray(
+            metadata.get("true_params_full") or env_preset.resolved_true_params(),
+            dtype=np.float32,
+        ),
+        true_min_embedding_dim=int(
+            metadata.get("min_embedding_dim") or env_preset.resolved_min_embedding_dim()
+        ),
+        source_state=env_preset.basin_switch_source,
+        target_state=env_preset.basin_switch_target,
+        dt=float(env_preset.dt),
+        dynamics_alpha=float(env_preset.dynamics_alpha),
+        horizon=horizon,
+        action_max=action_max,
+        terminal_weight=BASIN_SWITCH_TERMINAL_WEIGHT,
+        iterations=BASIN_SWITCH_ITERATIONS,
+        device="cpu",
+    )
+    energy_oracle = float(scores["energy"][-1])
+    success_oracle = float(scores["success"][-1])
+    out_rows: list[dict[str, Any]] = []
+    for idx, (step_i, cpu_sec, _) in enumerate(rows):
+        out_rows.append(
+            {
+                "step": step_i,
+                "cpu_time_sec": cpu_sec,
+                "basin_switch_energy": float(scores["energy"][idx]),
+                "basin_switch_success": float(scores["success"][idx]),
+                "basin_switch_terminal_distance": float(scores["terminal_distance"][idx]),
+                "basin_switch_energy_oracle": energy_oracle,
+                "basin_switch_success_oracle": success_oracle,
+                "basin_switch_horizon": horizon,
+                "basin_switch_action_max": action_max,
+                "basin_switch_iterations": BASIN_SWITCH_ITERATIONS,
+                "basin_switch_terminal_weight": BASIN_SWITCH_TERMINAL_WEIGHT,
+            }
+        )
+    return out_rows
+
+
+def recompute_basin_switch_traces(
+    records: list[dict[str, Any]], *, force: bool = False
+) -> int:
+    """Write ``basin_switch_trace.csv`` for runs whose preset enables the task.
+
+    Existing traces are kept unless ``force`` is set, because each recompute
+    runs the open-loop planner for every evaluation step.
+    """
+    count = 0
+    for record in records:
+        env_preset = get_environment_preset_from_metadata(record["metadata"])
+        if not basin_switch_enabled(env_preset):
+            continue
+        path = record["run_dir"] / "basin_switch_trace.csv"
+        if path.exists() and not force:
+            continue
+        rows = _recompute_basin_switch_rows(record, env_preset=env_preset)
+        if not rows:
+            continue
+        write_trace_csv(path, rows, BASIN_SWITCH_TRACE_FIELDS)
+        count += 1
+    return count
+
+
+def _aggregate_step_values(
+    records: list[dict[str, Any]],
+    *,
+    trace_rows_for_record: Callable[[dict[str, Any]], list[dict[str, Any]]],
+    value_col: str,
+    compute_time_cache: dict[Path, dict[int, float]] | None = None,
+) -> list[dict[str, Any]]:
+    """Average one trace column per policy and step across runs."""
+    out_rows: list[dict[str, Any]] = []
+    for policy_id in sorted({str(r["policy_id"]) for r in records}):
+        subgroup = [r for r in records if str(r["policy_id"]) == policy_id]
+        by_step: dict[int, dict[str, list[float]]] = {}
+        for record in subgroup:
+            compute_time_by_step = _compute_time_by_step(record, compute_time_cache)
+            for row in trace_rows_for_record(record):
+                step = safe_float(row.get("step"))
+                value = safe_float(row.get(value_col))
+                if step is None or value is None:
+                    continue
+                step_i = int(step)
+                cpu_sec = _cpu_time_for_step(row, step_i, compute_time_by_step)
+                bucket = by_step.setdefault(step_i, {"value": [], "cpu": []})
+                bucket["value"].append(value)
+                if cpu_sec is not None:
+                    bucket["cpu"].append(cpu_sec)
+        for step_i in sorted(by_step):
+            values = by_step[step_i]["value"]
+            cpu_vals = by_step[step_i]["cpu"]
+            values_array = np.asarray(values, dtype=np.float64)
+            out_rows.append(
+                {
+                    "policy_id": policy_id,
+                    "step": step_i,
+                    "value_mean": float(np.mean(values_array)),
+                    "value_sem": sample_sem(values),
+                    "value_median": float(np.median(values_array)),
+                    "value_q25": float(np.quantile(values_array, 0.25)),
+                    "value_q75": float(np.quantile(values_array, 0.75)),
+                    "cpu_time_sec_mean": float(np.mean(cpu_vals)) if cpu_vals else None,
+                    "n_points": len(values),
+                }
+            )
+    out_rows.sort(key=lambda row: (row["policy_id"], int(row["step"])))
+    return out_rows
+
+
+def aggregate_basin_switch_trace(
+    records: list[dict[str, Any]],
+    *,
+    compute_time_cache: dict[Path, dict[int, float]] | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Aggregate energy, success, and oracle energy from ``basin_switch_trace.csv``."""
+
+    def _rows(record: dict[str, Any]) -> list[dict[str, Any]]:
+        path = record["run_dir"] / "basin_switch_trace.csv"
+        return read_trace_csv(path) if path.exists() else []
+
+    return {
+        value_col: _aggregate_step_values(
+            records,
+            trace_rows_for_record=_rows,
+            value_col=value_col,
+            compute_time_cache=compute_time_cache,
+        )
+        for value_col in (
+            "basin_switch_energy",
+            "basin_switch_success",
+            "basin_switch_energy_oracle",
+        )
+    }
+
+
 def _extract_parameter_covariance_trace(row: dict[str, Any]) -> float | None:
     diag_values: list[float] = []
     for key, raw in row.items():
@@ -757,6 +997,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Deprecated: summaries recompute trajectory R2 from embedding traces by default.",
     )
+    parser.add_argument(
+        "--recompute-basin-switch",
+        action="store_true",
+        help="Re-run the basin-switch planner even when basin_switch_trace.csv exists.",
+    )
     return parser
 
 
@@ -855,6 +1100,22 @@ def main(argv: list[str] | None = None) -> int:
         "parameter_covariance_trace_mean",
     )
     _write_curve_csv(summary_dir / "I_z_t_over_steps.csv", info_rows, "I_z_t_mean")
+    if records and basin_switch_enabled(
+        get_environment_preset_from_metadata(records[0]["metadata"])
+    ):
+        refreshed_switch = recompute_basin_switch_traces(
+            records, force=bool(args.recompute_basin_switch)
+        )
+        print(f"Refreshed {refreshed_switch} basin-switch traces for {exp_spec.exp_id}")
+        switch_rows = aggregate_basin_switch_trace(
+            records, compute_time_cache=compute_time_cache
+        )
+        for value_col, curve_rows in switch_rows.items():
+            _write_curve_csv(
+                summary_dir / f"{value_col}_over_steps.csv",
+                curve_rows,
+                f"{value_col}_mean",
+            )
     _write_markdown(
         summary_dir / "metrics.md",
         exp_spec.exp_id,

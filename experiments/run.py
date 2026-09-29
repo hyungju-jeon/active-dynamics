@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 from datetime import datetime, timezone
 import inspect
 import json
@@ -16,6 +17,9 @@ from typing import Any
 
 import numpy as np
 import torch
+from actdyn.metrics.planning import PLANNING_MEASUREMENT_UPDATES
+from actdyn.models.model import LEARNING_SENSITIVITY_REVISION
+from actdyn.models.sensitivity import LEARNING_SENSITIVITY_UPDATES
 
 if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -148,7 +152,7 @@ class _EnvJacobianEmbedding:
         self.min_embedding_dim = int(min_embedding_dim)
         self.dynamics_alpha = float(dynamics_alpha)
 
-    def __call__(self, z: Any, e: Any):
+    def __call__(self, z: Any, e: Any, u: Any = None):
         return jacobian_embedding_torch(
             self.dynamics_type,
             z,
@@ -156,6 +160,7 @@ class _EnvJacobianEmbedding:
             full_params=self.full_params,
             min_embedding_dim=self.min_embedding_dim,
             dynamics_alpha=self.dynamics_alpha,
+            u=u,
         )
 
 
@@ -175,7 +180,7 @@ class _EnvJacobianState:
         self.min_embedding_dim = int(min_embedding_dim)
         self.dynamics_alpha = float(dynamics_alpha)
 
-    def __call__(self, z: Any, e: Any):
+    def __call__(self, z: Any, e: Any, u: Any = None):
         return jacobian_state_torch(
             self.dynamics_type,
             z,
@@ -185,6 +190,7 @@ class _EnvJacobianState:
                 min_embedding_dim=self.min_embedding_dim,
             ),
             dynamics_alpha=self.dynamics_alpha,
+            u=u,
         )
 
 
@@ -519,6 +525,7 @@ def _build_metric(
     ensemble_kind: str | None = None,
     eig_freeze_covariance: bool = False,
     eig_diagonal_covariance: bool = False,
+    planning_rollout: str = "prediction_only",
 ):
     from actdyn.metrics.objectives import (
         ambiguity_aware_parameter_eig,
@@ -543,6 +550,7 @@ def _build_metric(
             device=device,
             freeze_covariance=eig_freeze_covariance,
             diagonal_covariance=eig_diagonal_covariance,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "shrinkage_parameter_eig":
         return shrinkage_parameter_eig(
@@ -551,6 +559,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "ambiguity_aware_parameter_eig":
         return ambiguity_aware_parameter_eig(
@@ -563,6 +572,7 @@ def _build_metric(
                 1.0 if ambiguity_temperature is None else float(ambiguity_temperature)
             ),
             ensemble_kind=ensemble_kind,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "e_optimality":
         return build_e_optimality_metric(
@@ -571,6 +581,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "fully_observable_parameter_eig":
         return fully_observable_parameter_eig(
@@ -579,6 +590,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "state_information":
         return build_state_information_metric(
@@ -587,6 +599,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "dynamics":
         return build_dynamics_metric(
@@ -595,6 +608,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "dynamics_logdet":
         return build_dynamics_logdet_metric(
@@ -603,6 +617,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
         )
     if objective_kind == "observation_variance":
         return build_observation_variance_metric(
@@ -611,6 +626,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
             num_parameter_samples=int(observation_variance_samples),
             sample_seed=observation_variance_seed,
         )
@@ -621,6 +637,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
             num_parameter_samples=int(observation_variance_samples),
             sample_seed=observation_variance_seed,
             correction_df=3.0,
@@ -633,6 +650,7 @@ def _build_metric(
             Fz_net=Fz_net,
             gamma=gamma,
             device=device,
+            planning_rollout=planning_rollout,
             num_parameter_samples=int(observation_variance_samples),
             sample_seed=observation_variance_seed,
         )
@@ -886,6 +904,8 @@ def _run_single_parameter_identification(
     traj_eval_samples: int,
     observation_variance_samples: int,
     capture_planned_trajectory: bool = False,
+    planning_rollout: str = "prediction_only",
+    learning_sensitivity: str = "measurement_corrected",
 ) -> dict[str, Any]:
     import torch
     import torch.nn as nn
@@ -952,7 +972,22 @@ def _run_single_parameter_identification(
     )
     loading_seed = DEFAULT_LOG_LINEAR_LOADING_SEED
     loading_snr_seed = DEFAULT_LOG_LINEAR_SNR_SEED
-    if observation_model == "linear":
+    environment_kind = str(getattr(env_preset, "environment_kind", "vectorfield"))
+    spiking_diagnostics: dict[str, float] = {}
+    if environment_kind == "spiking_decision":
+        # Wang (2002) spiking network as the environment; spikes come from the
+        # network and the log-linear readout is calibrated, not designed.
+        from actdyn.environment.spiking_decision import build_spiking_environment
+
+        if observation_model != "log_linear":
+            raise ValueError("spiking_decision environments require observation_model='log_linear'.")
+        true_vec_env, obs_model, spiking_diagnostics = build_spiking_environment(
+            env_preset, seed=int(seed), action_max=action_max, device=device
+        )
+        # Calibrated readout, recorded in the run metadata like a designed loading.
+        c = obs_model.network[0].weight.data
+        bias = obs_model.network[0].bias.data
+    elif observation_model == "linear":
         if str(env_preset.observation_noise_type).lower() != "gaussian":
             raise ValueError(
                 "Linear observations require observation_noise_type='gaussian'."
@@ -1022,27 +1057,28 @@ def _run_single_parameter_identification(
             "expected 'log_linear' or 'linear'."
         )
 
-    true_vec_env = actdyn.VectorFieldEnv(
-        env_preset.resolved_dynamics_type(),
-        d_state=dz,
-        d_action=du,
-        x_range=5,
-        dyn_params=None,
-        dt=dt,
-        alpha=alpha,
-        Q=noise_scale,
-        action_bounds=[action_model.action_space.low, action_model.action_space.high],
-        state_bounds=[-5.0, 5.0],
-        initial_state=init_state.tolist(),
-        device=device,
-        **_boundary_env_kwargs(env_preset),
-    )
-    true_vec_env.set_params(
-        torch.as_tensor(
-            env_preset.params_from_embedding(e_true.reshape(-1)),
+    if environment_kind != "spiking_decision":
+        true_vec_env = actdyn.VectorFieldEnv(
+            env_preset.resolved_dynamics_type(),
+            d_state=dz,
+            d_action=du,
+            x_range=5,
+            dyn_params=None,
+            dt=dt,
+            alpha=alpha,
+            Q=noise_scale,
+            action_bounds=[action_model.action_space.low, action_model.action_space.high],
+            state_bounds=[-5.0, 5.0],
+            initial_state=init_state.tolist(),
             device=device,
-        ),
-    )
+            **_boundary_env_kwargs(env_preset),
+        )
+        true_vec_env.set_params(
+            torch.as_tensor(
+                env_preset.params_from_embedding(e_true.reshape(-1)),
+                device=device,
+            ),
+        )
     env = actdyn.environment.EnvWrapper(
         true_vec_env, obs_model, action_model, dt=dt, device=device
     )
@@ -1196,6 +1232,7 @@ def _run_single_parameter_identification(
         "Fe": fe_true,
         "Fz": fz_true,
         "device": device,
+        "learning_sensitivity": learning_sensitivity,
     }
     fe_init = inspect.signature(actdyn.models.FilteringEmbedding.__init__)
     if "q_theta" in fe_init.parameters:
@@ -1263,6 +1300,7 @@ def _run_single_parameter_identification(
             eig_diagonal_covariance=bool(
                 getattr(policy_spec, "eig_diagonal_covariance", False)
             ),
+            planning_rollout=planning_rollout,
         )
         _apply_boundary_visibility_to_metric(base_metric, env_preset)
         action_cost_weight = float(getattr(policy_spec, "action_cost_weight", 0.01))
@@ -1297,6 +1335,10 @@ def _run_single_parameter_identification(
         mpc_num_samples=24,
         mpc_num_elite=6,
     )
+    # Decision sessions: planners simulate the environment's decide-wait-reset rule.
+    session_rule = getattr(true_vec_env, "session_rule", None)
+    if session_rule is not None and hasattr(policy, "session_rule"):
+        policy.session_rule = session_rule
 
     exp_config = _build_runtime_experiment_config(
         run_dir=run_dir,
@@ -1351,6 +1393,9 @@ def _run_single_parameter_identification(
             "cpu_time_sec": cpu_time_sec,
             "cov_diag_mean": cov_diag_mean,
         }
+        if session_rule is not None:
+            emb_row["session_index"] = int(transition.get("session_index", 0))
+            emb_row["session_end"] = bool(transition.get("session_end", False))
         e_vec = e_est.reshape(-1)
         embedding_dim_active = int(e_vec.numel())
         emb_row["embedding_dim"] = embedding_dim_active
@@ -1665,6 +1710,12 @@ def _run_single_parameter_identification(
             "loop_plan_executed": loop_plan_executed,
             "loop_plan_reason": loop_plan_reason,
         }
+        if session_rule is not None:
+            state_action_row.update(
+                session_index=int(transition.get("session_index", 0)),
+                session_end=as_bool(transition.get("session_end", False)),
+                session_decision=int(transition.get("session_decision", 0)),
+            )
         for prefix, value in (
             ("true_z", env_state),
             ("model_z", model_state),
@@ -1768,6 +1819,7 @@ def _run_single_parameter_identification(
         [
             "step",
             "cpu_time_sec",
+            *(("session_index", "session_end") if session_rule is not None else ()),
             "embedding_dim",
             "full_param_dim",
             *emb_value_fields,
@@ -1843,6 +1895,11 @@ def _run_single_parameter_identification(
         [
             "step",
             "cpu_time_sec",
+            *(
+                ("session_index", "session_end", "session_decision")
+                if session_rule is not None
+                else ()
+            ),
             "true_x",
             "true_v",
             "model_x",
@@ -2084,6 +2141,12 @@ def _run_single_parameter_identification(
                 getattr(env_preset, "information_boundary_temperature", 0.15)
             ),
             "initial_state_true": [float(x) for x in init_state.tolist()],
+            "environment_kind": environment_kind,
+            "spiking_diagnostics": spiking_diagnostics,
+            "session_rule": (
+                None if session_rule is None else dataclasses.asdict(session_rule)
+            ),
+            "session_log": list(getattr(true_vec_env, "session_log", []) or []),
             "embedding_true": [float(x) for x in e_true_flat.tolist()],
             "embedding_estimate": [
                 float(x)
@@ -2116,6 +2179,13 @@ def _run_single_parameter_identification(
                 if hasattr(policy, "_flex_agent")
                 else None
             ),
+            **({
+                "rhc_implementation_revision": policy.implementation_revision,
+                "rhc_state_source": "filtered",
+                "rhc_update_state_source": "filtered",
+                "rhc_model_samples": int(policy.last_update_info["model_samples"]),
+                "rhc_episode_updates": int(policy.last_update_info["episode_updates"]),
+            } if policy_spec.policy_type == "rhc" else {}),
             "flex_update_mode": (
                 str(getattr(policy, "update_mode"))
                 if hasattr(policy, "update_mode")
@@ -2132,6 +2202,8 @@ def _run_single_parameter_identification(
             "eig_freeze_covariance": bool(
                 getattr(policy_spec, "eig_freeze_covariance", False)
             ),
+            "planning_rollout": planning_rollout,
+            "learning_sensitivity": learning_sensitivity,
             "eig_diagonal_covariance": bool(
                 getattr(policy_spec, "eig_diagonal_covariance", False)
             ),
@@ -2278,9 +2350,39 @@ def _run_one(
         layout=str(getattr(args, "path_layout", "legacy")),
     )
     metadata_path = run_dir / "run_metadata.json"
-    if bool(getattr(args, "skip_existing", False)) and metadata_path.exists():
+    from actdyn.metrics.planning import PLANNING_ROLLOUT_REVISION
+
+    planning_rollout = getattr(args, "planning_rollout", "prediction_only")
+    learning_sensitivity = getattr(args, "learning_sensitivity", "measurement_corrected")
+    if metadata_path.exists():
         existing_payload = load_json(metadata_path)
-        if str(existing_payload.get("status")) == "completed":
+        if get_policy_spec(policy_id).policy_type == "rhc":
+            from actdyn.policy.baseline_rhc import RHC_IMPLEMENTATION_REVISION
+
+            if existing_payload.get("rhc_implementation_revision") != RHC_IMPLEMENTATION_REVISION:
+                raise ValueError(
+                    f"RHC implementation revision mismatch at {metadata_path}. "
+                    "Use a separate --base-dir."
+                )
+        if existing_payload.get("planning_rollout") != planning_rollout:
+            raise ValueError(
+                f"Planning rollout mismatch at {metadata_path}: existing "
+                f"{existing_payload.get('planning_rollout', 'unrecorded')!r}, "
+                f"requested {planning_rollout!r}. Use a separate --base-dir."
+            )
+        if existing_payload.get("planning_rollout_revision") != PLANNING_ROLLOUT_REVISION:
+            raise ValueError(f"Planning rollout revision mismatch at {metadata_path}. Use a separate --base-dir.")
+        if existing_payload.get("learning_sensitivity_revision") != LEARNING_SENSITIVITY_REVISION:
+            raise ValueError(f"Learning sensitivity revision mismatch at {metadata_path}. Use a separate --base-dir.")
+        # This revision initially used corrected learning without a mode field.
+        previous_learning = existing_payload.get("learning_sensitivity", "measurement_corrected")
+        if previous_learning != learning_sensitivity:
+            raise ValueError(
+                f"Learning sensitivity mismatch at {metadata_path}: existing "
+                f"{previous_learning!r}, requested {learning_sensitivity!r}. "
+                "Use a separate --base-dir."
+            )
+        if bool(getattr(args, "skip_existing", False)) and str(existing_payload.get("status")) == "completed":
             return existing_payload
     ensure_dir(run_dir)
     try:
@@ -2301,6 +2403,8 @@ def _run_one(
                 traj_eval_samples=int(exp_spec.trajectory_eval_samples),
                 observation_variance_samples=int(args.observation_variance_samples),
                 capture_planned_trajectory=bool(args.capture_planned_trajectory),
+                planning_rollout=planning_rollout,
+                learning_sensitivity=learning_sensitivity,
             )
         else:
             if __package__ in {None, ""}:
@@ -2340,6 +2444,10 @@ def _run_one(
             results_path=run_dir,
             extra={"error": f"{type(exc).__name__}: {exc}"},
         )
+    payload["planning_rollout"] = planning_rollout
+    payload["planning_rollout_revision"] = PLANNING_ROLLOUT_REVISION
+    payload["learning_sensitivity_revision"] = LEARNING_SENSITIVITY_REVISION
+    payload["learning_sensitivity"] = learning_sensitivity
     write_json(run_dir / "run_metadata.json", payload)
     return payload
 
@@ -2573,6 +2681,7 @@ def _build_session_experiment_entry(
                 getattr(env_preset, "information_boundary_visibility_enabled", False)
             ),
             "true_embedding": env_summary["true_embedding"],
+            "environment_kind": str(getattr(env_preset, "environment_kind", "vectorfield")),
         },
         "policies": policies,
         "seeds": [int(seed) for seed in seeds],
@@ -2591,6 +2700,8 @@ def _build_session_metadata(
     repeats: int,
     records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    from actdyn.metrics.planning import PLANNING_ROLLOUT_REVISION
+
     policy_filter = set(parse_csv_list(getattr(args, "policy_ids", None))) or None
     experiments = [
         _build_session_experiment_entry(
@@ -2622,6 +2733,8 @@ def _build_session_metadata(
         },
         "parameters": {
             **{str(key): value for key, value in vars(args).items()},
+            "planning_rollout_revision": PLANNING_ROLLOUT_REVISION,
+            "learning_sensitivity_revision": LEARNING_SENSITIVITY_REVISION,
             "exp_ids_resolved": [str(exp_id) for exp_id in exp_ids],
             "seeds_resolved": [int(seed) for seed in seeds],
             "repeats_resolved": int(repeats),
@@ -2738,6 +2851,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--q-theta-meas-coeff", type=float, default=0.0)
     parser.add_argument("--q-theta-max-scale", type=float, default=10.0)
     parser.add_argument("--eig-gamma", type=float, default=1.0)
+    parser.add_argument(
+        "--learning-sensitivity",
+        choices=tuple(LEARNING_SENSITIVITY_UPDATES),
+        default="measurement_corrected",
+        help=(
+            "Parameter learning: measurement_corrected carries P+ (P-)^{-1} S- "
+            "after each real observation (default); dynamics_only retains the "
+            "original sensitivity. Combine with --planning-rollout prediction_only "
+            "for corrected learning and prediction-only planning."
+        ),
+    )
+    parser.add_argument(
+        "--planning-rollout",
+        choices=tuple(PLANNING_MEASUREMENT_UPDATES),
+        default="prediction_only",
+        help=(
+            "Parameter-information rollout: prediction_only carries nominal "
+            "sensitivity; measurement_conditioned contracts state covariance "
+            "and corrects conditional sensitivity after scoring each observation."
+        ),
+    )
     parser.add_argument("--observation-variance-samples", type=int, default=8)
     parser.add_argument("--capture-planned-trajectory", action="store_true")
     return parser
@@ -2810,6 +2944,27 @@ def main(
         create=args.mode in {"run", "all"},
         exp_ids=exp_ids,
     )
+    session_metadata_path = base_dir / "session_metadata.json"
+    if args.mode in {"run", "all"} and session_metadata_path.exists():
+        from actdyn.metrics.planning import PLANNING_ROLLOUT_REVISION
+
+        previous_parameters = load_json(session_metadata_path).get("parameters", {})
+        if previous_parameters.get("planning_rollout_revision") != PLANNING_ROLLOUT_REVISION:
+            parser.error("Session planning rollout revision differs. Use a separate --base-dir.")
+        if previous_parameters.get("learning_sensitivity_revision") != LEARNING_SENSITIVITY_REVISION:
+            parser.error("Session learning sensitivity revision differs. Use a separate --base-dir.")
+        previous_mode = previous_parameters.get("planning_rollout")
+        if previous_mode != args.planning_rollout:
+            parser.error(
+                f"Session planning rollout is {previous_mode or 'unrecorded'!r}, "
+                f"requested {args.planning_rollout!r}. Use a separate --base-dir."
+            )
+        previous_learning = previous_parameters.get("learning_sensitivity", "measurement_corrected")
+        if previous_learning != args.learning_sensitivity:
+            parser.error(
+                f"Session learning sensitivity is {previous_learning!r}, "
+                f"requested {args.learning_sensitivity!r}. Use a separate --base-dir."
+            )
     seeds = parse_csv_ints(args.seeds) or [0, 10, 20, 30]
     repeats = int(args.repeats)
     if args.mode in {"run", "all"}:

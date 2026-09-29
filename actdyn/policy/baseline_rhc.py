@@ -1,4 +1,4 @@
-"""Paper-faithful RHC baseline adapted to horizon-as-episode execution.
+"""RHC baseline adapted to filtered states and horizon-as-episode execution.
 
 This keeps the RHC structure from Schultheis et al. while adapting the outer
 loop to the repo's online driver: one executed planning horizon is treated as one
@@ -14,10 +14,31 @@ from typing import Any
 import numpy as np
 import torch
 
+from actdyn.environment.session import SessionRule, session_evidence
 from actdyn.models.planning_surrogates import LocalRBFBayesianLinearDynamics, RFFBayesianLinearDynamics
+from actdyn.utils.rollout import RecentRollout
 
 from .base import BasePolicy
 from .rhc_planner import RhcMultipleShootingPlanner
+
+RHC_IMPLEMENTATION_REVISION = 'filtered_state_latest_transition_v1'
+
+
+def _last_transition_vector(batch: Mapping | RecentRollout, key: str) -> np.ndarray:
+    """Read one trajectory's latest feature vector from (1, time, dim) data."""
+    value = batch.get(key)
+    if value is None:
+        raise ValueError(f'RHC learning requires {key}; true-state fallback is not supported')
+    if isinstance(value, torch.Tensor):
+        value = value.detach().cpu().numpy()
+    arr = np.asarray(value, dtype=np.float64)
+    if arr.ndim == 3 and arr.shape[0] == 1:
+        arr = arr[0]
+    if arr.ndim == 2:
+        arr = arr[-1]
+    if arr.ndim != 1 or arr.size == 0:
+        raise ValueError(f'RHC expects one nonempty trajectory for {key}, got {arr.shape}')
+    return arr.copy()
 
 
 def _to_numpy_vector(value: Any) -> np.ndarray:
@@ -45,9 +66,9 @@ def _symmetric_bounds(bound: float | np.ndarray, dim: int) -> tuple[np.ndarray, 
 
 
 class RecedingHorizonCuriosityPolicy(BasePolicy):
-    """Exact RHC with open-loop planning and horizon-end Bayesian updates."""
+    """RHC on filtered states, with open-loop plans and horizon-end updates."""
 
-    requires_observed_state = True
+    implementation_revision = RHC_IMPLEMENTATION_REVISION
 
     def __init__(
         self,
@@ -109,6 +130,10 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         self._episode_inputs: list[np.ndarray] = []
         self._episode_deltas: list[np.ndarray] = []
         self._episode_updates = 0
+        # Decision sessions (set by the runner and the agent): the planner adds the known
+        # evidence of the current session to its planned inputs.
+        self.session_rule: SessionRule | None = None
+        self.session_context: dict[str, Any] | None = None
         self.last_update_info: dict[str, float | int | str | bool] = {
             'parameter_posterior_updated': False,
             'objective': self.objective,
@@ -127,14 +152,20 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         self._episode_inputs = []
         self._episode_deltas = []
 
+    def on_session_reset(self, state: torch.Tensor) -> None:
+        """Plan again from the reset state; the collected transitions stay valid."""
+        self.count = 0
+        self.action_list = []
+
     def get_action(self, state: torch.Tensor, **kwargs) -> tuple[torch.Tensor, torch.Tensor]:
-        observed_state = kwargs.get('observed_state', state)
-        x0 = _to_numpy_vector(observed_state)
+        x0 = _to_numpy_vector(state)
         if x0.size == 0:
-            raise ValueError('RHC requires an observed state to plan from')
+            raise ValueError('RHC requires a filtered state to plan from')
         self._ensure_model(x0)
         assert self._planner is not None
-        plan = self._planner.plan(x0=x0, objective=self.objective)
+        evidence = self._known_evidence()
+        plan = (self._planner.plan(x0=x0, objective=self.objective) if evidence is None
+                else self._planner.plan(x0=x0, objective=self.objective, input_offset=evidence))
         action_tensor = torch.as_tensor(plan.actions[None, :, :], dtype=torch.float32, device=self.device)
         cost_tensor = torch.as_tensor([[plan.cost]], dtype=torch.float32, device=self.device)
         assert self._internal_model is not None
@@ -149,20 +180,25 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         }
         return action_tensor, cost_tensor
 
-    def update(self, batch) -> dict[str, float | int | str | bool]:
-        if not isinstance(batch, Mapping):
-            return self.last_update_info
-        if 'env_state' not in batch or 'next_env_state' not in batch:
-            return self.last_update_info
-        env_state = _to_numpy_vector(batch['env_state'])
-        next_env_state = _to_numpy_vector(batch['next_env_state'])
-        action_value = batch.get('env_action', batch.get('action'))
-        action = _to_numpy_vector(action_value)
-        if env_state.size == 0 or next_env_state.size == 0 or action.size == 0:
-            return self.last_update_info
-        self._ensure_model(env_state)
-        xu = np.concatenate([env_state, action], axis=0)
-        delta = next_env_state - env_state
+    def _known_evidence(self) -> np.ndarray | None:
+        """Evidence of the next ``horizon`` bins of the current session, shape (horizon, 2); None without."""
+        rule = self.session_rule
+        if rule is None or float(rule.evidence_amplitude) <= 0.0:
+            return None
+        context = self.session_context or {}
+        bins = int(context.get('bins', 0)) + torch.arange(self.horizon)
+        pool = torch.full((self.horizon,), int(context.get('evidence_pool', -1)), dtype=torch.long)
+        return session_evidence(bins, pool, rule).numpy().astype(np.float64)
+
+    def update(self, batch: Mapping | RecentRollout) -> dict[str, float | int | str | bool]:
+        """Collect the latest filtered transition; fit once per executed horizon."""
+        state = _last_transition_vector(batch, 'model_state')
+        next_state = _last_transition_vector(batch, 'next_model_state')
+        action_key = 'env_action' if batch.get('env_action') is not None else 'action'
+        action = _last_transition_vector(batch, action_key)
+        self._ensure_model(state)
+        xu = np.concatenate([state, action], axis=0)
+        delta = next_state - state
         self._episode_inputs.append(xu)
         self._episode_deltas.append(delta)
         updated = False

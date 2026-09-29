@@ -104,7 +104,7 @@ def test_tbme_loading_target_snr_is_available_in_session_metadata():
     from experiments import run as experiment_run
     from experiments.experiment_definitions import configure_catalogs
     from experiments.experiment_io import reconstruct_loglinear_rate_model
-    from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
     try:
         bundle = configure_tbme_catalogs()

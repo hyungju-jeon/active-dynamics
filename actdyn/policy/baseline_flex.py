@@ -12,6 +12,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from actdyn.environment.session import SessionRule, session_evidence
+
 from .base import BasePolicy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -206,6 +208,127 @@ class FlexMultiStableModel(_FlexVectorFieldModel):
         return self.alpha * field + u
 
 
+class FlexWilsonCowanModel(_FlexVectorFieldModel):
+    """Wilson-Cowan drift in centered latent coordinates.
+
+    Mirrors ``actdyn.utils.vectorfields_eqn.WilsonCowan``: rates r = z / s + 1/2,
+    gains act on the centered rates, and the learned parameters are the four
+    synaptic weights (w_EE, w_EI, w_IE, w_II). Fixed constants match that class.
+    """
+
+    def __init__(
+        self,
+        *args,
+        state_scale: float = 4.0,
+        beta: float = 6.0,
+        h_e: float = -0.05,
+        h_i: float = -0.35,
+        tau_e: float = 1.0,
+        tau_i: float = 1.0,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.state_scale = float(state_scale)
+        self.beta = float(beta)
+        self.h_e = float(h_e)
+        self.h_i = float(h_i)
+        self.tau_e = float(tau_e)
+        self.tau_i = float(tau_i)
+
+    def forward(self, z):
+        params = self._full_params(dtype=z.dtype, device=z.device)
+        w_ee, w_ei, w_ie, w_ii = params[0], params[1], params[2], params[3]
+        c_e = z[:, 0] / self.state_scale
+        c_i = z[:, 1] / self.state_scale
+        u = z[:, 2:4]
+        gain_e = torch.sigmoid(self.beta * (w_ee * c_e - w_ei * c_i + self.h_e))
+        gain_i = torch.sigmoid(self.beta * (w_ie * c_e - w_ii * c_i + self.h_i))
+        d_rate_e = (-(c_e + 0.5) + gain_e) / self.tau_e
+        d_rate_i = (-(c_i + 0.5) + gain_i) / self.tau_i
+        drift = torch.stack((self.state_scale * d_rate_e, self.state_scale * d_rate_i), dim=1)
+        return self.alpha * drift + u
+
+
+class FlexWongWangModel(_FlexVectorFieldModel):
+    """Two-pool Wong-Wang drift in centered latent coordinates.
+
+    Mirrors ``actdyn.utils.vectorfields_eqn.WongWang``: gating s = z / scale + 1/2,
+    gains act on the centered gating, and the learned parameters are the
+    self-excitation and cross-inhibition weights (w_+, w_-).
+    """
+
+    def __init__(
+        self,
+        *args,
+        state_scale: float = 4.0,
+        beta: float = 6.0,
+        h: float = 0.0,
+        gamma: float = 1.0,
+        tau: float = 1.0,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self.state_scale = float(state_scale)
+        self.beta = float(beta)
+        self.h = float(h)
+        self.gamma = float(gamma)
+        self.tau = float(tau)
+
+    def forward(self, z):
+        params = self._full_params(dtype=z.dtype, device=z.device)
+        w_plus, w_minus = params[0], params[1]
+        c1 = z[:, 0] / self.state_scale
+        c2 = z[:, 1] / self.state_scale
+        u = z[:, 2:4]
+        gain_1 = torch.sigmoid(self.beta * (w_plus * c1 - w_minus * c2 + self.h))
+        gain_2 = torch.sigmoid(self.beta * (w_plus * c2 - w_minus * c1 + self.h))
+        d_s1 = (-(c1 + 0.5) + (0.5 - c1) * self.gamma * gain_1) / self.tau
+        d_s2 = (-(c2 + 0.5) + (0.5 - c2) * self.gamma * gain_2) / self.tau
+        drift = torch.stack((self.state_scale * d_s1, self.state_scale * d_s2), dim=1)
+        return self.alpha * drift + u
+
+
+class FlexWongWangInsideGainModel(FlexWongWangModel):
+    """Wong-Wang drift with the input inside the gain (``WongWangInsideGain``).
+
+    Learned parameters (w_+, w_-, h_raw, gamma_raw, g_raw); h = h_raw / beta, and gamma
+    and g are the softplus of the raw values. The input matrix df/du depends on the
+    state, so ``get_B`` differentiates the drift instead of returning the identity.
+
+    ``input_offset`` (shape (m,)) is a known input added to the model's input, the
+    decision-session evidence: the FLEX policy, which linearizes at u = 0, then
+    linearizes at the evidence it acts with. It is zero while learning, which uses
+    the played total drive.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.input_offset = torch.zeros(self.m)
+
+    def forward(self, z):
+        params = self._full_params(dtype=z.dtype, device=z.device)
+        w_plus, w_minus, h = params[0], params[1], params[2] / self.beta
+        gamma = torch.nn.functional.softplus(params[3])
+        g = torch.nn.functional.softplus(params[4])
+        c1 = z[:, 0] / self.state_scale
+        c2 = z[:, 1] / self.state_scale
+        u = z[:, 2:4] + self.input_offset.to(z.dtype)
+        gain_1 = torch.sigmoid(self.beta * (w_plus * c1 - w_minus * c2 + h + g * u[:, 0]))
+        gain_2 = torch.sigmoid(self.beta * (w_plus * c2 - w_minus * c1 + h + g * u[:, 1]))
+        d_s1 = (-(c1 + 0.5) + (0.5 - c1) * gamma * gain_1) / self.tau
+        d_s2 = (-(c2 + 0.5) + (0.5 - c2) * gamma * gain_2) / self.tau
+        return self.alpha * torch.stack((self.state_scale * d_s1, self.state_scale * d_s2), dim=1)
+
+    def get_B(self, x):
+        """d f / d u at state ``x`` and u = 0, shape (d, m)."""
+        with torch.enable_grad():
+            x_t = torch.as_tensor(x, dtype=torch.float32).detach().reshape(1, self.d)
+            u = torch.zeros(1, self.m, requires_grad=True)
+            y = self.forward(torch.cat([x_t, u], dim=1))
+            rows = [torch.autograd.grad(y[0, i], u, retain_graph=True)[0][0] for i in range(self.d)]
+        return torch.stack(rows).detach().numpy().astype(np.float64)
+
+
 def build_flex_model(
     *,
     env_preset: Any,
@@ -233,6 +356,12 @@ def build_flex_model(
         return FlexAsymmetricBasinModel(**kwargs)
     if dynamics_type == "multi_stable":
         return FlexMultiStableModel(**kwargs)
+    if dynamics_type == "wilson_cowan":
+        return FlexWilsonCowanModel(**kwargs)
+    if dynamics_type == "wong_wang":
+        return FlexWongWangModel(**kwargs)
+    if dynamics_type == "wong_wang_inside_gain":
+        return FlexWongWangInsideGainModel(**kwargs)
     raise ValueError(f"Official FLEX wrapper does not support dynamics_type={dynamics_type!r}")
 
 
@@ -284,6 +413,10 @@ class FLEXPolicy(BasePolicy):
         self._initial_parameter_mean = init_mean[:1].detach().clone()
         self._flex_model = None
         self._flex_agent = None
+        # Decision sessions (set by the runner and the agent): the policy linearizes the
+        # model at the known evidence of the current bin.
+        self.session_rule: SessionRule | None = None
+        self.session_context: dict[str, Any] | None = None
         self.last_update_info = {
             "parameter_posterior_updated": False,
             "flex_residual_norm": 0.0,
@@ -381,9 +514,28 @@ class FLEXPolicy(BasePolicy):
         )
         t = int(self.count)
         self.count += 1
-        u = np.asarray(self._flex_agent.policy(x, t), dtype=np.float32).reshape(1, 1, -1)
+        evidence = self._known_evidence()
+        if evidence is not None:
+            self._flex_model.input_offset = evidence
+        try:
+            u = np.asarray(self._flex_agent.policy(x, t), dtype=np.float32).reshape(1, 1, -1)
+        finally:
+            if evidence is not None:
+                self._flex_model.input_offset = torch.zeros_like(evidence)
         action = torch.as_tensor(u, dtype=torch.float32, device=self.device)
         return action, torch.zeros((), dtype=torch.float32, device=self.device)
+
+    def _known_evidence(self) -> torch.Tensor | None:
+        """Evidence of the bin about to run, shape (2,); None without session evidence."""
+        rule = self.session_rule
+        if rule is None or float(rule.evidence_amplitude) <= 0.0:
+            return None
+        if not hasattr(self._flex_model, "input_offset"):
+            raise ValueError("session evidence needs a FLEX model with an input offset (wong_wang_inside_gain)")
+        context = self.session_context or {}
+        bins = torch.tensor([int(context.get("bins", 0))])
+        pool = torch.tensor([int(context.get("evidence_pool", -1))])
+        return session_evidence(bins, pool, rule)[0]
 
     def update(self, rollout: Any):
         assert self._flex_agent is not None

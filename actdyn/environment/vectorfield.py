@@ -24,6 +24,10 @@ from actdyn.utils.vectorfields_eqn import (
     RankImbalancedGate,
     CompoundTriGate,
     ThreeGateDiagnostic,
+    ThreeGateTradeoff,
+    WilsonCowan,
+    WongWang,
+    WongWangInsideGain,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence, Callable
 from actdyn.utils.plotting import plot_vector_field
@@ -42,6 +46,7 @@ vf_from_string = {
     "rank_imbalanced_gate": RankImbalancedGate,
     "compound_tri_gate": CompoundTriGate,
     "three_gate_diagnostic": ThreeGateDiagnostic,
+    "three_gate_tradeoff": ThreeGateTradeoff,
     # Legacy alias: archived runs recorded this system as simple_tri_gate.
     "simple_tri_gate": ThreeGateDiagnostic,
     "multi_stable": MultiStable,
@@ -50,6 +55,9 @@ vf_from_string = {
     "fitzhugh_nagumo": FitzHughNagumo,
     "hopf": Hopf,
     "snowman": SnowMan,
+    "wilson_cowan": WilsonCowan,
+    "wong_wang": WongWang,
+    "wong_wang_inside_gain": WongWangInsideGain,
 }
 
 
@@ -146,6 +154,38 @@ def residual_torch(
     return drift.reshape(state_t.shape)
 
 
+def drift_torch(
+    dynamics_type: str,
+    state: torch.Tensor,
+    dyn_params: torch.Tensor | list[float] | Dict[str, float],
+    u: torch.Tensor,
+    *,
+    dynamics_alpha: float,
+) -> torch.Tensor:
+    """Full latent drift with the input, shape (..., d): f(z, u) or f(z) + u.
+
+    Input-dependent fields evaluate ``compute_with_input``; for the others this is
+    :func:`residual_torch` plus ``u``.
+    """
+    device = _state_device(state, dyn_params)
+    state_t = torch.as_tensor(state, dtype=torch.float32, device=device)
+    u_t = torch.as_tensor(u, dtype=torch.float32, device=device).expand_as(state_t)
+    params_t = dyn_params if isinstance(dyn_params, dict) else _align_dyn_params_torch(state_t, dyn_params)
+    flat_state = state_t.reshape(-1, state_t.shape[-1])
+    params_value = params_t if isinstance(params_t, dict) else params_t.reshape(-1, params_t.shape[-1])
+    vf = build_vectorfield(dynamics_type, params_value, dynamics_alpha=float(dynamics_alpha), device=state_t.device)
+    if not bool(getattr(vf, "input_dependent", False)):
+        return residual_torch(dynamics_type, state_t, dyn_params, dynamics_alpha=dynamics_alpha) + u_t
+    return vf.compute_with_input(flat_state, u_t.reshape(flat_state.shape)).reshape(state_t.shape)
+
+
+def _drift_for_jacobian(dynamics_type, state, dyn_params, u, *, dynamics_alpha):
+    """Drift used for Jacobians: residual without input, or the input-aware drift at ``u``."""
+    if u is None:
+        return residual_torch(dynamics_type, state, dyn_params, dynamics_alpha=float(dynamics_alpha))
+    return drift_torch(dynamics_type, state, dyn_params, u, dynamics_alpha=float(dynamics_alpha))
+
+
 class ResidualDynamicsCallable:
     """Bind vector-field residual metadata into a state-to-drift callable.
 
@@ -191,17 +231,14 @@ def jacobian_state_torch(
     dyn_params: torch.Tensor | list[float] | Dict[str, float],
     *,
     dynamics_alpha: float,
+    u: torch.Tensor | None = None,
 ) -> torch.Tensor:
+    """d f / d z at ``state`` (and at input ``u`` for input-dependent fields); shape (..., d, d)."""
     with torch.enable_grad():
         device = _state_device(state, dyn_params)
         state_t = torch.as_tensor(state, dtype=torch.float32, device=device).detach().clone()
         state_t.requires_grad_(True)
-        drift = residual_torch(
-            dynamics_type,
-            state_t,
-            dyn_params,
-            dynamics_alpha=float(dynamics_alpha),
-        )
+        drift = _drift_for_jacobian(dynamics_type, state_t, dyn_params, u, dynamics_alpha=dynamics_alpha)
         return _batched_jacobian(drift, state_t)
 
 
@@ -282,6 +319,7 @@ def jacobian_embedding_torch(
     full_params: torch.Tensor | np.ndarray | Sequence[float],
     min_embedding_dim: int,
     dynamics_alpha: float,
+    u: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Differentiate residual dynamics with respect to learned embedding coordinates.
 
@@ -294,6 +332,8 @@ def jacobian_embedding_torch(
         min_embedding_dim: Minimum number of learned coordinates required by
             the dynamics.
         dynamics_alpha: Dynamics scale passed to :func:`residual_torch`.
+        u: Input with the state's shape; used by input-dependent fields only
+            (an additive input does not change the Jacobian).
 
     Returns:
         Jacobian with shape ``(..., d_state, d_embedding)``.
@@ -312,12 +352,7 @@ def jacobian_embedding_torch(
             full_params=full_params,
             min_embedding_dim=int(min_embedding_dim),
         )
-        drift = residual_torch(
-            dynamics_type,
-            state_t,
-            dyn_params,
-            dynamics_alpha=float(dynamics_alpha),
-        )
+        drift = _drift_for_jacobian(dynamics_type, state_t, dyn_params, u, dynamics_alpha=dynamics_alpha)
         return _batched_jacobian(drift, embedding_t)
 
 
@@ -478,9 +513,24 @@ class VectorFieldEnv(gym.Env):
         if hasattr(self.dynamics, "set_params"):
             self.dynamics.set_params(*dyn_params)
 
-    def compute_dynamics(self, state: torch.Tensor) -> torch.Tensor:
-        """Compute vector field at given state."""
-        dynamics = self.dynamics(state)
+    @property
+    def input_dependent(self) -> bool:
+        """True when the input acts inside the drift (dz/dt = f(z, u)) instead of adding to it."""
+        return bool(getattr(self.dynamics, "input_dependent", False))
+
+    def compute_dynamics_with_input(self, state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
+        """Full drift f(z, u) including the input and any boundary barrier; shapes (..., d)."""
+        return self.compute_dynamics(state, action=action)
+
+    def compute_dynamics(self, state: torch.Tensor, action: torch.Tensor | None = None) -> torch.Tensor:
+        """Compute vector field at given state (with the input for input-dependent fields)."""
+        if action is None:
+            dynamics = self.dynamics(state)
+        elif state.dim() == 1:  # single state, as VectorField.__call__ handles it
+            u = torch.as_tensor(action, dtype=state.dtype, device=state.device).reshape(1, -1)
+            dynamics = self.dynamics.compute_with_input(state.unsqueeze(0), u).squeeze(0)
+        else:
+            dynamics = self.dynamics.compute_with_input(state, action)
         if self.boundary_barrier_enabled and self.boundary_type != "none":
             dynamics = dynamics + boundary_barrier_drift(
                 state,
@@ -534,10 +584,11 @@ class VectorFieldEnv(gym.Env):
     def step(self, action: torch.Tensor) -> Tuple[torch.Tensor, float, bool, bool, Dict[str, Any]]:
         """Step the environment."""
         # Compute dynamics
-        dynamics = self.compute_dynamics(self.state)
-
-        # Update state
-        self.state = self.state + (dynamics + action) * self.dt
+        if self.input_dependent:
+            self.state = self.state + self.compute_dynamics_with_input(self.state, action) * self.dt
+        else:
+            dynamics = self.compute_dynamics(self.state)
+            self.state = self.state + (dynamics + action) * self.dt
 
         # Add noise
         self.state += torch.randn_like(self.state) * torch.sqrt(torch.tensor(self.Q) * self.dt)

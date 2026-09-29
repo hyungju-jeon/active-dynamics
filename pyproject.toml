@@ -40,6 +40,7 @@ dependencies = [
     "torchvision==0.26.0; sys_platform == 'darwin'",
     "torchvision==0.26.0+cpu; sys_platform != 'darwin'",
     "tqdm",
+    "brian2>=2.10.1",
 ]
 
 [project.scripts]

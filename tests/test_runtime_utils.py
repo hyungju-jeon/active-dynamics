@@ -29,7 +29,7 @@ from experiments.experiment_definitions import (
     get_policy_spec,
 )
 from experiments.run import _EnvParameterFormatter, _build_env_jacobians
-from experiments.tbme.run_tbme_experiments import configure_tbme_catalogs
+from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
 
 def test_configure_runtime_returns_valid_device():
@@ -1975,7 +1975,7 @@ def test_async_policy_catalog_entry_is_available() -> None:
 
 
 def test_exp02_defaults_use_realtime_async() -> None:
-    from experiments.tbme.exp02_hardEnv import EXPERIMENT_SUITES
+    from experiments.tnsre.exp02_hardEnv import EXPERIMENT_SUITES
 
     for suite in EXPERIMENT_SUITES.values():
         model_ids = suite["model_ids"]

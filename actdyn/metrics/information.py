@@ -5,13 +5,14 @@ from actdyn.environment.boundary import boundary_visibility
 import actdyn.models
 from actdyn.models.base import BaseDynamicsEnsemble
 import torch
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from actdyn.models import BaseDynamics, Decoder
 from actdyn.models.decoder import LinearMapping, LogLinearMapping, diagonal_observation_information
 from actdyn.models.dynamics import RBFDynamics
 from actdyn.models.model import FilteringEmbedding
 from actdyn.utils.rollout import Rollout, RolloutBuffer
 from .base import BaseMetric
+from .planning import planning_measurement_update
 from torch.nn.functional import softplus
 from actdyn.utils.torch_utils import (
     attenuated_state_information,
@@ -324,8 +325,47 @@ class DOptimality(FisherInformationMetric):
             pass
 
 
+def _optional_rollout_field(rollout: Union[Rollout, RolloutBuffer, Dict], key: str) -> Optional[torch.Tensor]:
+    """Field of a dict, Rollout, or RolloutBuffer rollout, or None when absent."""
+    if isinstance(rollout, dict) or hasattr(rollout, "get"):
+        return rollout.get(key)
+    if hasattr(rollout, "flat"):
+        return rollout.flat.get(key)
+    return None
+
+
+def planned_inputs(model: Any, rollout: Union[Rollout, RolloutBuffer, Dict]) -> Optional[torch.Tensor]:
+    """Encoded planned inputs (B, T, d_u) for input-dependent drifts, else None.
+
+    With dz/dt = f(z) + u the input does not change the Jacobians, so the
+    metrics evaluate them without it; with dz/dt = f(z, u) they need the input
+    of every rollout step (``env_action``, as the planners store it).
+    """
+    if not bool(getattr(model, "input_dependent_dynamics", False)):
+        return None
+    u = _optional_rollout_field(rollout, "env_action")
+    if u is None:
+        raise ValueError("input-dependent dynamics need the planned inputs ('env_action') in the rollout")
+    return u
+
+
+def drift_jacobians(Fe_net: Callable, Fz_net: Callable, z: torch.Tensor, e: torch.Tensor,
+                    u: Optional[torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """(d f / d theta, d f / d z) along a rollout; the input enters only when given."""
+    if u is None:
+        return Fe_net(z, e).detach(), Fz_net(z, e).detach()
+    return Fe_net(z, e, u=u).detach(), Fz_net(z, e, u=u).detach()
+
+
 class EmbeddingFisherMetric(BaseMetric):
-    """Metric that computes information gain in the embedding space."""
+    """Parameter EIG with prediction-only or measurement-conditioned planning.
+
+    Every ablation uses the selected measurement step. Unattenuated scoring
+    removes only information attenuation; frozen-covariance scoring uses the
+    initial P in the score, while the actual rollout covariance still updates.
+    The diagonal ablation projects P+ to its diagonal; no-sensitivity propagation
+    resets S before each prediction.
+    """
 
     def __init__(
         self,
@@ -339,6 +379,7 @@ class EmbeddingFisherMetric(BaseMetric):
         no_sensitivity_propagation: bool = False,
         fully_observed: bool = False,
         diagonal_covariance: bool = False,
+        planning_rollout: str = "prediction_only",
         **kwargs,
     ):
         super().__init__(compute_type, device)
@@ -346,6 +387,8 @@ class EmbeddingFisherMetric(BaseMetric):
         self.Fe_net = Fe_net
         self.Fz_net = Fz_net
         self.model = model
+        self.planning_rollout = planning_rollout
+        self._measurement_update = planning_measurement_update(planning_rollout)
         # Backward-compatible alias from existing config fields.
         legacy_gamma = kwargs.get("met_discount_factor")
         if gamma is None:
@@ -358,6 +401,8 @@ class EmbeddingFisherMetric(BaseMetric):
         self.boundary_visibility_enabled = bool(
             kwargs.get("boundary_visibility_enabled", False)
         )
+        # State variance after a decision-session reset (set by a session-aware planner).
+        self.session_reset_variance = float(kwargs.get("session_reset_variance", 0.01))
         self.boundary_type = str(kwargs.get("boundary_type", "none"))
         self.boundary_radius = kwargs.get("boundary_radius")
         self.boundary_margin = float(kwargs.get("boundary_margin", 1.0))
@@ -414,26 +459,78 @@ class EmbeddingFisherMetric(BaseMetric):
         Fz_net: Callable,
         decoder: Optional[Decoder] = None,
     ) -> torch.Tensor:
-        """Compute the discounted EIG for one nominal model used in planning."""
+        """Compute discounted EIG using information at each transition's destination.
+
+        Returns ``0.5 log det(I + L^T J L)`` per batch member, with ``J`` from
+        :meth:`_rollout_parameter_information` and ``L L^T`` the parameter
+        covariance; parameter beliefs remain fixed.
+        """
+        J = self._rollout_parameter_information(rollout, Fe_net, Fz_net, decoder)
+        batch, d_embedding = J.shape[0], J.shape[-1]
+        eye_embedding = (
+            torch.eye(d_embedding, device=self.device, dtype=J.dtype)
+            .unsqueeze(0)
+            .expand(batch, -1, -1)
+        )
+
+        def _spd_cholesky(
+            M: torch.Tensor, eye: torch.Tensor, min_eig: float = 1e-9
+        ) -> torch.Tensor:
+            M = torch.nan_to_num(M.float(), nan=0.0, posinf=1e6, neginf=-1e6)
+            M = symmetrize(M)
+            return safe_cholesky(M + max(float(min_eig), 1e-8) * eye)
+
+        P_theta = self.model.e["P"].to(self.device)
+        if P_theta.dim() == 2:
+            P_theta = P_theta.unsqueeze(0)
+        if P_theta.shape[0] == 1 and batch > 1:
+            P_theta = P_theta.expand(batch, -1, -1)
+
+        chol_theta = _spd_cholesky(P_theta, eye_embedding)
+        scaled_info = symmetrize(
+            eye_embedding + chol_theta.transpose(-1, -2) @ J @ chol_theta
+        )
+        chol_mat = _spd_cholesky(scaled_info, eye_embedding)
+        chol_diag = torch.diagonal(chol_mat, dim1=-2, dim2=-1).clamp_min(eps)
+        logabsdet = 2.0 * torch.log(chol_diag).sum(dim=-1)
+        return 0.5 * logabsdet
+
+    def _rollout_parameter_information(
+        self,
+        rollout: Union[Rollout, RolloutBuffer, Dict],
+        Fe_net: Callable,
+        Fz_net: Callable,
+        decoder: Optional[Decoder] = None,
+    ) -> torch.Tensor:
+        """Discounted predicted parameter information ``J``, shape (batch, d_e, d_e).
+
+        Rollout states have shape (batch, horizon, latent_dim): ``model_state``
+        supplies transition Jacobians and ``next_model_state`` supplies
+        observation curvature. Score predictive covariance and sensitivity first,
+        then apply the selected measurement step before the next transition. An
+        optional ``session_reset_after`` mask (batch, horizon, 1) restarts the
+        sensitivity at zero and the covariance at ``session_reset_variance`` after
+        the marked steps.
+        """
         e_bel = self.model.e
         z_bel = self.model.z
         decoder = self.model.decoder if decoder is None else decoder
 
         z = rollout["model_state"].to(self.device).float()
+        z_next = rollout["next_model_state"].to(self.device).float()
+        if z_next.ndim != 3:
+            z_next = z_next.unsqueeze(0)
 
         if len(z.shape) != 3:
             z = z.unsqueeze(0)  # Ensure z is (batch, T, d_latent)
         assert len(z.shape) == 3, "z must be a tensor of shape (batch, T, d_latent)"
+        if z_next.shape != z.shape:
+            raise ValueError("model_state and next_model_state must have matching shapes")
         batch, T, d_latent = z.shape
         d_embedding = e_bel["m"].shape[-1]
         dt = float(getattr(self.model, "dt", 1.0))
         eye_latent = (
             torch.eye(d_latent, device=self.device, dtype=z.dtype)
-            .unsqueeze(0)
-            .expand(batch, -1, -1)
-        )
-        eye_embedding = (
-            torch.eye(d_embedding, device=self.device, dtype=z.dtype)
             .unsqueeze(0)
             .expand(batch, -1, -1)
         )
@@ -446,13 +543,6 @@ class EmbeddingFisherMetric(BaseMetric):
             if P_in.shape[0] == 1 and batch > 1:
                 P_in = P_in.expand(batch, -1, -1)
             return symmetrize(P_in)
-
-        def _spd_cholesky(
-            M: torch.Tensor, eye: torch.Tensor, min_eig: float = 1e-9
-        ) -> torch.Tensor:
-            M = torch.nan_to_num(M.float(), nan=0.0, posinf=1e6, neginf=-1e6)
-            M = symmetrize(M)
-            return safe_cholesky(M + max(float(min_eig), 1e-8) * eye)
 
         def _cov_diag(P: torch.Tensor) -> torch.Tensor:
             return torch.diagonal(P, dim1=-2, dim2=-1).clamp_min(0.0)
@@ -467,8 +557,10 @@ class EmbeddingFisherMetric(BaseMetric):
             e_rep = e_m
         e_rep_time = e_rep.unsqueeze(1).expand(batch, T, -1)
 
-        Fe = Fe_net(z, e_rep_time).detach()
-        Fz = Fz_net(z, e_rep_time).detach()
+        u_plan = planned_inputs(self.model, rollout)
+        if u_plan is not None:
+            u_plan = u_plan.to(self.device).float().reshape(batch, T, -1)
+        Fe, Fz = drift_jacobians(Fe_net, Fz_net, z, e_rep_time, u_plan)
         S_sens = torch.zeros(batch, d_latent, d_embedding, device=self.device, dtype=z.dtype)
 
         P_pred = _to_batch_latent_cov(z_bel["P"].to(self.device))
@@ -483,8 +575,15 @@ class EmbeddingFisherMetric(BaseMetric):
             P_diag = _cov_diag(P_pred)
             Q_diag = _cov_diag(Q)
 
-        _, I_z_all, _, _ = diagonal_observation_information(decoder, z)
+        _, I_z_all, _, _ = diagonal_observation_information(decoder, z_next)
         I_z_all = I_z_all.to(self.device)
+
+        # Decision sessions: after a reset the state is known (small variance) and no
+        # longer depends on the parameters, so the sensitivity restarts at zero.
+        session_reset = _optional_rollout_field(rollout, "session_reset_after")
+        if session_reset is not None:
+            session_reset = session_reset.to(self.device).reshape(batch, T) > 0.5
+            reset_cov = self.session_reset_variance * eye_latent
 
         # Discounted accumulation of predicted parameter information.
         discounts = self.gamma ** torch.arange(T, device=self.device, dtype=z.dtype)
@@ -500,22 +599,29 @@ class EmbeddingFisherMetric(BaseMetric):
             else:
                 S_sens = dfdz @ S_sens + dfde
 
+            # Score the next observation with next-state sensitivity and covariance.
+            if self.diagonal_covariance:
+                P_diag = (dfdz.square() * P_diag.unsqueeze(1)).sum(dim=-1) + Q_diag
+                P_diag = torch.nan_to_num(
+                    P_diag, nan=0.0, posinf=1e6, neginf=0.0
+                ).clamp_min(0.0)
+            else:
+                P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)
+
             # I_z = H^T R^{-1} H (Fisher approximation in state space).
             I_z = I_z_all[:, i]
 
             # DeltaLambda = S^T I_z (I + P^- I_z)^{-1} S.
+            P_for_gain = torch.diag_embed(P_diag) if self.diagonal_covariance else P_pred
             if self.fully_observed:
                 atten_Iz = I_z
             else:
-                if self.diagonal_covariance:
-                    P_for_gain = torch.diag_embed(P_diag)
-                else:
-                    P_for_gain = P_pred_initial if self.freeze_covariance else P_pred
-                atten_Iz = attenuated_state_information(P_for_gain, I_z)
+                P_for_score = P_pred_initial if self.freeze_covariance else P_for_gain
+                atten_Iz = attenuated_state_information(P_for_score, I_z)
             info_step = symmetrize(S_sens.transpose(-1, -2) @ atten_Iz @ S_sens)
             if self.boundary_visibility_enabled:
                 visibility = boundary_visibility(
-                    z[:, i],
+                    z_next[:, i],
                     boundary_type=self.boundary_type,
                     radius=self.boundary_radius,
                     margin=self.boundary_margin,
@@ -524,28 +630,23 @@ class EmbeddingFisherMetric(BaseMetric):
                 info_step = visibility.square().view(batch, 1, 1) * info_step
             J += discounts[i] * info_step
 
+            # Condition both P and S, or carry both unchanged in prediction-only mode.
+            posterior_cov, S_sens = self._measurement_update(
+                P_for_gain, S_sens, I_z
+            )
             if self.diagonal_covariance:
-                P_diag = (dfdz.square() * P_diag.unsqueeze(1)).sum(dim=-1) + Q_diag
-                P_diag = torch.nan_to_num(
-                    P_diag, nan=0.0, posinf=1e6, neginf=0.0
-                ).clamp_min(0.0)
-            elif not (self.freeze_covariance or self.fully_observed):
-                P_pred = symmetrize(dfdz @ P_pred @ dfdz.transpose(-1, -2) + Q)
+                P_diag = _cov_diag(posterior_cov)
+            else:
+                P_pred = posterior_cov
+            if session_reset is not None and bool(session_reset[:, i].any()):
+                reset_i = session_reset[:, i].view(batch, 1, 1)
+                S_sens = torch.where(reset_i, torch.zeros_like(S_sens), S_sens)
+                if self.diagonal_covariance:
+                    P_diag = torch.where(reset_i[:, :, 0], _cov_diag(reset_cov), P_diag)
+                else:
+                    P_pred = torch.where(reset_i, reset_cov, P_pred)
 
-        P_theta = e_bel["P"].to(self.device)
-        if P_theta.dim() == 2:
-            P_theta = P_theta.unsqueeze(0)
-        if P_theta.shape[0] == 1 and batch > 1:
-            P_theta = P_theta.expand(batch, -1, -1)
-
-        chol_theta = _spd_cholesky(P_theta, eye_embedding)
-        scaled_info = symmetrize(
-            eye_embedding + chol_theta.transpose(-1, -2) @ J @ chol_theta
-        )
-        chol_mat = _spd_cholesky(scaled_info, eye_embedding)
-        chol_diag = torch.diagonal(chol_mat, dim1=-2, dim2=-1).clamp_min(eps)
-        logabsdet = 2.0 * torch.log(chol_diag).sum(dim=-1)
-        return 0.5 * logabsdet
+        return J
 
     def compute_stepwise(self, rollout: Union[Rollout, RolloutBuffer, Dict]) -> torch.Tensor:
         EIG = self._compute_member_eig(
