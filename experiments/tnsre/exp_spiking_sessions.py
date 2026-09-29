@@ -9,10 +9,20 @@ later, or after 2 s without a decision, the circuit resets. Agents are given the
 session rule: their filters jump to the known reset state and the iCEM planners
 simulate resets inside their rollouts. The run stops after the last session;
 ``total_steps`` is only an upper bound (20 sessions x 400 bins).
+
+``wong_wang_snn_sessions_m2_evidence`` adds sensory evidence to every session (6 pA to a
+random pool for the first 1 s, as in the task sessions); the agents know it, so their
+filters, learners, and planners use the action plus the evidence as the circuit's input.
+``wong_wang_snn_sessions_m2_evidence_u2`` doubles the agents' input bound (|u| <= 2, 40 pA)
+with the same evidence; the readout is calibrated as before (amplitude 1).
 """
 
 DEFAULT_SEED_COUNT = 20
-DEFAULT_EXP_IDS = ("wong_wang_snn_sessions_m2",)
+DEFAULT_EXP_IDS = (
+    "wong_wang_snn_sessions_m2",
+    "wong_wang_snn_sessions_m2_evidence",
+    "wong_wang_snn_sessions_m2_evidence_u2",
+)
 # Matched comparison set of the manuscript (PALDI, Myopic, FLEX, RHC-US, PRBS, Random).
 MODEL_IDS = ["adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random"]
 SHARED_EXP_ARGS = {

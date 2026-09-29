@@ -674,3 +674,21 @@ environments:
     - 0.0
     - 1.5
     - 0.0
+
+  # The M2 identification with sensory evidence in every session (2026-09-28): 6 pA
+  # (0.3 units) to a random pool (drawn per session from its network seed) for the
+  # first 1 s, as in the task sessions. Agents know the schedule and the pool.
+  tbme_wong_wang_snn_sessions_m2_evidence:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions with evidence
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+
+  # The evidence identification with twice the agents' input bound (2026-09-29): |u| <= 2
+  # (40 pA per pool) during identification. The readout calibration keeps amplitude 1, so
+  # each seed's readout matches the other M2 runs; the task evaluation keeps |u| <= 1.
+  tbme_wong_wang_snn_sessions_m2_evidence_u2:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    system_label: Wong-Wang (input inside the gain) / spiking network, sessions with evidence, input bound 2
+    action_max: 2.0
+    spiking_calibration_amplitude: 1.0
