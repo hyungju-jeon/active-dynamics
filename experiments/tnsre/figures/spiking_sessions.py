@@ -144,7 +144,7 @@ def _draw_circuit(ax: Any) -> None:
                     arrowprops=dict(arrowstyle="-|>", lw=1.0, color=STROKE_COLOR, mutation_scale=7))
         ax.text(x + side * 2.5, y + 1.45, f"$u_{i}$", ha="center", va="center", fontsize=_ASSET_LABEL_SIZE)
         ax.plot([x + side * 0.95, x + side * 1.9], [y - 0.65, y - 0.7], color=STROKE_COLOR, lw=0.7)
-        ax.text(x + side * 2.1, y - 1.3, "40 rec.", ha="center", va="center", fontsize=_ASSET_TICK_SIZE,
+        ax.text(x + side * 2.1, y - 1.3, "40 neurons", ha="center", va="center", fontsize=_ASSET_TICK_SIZE,
                 color=STROKE_COLOR)
     inhibitory_center = (6.0, 3.1)
     inhibitory = Circle(inhibitory_center, 0.7, facecolor=NEUTRAL_LIGHT, alpha=0.5,
@@ -494,7 +494,7 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
         a.axvline(onset_ms, color=STROKE_COLOR, lw=0.6, ls="--")
         style_experiment_axis(a)
     ax_l.axhline(2.0, color=STROKE_COLOR, lw=0.5, alpha=0.6)
-    ax_l.set_ylabel("lead", fontsize=_ASSET_LABEL_SIZE)
+    ax_l.set_ylabel(rf"$z_{target}-z_{1 - target}$", fontsize=_ASSET_LABEL_SIZE)
     ax_t.set_title(f"One session (budget {budget:g})", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
     handles, labels = ax_l.get_legend_handles_labels()
     handles = [handles[labels.index("no input")], Line2D([], [], ls="none", markerfacecolor=STROKE_COLOR,
@@ -527,8 +527,8 @@ def _control_legend(fig: Any, plt: Any) -> None:
 
 
 def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = "task_summary_warm.csv") -> Path:
-    """Overturn-task figure of the main text: (A) success vs budget, (B) success along
-    identification, (C) task timeline over one example session. Warm-start controller
+    """Overturn-task figure of the main text: (A) task timeline over one example session, (B) success along
+    identification, (C) success vs budget. Warm-start controller
     unless ``summary_name`` says otherwise."""
     from experiments.tnsre.eval_spiking_sessions import PROTOCOL
 
@@ -539,15 +539,17 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     fig = plt.figure(figsize=(FIGURE_WIDTH, 2.05))
-    row = fig.add_gridspec(1, 3, width_ratios=[0.5, 1.0, 2.15], left=0.065, right=0.985, top=0.8,
-                           bottom=0.2, wspace=0.3)
-    ax = fig.add_subplot(row[0])
-    _draw_budget_panel(ax, look, task, [float(b) for b in PROTOCOL["budgets"][task]], ylabel=True)
-    _panel_label(ax, "A", dx=-28)  # left of the tick labels: the title is wider than this narrow panel
-    ax = fig.add_subplot(row[1], sharey=ax)
-    _draw_session_panel(ax, look, task, checkpoints, ylabel=False)
-    _panel_label(ax, "B")
-    _panel_label(_draw_example_session(fig, row[2], eval_dir, task), "C", dx=-30)
+    row = fig.add_gridspec(1, 3, width_ratios=[2.15, 1.0, 0.5], left=0.065, right=0.97, top=0.8,
+                           bottom=0.2, wspace=0.45)
+    _panel_label(_draw_example_session(fig, row[0], eval_dir, task), "A", dx=-30)
+    ax = fig.add_subplot(row[1])
+    _draw_session_panel(ax, look, task, checkpoints, ylabel=True)
+    _panel_label(ax, "B", dx=-28)
+    ax = fig.add_subplot(row[2], sharey=ax)
+    _draw_budget_panel(ax, look, task, [float(b) for b in PROTOCOL["budgets"][task]], ylabel=False)
+    ax.set_xlabel(r"Budget $B$")
+    ax.set_title("After 20\nsessions", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
+    _panel_label(ax, "C", dx=-18)
     _control_legend(fig, plt)
     return save_figure(fig, output, plt_module=plt)
 
@@ -697,7 +699,69 @@ def generate_diagnosis(experiment_dir: Path, output: Path) -> Path:
     return save_figure(fig, output, plt_module=plt)
 
 
+def generate_identification_diagnostics(experiment_dir: Path, output: Path) -> Path:
+    """Restore threshold timing and decision frequency from saved identification runs.
+
+    Threshold panel follows the archived provenance/untracked_sources version of
+    this script. Nonattainment is reported explicitly, never imputed as a time.
+    Decision frequency is the fraction of 20 sessions with decision != 0.
+    """
+    r2 = _read(experiment_dir / "eval" / "r2_per_session.csv")
+    sessions = _read(experiment_dir / "eval" / "identification_sessions.csv")
+    plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
+    if plt is None:
+        raise RuntimeError("Matplotlib is unavailable")
+    fig, axes = plt.subplots(1, 2, figsize=(FIGURE_WIDTH, 2.45))
+    fig.subplots_adjust(left=0.105, right=0.975, bottom=0.23, top=0.88, wspace=0.50)
+    summary = {}
+    for i, policy in enumerate(POLICIES):
+        first, fractions = [], []
+        for seed in range(20):
+            rr = [r for r in r2 if r["policy"] == policy and int(r["seed"]) == seed]
+            ss = [r for r in sessions if r["policy"] == policy and int(r["seed"]) == seed]
+            if (len(rr) != 21 or {int(r["sessions"]) for r in rr} != set(range(21))
+                    or len(ss) != 20 or {int(r["session"]) for r in ss} != set(range(20))):
+                raise ValueError(f"Incomplete identification data: {policy}, seed {seed}")
+            if not all(np.isfinite(float(r["r2"])) for r in rr):
+                raise ValueError(f"Nonfinite prediction score: {policy}, seed {seed}")
+            hits = [int(r["sessions"]) for r in rr if float(r["r2"]) >= 0.8]
+            first.append(min(hits) if hits else None)
+            fractions.append(np.mean([int(r["decision"]) != 0 for r in ss]))
+        reached = [v for v in first if v is not None]
+        color = _asset_baseline_policy_color(policy)
+        if reached:
+            lo, med, hi = np.percentile(reached, [25, 50, 75])
+            axes[0].plot([lo, hi], [i, i], color=color, lw=2)
+            axes[0].plot(med, i, "o", color=color, ms=4)
+        axes[0].text(21, i, f"{len(reached)}/20", va="center", ha="left",
+                     fontsize=_ASSET_TICK_SIZE)
+        axes[1].scatter(np.asarray(fractions) * 100,
+                        i + np.linspace(-0.14, 0.14, 20), s=9, color=color, alpha=0.45, lw=0)
+        axes[1].plot(np.mean(fractions) * 100, i, "D", color=color, ms=4,
+                     markeredgecolor="white", markeredgewidth=0.5)
+        summary[policy] = dict(first_threshold_session=first, decision_fraction=fractions,
+                               reached=len(reached), conditional_median=float(np.median(reached)) if reached else None,
+                               mean_decision_fraction=float(np.mean(fractions)))
+    for ax, letter in zip(axes, "AB"):
+        ax.set_yticks(range(len(POLICIES)))
+        ax.set_yticklabels([_asset_policy_label(p) for p in POLICIES])
+        ax.set_ylim(5.6, -0.6)
+        style_experiment_axis(ax)
+        _panel_label(ax, letter, dx=-36)
+    axes[0].set_xlim(0, 26)
+    axes[0].set_xticks([0, 5, 10, 15, 20])
+    axes[0].set_xlabel(r"Sessions to $R^2_{\mathrm{roll}}\geq0.8$")
+    axes[0].text(21, -0.85, "Reached", fontsize=_ASSET_TICK_SIZE, ha="left")
+    axes[1].set_xlim(-3, 103)
+    axes[1].set_xticks([0, 25, 50, 75, 100])
+    axes[1].set_xlabel("Sessions with a decision (%)")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.with_suffix(".summary.json").write_text(json.dumps(summary, indent=2))
+    return save_figure(fig, output, plt_module=plt)
+
+
 FIGURES = {
+    "identification_diagnostics": ("appendix_spiking_identification", generate_identification_diagnostics),
     "identification": ("tnsre_fig_spiking_identification", generate_identification),
     "control": ("tnsre_fig_spiking_control", generate_control),
     "force": ("tnsre_fig_spiking_force", generate_force),
