@@ -12,6 +12,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from actdyn.environment.session import SessionRule, session_evidence
+
 from .base import BasePolicy
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -292,7 +294,16 @@ class FlexWongWangInsideGainModel(FlexWongWangModel):
     Learned parameters (w_+, w_-, h_raw, gamma_raw, g_raw); h = h_raw / beta, and gamma
     and g are the softplus of the raw values. The input matrix df/du depends on the
     state, so ``get_B`` differentiates the drift instead of returning the identity.
+
+    ``input_offset`` (shape (m,)) is a known input added to the model's input, the
+    decision-session evidence: the FLEX policy, which linearizes at u = 0, then
+    linearizes at the evidence it acts with. It is zero while learning, which uses
+    the played total drive.
     """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.input_offset = torch.zeros(self.m)
 
     def forward(self, z):
         params = self._full_params(dtype=z.dtype, device=z.device)
@@ -301,7 +312,7 @@ class FlexWongWangInsideGainModel(FlexWongWangModel):
         g = torch.nn.functional.softplus(params[4])
         c1 = z[:, 0] / self.state_scale
         c2 = z[:, 1] / self.state_scale
-        u = z[:, 2:4]
+        u = z[:, 2:4] + self.input_offset.to(z.dtype)
         gain_1 = torch.sigmoid(self.beta * (w_plus * c1 - w_minus * c2 + h + g * u[:, 0]))
         gain_2 = torch.sigmoid(self.beta * (w_plus * c2 - w_minus * c1 + h + g * u[:, 1]))
         d_s1 = (-(c1 + 0.5) + (0.5 - c1) * gamma * gain_1) / self.tau
@@ -402,6 +413,10 @@ class FLEXPolicy(BasePolicy):
         self._initial_parameter_mean = init_mean[:1].detach().clone()
         self._flex_model = None
         self._flex_agent = None
+        # Decision sessions (set by the runner and the agent): the policy linearizes the
+        # model at the known evidence of the current bin.
+        self.session_rule: SessionRule | None = None
+        self.session_context: dict[str, Any] | None = None
         self.last_update_info = {
             "parameter_posterior_updated": False,
             "flex_residual_norm": 0.0,
@@ -499,9 +514,28 @@ class FLEXPolicy(BasePolicy):
         )
         t = int(self.count)
         self.count += 1
-        u = np.asarray(self._flex_agent.policy(x, t), dtype=np.float32).reshape(1, 1, -1)
+        evidence = self._known_evidence()
+        if evidence is not None:
+            self._flex_model.input_offset = evidence
+        try:
+            u = np.asarray(self._flex_agent.policy(x, t), dtype=np.float32).reshape(1, 1, -1)
+        finally:
+            if evidence is not None:
+                self._flex_model.input_offset = torch.zeros_like(evidence)
         action = torch.as_tensor(u, dtype=torch.float32, device=self.device)
         return action, torch.zeros((), dtype=torch.float32, device=self.device)
+
+    def _known_evidence(self) -> torch.Tensor | None:
+        """Evidence of the bin about to run, shape (2,); None without session evidence."""
+        rule = self.session_rule
+        if rule is None or float(rule.evidence_amplitude) <= 0.0:
+            return None
+        if not hasattr(self._flex_model, "input_offset"):
+            raise ValueError("session evidence needs a FLEX model with an input offset (wong_wang_inside_gain)")
+        context = self.session_context or {}
+        bins = torch.tensor([int(context.get("bins", 0))])
+        pool = torch.tensor([int(context.get("evidence_pool", -1))])
+        return session_evidence(bins, pool, rule)[0]
 
     def update(self, rollout: Any):
         assert self._flex_agent is not None

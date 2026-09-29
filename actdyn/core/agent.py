@@ -190,6 +190,14 @@ def _session_fields(env_info: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _model_input(action: torch.Tensor | None, env_info: Dict[str, Any]) -> torch.Tensor | None:
+    """Input the model sees for a step: the action plus any known evidence the environment added."""
+    if action is None or 'evidence' not in env_info:
+        return action
+    evidence = torch.as_tensor(env_info['evidence'], dtype=action.dtype, device=action.device)
+    return action + evidence.reshape(action.shape)
+
+
 def _apply_session_reset(model: Any, policy: Any, env_info: Dict[str, Any]) -> None:
     """Move the state belief to the announced reset state and let the policy restart its plan."""
     reset_state_belief = getattr(model, 'reset_session_state', None)
@@ -276,6 +284,8 @@ class Agent:
         reset_policy_state = getattr(self.policy, 'reset_policy_state', None)
         if callable(reset_policy_state):
             reset_policy_state(seed=seed)
+        if 'session_context' in info:
+            setattr(self.policy, 'session_context', info['session_context'])
 
         self._env_state = info['latent_state']
         self._model_state = model_info['latent_state']
@@ -322,6 +332,8 @@ class Agent:
         """Take a step in the environment."""
         obs, reward, terminated, truncated, env_info = self.env.step(action)
         done = terminated or truncated
+        policy_action = action
+        action = _model_input(action, env_info)  # the filter and learner see the total drive
 
         policy_owns_theta = bool(getattr(self.policy, 'owns_parameter_estimate', False))
         env_transition = {
@@ -417,7 +429,7 @@ class Agent:
         transition = {
             **env_transition,
             **model_transition,
-            'policy_action': action,
+            'policy_action': policy_action,
             'state_posterior_updated': state_posterior_updated,
             'parameter_posterior_updated': parameter_posterior_updated,
             'window_buffer_length': len(self._window_buffer),
@@ -591,6 +603,7 @@ class AsyncAgent(Agent):
 
         obs, reward, terminated, truncated, env_info = self.env.step(action)
         done = terminated or truncated
+        action = _model_input(action, env_info)
 
         env_transition = {
             'obs': self._observation,

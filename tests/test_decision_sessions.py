@@ -8,13 +8,15 @@ import numpy as np
 import pytest
 import torch
 
-from actdyn.core.agent import _apply_session_reset, _session_fields
+from actdyn.core.agent import _apply_session_reset, _model_input, _session_fields
 from actdyn.environment.action import IdentityActionEncoder
 from actdyn.environment.session import (
     SessionRule,
     advance_session_clock,
     new_session_clock,
     session_clock_from_context,
+    session_evidence,
+    session_evidence_pool,
 )
 from actdyn.environment.spiking_decision import SpikingDecisionEnv
 from actdyn.metrics.information import EmbeddingFisherMetric
@@ -95,7 +97,7 @@ def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
         if info["session_end"]:
             np.testing.assert_allclose(info["latent_state"], rule.reset_state)
             np.testing.assert_allclose(info["session_pre_reset_state"], [-2.0 + 0.3 * 11, -2.0], rtol=1e-6)
-            assert info["session_context"] == {"bins": 0, "decided": False, "since": 0}
+            assert info["session_context"] == {"bins": 0, "decided": False, "since": 0, "evidence_pool": -1}
     # The gap first exceeds 2 at bin 7; the reset follows 4 bins later.
     assert [i + 1 for i, e in enumerate(ends) if e] == [11, 22, 33]
     _, clock_resets = _run_clock([0.3 * (t + 1) for t in range(11)], rule)
@@ -103,6 +105,65 @@ def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
     assert [s["decision"] for s in env.session_log] == [1, 1, 1]
     assert [s["decision_bin"] for s in env.session_log] == [7, 7, 7]
     assert network.reset_seeds == [SpikingDecisionEnv.session_seed(7, k) for k in range(4)]
+
+
+def test_session_evidence_follows_the_pool_and_the_evidence_period():
+    rule = SessionRule(evidence_amplitude=0.3, evidence_bins=4)
+    bins = torch.tensor([0, 3, 4, 0, 2])
+    pool = torch.tensor([1, 0, 0, -1, 0])
+    expected = [[0.0, 0.3], [0.3, 0.0], [0.0, 0.0], [0.15, 0.15], [0.3, 0.0]]
+    torch.testing.assert_close(session_evidence(bins, pool, rule), torch.tensor(expected))
+    # A coarse step of 4 bins starting at bin 2 has the evidence on for half its bins.
+    torch.testing.assert_close(session_evidence(torch.tensor([2]), torch.tensor([1]), rule, 4),
+                               torch.tensor([[0.0, 0.15]]))
+    assert session_evidence(bins, pool, SessionRule()).abs().max() == 0.0
+    pools = [session_evidence_pool(SpikingDecisionEnv.session_seed(3, k)) for k in range(40)]
+    assert set(pools) == {0, 1}
+    assert pools == [session_evidence_pool(SpikingDecisionEnv.session_seed(3, k)) for k in range(40)]
+
+
+class RecordingNetwork(ScriptedNetwork):
+    """ScriptedNetwork that records the drive of every bin."""
+
+    def __init__(self, rate: float) -> None:
+        super().__init__(rate)
+        self.drives: list[np.ndarray] = []
+
+    def step(self, action: np.ndarray):
+        self.drives.append(np.asarray(action, dtype=np.float64).copy())
+        return super().step(action)
+
+
+def test_environment_adds_the_known_evidence_to_the_drive():
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=2, max_session_bins=30, max_sessions=2,
+                       evidence_amplitude=0.3, evidence_bins=3)
+    network = RecordingNetwork(rate=0.3)
+    env = SpikingDecisionEnv(network, session_rule=rule)
+    _z, info = env.reset(seed=4)
+    pools = [session_evidence_pool(SpikingDecisionEnv.session_seed(4, k)) for k in range(2)]
+    assert info["session_context"]["evidence_pool"] == pools[0]
+    action = np.array([0.1, -0.2])
+    evidences, context_pools, terminated = [], [info["session_context"]["evidence_pool"]], False
+    while not terminated:
+        _z, _r, terminated, _trunc, info = env.step(action)
+        evidences.append(info["evidence"])
+        context_pools.append(info["session_context"]["evidence_pool"])
+    # Decision at bin 7, reset after bin 9: each session has 9 bins, the first 3 with evidence.
+    for k, pool in enumerate(pools):
+        on = np.zeros(2)
+        on[pool] = 0.3
+        for b in range(9):
+            np.testing.assert_allclose(evidences[9 * k + b], on if b < 3 else np.zeros(2), atol=1e-7)
+            np.testing.assert_allclose(network.drives[9 * k + b], action + evidences[9 * k + b], atol=1e-7)
+    assert context_pools[:9] == [pools[0]] * 9 and context_pools[9] == pools[1]
+    assert [s["evidence_pool"] for s in env.session_log] == pools
+
+
+def test_agent_model_input_is_the_action_plus_the_evidence():
+    action = torch.tensor([[[0.5, -0.5]]])
+    torch.testing.assert_close(_model_input(action, {"evidence": np.array([0.3, 0.0])}),
+                               torch.tensor([[[0.8, -0.5]]]))
+    assert _model_input(action, {}) is action
 
 
 def test_environment_without_sessions_never_resets_itself():
@@ -169,6 +230,22 @@ def test_planner_rollout_uses_the_session_context_and_coarse_bins():
     planner.model.predict = lambda a: planner.model._state + torch.cumsum(a, dim=-2)
     plain = planner.simulate(None, torch.zeros(1, 6, 2))
     assert plain.flat.get("session_reset_after") is None
+
+
+def test_planner_rollout_adds_the_known_evidence_until_a_reset():
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=1, max_session_bins=100,
+                       evidence_amplitude=2.0, evidence_bins=2)
+    planner, _ = _session_planner(rule)
+    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": 0}
+    rollout = planner.simulate(None, torch.zeros(1, 5, 2))
+    # z1 rises by 2 per evidence bin: the gap reaches 4 > 2 in step 1 (the decision), the
+    # evidence ends after bin 2, and the session resets after step 2. The next session's
+    # pool is unknown, so its evidence is split between the pools.
+    expected_inputs = [[2.0, 0.0], [2.0, 0.0], [0.0, 0.0], [1.0, 1.0], [1.0, 1.0]]
+    torch.testing.assert_close(rollout["env_action"][0], torch.tensor(expected_inputs))
+    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 0, 1, 0, 0]
+    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([0.0, 0.0]))
+    torch.testing.assert_close(planner._known_evidence(3)[0], torch.tensor([[2.0, 0.0]] * 2 + [[0.0, 0.0]]))
 
 
 def test_planner_session_reset_forces_a_new_plan():

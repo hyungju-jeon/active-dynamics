@@ -7,12 +7,18 @@ to the initial point, and a session without a decision ends after
 ``max_session_bins``. The environment applies the rule to the true latent; agents
 are given the same rule, so their filters know the reset state and their
 planners can simulate resets inside model rollouts.
+
+A rule with ``evidence_amplitude > 0`` adds sensory evidence to every session:
+the input ``evidence_amplitude`` drives one pool, drawn per session, during the
+first ``evidence_bins`` bins, on top of the agent's input. Agents know the
+schedule and the pool of the current session.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 
 
@@ -27,6 +33,8 @@ class SessionRule:
         reset_state: Latent state after a reset, shape (2,) (all gating zero).
         reset_variance: Variance of the agents' state belief right after a reset.
         max_sessions: The environment terminates after this many sessions (None: never).
+        evidence_amplitude: Evidence input to the evidence pool, in action units (0: none).
+        evidence_bins: Bins from the session start during which the evidence is on.
     """
 
     decision_gap: float = 2.0
@@ -35,6 +43,34 @@ class SessionRule:
     reset_state: tuple[float, float] = (-2.0, -2.0)
     reset_variance: float = 0.01
     max_sessions: int | None = None
+    evidence_amplitude: float = 0.0
+    evidence_bins: int = 0
+
+
+def session_evidence_pool(session_seed: int) -> int:
+    """Pool (0 or 1) that receives the evidence in the session with network seed ``session_seed``."""
+    return int(np.random.default_rng([int(session_seed), 1]).integers(2))
+
+
+def session_evidence(
+    bins: torch.Tensor, pool: torch.Tensor, rule: SessionRule, step_bins: int = 1
+) -> torch.Tensor:
+    """Evidence input of the step that starts at session bin ``bins``, shape (B, 2), float32.
+
+    Args:
+        bins: Bins elapsed in the session at the start of the step, shape (B,).
+        pool: Evidence pool per rollout, shape (B,): 0 or 1, or -1 for a session whose
+            pool is not known yet (a later session inside a planner rollout), which gets
+            the expected evidence, half the amplitude to each pool.
+        step_bins: Bins per step; a step that straddles the end of the evidence period
+            gets the evidence averaged over its bins.
+    """
+    step = float(step_bins)
+    on = ((float(rule.evidence_bins) - bins.to(torch.float32)) / step).clamp(0.0, 1.0)
+    onehot = torch.nn.functional.one_hot(pool.clamp(min=0).long(), 2).to(torch.float32)
+    split = torch.full_like(onehot, 0.5)
+    share = torch.where((pool >= 0).unsqueeze(-1), onehot, split)
+    return float(rule.evidence_amplitude) * on.unsqueeze(-1) * share
 
 
 def new_session_clock(batch: int, *, device: torch.device | str = "cpu") -> dict[str, torch.Tensor]:

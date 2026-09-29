@@ -36,7 +36,7 @@ import numpy as np
 import torch
 from gymnasium import spaces
 
-from actdyn.environment.session import SessionRule
+from actdyn.environment.session import SessionRule, session_evidence, session_evidence_pool
 
 # Wang (2002) time constant of NMDA gating, the unit of time of the reduced model.
 TAU_NMDA_MS = 100.0
@@ -443,7 +443,10 @@ class SpikingDecisionEnv(gym.Env):
     True``, the post-reset latent as ``latent_state``, and the latent before the
     reset as ``session_pre_reset_state``. Session ``k`` of a run
     reseeded with ``seed`` uses network seed ``session_seed(seed, k)``. After
-    ``rule.max_sessions`` sessions the step reports ``terminated``.
+    ``rule.max_sessions`` sessions the step reports ``terminated``. With session
+    evidence (``rule.evidence_amplitude > 0``) the network is driven by the action
+    plus the evidence of the bin; the step reports that evidence as
+    ``info["evidence"]`` and the session context carries the evidence pool.
     """
 
     metadata: Dict[str, Any] = {"render_modes": []}
@@ -484,6 +487,17 @@ class SpikingDecisionEnv(gym.Env):
         self.session_bins = 0
         self.decision = 0
         self.decision_bin = -1
+        self.evidence_pool = (session_evidence_pool(self.session_seed(self._run_seed, session_index))
+                              if self._has_evidence() else -1)
+
+    def _has_evidence(self) -> bool:
+        return self.session_rule is not None and float(self.session_rule.evidence_amplitude) > 0.0
+
+    def _evidence(self) -> np.ndarray:
+        """Evidence input of the bin about to run, shape (2,)."""
+        bins = torch.tensor([self.session_bins])
+        pool = torch.tensor([self.evidence_pool])
+        return session_evidence(bins, pool, self.session_rule)[0].numpy().astype(np.float64)
 
     def get_params(self) -> torch.Tensor:
         """Reference parameters of the reduced model (not parameters of the network)."""
@@ -498,7 +512,8 @@ class SpikingDecisionEnv(gym.Env):
         """Session clock as the agents see it (bins elapsed, decision made, bins since)."""
         decided = self.decision != 0
         return {"bins": self.session_bins, "decided": decided,
-                "since": self.session_bins - self.decision_bin if decided else 0}
+                "since": self.session_bins - self.decision_bin if decided else 0,
+                "evidence_pool": self.evidence_pool}
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         if seed is not None:
@@ -517,9 +532,13 @@ class SpikingDecisionEnv(gym.Env):
 
     def step(self, action: Any):
         a = action.detach().cpu().numpy() if isinstance(action, torch.Tensor) else np.asarray(action)
-        counts, z = self.network.step(a.reshape(-1))
+        evidence = self._evidence() if self._has_evidence() else None
+        drive = a.reshape(-1) if evidence is None else a.reshape(-1) + evidence
+        counts, z = self.network.step(drive)
         self.last_counts = counts
         info: Dict[str, Any] = {"latent_state": z, "spike_counts": counts}
+        if evidence is not None:
+            info["evidence"] = evidence.astype(np.float32)
         terminated = False
         rule = self.session_rule
         if rule is not None:
@@ -534,7 +553,8 @@ class SpikingDecisionEnv(gym.Env):
             info.update(session_index=self.session_index, decision=self.decision, session_end=bool(end))
             if end:
                 self.session_log.append({"session": self.session_index, "bins": self.session_bins,
-                                         "decision": self.decision, "decision_bin": self.decision_bin})
+                                         "decision": self.decision, "decision_bin": self.decision_bin,
+                                         "evidence_pool": self.evidence_pool})
                 next_index = self.session_index + 1
                 info["session_pre_reset_state"] = z
                 z = self.network.reset(self.session_seed(self._run_seed, next_index))
@@ -684,7 +704,8 @@ def build_spiking_environment(
     The preset supplies the network configuration (``spiking_*`` fields), the
     latent step ``dt`` in units of tau_NMDA (control bin ``dt * 100 ms``), and the
     reduced-model reference parameters. The readout is calibrated on an
-    open-loop episode seeded by ``seed`` before the experiment starts.
+    open-loop episode seeded by ``seed`` before the experiment starts, with input
+    amplitude ``spiking_calibration_amplitude`` (default ``action_max``).
     """
     dt = float(env_preset.dt)
     network = WangDecisionNetwork(
@@ -710,7 +731,8 @@ def build_spiking_environment(
         steps=int(env_preset.spiking_calibration_steps),
         hold_steps=int(env_preset.spiking_calibration_hold_steps),
         seed=int(seed),
-        action_max=float(action_max),
+        action_max=float(action_max if env_preset.spiking_calibration_amplitude is None
+                         else env_preset.spiking_calibration_amplitude),
     )
     reference = np.asarray(env_preset.resolved_true_params(), dtype=np.float32)
     env = SpikingDecisionEnv(network, action_max=action_max, reference_params=reference,
@@ -735,5 +757,7 @@ def session_rule_from_preset(env_preset: Any, state_scale: float) -> Optional[Se
         reset_state=(-float(state_scale) / 2.0,) * 2,
         reset_variance=float(env_preset.spiking_reset_variance),
         max_sessions=int(n_sessions),
+        evidence_amplitude=float(env_preset.spiking_session_evidence_amplitude),
+        evidence_bins=int(env_preset.spiking_session_evidence_bins),
     )
 

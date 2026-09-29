@@ -79,6 +79,9 @@ class EnvironmentPreset:
     spiking_background_rate_hz: float = 2400.0
     spiking_calibration_steps: int = 800
     spiking_calibration_hold_steps: int = 50
+    # Input amplitude of the readout calibration episode; None = action_max. Fixing it keeps
+    # the calibrated readout when a variant changes the agents' input bound.
+    spiking_calibration_amplitude: float | None = None
     spiking_codegen_target: str = "cython"
     # Decision sessions (actdyn.environment.session.SessionRule); None = one continuous trial.
     spiking_sessions: int | None = None
@@ -86,6 +89,9 @@ class EnvironmentPreset:
     spiking_post_decision_bins: int = 40
     spiking_max_session_bins: int = 400
     spiking_reset_variance: float = 0.01
+    # Evidence in every decision session (SessionRule.evidence_*); amplitude 0 = none.
+    spiking_session_evidence_amplitude: float = 0.0
+    spiking_session_evidence_bins: int = 0
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
@@ -749,12 +755,16 @@ def load_catalog_bundle(
             spiking_background_rate_hz=float(spec.get("spiking_background_rate_hz", 2400.0)),
             spiking_calibration_steps=int(spec.get("spiking_calibration_steps", 800)),
             spiking_calibration_hold_steps=int(spec.get("spiking_calibration_hold_steps", 50)),
+            spiking_calibration_amplitude=(None if spec.get("spiking_calibration_amplitude") is None
+                                           else float(spec["spiking_calibration_amplitude"])),
             spiking_codegen_target=str(spec.get("spiking_codegen_target", "cython")),
             spiking_sessions=(None if spec.get("spiking_sessions") is None else int(spec["spiking_sessions"])),
             spiking_decision_gap=float(spec.get("spiking_decision_gap", 2.0)),
             spiking_post_decision_bins=int(spec.get("spiking_post_decision_bins", 40)),
             spiking_max_session_bins=int(spec.get("spiking_max_session_bins", 400)),
             spiking_reset_variance=float(spec.get("spiking_reset_variance", 0.01)),
+            spiking_session_evidence_amplitude=float(spec.get("spiking_session_evidence_amplitude", 0.0)),
+            spiking_session_evidence_bins=int(spec.get("spiking_session_evidence_bins", 0)),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
             action_dim=int(spec.get("action_dim", 2)),

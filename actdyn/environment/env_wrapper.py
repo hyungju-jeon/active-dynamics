@@ -130,6 +130,10 @@ class EnvWrapper(gym.Wrapper):
         else:
             latent_state = self._to_tensor(obs)
         observed = self.obs_model.observe(self._to_tensor(obs))
+        # A known exogenous input (decision-session evidence) adds to the action: the
+        # logged env_action is the drive the system received.
+        if "evidence" in info:
+            env_action_log = self._to_tensor(env_action_log) + self._to_tensor(info["evidence"])
 
         # Add observation info (all torch tensors)
         info.update(

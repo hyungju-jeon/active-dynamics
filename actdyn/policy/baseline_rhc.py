@@ -14,6 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from actdyn.environment.session import SessionRule, session_evidence
 from actdyn.models.planning_surrogates import LocalRBFBayesianLinearDynamics, RFFBayesianLinearDynamics
 from actdyn.utils.rollout import RecentRollout
 
@@ -129,6 +130,10 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         self._episode_inputs: list[np.ndarray] = []
         self._episode_deltas: list[np.ndarray] = []
         self._episode_updates = 0
+        # Decision sessions (set by the runner and the agent): the planner adds the known
+        # evidence of the current session to its planned inputs.
+        self.session_rule: SessionRule | None = None
+        self.session_context: dict[str, Any] | None = None
         self.last_update_info: dict[str, float | int | str | bool] = {
             'parameter_posterior_updated': False,
             'objective': self.objective,
@@ -158,7 +163,9 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
             raise ValueError('RHC requires a filtered state to plan from')
         self._ensure_model(x0)
         assert self._planner is not None
-        plan = self._planner.plan(x0=x0, objective=self.objective)
+        evidence = self._known_evidence()
+        plan = (self._planner.plan(x0=x0, objective=self.objective) if evidence is None
+                else self._planner.plan(x0=x0, objective=self.objective, input_offset=evidence))
         action_tensor = torch.as_tensor(plan.actions[None, :, :], dtype=torch.float32, device=self.device)
         cost_tensor = torch.as_tensor([[plan.cost]], dtype=torch.float32, device=self.device)
         assert self._internal_model is not None
@@ -172,6 +179,16 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
             'planner_cost': float(plan.cost),
         }
         return action_tensor, cost_tensor
+
+    def _known_evidence(self) -> np.ndarray | None:
+        """Evidence of the next ``horizon`` bins of the current session, shape (horizon, 2); None without."""
+        rule = self.session_rule
+        if rule is None or float(rule.evidence_amplitude) <= 0.0:
+            return None
+        context = self.session_context or {}
+        bins = int(context.get('bins', 0)) + torch.arange(self.horizon)
+        pool = torch.full((self.horizon,), int(context.get('evidence_pool', -1)), dtype=torch.long)
+        return session_evidence(bins, pool, rule).numpy().astype(np.float64)
 
     def update(self, batch: Mapping | RecentRollout) -> dict[str, float | int | str | bool]:
         """Collect the latest filtered transition; fit once per executed horizon."""

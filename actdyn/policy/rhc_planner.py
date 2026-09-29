@@ -48,8 +48,18 @@ class RhcMultipleShootingPlanner:
     def state_dim(self) -> int:
         return int(self.model.output_dim)
 
-    def plan(self, *, x0: np.ndarray, objective: str = 'rhc_us') -> RhcPlanResult:
+    def plan(
+        self, *, x0: np.ndarray, objective: str = 'rhc_us', input_offset: np.ndarray | None = None
+    ) -> RhcPlanResult:
+        """Plan ``horizon`` actions from ``x0``.
+
+        ``input_offset`` (horizon, action_dim) is a known input added to each planned
+        action before the surrogate sees it (decision-session evidence); the returned
+        actions exclude it.
+        """
         m = self.model.predict_casf(ret_var=True)
+        offset = cas.DM(np.zeros((self.horizon, self.action_dim)) if input_offset is None
+                        else np.asarray(input_offset, dtype=np.float64).reshape(self.horizon, self.action_dim))
         x0_arr = cas.DM(np.atleast_2d(np.asarray(x0, dtype=np.float64)))
         xu = cas.MX.sym('x', self.horizon, self.state_dim + self.action_dim)
         x = cas.vcat((x0_arr, xu[:, : self.state_dim]))
@@ -72,7 +82,7 @@ class RhcMultipleShootingPlanner:
         for i in range(self.horizon):
             xi = x[i, :]
             ui = u[i, :]
-            pred_res = m(cas.hcat((xi, ui)))
+            pred_res = m(cas.hcat((xi, ui + offset[i, :])))
             xj = pred_res[0]
             vi = pred_res[1]
             v = cas.vcat((v, vi))
