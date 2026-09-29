@@ -73,6 +73,8 @@ REFERENCE_STYLE = {
 DECISION_MARKER = dict(marker="o", ms=3.0, markeredgecolor="white", markeredgewidth=0.4)
 T_SHOWN_MS = 2500.0  # example session axis; both unsuccessful traces stay below the threshold after it
 TASK_TITLES = {"force": "Force", "overturn": "Overturn"}
+CURRENT_PA = 20.0
+BUDGET_PA2_S = CURRENT_PA ** 2 * 0.1  # normalized time unit = 100 ms
 CURVE_BUDGETS = {"force": 1.0, "overturn": 12.0}
 
 
@@ -271,40 +273,27 @@ def generate_identification(experiment_dir: Path, output: Path, *,
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     fig = plt.figure(figsize=(FIGURE_WIDTH, 2.7))
-    # All columns share one top and one bottom line; the legend runs above them.
+    from .spiking_characterization import draw_phase_portrait
+    # A: phase portrait; B: actual trial structure and recordings; C: prediction.
     top, bottom = 0.8, 0.15
-    left = fig.add_gridspec(2, 1, height_ratios=[1.1, 1.0], left=0.065, right=0.27, top=top, bottom=bottom,
-                            hspace=0.29)
-    row = fig.add_gridspec(1, 2, width_ratios=[2.5, 1.05], left=0.335, right=0.99, top=top, bottom=bottom,
-                           wspace=0.3)
-
-    ax = fig.add_subplot(left[0])
-    _draw_circuit(ax)
-    ax_b = fig.add_subplot(left[1])
-    # Reserve space below A's footer for B's title, event labels, and arrows.
-    pos_b = ax_b.get_position()
-    ax_b.set_position([pos_b.x0, pos_b.y0, pos_b.width, 0.49 / fig.get_size_inches()[1]])
-    _draw_session_protocol(ax_b)
-    fig.text(pos_b.x0 - 22.0 / 72.0 / FIGURE_WIDTH,
-             ax_b.get_position().y1 + 22.0 / 72.0 / fig.get_size_inches()[1],
-             "B", ha="left", va="bottom", fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
-    # Use the same top baseline as C and D, even though the equal-aspect circuit
-    # occupies only part of its grid cell horizontally.
-    fig.text(ax_b.get_position().x0 - 22.0 / 72.0 / FIGURE_WIDTH, top + 3.0 / 72.0 / 2.7,
-             "A", ha="left", va="bottom", fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight="bold")
-
-    # (C) one PALDI run: raster, latent, input in the first and the last session.
-    # Column widths follow session length, so all columns share one time scale.
+    ax = fig.add_axes([0.065, bottom, 0.22, 0.22 * FIGURE_WIDTH / 2.7])
+    equilibria = draw_phase_portrait(ax, experiment_dir)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.with_suffix('.fixed_points.json').write_text(json.dumps(equilibria, indent=2))
+    fig.text(.035, top+.02, 'A', fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight='bold')
+    row = fig.add_gridspec(1, 2, width_ratios=[2.5, 1.05], left=0.365, right=0.99,
+                          top=top, bottom=bottom, wspace=0.33)
     bounds = [_session_bounds(ex["session_end"])[k - 1] for k in sessions_shown]
-    sub = row[0].subgridspec(3, len(bounds), height_ratios=[0.8, 1.25, 0.95], hspace=0.12, wspace=0.1,
-                             width_ratios=[b - a for a, b in bounds])
+    sub = row[0].subgridspec(4, len(bounds), height_ratios=[0.5, 0.7, 1.15, 0.9],
+                           hspace=0.1, wspace=0.1, width_ratios=[b-a for a,b in bounds])
     n_obs = ex["counts"].shape[1]
     shared_y = []
     for col, (k, (a, b)) in enumerate(zip(sessions_shown, bounds)):
         t_ms = np.arange(b - a) * 5.0
-        ax_r = fig.add_subplot(sub[0, col])
-        ax_z = fig.add_subplot(sub[1, col], sharex=ax_r)
-        ax_u = fig.add_subplot(sub[2, col], sharex=ax_r)
+        ax_t = fig.add_subplot(sub[0, col])
+        ax_r = fig.add_subplot(sub[1, col], sharex=ax_t)
+        ax_z = fig.add_subplot(sub[2, col], sharex=ax_r)
+        ax_u = fig.add_subplot(sub[3, col], sharex=ax_r)
         if shared_y:
             for ax, first in zip((ax_r, ax_z, ax_u), shared_y):
                 ax.sharey(first)
@@ -316,21 +305,32 @@ def generate_identification(experiment_dir: Path, output: Path, *,
             ax_r.scatter(t_ms[spikes], np.full(spikes.size, j), s=2.0, marker="|", linewidths=0.6,
                          color=POOL_COLORS[0 if j < n_obs // 2 else 1], rasterized=True)
         rmse = _filter_rmse(ex["z"][a:b], ex["m"][a:b])
-        ax_r.set_title(f"Session {k}", fontsize=_ASSET_LABEL_SIZE, pad=2.0, loc="left")
-        ax_r.set_title(f"filter RMSE {rmse:.2f}", fontsize=_ASSET_TICK_SIZE, pad=2.5, loc="right",
-                       color=STROKE_COLOR)
+        ax_t.set_title(f"Trial {k}", fontsize=_ASSET_LABEL_SIZE, pad=2.0, loc="left")
         ax_r.set_ylim(-1, n_obs)
         ax_r.set_yticks([20, 60])
         ax_r.set_yticklabels(["1", "2"])
         for i in range(2):
             ax_z.plot(t_ms, ex["z"][a:b, i], color=POOL_COLORS[i], lw=0.8)
             ax_z.plot(t_ms, ex["m"][a:b, i], color=POOL_COLORS[i], lw=0.55, ls="--", alpha=0.8)
-            ax_u.plot(t_ms, ex["u"][a:b, i], color=POOL_COLORS[i], lw=0.6)
+            ax_u.plot(t_ms, CURRENT_PA * ex["u"][a:b, i], color=POOL_COLORS[i], lw=0.6)
         ax_z.set_ylim(-2.4, 2.4)
-        ax_u.set_ylim(-1.1, 1.1)
+        ax_u.set_ylim(-22, 22)
         # Decision (first bin with |z_1 - z_2| > gap, dashed) and the hold until the reset (shaded).
         lead = ex["z"][a:b, 0] - ex["z"][a:b, 1]
         decided = np.flatnonzero(np.abs(lead) > float(PROTOCOL["decision_gap"]))
+        from matplotlib.patches import Rectangle
+        decision_ms = decided[0] * 5.0 if decided.size else (b-a)*5.0
+        end_ms = (b-a)*5.0
+        ax_t.add_patch(Rectangle((0, .25), decision_ms, .6, color=PROBE_SHADE, lw=0))
+        ax_t.add_patch(Rectangle((decision_ms,.25), end_ms-decision_ms,.6,
+                                color=DECISION_SHADE, alpha=DECISION_ALPHA, lw=0))
+        ax_t.text(decision_ms/2,.55,'input',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
+        if decided.size:
+            ax_t.axvline(decision_ms,color=STROKE_COLOR,ls='--',lw=.6)
+            ax_t.text((decision_ms+end_ms)/2,.55,'hold',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
+        ax_t.plot([end_ms,end_ms],[.1,1.1],color=STROKE_COLOR,lw=.7,clip_on=False)
+        ax_t.text(end_ms,1.12,'reset',ha='right',va='bottom',fontsize=_ASSET_TICK_SIZE)
+        ax_t.set_ylim(0,1.8); ax_t.axis('off')
         if decided.size:
             for ax in (ax_r, ax_z, ax_u):
                 ax.axvspan(0.0, decided[0] * 5.0, color=PROBE_SHADE, lw=0, zorder=0)
@@ -340,7 +340,7 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         # Ticks every 500 ms, none at the right edge where the next column starts.
         ax_u.set_xlim(0.0, (b - a) * 5.0)
         ax_u.set_xticks(np.arange(0.0, (b - a) * 5.0 - 150.0, 500.0))
-        ax_u.set_xlabel("Session time (ms)")
+        ax_u.set_xlabel("Trial time (ms)")
         for ax in (ax_r, ax_z, ax_u):
             style_experiment_axis(ax)
             if col > 0:
@@ -348,10 +348,10 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         plt.setp(ax_r.get_xticklabels(), visible=False)
         plt.setp(ax_z.get_xticklabels(), visible=False)
         if col == 0:
-            for axis, label in zip((ax_r, ax_z, ax_u), ("Pool", "latent", "input")):
+            for axis, label in zip((ax_r, ax_z, ax_u), ("Pool", "state", "Input (pA)")):
                 axis.tick_params(axis="y", pad=1.0)
                 axis.set_ylabel(label, fontsize=_ASSET_LABEL_SIZE, labelpad=1.0)
-            _panel_label(ax_r, "C", dx=-34)
+            _panel_label(ax_t, "B", dx=-34)
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.8, label="network")
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.55, ls="--", label="filtered")
             ax_z.legend(loc="upper left", fontsize=_ASSET_TICK_SIZE, frameon=False, ncol=2,
@@ -371,11 +371,11 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     ax.set_xlim(0, FINAL_SESSIONS)
     ax.set_ylim(-0.2, 1.0)
     ax.set_xticks([0, 5, 10, 15, 20])
-    ax.set_xlabel("Identification sessions")
+    ax.set_xlabel("Identification trials")
     ax.set_ylabel(r"Held-out $R^2_{\mathrm{roll}}$")
     ax.set_title("Prediction", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
     style_experiment_axis(ax)
-    _panel_label(ax, "D", dx=-32)
+    _panel_label(ax, "C", dx=-32)
 
     handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0, label=_asset_policy_label(p))
                for p in POLICIES]
@@ -400,10 +400,10 @@ def _draw_budget_panel(ax: Any, look: dict, task: str, budgets: list[float], *, 
     pad = 0.15 * (budgets[-1] - budgets[0])
     ax.set_xlim(budgets[0] - pad, budgets[-1] + pad)
     ax.set_xticks(budgets)
-    ax.set_xticklabels([f"{b:g}" for b in budgets])
+    ax.set_xticklabels([f"{b * BUDGET_PA2_S:g}" for b in budgets])
     ax.set_ylim(-0.03, 1.03)
-    ax.set_title(f"After {FINAL_SESSIONS} sessions", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
-    ax.set_xlabel(r"Energy budget $\int\|u\|^2dt$")
+    ax.set_title(f"After {FINAL_SESSIONS} trials", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
+    ax.set_xlabel(r"Budget (pA$^2$ s)")
     if ylabel:
         ax.set_ylabel("Task success")
     style_experiment_axis(ax)
@@ -426,8 +426,8 @@ def _draw_session_panel(ax: Any, look: dict, task: str, checkpoints: list[int], 
     ax.set_xticks(pos)
     ax.set_xticklabels([str(k) for k in checkpoints])
     ax.set_ylim(-0.03, 1.03)
-    ax.set_title(f"Budget {b:g}", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
-    ax.set_xlabel("Identification sessions")
+    ax.set_title(rf"Budget {b * BUDGET_PA2_S:g} pA$^2$ s", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
+    ax.set_xlabel("Identification trials")
     if ylabel:
         ax.set_ylabel("Task success")
     style_experiment_axis(ax)
@@ -450,13 +450,9 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     ax_t = fig.add_subplot(sub[0])
     ax_l = fig.add_subplot(sub[1], sharex=ax_t)
     ax_u = fig.add_subplot(sub[2], sharex=ax_t)
-    free = EXAMPLES["model_free"][task]
-    # Drawn in this order: no input as a wide pale baseline underneath, the fit dotted on top of PALDI.
+    # Only PALDI and the uncontrolled trajectory are shown in Panel A.
     styles = {"none": dict(color=NEUTRAL_LIGHT, lw=1.8, label="no input"),
-              free: dict(color=REFERENCE_STYLE[free]["color"], lw=0.9, ls=REFERENCE_STYLE[free]["linestyle"],
-                         label=REFERENCE_STYLE[free]["label"].replace(" from onset", "")),
-              "learned": dict(color=_asset_baseline_policy_color("adaptive"), lw=1.0, label="PALDI model"),
-              "fit": dict(color=REFERENCE_STYLE["reduced_fit"]["color"], lw=1.0, ls=":", label="fitted model")}
+              "learned": dict(color=_asset_baseline_policy_color("adaptive"), lw=1.0, label="PALDI model")}
     onset_ms_bin = int(ex_rows[(task, "learned")]["onset"])
     onset_ms = onset_ms_bin * 5.0
     target = int(ex_rows[(task, "learned")]["target"])
@@ -481,21 +477,21 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
         if int(ex_rows[(task, name)]["success"]):
             ax_l.plot((z.shape[0] - 1) * 5.0, lead[-1], ls="none", **DECISION_MARKER,
                       markerfacecolor=st["color"])
-    # The uncontrolled decision ends the evidence period (bin onset - 1), the same in all traces.
+    # Mark the uncontrolled decision; evidence continues until its fixed 1-s endpoint.
     z = ex[f"{task}_learned_z"]
     ax_l.plot(onset_ms - 5.0, z[onset_ms_bin - 1, target] - z[onset_ms_bin - 1, 1 - target], ls="none",
               **DECISION_MARKER, markerfacecolor=STROKE_COLOR)
     u = ex[f"{task}_learned_u"]
     t_ms = np.arange(u.shape[0]) * 5.0
-    ax_u.plot(t_ms, u[:, target], color=POOL_COLORS[1], lw=0.8, label="to losing pool")
-    ax_u.plot(t_ms, u[:, 1 - target], color=POOL_COLORS[0], lw=0.8, label="to winning pool")
+    ax_u.plot(t_ms, CURRENT_PA * u[:, target], color=POOL_COLORS[target], lw=0.8, label="to target pool")
+    ax_u.plot(t_ms, CURRENT_PA * u[:, 1 - target], color=POOL_COLORS[1-target], lw=0.8, label="to initial-choice pool")
     ax_t.axvline(onset_ms, ymax=0.94, color=STROKE_COLOR, lw=0.6, ls="--")
     for a in (ax_l, ax_u):
         a.axvline(onset_ms, color=STROKE_COLOR, lw=0.6, ls="--")
         style_experiment_axis(a)
     ax_l.axhline(2.0, color=STROKE_COLOR, lw=0.5, alpha=0.6)
-    ax_l.set_ylabel(rf"$z_{target}-z_{1 - target}$", fontsize=_ASSET_LABEL_SIZE)
-    ax_t.set_title(f"One session (budget {budget:g})", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
+    ax_l.set_ylabel(rf"$z_{target + 1}-z_{2 - target}$", fontsize=_ASSET_LABEL_SIZE)
+    ax_t.set_title("Trial structure", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
     handles, labels = ax_l.get_legend_handles_labels()
     handles = [handles[labels.index("no input")], Line2D([], [], ls="none", markerfacecolor=STROKE_COLOR,
                                                          label="decision", **DECISION_MARKER)]
@@ -505,14 +501,17 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     ax_l.set_yticks([-2, 0, 2])
     for label in ax_l.get_xticklabels():
         label.set_visible(False)
-    ax_u.set_ylabel("input", fontsize=_ASSET_LABEL_SIZE)
-    ax_u.set_ylim(-1.1, 1.1)
+    ax_u.set_ylabel("Input\n(pA)", fontsize=_ASSET_LABEL_SIZE)
+    ax_u.yaxis.set_label_coords(-0.065, 0.5)
+    ax_u.set_ylim(-22, 22)
     ax_u.set_xlabel("Time (ms)")
     ax_u.set_xlim(0.0, T_SHOWN_MS)
-    # PALDI's input is zero before the decision; its legend sits in that span.
-    # Direct labels at the end of PALDI's input, where the traces separate.
-    for series, name, color in ((u[:, target], "losing", POOL_COLORS[1]), (u[:, 1 - target], "winning", POOL_COLORS[0])):
-        ax_u.text(t_ms[-1] + 40.0, series[-1], name, ha="left", va="center", fontsize=_ASSET_TICK_SIZE, color=color)
+    # Before control onset both inputs are zero, leaving room above the traces.
+    ax_u.legend(handles=[
+        Line2D([], [], color=POOL_COLORS[i], lw=0.8, label=str(i + 1))
+        for i in range(2)
+    ], loc="upper left", ncol=2, fontsize=_ASSET_TICK_SIZE, frameon=False,
+        borderaxespad=0.2, handlelength=1.0, handletextpad=0.3, columnspacing=0.7)
     return ax_t
 
 
@@ -527,8 +526,8 @@ def _control_legend(fig: Any, plt: Any) -> None:
 
 
 def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = "task_summary_warm.csv") -> Path:
-    """Overturn-task figure of the main text: (A) task timeline over one example session, (B) success along
-    identification, (C) success vs budget. Warm-start controller
+    """Overturn-task figure of the main text: (A) task timeline over one example session, (B) control trajectories over the fitted vector field,
+    (C) success along identification. Warm-start controller
     unless ``summary_name`` says otherwise."""
     from experiments.tnsre.eval_spiking_sessions import PROTOCOL
 
@@ -539,17 +538,16 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     fig = plt.figure(figsize=(FIGURE_WIDTH, 2.05))
-    row = fig.add_gridspec(1, 3, width_ratios=[2.15, 1.0, 0.5], left=0.065, right=0.97, top=0.8,
-                           bottom=0.2, wspace=0.45)
-    _panel_label(_draw_example_session(fig, row[0], eval_dir, task), "A", dx=-30)
-    ax = fig.add_subplot(row[1])
+    example = fig.add_gridspec(1, 1, left=0.065, right=0.49, top=0.84, bottom=0.20)
+    comparison = fig.add_gridspec(1, 1, left=0.825, right=0.995, top=0.8, bottom=0.20)
+    _panel_label(_draw_example_session(fig, example[0], eval_dir, task), "A", dx=-30)
+    from .spiking_characterization import draw_control_phase
+    ax = fig.add_axes([0.565, 0.20, 0.175, 0.60])
+    draw_control_phase(ax, experiment_dir, Path("results/tnsre/20260929_manuscript_update/control_phase_uniform"))
+    _panel_label(ax, "B", dx=-18)
+    ax = fig.add_subplot(comparison[0])
     _draw_session_panel(ax, look, task, checkpoints, ylabel=True)
-    _panel_label(ax, "B", dx=-28)
-    ax = fig.add_subplot(row[2], sharey=ax)
-    _draw_budget_panel(ax, look, task, [float(b) for b in PROTOCOL["budgets"][task]], ylabel=False)
-    ax.set_xlabel(r"Budget $B$")
-    ax.set_title("After 20\nsessions", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
-    _panel_label(ax, "C", dx=-18)
+    _panel_label(ax, "C", dx=-28)
     _control_legend(fig, plt)
     return save_figure(fig, output, plt_module=plt)
 
@@ -604,9 +602,11 @@ def generate_diagnosis(experiment_dir: Path, output: Path) -> Path:
     fit = reference_fit()
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
-    fig = plt.figure(figsize=(FIGURE_WIDTH, 2.35))
-    gs = fig.add_gridspec(1, 4, width_ratios=[1.0, 1.35, 1.0, 1.0], left=0.065, right=0.985, top=0.83,
-                          bottom=0.2, wspace=0.7)
+    # Two rows give the fourteen swap labels room at the printed text width.
+    fig = plt.figure(figsize=(FIGURE_WIDTH, 5.2))
+    gs = fig.add_gridspec(2, 2, height_ratios=[1.35, 1.0], left=0.085,
+                          right=0.98, top=0.90, bottom=0.12,
+                          wspace=0.85, hspace=0.55)
 
     # (A) control-regime R2 by push direction.
     ax = fig.add_subplot(gs[0])
@@ -623,7 +623,7 @@ def generate_diagnosis(experiment_dir: Path, output: Path) -> Path:
         ax.bar(np.arange(3) + (j - (len(models) - 1) / 2) * width, med, width * 0.9, yerr=[lo, hi], color=color,
                error_kw=dict(lw=0.5, capsize=1.0))
     ax.set_xticks(range(3))
-    ax.set_xticklabels(["excite\nlosing pool", "both", "suppress\nwinning pool"], fontsize=_ASSET_TICK_SIZE)
+    ax.set_xticklabels(["excite\ntarget", "both", "suppress\ninitial choice"], fontsize=_ASSET_TICK_SIZE)
     ax.set_ylim(0, 1.05)
     ax.set_ylabel(r"$R^2_{\mathrm{roll}}$, control regime")
     style_experiment_axis(ax)
@@ -632,7 +632,7 @@ def generate_diagnosis(experiment_dir: Path, output: Path) -> Path:
     # (B) parameter swaps and the planner/filter split.
     ax = fig.add_subplot(gs[1])
     names = {"w_plus": r"$w_+$", "w_minus": r"$w_-$", "h_raw": r"$h$", "gamma_raw": r"$\gamma$", "g_raw": r"$g$"}
-    order = ([("learned", "PALDI estimate"), ("fit", "fitted model")]
+    order = ([("learned", "PALDI estimate"), ("fit", "Fitted")]
              + [(f"learned+fit:{p}", f"PALDI, fit {n}") for p, n in names.items()]
              + [(f"fit+learned:{p}", f"fit, PALDI {n}") for p, n in names.items()]
              + [("plan:learned/filter:fit", "plan PALDI, filter fit"),
@@ -647,7 +647,7 @@ def generate_diagnosis(experiment_dir: Path, output: Path) -> Path:
     ax.set_yticklabels([lab for _, lab in order], fontsize=_ASSET_TICK_SIZE)
     ax.invert_yaxis()
     ax.set_xlim(0, 1.0)
-    ax.set_xlabel("Overturn success (budget 12)")
+    ax.set_xlabel("Task success\n" + r"(480 pA$^2$ s)")
     style_experiment_axis(ax)
     _panel_label(ax, "B", dx=-55)
 
@@ -655,14 +655,15 @@ def generate_diagnosis(experiment_dir: Path, output: Path) -> Path:
     ax = fig.add_subplot(gs[2])
     rng = np.random.default_rng(0)  # vertical jitter only, for overlapping success fractions
     all_x, all_y = [], []
+    markers = dict(zip(ACTIVE, ("o", "^", "s")))
     for policy in ACTIVE:
         pts = [(r2[(policy, s, k)][0], success[(policy, s, k)]) for (p, s, k) in success
                if p == policy and k in (1, 5, 20) and (policy, s, k) in r2]
         x, y = (np.array(v) for v in zip(*pts))
         all_x.append(x)
         all_y.append(y)
-        ax.scatter(x, y + rng.uniform(-0.015, 0.015, y.size), s=5, color=_asset_baseline_policy_color(policy),
-                   alpha=0.6, lw=0)
+        ax.scatter(x, y + rng.uniform(-0.015, 0.015, y.size), s=9, color=_asset_baseline_policy_color(policy),
+                   marker=markers[policy], alpha=0.7, lw=0)
     r = float(np.corrcoef(np.concatenate(all_x), np.concatenate(all_y))[0, 1])
     ax.text(0.03, 0.97, f"r = {r:.2f}", transform=ax.transAxes, ha="left", va="top", fontsize=_ASSET_TICK_SIZE)
     # Early checkpoints have negative R2; show every point that enters r.
@@ -670,7 +671,7 @@ def generate_diagnosis(experiment_dir: Path, output: Path) -> Path:
     ax.set_xticks(np.arange(np.ceil(ax.get_xlim()[0] * 2) / 2, 1.01, 0.5))
     ax.set_ylim(-0.05, 1.05)
     ax.set_xlabel(r"Held-out $R^2_{\mathrm{roll}}$")
-    ax.set_ylabel("Overturn success (budget 12)")
+    ax.set_ylabel("Task success\n" + r"(480 pA$^2$ s)")
     style_experiment_axis(ax)
     _panel_label(ax, "C")
 
@@ -678,22 +679,25 @@ def generate_diagnosis(experiment_dir: Path, output: Path) -> Path:
     ax = fig.add_subplot(gs[3])
     for policy in ACTIVE:
         th = np.array([r2[(policy, s, FINAL_SESSIONS)][1] for s in range(20) if (policy, s, FINAL_SESSIONS) in r2])
-        ax.scatter(th[:, 1], [_softplus(x) for x in th[:, 3]], s=6, color=_asset_baseline_policy_color(policy),
-                   alpha=0.75, lw=0)
+        ax.scatter(th[:, 1], [_softplus(x) for x in th[:, 3]], s=12, color=_asset_baseline_policy_color(policy),
+                   marker=markers[policy], alpha=0.75, lw=0)
     if refits:
         ax.scatter([r["w_minus"] for r in refits], [r["gamma"] for r in refits], s=14, marker="x", lw=0.7,
-                   color=STROKE_COLOR, label="refit on session data")
+                   color=STROKE_COLOR, label="refit on trial data")
     ax.scatter([fit[1]], [_softplus(fit[3])], s=28, marker="s", color=REFERENCE_STYLE["reduced_fit"]["color"],
-               label="fitted model", zorder=5)
+               label="Fitted", zorder=5)
     ax.set_xlabel(r"cross-inhibition $w_-$")
     ax.set_ylabel(r"gain scale $\gamma$")
-    ax.legend(loc="upper right", fontsize=_ASSET_TICK_SIZE, frameon=False, handletextpad=0.2, borderaxespad=0.1)
+    ax.legend(loc="lower right", bbox_to_anchor=(1, 1.02), ncol=2,
+              fontsize=_ASSET_TICK_SIZE, frameon=False, handletextpad=0.3,
+              columnspacing=0.8, borderaxespad=0.1)
     style_experiment_axis(ax)
     _panel_label(ax, "D")
 
-    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0, label=_asset_policy_label(p))
+    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0,
+                         marker=markers[p], markersize=3, label=_asset_policy_label(p))
                for p in ACTIVE]
-    handles.append(plt.Line2D([], [], color=REFERENCE_STYLE["reduced_fit"]["color"], lw=3, label="fitted model"))
+    handles.append(plt.Line2D([], [], color=REFERENCE_STYLE["reduced_fit"]["color"], lw=3, label="Fitted"))
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=len(handles),
                fontsize=_ASSET_TICK_SIZE, columnspacing=0.9, handlelength=1.4, handletextpad=0.3, frameon=False)
     return save_figure(fig, output, plt_module=plt)
@@ -750,19 +754,23 @@ def generate_identification_diagnostics(experiment_dir: Path, output: Path) -> P
         _panel_label(ax, letter, dx=-36)
     axes[0].set_xlim(0, 26)
     axes[0].set_xticks([0, 5, 10, 15, 20])
-    axes[0].set_xlabel(r"Sessions to $R^2_{\mathrm{roll}}\geq0.8$")
+    axes[0].set_xlabel(r"Trials to $R^2_{\mathrm{roll}}\geq0.8$")
     axes[0].text(21, -0.85, "Reached", fontsize=_ASSET_TICK_SIZE, ha="left")
     axes[1].set_xlim(-3, 103)
     axes[1].set_xticks([0, 25, 50, 75, 100])
-    axes[1].set_xlabel("Sessions with a decision (%)")
+    axes[1].set_xlabel("Trials with a decision (%)")
     output.parent.mkdir(parents=True, exist_ok=True)
     output.with_suffix(".summary.json").write_text(json.dumps(summary, indent=2))
     return save_figure(fig, output, plt_module=plt)
 
 
+from .spiking_characterization import generate_circuit
+
+
 FIGURES = {
     "identification_diagnostics": ("appendix_spiking_identification", generate_identification_diagnostics),
     "identification": ("tnsre_fig_spiking_identification", generate_identification),
+    "circuit": ("appendix_spiking_circuit", generate_circuit),
     "control": ("tnsre_fig_spiking_control", generate_control),
     "force": ("tnsre_fig_spiking_force", generate_force),
     "diagnosis": ("tnsre_fig_spiking_diagnosis", generate_diagnosis),

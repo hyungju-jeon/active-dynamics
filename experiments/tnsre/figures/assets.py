@@ -2173,7 +2173,8 @@ def _asset_plot_constraints_combined(
         [Line2D([0], [0], color=_asset_baseline_policy_color(policy), linewidth=1.6)
          for policy in _ASSET_MATCHED_POLICIES],
         [_asset_policy_label(policy) for policy in _ASSET_MATCHED_POLICIES],
-        loc="upper left", bbox_to_anchor=(0.075, 1.015), ncol=6,
+        loc="lower right", bbox_to_anchor=(0.995, 0.91), ncol=6,
+        borderaxespad=0.1, borderpad=0.1,
         fontsize=_ASSET_TICK_SIZE, columnspacing=1.0, handlelength=1.4,
     )
     _asset_write_method_csv(output_path.with_suffix(".csv"), bar_rows, r2_summary=r2_summary)

@@ -22,6 +22,8 @@ from .assets import (
 )
 from .theme import style_experiment_axis
 
+from .spiking_sessions import BUDGET_PA2_S
+
 WIDTH = 516 / 72.27
 POLICIES = ("adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random")
 REFERENCES = ("reduced_fit", "spread", "front")
@@ -134,7 +136,7 @@ def make_figure(scores: pd.DataFrame):
         ax.set_axisbelow(True)
         ax.yaxis.grid(True, linewidth=0.4, color="#E4E4E4")
         handles = [Patch(facecolor=str(1 - 0.55 * strength), edgecolor="#333333", linewidth=0.35,
-                         label=f"$B={b:g}$")
+                         label=rf"{BUDGET_PA2_S*b:g} pA$^2$ s")
                    for b, strength in zip(budgets, strengths)]
         ax.legend(handles=handles, loc="lower right", bbox_to_anchor=(1, 1.03),
                   ncol=len(budgets), frameon=False, handlelength=1.7, columnspacing=1.25)
