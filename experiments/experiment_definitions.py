@@ -51,6 +51,13 @@ class EnvironmentPreset:
     estimator_true_params: tuple[float, ...] | None = None
     initial_parameter_mean: float | tuple[float, ...] = 1.0
     initial_parameter_variance: float = 0.0
+    # Unit of the learned parameters: the initial-draw std, prior covariance, q_theta, and
+    # FLEX step clip, bounds and prior precision are given for unit-scale parameters and
+    # rescaled by this factor (std, clip, bounds x s; variances x s^2; precision / s^2).
+    parameter_scale: float = 1.0
+    # Draw the initial guess as mean + std |xi| for parameters of known sign (for example
+    # connection strengths); False keeps mean + std xi.
+    initial_parameter_nonnegative: bool = False
     state_low: tuple[float, ...] | None = None
     state_high: tuple[float, ...] | None = None
     min_embedding_dim: int | None = None
@@ -664,6 +671,8 @@ def load_catalog_bundle(
             initial_parameter_variance=float(
                 spec.get("initial_parameter_variance", 0.0)
             ),
+            parameter_scale=float(spec.get("parameter_scale", 1.0)),
+            initial_parameter_nonnegative=bool(spec.get("initial_parameter_nonnegative", False)),
             state_low=_as_state_vector(
                 spec.get("state_low"), label=f"environments.{preset_id}.state_low"
             ),
