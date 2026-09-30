@@ -717,6 +717,19 @@ def _boundary_visibility_mean(states: Any, env_preset: Any) -> float | None:
         return None
 
 
+def _flex_parameter_settings(policy_spec: Any, env_preset: Any) -> dict[str, float | None]:
+    """FLEX prior precision, step clip and bounds in the units of ``env_preset.parameter_scale``."""
+    scale = float(env_preset.parameter_scale)
+    regularization = 1e-2 if policy_spec.flex_regularization is None else float(policy_spec.flex_regularization)
+    scaled = lambda value: None if value is None else float(value) * scale
+    return {
+        "regularization": regularization / scale**2,
+        "parameter_step_clip": scaled(policy_spec.flex_parameter_step_clip),
+        "parameter_min": scaled(policy_spec.flex_parameter_min),
+        "parameter_max": scaled(policy_spec.flex_parameter_max),
+    }
+
+
 def _instantiate_synthetic_policy(
     *,
     actdyn_module: Any,
@@ -765,14 +778,7 @@ def _instantiate_synthetic_policy(
             initial_parameter_mean=initial_parameter_mean,
             use_observed_state=use_observed_state,
             rollback_unstable_update=policy_name == "flex_safe",
-            regularization=(
-                1e-2
-                if policy_spec.flex_regularization is None
-                else float(policy_spec.flex_regularization)
-            ),
-            parameter_step_clip=policy_spec.flex_parameter_step_clip,
-            parameter_min=policy_spec.flex_parameter_min,
-            parameter_max=policy_spec.flex_parameter_max,
+            **_flex_parameter_settings(policy_spec, env_preset),
             lr=policy_spec.flex_lr,
             device=device,
         )
@@ -792,14 +798,7 @@ def _instantiate_synthetic_policy(
             initial_parameter_mean=initial_parameter_mean,
             use_observed_state=bool(policy_spec.use_true_state),
             rollback_unstable_update=policy_type == "flex-rollback",
-            regularization=(
-                1e-2
-                if policy_spec.flex_regularization is None
-                else float(policy_spec.flex_regularization)
-            ),
-            parameter_step_clip=policy_spec.flex_parameter_step_clip,
-            parameter_min=policy_spec.flex_parameter_min,
-            parameter_max=policy_spec.flex_parameter_max,
+            **_flex_parameter_settings(policy_spec, env_preset),
             lr=policy_spec.flex_lr,
             device=device,
         )
@@ -927,6 +926,10 @@ def _run_single_parameter_identification(
     policy_spec = get_policy_spec(policy_id)
     schedule_spec = get_schedule_spec(policy_spec.schedule_id)
     env_preset = get_environment_preset(exp_spec.env_preset_id)
+    # Parameter-space settings are given for unit-scale parameters (see parameter_scale).
+    parameter_scale = float(env_preset.parameter_scale)
+    q_theta = float(q_theta) * parameter_scale**2
+    parameter_prior_covariance = float(parameter_prior_covariance) * parameter_scale**2
 
     start_time = utc_now()
     set_matplotlib_style()
@@ -1207,13 +1210,15 @@ def _run_single_parameter_identification(
     if initial_parameter_variance > 0.0:
         initial_parameter_generator = torch.Generator(device="cpu")
         initial_parameter_generator.manual_seed(int(seed))
-        initial_parameter_std = float(initial_parameter_variance) ** 0.5
+        initial_parameter_std = parameter_scale * float(initial_parameter_variance) ** 0.5
         initial_parameter_noise = torch.randn(
             1,
             de,
             generator=initial_parameter_generator,
             dtype=torch.float32,
         ).to(device)
+        if env_preset.initial_parameter_nonnegative:
+            initial_parameter_noise = initial_parameter_noise.abs()
         initial_parameter = (
             initial_parameter_mean + initial_parameter_std * initial_parameter_noise
         )
@@ -1237,6 +1242,9 @@ def _run_single_parameter_identification(
     fe_init = inspect.signature(actdyn.models.FilteringEmbedding.__init__)
     if "q_theta" in fe_init.parameters:
         model_kwargs["q_theta"] = q_theta
+    if "e_clip" in fe_init.parameters:
+        # The filter clamps parameter estimates to +-5 unit-scale parameters.
+        model_kwargs["e_clip"] = 5.0 * parameter_scale
     if "k_theta" in fe_init.parameters:
         model_kwargs["k_theta"] = int(schedule_spec.update_interval)
     if "adaptive_update" in fe_init.parameters:
@@ -2263,6 +2271,8 @@ def _run_single_parameter_identification(
             ),
             "q_theta": float(q_theta),
             "parameter_prior_covariance": float(parameter_prior_covariance),
+            "parameter_scale": float(parameter_scale),
+            "initial_parameter_nonnegative": bool(env_preset.initial_parameter_nonnegative),
             "initial_parameter_mean": [
                 float(x) for x in initial_parameter_mean.reshape(-1).tolist()
             ],

@@ -25,7 +25,7 @@ from actdyn.utils.vectorfields_eqn import (
     CompoundTriGate,
     ThreeGateDiagnostic,
     ThreeGateTradeoff,
-    WilsonCowan,
+    WilsonCowan1972,
     WongWang,
     WongWangInsideGain,
 )
@@ -55,7 +55,7 @@ vf_from_string = {
     "fitzhugh_nagumo": FitzHughNagumo,
     "hopf": Hopf,
     "snowman": SnowMan,
-    "wilson_cowan": WilsonCowan,
+    "wilson_cowan_1972": WilsonCowan1972,
     "wong_wang": WongWang,
     "wong_wang_inside_gain": WongWangInsideGain,
 }

@@ -27,35 +27,52 @@ from .assets import (
 from .theme import style_axis
 
 ROOT = Path(__file__).resolve().parents[3]
-SOURCE = ROOT / "results/tnsre/20260922_wilson_cowan_a2/tracks/wilson_cowan"
-OUTPUT = ROOT / "results/tnsre/20260928_wilson_exploration"
+SOURCE = ROOT / "results/tnsre/20260930_wilson_cowan_1972_u3_signed/tracks/wilson_cowan"
+OUTPUT = ROOT / "results/tnsre/20260930_wilson_cowan_1972_u3_signed/exploration"
 WIDTH = 516 / 72.27
-DOMAIN = (-4.5, 4.5)  # encloses every saved state of every compared run
-GRID = 60  # 0.15 x 0.15 latent-coordinate cells
+# Visit-map domain [-7.5, 7.5]^2: the additive input moves states beyond the rate range
+# (z < -2 is a negative rate), and the grid must enclose every saved state (--half-width).
+DOMAIN = (-7.5, 7.5)
+CELL = 0.15  # latent-coordinate cell size
 POLICIES = tuple(_ASSET_MATCHED_POLICIES)
 
 
 def jacobians(z: np.ndarray, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Return drift Jacobians (...,2,2) and (...,2,4) in float64 latent units."""
-    weights = np.array([[theta[0], -theta[1]], [theta[2], -theta[3]]])
-    gain = expit(6 * (z @ weights.T / 4 + [-0.05, -0.35]))
-    slope = 6 * gain * (1 - gain)
-    jz = slope[..., :, None] * weights - np.eye(2)
+    """Drift Jacobians (...,2,2) and (...,2,4) of ``WilsonCowan1972`` in float64 latent units.
+
+    With r = z / s + r_0, x = C r and v = s (-r + (k - r_r r) S(x)) per population,
+    dv/dz = -I - diag(r_r S) + diag((k - r_r r) S') C and
+    dv/dw = s diag((k - r_r r) S') dx/dw, where C = [[w_1, -w_2], [w_3, -w_4]].
+    """
+    from actdyn.utils.vectorfields_eqn import WilsonCowan1972
+
+    vf = WilsonCowan1972()
+    a = np.array([vf.a_e, vf.a_i])
+    thresh = np.array([vf.theta_e, vf.theta_i])
+    k = np.array([vf.k_e, vf.k_i])
+    refractory = np.array([vf.r_e, vf.r_i])
+    weights = vf.weight_scale * np.array([[theta[0], -theta[1]], [theta[2], -theta[3]]])
+    rate = z / vf.state_scale + vf.rate_offset
+    logistic = expit(a * (rate @ weights.T - thresh))
+    gain = logistic - expit(-a * thresh)
+    slope = (k - refractory * rate) * a * logistic * (1 - logistic)
+    jz = slope[..., :, None] * weights - np.eye(2) - (refractory * gain)[..., :, None] * np.eye(2)
     jt = np.zeros((*z.shape[:-1], 2, 4), dtype=np.float64)
-    jt[..., 0, :2] = slope[..., 0, None] * z * [1, -1]
-    jt[..., 1, 2:] = slope[..., 1, None] * z * [1, -1]
+    jt[..., 0, :2] = vf.state_scale * vf.weight_scale * slope[..., 0, None] * rate * [1, -1]
+    jt[..., 1, 2:] = vf.state_scale * vf.weight_scale * slope[..., 1, None] * rate * [1, -1]
     return jz, jt
 
 
-def coverage(z: np.ndarray, bins: int) -> tuple[np.ndarray, np.ndarray, float]:
+
+def coverage(z: np.ndarray, bins: int, domain: tuple[float, float] = DOMAIN) -> tuple[np.ndarray, np.ndarray, float]:
     """Per-run cumulative visited-cell fraction, pooled visit probability, outside fraction.
 
     z has shape (seed,time,2). Count sampled states, with no line interpolation,
     convex hull, smoothing, or clipping of out-of-domain states into edge cells.
     """
     n, t, _ = z.shape
-    inside = np.all((z >= DOMAIN[0]) & (z <= DOMAIN[1]), axis=-1)
-    cells = np.floor((z - DOMAIN[0]) / (DOMAIN[1] - DOMAIN[0]) * bins).astype(int)
+    inside = np.all((z >= domain[0]) & (z <= domain[1]), axis=-1)
+    cells = np.floor((z - domain[0]) / (domain[1] - domain[0]) * bins).astype(int)
     cells = np.clip(cells, 0, bins - 1)
     ids = cells[..., 1] * bins + cells[..., 0]
     seen = np.zeros((n, bins * bins), dtype=bool)
@@ -73,14 +90,16 @@ def parameter_information(z: np.ndarray, meta: dict) -> np.ndarray:
     S^- = Fz S^+ + Ftheta; P^- = Fz P^+ Fz.T + Q.
     A = (Iz^-1 + P^-)^-1; Lambda += S^-.T A S^-.
     S^+ = (I - P^- A) S^-; P^+ = P^- - P^- A P^-.
-    Gain = logdet(I + Ptheta0 Lambda)/2, Ptheta0=I.
-    Initial state covariance is I and initial sensitivity is zero. No parameter
+    Gain = logdet(I + Ptheta0 Lambda)/2, Ptheta0 = the run's prior parameter covariance (I or,
+    for weights on the scale of 10, 100 I). Initial state covariance is I and initial
+    sensitivity is zero. No parameter
     diffusion, online parameter estimates, shrinkage, or policy-specific schedule
     is used. The last saved state has no successor; use the 1,999 saved pairs.
     Boundary derivatives are omitted, as in the manuscript's local Jacobians.
     """
     n, t, _ = z.shape
     dt, q = float(meta["dt"]), float(meta["state_noise"])
+    prior_covariance = float(meta.get("parameter_prior_covariance", 1.0))
     c = np.asarray(meta["observation_loading_matrix"], dtype=np.float64)
     b = np.asarray(meta["observation_loading_bias"], dtype=np.float64)
     jz, jt = jacobians(z[:, :-1], np.asarray(meta["embedding_true"]))
@@ -100,7 +119,7 @@ def parameter_information(z: np.ndarray, meta: dict) -> np.ndarray:
         sensitivity = correction @ predicted_s
         covariance = correction @ predicted_p
         covariance = (covariance + covariance.swapaxes(-1, -2)) / 2
-        sign, logdet = np.linalg.slogdet(np.eye(4) + precision_gain)
+        sign, logdet = np.linalg.slogdet(np.eye(4) + prior_covariance * precision_gain)
         if not np.all(sign > 0):
             raise ValueError("Nonpositive diagnostic precision determinant")
         out[:, k + 1] = logdet / 2
@@ -140,7 +159,7 @@ def load_runs(source: Path, policy: str) -> tuple[np.ndarray, dict, list[dict]]:
     return np.stack(trajectories), metadata[0], provenance
 
 
-def plot(data: dict, output: Path) -> None:
+def plot(data: dict, output: Path, domain: tuple[float, float] = DOMAIN) -> None:
     """Six comparable visit maps above coverage and information learning curves."""
     import matplotlib
     matplotlib.use("Agg")
@@ -155,7 +174,7 @@ def plot(data: dict, output: Path) -> None:
                           sharey=first_map)
         if first_map is None:
             first_map = ax
-        im = ax.imshow(data[policy]["map"], origin="lower", extent=(*DOMAIN, *DOMAIN),
+        im = ax.imshow(data[policy]["map"], origin="lower", extent=(*domain, *domain),
                        vmin=0, vmax=100, cmap="cividis", interpolation="nearest")
         ax.set_title(_asset_policy_label(policy), pad=4)
         ax.set_xticks([-4, 0, 4]); ax.set_yticks([-4, 0, 4])
@@ -207,7 +226,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", type=Path, default=SOURCE)
     parser.add_argument("--output-dir", type=Path, default=OUTPUT)
+    parser.add_argument("--half-width", type=float, default=DOMAIN[1],
+                        help="Visit-map domain [-h, h]^2; must enclose every saved state.")
     args = parser.parse_args()
+    domain = (-float(args.half_width), float(args.half_width))
+    grid = int(round((domain[1] - domain[0]) / CELL))
     args.output_dir.mkdir(parents=True, exist_ok=True)
     data, ledger, rows, summary = {}, [], [], {}
     common = None
@@ -218,16 +241,16 @@ def main() -> None:
                         "observation_loading_bias", "parameter_prior_covariance", "state_init_uncertainty"):
                 np.testing.assert_allclose(meta[key], common[key])
         common = meta
-        if meta["parameter_prior_covariance"] != 1 or meta["state_init_uncertainty"] != 1:
-            raise ValueError("Diagnostic initialization assumes identity covariances")
-        cov, visit, outside = coverage(z, GRID)
+        if meta["state_init_uncertainty"] != 1:
+            raise ValueError("Diagnostic initialization assumes an identity state covariance")
+        cov, visit, outside = coverage(z, grid, domain)
         info = parameter_information(z, meta)
         data[policy] = {"coverage": cov, "map": visit, "information": info}
         ledger.extend(provenance)
         summary[policy] = {"seeds": 100, "outside_domain_fraction": outside,
                            "coverage_final_q25_median_q75": np.quantile(cov[:, -1], [.25, .5, .75]).tolist(),
                            "information_final_q25_median_q75": np.quantile(info[:, -1], [.25, .5, .75]).tolist(),
-                           "coverage_resolution_check": {str(n): float(np.median(coverage(z, n)[0][:, -1]))
+                           "coverage_resolution_check": {str(n): float(np.median(coverage(z, n, domain)[0][:, -1]))
                                                          for n in [40, 80]}}
         for seed in range(100):
             for k in np.unique(np.r_[np.arange(0, 2000, 25), 1999]):
@@ -237,12 +260,12 @@ def main() -> None:
     pd.DataFrame(rows).to_csv(args.output_dir / "metrics.csv", index=False)
     (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     (args.output_dir / "provenance.json").write_text(json.dumps({
-        "source": str(args.source), "grid": GRID, "domain": DOMAIN,
+        "source": str(args.source), "grid": grid, "domain": domain,
         "samples_per_run": 2000, "transitions_per_run": 1999,
         "information": "oracle-linearized Gaussian/Poisson sensitivity proxy; not realized posterior gain",
         "inputs": ledger,
     }, indent=2) + "\n")
-    plot(data, args.output_dir / "appendix_wilson_exploration.pdf")
+    plot(data, args.output_dir / "appendix_wilson_exploration.pdf", domain)
 
 
 if __name__ == "__main__":

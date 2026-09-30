@@ -36,7 +36,12 @@ TBME_ENV_PATHS = [
 
 # Attractors of the default parameterizations in latent coordinates, found by
 # root finding on the drift (scripts under scratch, reproduced here as data).
-WILSON_COWAN_ATTRACTORS = np.array([[-1.966, -1.940], [1.992, 0.600]], dtype=np.float32)
+# Equilibria (E, I) of the Wilson-Cowan (1972) multiple-steady-state example as listed by
+# Akhmet & Cag (arXiv:1701.04015, Eq. 8): down state, up state, saddle.
+WILSON_COWAN_1972_RATES = np.array(
+    [[0.0, 0.0], [0.44234, 0.22751], [0.18816, 0.067243]], dtype=np.float32
+)
+WILSON_COWAN_1972_TRUE = np.array([12.0, 4.0, 13.0, 11.0], dtype=np.float32)
 WONG_WANG_ATTRACTORS = np.array([[-1.8443, -0.1291], [-0.1291, -1.8443]], dtype=np.float32)
 WONG_WANG_SADDLE = np.array([[-0.9336, -0.9336]], dtype=np.float32)
 WONG_WANG_TRUE = np.array([1.2, 0.8], dtype=np.float32)
@@ -58,7 +63,7 @@ def tbme_catalog():
 @pytest.mark.parametrize(
     ("dynamics_type", "equilibria", "param_dim"),
     [
-        ("wilson_cowan", WILSON_COWAN_ATTRACTORS, 4),
+        ("wilson_cowan_1972", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 4),
         ("wong_wang", np.concatenate([WONG_WANG_ATTRACTORS, WONG_WANG_SADDLE]), 2),
     ],
 )
@@ -90,8 +95,13 @@ def test_wong_wang_is_symmetric_under_pool_exchange():
 
 def test_neural_presets_resolve_from_tbme_catalog(tbme_catalog):
     wc = get_environment_preset("tbme_wilson_cowan")
-    assert wc.resolved_dynamics_type() == "wilson_cowan"
-    np.testing.assert_allclose(wc.resolved_true_params(), [2.5, 1.0, 1.0, 0.3])
+    assert wc.resolved_dynamics_type() == "wilson_cowan_1972"
+    np.testing.assert_allclose(wc.resolved_true_params(), WILSON_COWAN_1972_TRUE)
+    assert wc.parameter_scale == pytest.approx(10.0)
+    assert wc.action_max == pytest.approx(3.0)
+    assert wc.initial_parameter_nonnegative
+    assert wc.initial_parameter_nonnegative
+    assert wc.action_max == pytest.approx(3.0)
     assert wc.embedding_dim == 4
     assert wc.state_noise == pytest.approx(0.1)
     assert not basin_switch_enabled(wc)
@@ -203,20 +213,35 @@ def test_recompute_basin_switch_traces_writes_rows_at_interval(
     assert recompute_basin_switch_traces([record], force=True) == 1
 
 
-def test_flex_wilson_cowan_model_matches_vector_field():
-    from actdyn.environment.vectorfield import residual_torch
-    from actdyn.policy.baseline_flex import FlexWilsonCowanModel
+def test_wilson_cowan_1972_stability_and_published_weights():
+    from actdyn.utils.vectorfields_eqn import WilsonCowan1972
 
-    params = np.array([2.1, 0.7, 1.3, 0.5], dtype=np.float32)
-    model = FlexWilsonCowanModel(
+    vf = WilsonCowan1972()
+    # The learned coordinates are the published weights (12, 4, 13, 11) as is.
+    np.testing.assert_allclose(vf.dyn_params.numpy()[0], WILSON_COWAN_1972_TRUE)
+    states = torch.as_tensor(8.0 * (WILSON_COWAN_1972_RATES - 0.25))
+    jac = jacobian_state_torch("wilson_cowan_1972", states, vf.dyn_params.reshape(-1), dynamics_alpha=1.0)
+    real = torch.linalg.eigvals(jac).real
+    assert torch.all(real[:2] < 0)  # down and up states are stable
+    assert real[2].min() < 0 < real[2].max()  # saddle
+    # The shifted logistic makes E = I = 0 an exact equilibrium.
+    np.testing.assert_allclose(vf(states[:1]).numpy(), 0.0, atol=1e-6)
+
+
+def test_flex_wilson_cowan_1972_model_matches_vector_field():
+    from actdyn.environment.vectorfield import residual_torch
+    from actdyn.policy.baseline_flex import FlexWilsonCowan1972Model
+
+    params = np.array([10.0, 6.0, 15.0, 9.0], dtype=np.float32)
+    model = FlexWilsonCowan1972Model(
         dt=0.01, dynamics_alpha=1.0, latent_dim=2, action_dim=2,
         initial_embedding=params, fixed_tail=np.zeros(0, dtype=np.float32),
     )
     z = torch.tensor([[-1.5, 0.3], [0.8, -0.9], [2.0, 0.6]])
     u = torch.tensor([[0.2, -0.1], [0.0, 0.0], [-0.5, 0.4]])
     out = model(torch.cat([z, u], dim=1))
-    expected = residual_torch("wilson_cowan", z, torch.as_tensor(params), dynamics_alpha=1.0) + u
-    np.testing.assert_allclose(out.detach().numpy(), expected.detach().numpy(), atol=1e-6)
+    expected = residual_torch("wilson_cowan_1972", z, torch.as_tensor(params), dynamics_alpha=1.0) + u
+    np.testing.assert_allclose(out.detach().numpy(), expected.detach().numpy(), atol=1e-5)
 
 
 def test_flex_wong_wang_model_matches_vector_field():
@@ -275,3 +300,18 @@ def test_project_to_budget_enforces_step_and_energy_bounds():
     assert torch.all(0.1 * torch.sum(out**2, dim=(-2, -1)) <= 1.5 + 1e-5)
     small = 0.01 * torch.ones(1, 30, 2)
     torch.testing.assert_close(project_to_budget(small, torch.tensor(1.5), dt=0.1, action_max=1.0), small)
+
+
+def test_parameter_scale_sets_flex_units(tbme_catalog):
+    from types import SimpleNamespace
+
+    from experiments.run import _flex_parameter_settings
+
+    spec = SimpleNamespace(flex_regularization=0.1, flex_parameter_step_clip=0.25,
+                           flex_parameter_min=-5.0, flex_parameter_max=5.0)
+    settings = _flex_parameter_settings(spec, get_environment_preset("tbme_wilson_cowan"))
+    assert settings == pytest.approx({"regularization": 1e-3, "parameter_step_clip": 2.5,
+                                      "parameter_min": -50.0, "parameter_max": 50.0})
+    # Unit scale leaves the other systems unchanged.
+    assert _flex_parameter_settings(spec, get_environment_preset("tbme_duffing")) == pytest.approx(
+        {"regularization": 0.1, "parameter_step_clip": 0.25, "parameter_min": -5.0, "parameter_max": 5.0})

@@ -1102,26 +1102,26 @@ if __name__ == "__main__":
     vf = VanDerPol(x_range=2.5, n_grid=50)
 
 
-class WilsonCowan(VectorField):
-    """Wilson-Cowan excitatory-inhibitory population in centered latent coordinates.
+class WilsonCowan1972(VectorField):
+    """Wilson-Cowan (1972) excitatory-inhibitory population in latent coordinates.
 
-    Population rates r = (E, I) in [0, 1] are mapped to the latent state
-    z = s (r - 1/2), so the dynamics share the scale of the other benchmark
-    systems. The synaptic weights act on the centered rates, which keeps the
-    gain in its responsive range near the center of state space for any weight
-    estimate; saturation then depends on the state, not on the estimate.
-
-    Equation (rates):
-        dE/dt = (-E + S(w_EE (E - 1/2) - w_EI (I - 1/2) + h_E)) / tau_E
-        dI/dt = (-I + S(w_IE (E - 1/2) - w_II (I - 1/2) + h_I)) / tau_I
-        S(u)  = 1 / (1 + exp(-beta u))
+    Equation (rates, Wilson & Cowan 1972, with the multiple-steady-state parameters
+    as reproduced in Akhmet & Cag 2017, arXiv:1701.04015, Eq. 8):
+        tau_E dE/dt = -E + (k_E - r_E E) S_E(c_1 E - c_2 I + P)
+        tau_I dI/dt = -I + (k_I - r_I I) S_I(c_3 E - c_4 I + Q)
+        S_j(x) = 1 / (1 + exp(-a_j (x - theta_j))) - 1 / (1 + exp(a_j theta_j))
     Latent drift:
-        dz/dt = s (dE/dt, dI/dt)
+        z = s (r - r_0),  dz/dt = s (dE/dt, dI/dt)
+    With s = 8 and r_0 = 1/4, the rate range [0, 1/2] maps to z in [-2, 2]. The
+    refractory factor keeps E and I below k^2 / (1 + k) ~ 0.48 without input.
 
-    Learned parameters: (w_EE, w_EI, w_IE, w_II). The gain slope beta, the
-    net drives h_E and h_I, the time constants, and the state scale s are fixed
-    constants of the benchmark. The default constants give a bistable regime
-    with a low-activity "down" state and a high-activity "up" state.
+    Learned parameters: the published weights c = (c_1, c_2, c_3, c_4) = (12, 4, 13, 11)
+    as is (``weight_scale`` = 1). Their prior is set on the scale of 10 through the
+    environment's ``parameter_scale``. The gains a_j, thresholds theta_j, refractory
+    constants k_j and r_j, time
+    constants, and drives P = Q = 0 are fixed. The defaults give a stable down
+    state at E = I = 0, a saddle at (0.188, 0.067), and a stable up state at
+    (0.442, 0.228).
     """
 
     def __init__(
@@ -1131,37 +1131,50 @@ class WilsonCowan(VectorField):
         **kwargs,
     ):
         super().__init__(device=device, **kwargs)
-        self.state_scale = float(kwargs.get("state_scale", 4.0))
-        self.beta = float(kwargs.get("beta", 6.0))
-        self.h_e = float(kwargs.get("h_e", -0.05))
-        self.h_i = float(kwargs.get("h_i", -0.35))
+        self.state_scale = float(kwargs.get("state_scale", 8.0))
+        self.rate_offset = float(kwargs.get("rate_offset", 0.25))
+        self.weight_scale = float(kwargs.get("weight_scale", 1.0))
+        self.a_e = float(kwargs.get("a_e", 1.2))
+        self.theta_e = float(kwargs.get("theta_e", 2.8))
+        self.a_i = float(kwargs.get("a_i", 1.0))
+        self.theta_i = float(kwargs.get("theta_i", 4.0))
+        self.k_e = float(kwargs.get("k_e", 0.97))
+        self.k_i = float(kwargs.get("k_i", 0.98))
+        self.r_e = float(kwargs.get("r_e", 1.0))
+        self.r_i = float(kwargs.get("r_i", 1.0))
+        self.p = float(kwargs.get("p", 0.0))
+        self.q = float(kwargs.get("q", 0.0))
         self.tau_e = float(kwargs.get("tau_e", 1.0))
         self.tau_i = float(kwargs.get("tau_i", 1.0))
         if dyn_param is None:
-            self.set_params([2.5, 1.0, 1.0, 0.3])
+            self.set_params([12.0, 4.0, 13.0, 11.0])
         else:
             self.set_params(dyn_param)
 
-    def _set_params(self, w_ee=2.5, w_ei=1.0, w_ie=1.0, w_ii=0.3):
+    def _set_params(self, w_ee=12.0, w_ei=4.0, w_ie=13.0, w_ii=11.0):
         self.w_ee = w_ee
         self.w_ei = w_ei
         self.w_ie = w_ie
         self.w_ii = w_ii
 
+    @staticmethod
+    def _sigmoid(x: torch.Tensor, a: float, theta: float) -> torch.Tensor:
+        """Shifted logistic S(x) with S(0) = 0."""
+        return torch.sigmoid(a * (x - theta)) - float(1.0 / (1.0 + np.exp(a * theta)))
+
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         """Compute the latent drift for state shape (..., 2)."""
 
-        w_ee = self._broadcast_param(self.w_ee, x)
-        w_ei = self._broadcast_param(self.w_ei, x)
-        w_ie = self._broadcast_param(self.w_ie, x)
-        w_ii = self._broadcast_param(self.w_ii, x)
-        # Centered rates E - 1/2 and I - 1/2 in latent units.
-        c_e = x[..., 0] / self.state_scale
-        c_i = x[..., 1] / self.state_scale
-        gain_e = torch.sigmoid(self.beta * (w_ee * c_e - w_ei * c_i + self.h_e))
-        gain_i = torch.sigmoid(self.beta * (w_ie * c_e - w_ii * c_i + self.h_i))
-        d_rate_e = (-(c_e + 0.5) + gain_e) / self.tau_e
-        d_rate_i = (-(c_i + 0.5) + gain_i) / self.tau_i
+        c1 = self.weight_scale * self._broadcast_param(self.w_ee, x)
+        c2 = self.weight_scale * self._broadcast_param(self.w_ei, x)
+        c3 = self.weight_scale * self._broadcast_param(self.w_ie, x)
+        c4 = self.weight_scale * self._broadcast_param(self.w_ii, x)
+        rate_e = x[..., 0] / self.state_scale + self.rate_offset
+        rate_i = x[..., 1] / self.state_scale + self.rate_offset
+        gain_e = self._sigmoid(c1 * rate_e - c2 * rate_i + self.p, self.a_e, self.theta_e)
+        gain_i = self._sigmoid(c3 * rate_e - c4 * rate_i + self.q, self.a_i, self.theta_i)
+        d_rate_e = (-rate_e + (self.k_e - self.r_e * rate_e) * gain_e) / self.tau_e
+        d_rate_i = (-rate_i + (self.k_i - self.r_i * rate_i) * gain_i) / self.tau_i
         U = self.alpha * self.state_scale * d_rate_e
         V = self.alpha * self.state_scale * d_rate_i
         return torch.stack([U, V], dim=-1)
@@ -1171,8 +1184,8 @@ class WongWang(VectorField):
     """Two-pool mutual-inhibition decision circuit (reduced Wong-Wang form).
 
     Synaptic gating variables r = (s_1, s_2) in [0, 1] of two choice-selective
-    pools are mapped to the latent state z = s (r - 1/2). As in ``WilsonCowan``
-    the weights act on the centered gating variables.
+    pools are mapped to the latent state z = s (r - 1/2). The weights act on the
+    centered gating variables.
 
     Equation (gating variables):
         ds_1/dt = (-s_1 + (1 - s_1) gamma S(w_+ (s_1 - 1/2) - w_- (s_2 - 1/2) + h)) / tau

@@ -4,7 +4,7 @@ Left block, the latent dynamics:
 
 * (A) circuit: excitatory and inhibitory populations, the four unknown weights, the two
   input channels, and the Poisson readout.
-* (B) phase portrait in the latent coordinates z = 4([E, I] - 1/2): streamlines, nullclines,
+* (B) phase portrait in the latent coordinates z = 8([E, I] - 1/4): streamlines, nullclines,
   stable states and saddle, the saddle's stable manifold (separatrix) with the down-state
   basin shaded, the region of R2 start states, the region that holds 90% of passive
   (no-input) activity, and the example trajectory of (F).
@@ -49,7 +49,7 @@ E_COLOR, I_COLOR = POOL_COLORS[1], POOL_COLORS[0]
 WEIGHT_LABELS = (r"$w_{EE}$", r"$w_{EI}$", r"$w_{IE}$", r"$w_{II}$")
 MAP_CMAP = "magma"
 PULSE_SHADE = "#C6C0B8"
-MAP_LIM = 3.0  # shared B/C/E domain includes the full path; z = -2 and 2 are rates 0 and 1
+MAP_LIM = 3.0  # shared B/C/E domain includes the full path; z = -2 and 2 are rates 0 and 1/2
 FIGURE_WIDTH = 516.0 / 72.27
 FIGURE_HEIGHT = 3.1
 # Layout in inches. Left block: A and B on top, the C strip below. Right block: a 3 x 3 matrix
@@ -59,7 +59,8 @@ LEFT = {"top": 2.89, "a_left": 0.15, "a_width": 1.5, "b_left": 2.12, "b_size": 1
 RIGHT = {"x0": 4.10, "col": 0.88, "gap": 0.06, "d": (2.42, 0.50), "e": (1.36, 0.88),
          "f_raster": (0.28, 0.60)}
 # Example trajectory of (B) and (F): start in the down state; (start, stop, u_E, u_I) pulses.
-# From the down state this pulse reaches the up state in 40 of 40 noise seeds (checked 2026-09-25).
+# From the down state this pulse reaches the up state in 39 of 40 noise seeds (Wilson-Cowan 1972
+# parameters, checked 2026-09-29; seed 0 is one of the 39).
 # 600 steps keep single spikes visible in (F); longer windows merge into solid bands.
 EXAMPLE = {
     "steps": 600,
