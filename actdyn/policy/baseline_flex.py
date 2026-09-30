@@ -208,43 +208,57 @@ class FlexMultiStableModel(_FlexVectorFieldModel):
         return self.alpha * field + u
 
 
-class FlexWilsonCowanModel(_FlexVectorFieldModel):
-    """Wilson-Cowan drift in centered latent coordinates.
+class FlexWilsonCowan1972Model(_FlexVectorFieldModel):
+    """Wilson-Cowan (1972) drift in latent coordinates.
 
-    Mirrors ``actdyn.utils.vectorfields_eqn.WilsonCowan``: rates r = z / s + 1/2,
-    gains act on the centered rates, and the learned parameters are the four
-    synaptic weights (w_EE, w_EI, w_IE, w_II). Fixed constants match that class.
+    Mirrors ``actdyn.utils.vectorfields_eqn.WilsonCowan1972``: rates r = z / s + r_0,
+    the refractory factor (k - r r) multiplies the shifted logistic S with S(0) = 0,
+    and the learned parameters are the weights (c_1, c_2, c_3, c_4) as is. Fixed
+    constants match that class.
     """
 
     def __init__(
         self,
         *args,
-        state_scale: float = 4.0,
-        beta: float = 6.0,
-        h_e: float = -0.05,
-        h_i: float = -0.35,
+        state_scale: float = 8.0,
+        rate_offset: float = 0.25,
+        weight_scale: float = 1.0,
+        a_e: float = 1.2,
+        theta_e: float = 2.8,
+        a_i: float = 1.0,
+        theta_i: float = 4.0,
+        k_e: float = 0.97,
+        k_i: float = 0.98,
+        r_e: float = 1.0,
+        r_i: float = 1.0,
         tau_e: float = 1.0,
         tau_i: float = 1.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.state_scale = float(state_scale)
-        self.beta = float(beta)
-        self.h_e = float(h_e)
-        self.h_i = float(h_i)
-        self.tau_e = float(tau_e)
-        self.tau_i = float(tau_i)
+        self.rate_offset = float(rate_offset)
+        self.weight_scale = float(weight_scale)
+        self.a_e, self.theta_e = float(a_e), float(theta_e)
+        self.a_i, self.theta_i = float(a_i), float(theta_i)
+        self.k_e, self.k_i = float(k_e), float(k_i)
+        self.r_e, self.r_i = float(r_e), float(r_i)
+        self.tau_e, self.tau_i = float(tau_e), float(tau_i)
+
+    @staticmethod
+    def _sigmoid(x, a: float, theta: float):
+        return torch.sigmoid(a * (x - theta)) - float(1.0 / (1.0 + np.exp(a * theta)))
 
     def forward(self, z):
         params = self._full_params(dtype=z.dtype, device=z.device)
-        w_ee, w_ei, w_ie, w_ii = params[0], params[1], params[2], params[3]
-        c_e = z[:, 0] / self.state_scale
-        c_i = z[:, 1] / self.state_scale
+        c1, c2, c3, c4 = (self.weight_scale * params[k] for k in range(4))
+        rate_e = z[:, 0] / self.state_scale + self.rate_offset
+        rate_i = z[:, 1] / self.state_scale + self.rate_offset
         u = z[:, 2:4]
-        gain_e = torch.sigmoid(self.beta * (w_ee * c_e - w_ei * c_i + self.h_e))
-        gain_i = torch.sigmoid(self.beta * (w_ie * c_e - w_ii * c_i + self.h_i))
-        d_rate_e = (-(c_e + 0.5) + gain_e) / self.tau_e
-        d_rate_i = (-(c_i + 0.5) + gain_i) / self.tau_i
+        gain_e = self._sigmoid(c1 * rate_e - c2 * rate_i, self.a_e, self.theta_e)
+        gain_i = self._sigmoid(c3 * rate_e - c4 * rate_i, self.a_i, self.theta_i)
+        d_rate_e = (-rate_e + (self.k_e - self.r_e * rate_e) * gain_e) / self.tau_e
+        d_rate_i = (-rate_i + (self.k_i - self.r_i * rate_i) * gain_i) / self.tau_i
         drift = torch.stack((self.state_scale * d_rate_e, self.state_scale * d_rate_i), dim=1)
         return self.alpha * drift + u
 
@@ -356,8 +370,8 @@ def build_flex_model(
         return FlexAsymmetricBasinModel(**kwargs)
     if dynamics_type == "multi_stable":
         return FlexMultiStableModel(**kwargs)
-    if dynamics_type == "wilson_cowan":
-        return FlexWilsonCowanModel(**kwargs)
+    if dynamics_type == "wilson_cowan_1972":
+        return FlexWilsonCowan1972Model(**kwargs)
     if dynamics_type == "wong_wang":
         return FlexWongWangModel(**kwargs)
     if dynamics_type == "wong_wang_inside_gain":

@@ -473,21 +473,30 @@ environments:
     observation_loading_direction_mismatch_max_deg: 30.0
     observation_loading_gain_mismatch_max_factor: 1.5
 
+  # Wilson & Cowan (1972) with their multiple-steady-state weights (c_1..c_4) =
+  # (12, 4, 13, 11), learned as is. parameter_scale 10 sets the prior, q_theta and FLEX
+  # settings on that scale (initial-draw std 10, prior covariance 100 I).
+  # z = 8 (r - 1/4) maps rates [0, 1/2] to [-2, 2] (see WilsonCowan1972). The input bound
+  # 3 in these units is the rate drive of the bound 1.5 in the old z = 4 (r - 1/2).
+  # The couplings are positive by definition, so the initial guesses are drawn with that
+  # sign: c0 = 10 |xi|, xi ~ N(0, I).
   tbme_wilson_cowan:
     extends: tbme_duffing
     system_id: wilson_cowan
     system_label: Wilson-Cowan E-I population
-    dynamics_type: wilson_cowan
+    dynamics_type: wilson_cowan_1972
     embedding_dim: 4
     min_embedding_dim: 4
     initial_parameter_variance: 1.0
-    action_max: 2.0
+    initial_parameter_nonnegative: true
+    parameter_scale: 10.0
+    action_max: 3.0
     state_noise: 0.1
     true_params:
-    - 2.5
-    - 1.0
-    - 1.0
-    - 0.3
+    - 12.0
+    - 4.0
+    - 13.0
+    - 11.0
     state_low:
     - -2.0
     - -2.0
@@ -549,7 +558,7 @@ environments:
     system_label: Wilson-Cowan / challenging
     state_noise: 0.25
     loading_target_snr_db: -10.0
-    action_max: 2.0
+    action_max: 3.0
 
   tbme_wilson_cowan_state_noise_mild:
     extends: tbme_wilson_cowan
@@ -584,24 +593,24 @@ environments:
   tbme_wilson_cowan_parameter_mismatch_mild:
     extends: tbme_wilson_cowan
     system_label: Wilson-Cowan / mild fixed-parameter mismatch
-    estimator_dynamics_type: wilson_cowan
+    estimator_dynamics_type: wilson_cowan_1972
     estimator_true_params:
-    - 2.5
-    - 1.0
-    - 1.0
-    - 0.6
+    - 12.0
+    - 4.0
+    - 13.0
+    - 14.0
     embedding_dim: 3
     min_embedding_dim: 3
 
   tbme_wilson_cowan_parameter_mismatch_strong:
     extends: tbme_wilson_cowan
     system_label: Wilson-Cowan / strong fixed-parameter mismatch
-    estimator_dynamics_type: wilson_cowan
+    estimator_dynamics_type: wilson_cowan_1972
     estimator_true_params:
-    - 2.5
-    - 1.0
-    - 1.0
-    - -0.5
+    - 12.0
+    - 4.0
+    - 13.0
+    - 3.0
     embedding_dim: 3
     min_embedding_dim: 3
 
