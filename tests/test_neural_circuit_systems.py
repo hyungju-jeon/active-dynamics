@@ -64,6 +64,7 @@ def tbme_catalog():
     ("dynamics_type", "equilibria", "param_dim"),
     [
         ("wilson_cowan_1972", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 4),
+        ("wilson_cowan_1972_native_input", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 4),
         ("wong_wang", np.concatenate([WONG_WANG_ATTRACTORS, WONG_WANG_SADDLE]), 2),
     ],
 )
@@ -242,6 +243,67 @@ def test_flex_wilson_cowan_1972_model_matches_vector_field():
     out = model(torch.cat([z, u], dim=1))
     expected = residual_torch("wilson_cowan_1972", z, torch.as_tensor(params), dynamics_alpha=1.0) + u
     np.testing.assert_allclose(out.detach().numpy(), expected.detach().numpy(), atol=1e-5)
+
+
+def _wc_native_states(n=7, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    return 2.0 * torch.randn(n, 2, generator=g), 3.0 * torch.randn(n, 2, generator=g)
+
+
+def test_wilson_cowan_1972_native_input_is_the_documented_equation():
+    z, u = _wc_native_states()
+    vf = build_vectorfield("wilson_cowan_1972_native_input", torch.as_tensor(WILSON_COWAN_1972_TRUE))
+    assert vf.input_dependent and vf.input_gain == 1.0
+    c1, c2, c3, c4 = WILSON_COWAN_1972_TRUE.astype(np.float64)
+    r = z.double().numpy() / 8.0 + 0.25
+    p, q = u.double().numpy().T  # (P, Q) = g u with g = 1
+
+    def s(x, a, theta):
+        return 1.0 / (1.0 + np.exp(-a * (x - theta))) - 1.0 / (1.0 + np.exp(a * theta))
+
+    d_e = -r[:, 0] + (0.97 - r[:, 0]) * s(c1 * r[:, 0] - c2 * r[:, 1] + p, 1.2, 2.8)
+    d_i = -r[:, 1] + (0.98 - r[:, 1]) * s(c3 * r[:, 0] - c4 * r[:, 1] + q, 1.0, 4.0)
+    expected = 8.0 * np.stack([d_e, d_i], axis=1)
+    np.testing.assert_allclose(vf.compute_with_input(z, u).numpy(), expected, rtol=1e-5, atol=1e-5)
+    # At u = 0 the drift is the additive-input model's drift.
+    additive = build_vectorfield("wilson_cowan_1972", torch.as_tensor(WILSON_COWAN_1972_TRUE))
+    torch.testing.assert_close(vf.compute(z), additive.compute(z), rtol=0, atol=0)
+    torch.testing.assert_close(vf.compute_with_input(z, torch.zeros_like(z)), additive.compute(z), rtol=0, atol=0)
+
+
+def test_wilson_cowan_1972_native_input_keeps_rates_in_range():
+    # Noise-free Euler rollouts with inputs of norm 20 from the whole start box stay in
+    # the invariant rate range [k S(-inf) / (1 + S(-inf)), k S(inf) / (1 + S(inf))].
+    vf = build_vectorfield("wilson_cowan_1972_native_input", torch.as_tensor(WILSON_COWAN_1972_TRUE))
+    g = torch.Generator().manual_seed(1)
+    z = 4.0 * torch.rand(512, 2, generator=g) - 2.0
+    for _ in range(300):
+        u = torch.nn.functional.normalize(torch.randn(512, 2, generator=g), dim=-1) * 20.0
+        z = z + 0.01 * vf.compute_with_input(z, u)
+    rates = z.numpy() / 8.0 + 0.25
+    assert rates[:, 0].min() > -0.034 - 1e-3 and rates[:, 0].max() < 0.477 + 1e-3
+    assert rates[:, 1].min() > -0.018 - 1e-3 and rates[:, 1].max() < 0.486 + 1e-3
+
+
+def test_flex_wilson_cowan_1972_native_input_matches_field_and_input_jacobian():
+    from actdyn.policy.baseline_flex import FlexWilsonCowan1972NativeInputModel
+
+    params = np.array([10.0, 6.0, 15.0, 9.0], dtype=np.float32)
+    model = FlexWilsonCowan1972NativeInputModel(
+        dt=0.01, dynamics_alpha=1.0, latent_dim=2, action_dim=2,
+        initial_embedding=params, fixed_tail=np.zeros(0, dtype=np.float32),
+    )
+    z, u = _wc_native_states(seed=2)
+    vf = build_vectorfield("wilson_cowan_1972_native_input", torch.as_tensor(params))
+    out = model(torch.cat([z, u], dim=1))
+    np.testing.assert_allclose(out.detach().numpy(), vf.compute_with_input(z, u).numpy(), rtol=1e-5, atol=1e-5)
+    for x in z:
+        # get_B is df/du at u = 0; compare with autograd of the vector field.
+        jac = torch.autograd.functional.jacobian(lambda v: vf.compute_with_input(x[None], v[None])[0], torch.zeros(2))
+        B = model.get_B(x)
+        assert B.shape == (2, 2) and B.dtype == np.float64
+        np.testing.assert_allclose(B, jac.numpy(), rtol=1e-5, atol=1e-6)
+        assert B[0, 1] == 0.0 and B[1, 0] == 0.0  # P drives E, Q drives I
 
 
 def test_flex_wong_wang_model_matches_vector_field():

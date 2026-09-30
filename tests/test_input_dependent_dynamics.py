@@ -77,7 +77,8 @@ def test_inside_gain_jacobians_depend_on_the_input():
         torch.testing.assert_close(Fz[..., j], fd, rtol=2e-2, atol=2e-3)
 
 
-@pytest.mark.parametrize("dynamics_type,params", [("wong_wang", [1.2, 0.8]), ("wong_wang_inside_gain", RAW)])
+@pytest.mark.parametrize("dynamics_type,params", [("wong_wang", [1.2, 0.8]), ("wong_wang_inside_gain", RAW),
+                                                  ("wilson_cowan_1972_native_input", [12.0, 4.0, 13.0, 11.0])])
 def test_forward_step_and_env_step_use_the_input_as_the_field_defines(dynamics_type, params):
     env = VectorFieldEnv(dynamics_type, d_state=2, d_action=2, Q=0.0, dt=0.05, dyn_params=torch.tensor([params]))
     dyn = FunctionDynamics(state_dim=2, dt=0.05, dynamics_fn=env)
@@ -90,6 +91,55 @@ def test_forward_step_and_env_step_use_the_input_as_the_field_defines(dynamics_t
     env.state = z.reshape(2).clone()
     state, *_ = env.step(u.reshape(2))
     torch.testing.assert_close(state, expected.reshape(2), rtol=1e-6, atol=1e-6)
+
+
+def test_env_step_from_the_reset_state_runs_in_float32():
+    # The reset state is float16; the input-dependent step must not keep that precision.
+    params = [12.0, 4.0, 13.0, 11.0]
+    env = VectorFieldEnv("wilson_cowan_1972_native_input", d_state=2, d_action=2, Q=0.0, dt=0.01,
+                         dyn_params=torch.tensor([params]), initial_state=[0.5, -0.9], state_bounds=[-5.0, 5.0])
+    z, _ = env.reset()
+    u = torch.tensor([1.3, -0.7])
+    expected = z.float()
+    for _ in range(50):
+        z, *_ = env.step(u)
+        expected = expected + 0.01 * drift_torch("wilson_cowan_1972_native_input", expected[None], torch.tensor([params]),
+                                                 u[None], dynamics_alpha=1.0)[0]
+    assert z.dtype == torch.float32
+    torch.testing.assert_close(z, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("dynamics_type,params", [("duffing", [0.1, -0.1, 0.1]),
+                                                  ("wilson_cowan_1972_native_input", [12.0, 4.0, 13.0, 11.0])])
+def test_step_np_is_the_euler_step_of_the_drift(dynamics_type, params):
+    from actdyn.environment.vectorfield import step_np
+
+    z, u = _states(n=4, seed=6)
+    out = step_np(dynamics_type, z.numpy(), u.numpy(), dyn_params=np.asarray(params), dt=0.01,
+                  dynamics_alpha=1.0, clip_limit=100.0)
+    expected = z + 0.01 * drift_torch(dynamics_type, z, torch.tensor(params), u, dynamics_alpha=1.0)
+    np.testing.assert_allclose(out, expected.numpy(), rtol=1e-6, atol=1e-6)
+
+
+def test_predictive_only_step_linearizes_at_the_input():
+    from actdyn.core.agent import _predictive_only_embedding_step
+
+    calls = []
+
+    class Stub(SimpleNamespace):
+        def _jac_state(self, z, e, u):
+            calls.append(u)
+            return torch.zeros(*z.shape, z.shape[-1])
+
+    stub = Stub(
+        _normalize_embedding_belief=lambda: None, _ensure_state_belief_shapes=lambda batch_size: None,
+        dynamics=SimpleNamespace(logvar=torch.zeros(2)), predict=lambda action: torch.zeros(1, 1, 2),
+        _project_spd=lambda p: p, z={"m": torch.zeros(1, 1, 2), "P": torch.eye(2).reshape(1, 1, 2, 2)},
+        e={"m": torch.zeros(1, 4)}, dt=0.01, latent_dim=2, device="cpu", action_encoder=None,
+    )
+    _predictive_only_embedding_step(stub, torch.ones(1, 1, 2))
+    assert len(calls) == 1
+    torch.testing.assert_close(calls[0], torch.ones(1, 1, 2))
 
 
 def test_filter_and_metric_pass_the_input_only_to_input_dependent_drifts():
