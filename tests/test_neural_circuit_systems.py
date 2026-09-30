@@ -118,6 +118,7 @@ def test_neural_presets_resolve_from_tbme_catalog(tbme_catalog):
                       "loading_target_snr_db", "asymmetric_loading", "observation_primary_scale",
                       "state_low", "state_high", "trajectory_eval_state_low", "trajectory_eval_state_high"):
             assert getattr(native, field) == getattr(additive, field), (suffix, field)
+        assert native.action_max == pytest.approx(1.75)
 
     ww = get_environment_preset("tbme_wong_wang")
     assert ww.resolved_dynamics_type() == "wong_wang"
