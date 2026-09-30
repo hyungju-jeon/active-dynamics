@@ -14,7 +14,7 @@ in the manuscript asset style:
   (mean +/- SEM over seeds) with the model-free pushes and the fitted model on
   the same task sessions, (D, E) success along identification at one budget per
   task, (F) one overturn session: target-pool lead and input under PALDI's
-  model, the fitted model, the full push, and no input.
+  model, the fitted model, the maximum-amplitude input, and no input.
 * ``diagnosis`` (appendix, fresh controller): (A) held-out R2 on network
   trajectories of the control regime by push direction, (B) overturn success
   with one parameter exchanged between PALDI's estimate and the fit, or with the
@@ -66,9 +66,9 @@ DECISION_SHADE, DECISION_TEXT = "#DDD2EC", "#745197"
 DECISION_ALPHA = 0.45
 FIGURE_WIDTH = 516.0 / 72.27  # IEEE text width in inches
 REFERENCE_STYLE = {
-    "reduced_fit": dict(color="#4A4A4A", linestyle=":", marker="s", label="model fitted to network data"),
-    "spread": dict(color="#8C8C8C", linestyle="--", marker="^", label="even push"),
-    "front": dict(color="#8B6B4A", linestyle="-.", marker="v", label="full push from onset"),
+    "reduced_fit": dict(color="#4A4A4A", linestyle=":", marker="s", label="Fitted model"),
+    "spread": dict(color="#8C8C8C", linestyle="--", marker="^", label="Constant-amplitude"),
+    "front": dict(color="#8B6B4A", linestyle="-.", marker="v", label="Maximum-amplitude"),
 }
 DECISION_MARKER = dict(marker="o", ms=3.0, markeredgecolor="white", markeredgewidth=0.4)
 T_SHOWN_MS = 2500.0  # example session axis; both unsuccessful traces stay below the threshold after it
@@ -421,8 +421,10 @@ def _draw_session_panel(ax: Any, look: dict, task: str, checkpoints: list[int], 
         ax.plot(pos, m, color=color, lw=0.9, marker="o", ms=2.2)
         ax.fill_between(pos, m - e, m + e, color=color, alpha=0.1, lw=0)
     for name, style in REFERENCE_STYLE.items():
-        ax.axhline(look.get((name, -1, task, b), (np.nan, 0.0))[0], color=style["color"], ls=style["linestyle"],
-                   lw=0.8)
+        value = look.get((name, -1, task, b), (np.nan, 0.0))[0]
+        ax.axhline(value, color=style["color"], ls=style["linestyle"], lw=0.8)
+        ax.plot(pos, np.full(len(pos), value), linestyle="none", marker=style["marker"],
+                color=style["color"], ms=2.8, zorder=4)
     ax.set_xticks(pos)
     ax.set_xticklabels([str(k) for k in checkpoints])
     ax.set_ylim(-0.03, 1.03)
@@ -516,13 +518,22 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
 
 
 def _control_legend(fig: Any, plt: Any) -> None:
-    reference_labels = {"reduced_fit": "Fitted", "spread": "Uniform", "front": "Full"}
-    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0, label=_asset_policy_label(p))
-               for p in POLICIES]
-    handles += [plt.Line2D([], [], color=s["color"], ls=s["linestyle"], marker=s["marker"], ms=2.4, lw=0.8,
-                           label=reference_labels[name]) for name, s in REFERENCE_STYLE.items()]
-    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=len(handles),
-               fontsize=_ASSET_TICK_SIZE, columnspacing=0.9, handlelength=1.4, handletextpad=0.3, frameon=False)
+    model_handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0,
+                                label=_asset_policy_label(p)) for p in POLICIES]
+    style = REFERENCE_STYLE["reduced_fit"]
+    model_handles.append(plt.Line2D([], [], color=style["color"], ls=style["linestyle"],
+                                   marker=style["marker"], ms=2.8, lw=0.8, label="Fitted"))
+    control_handles = [plt.Line2D([], [], color=REFERENCE_STYLE[name]["color"],
+                                  ls=REFERENCE_STYLE[name]["linestyle"],
+                                  marker=REFERENCE_STYLE[name]["marker"], ms=2.8, lw=0.8,
+                                  label=label)
+                       for name, label in (("spread", "Const."), ("front", "Max."))]
+    options = dict(fontsize=_ASSET_TICK_SIZE, columnspacing=0.9, handlelength=1.4,
+                   handletextpad=0.3, frameon=False, borderaxespad=0)
+    fig.legend(handles=model_handles, loc="upper left", bbox_to_anchor=(0.11, 0.99),
+               ncol=len(model_handles), **options)
+    fig.legend(handles=control_handles, loc="upper right", bbox_to_anchor=(0.985, 0.99),
+               ncol=len(control_handles), **options)
 
 
 def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = "task_summary_warm.csv") -> Path:

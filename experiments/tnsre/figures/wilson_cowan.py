@@ -8,7 +8,7 @@ Left block, the latent dynamics:
   stable states and saddle, the saddle's stable manifold (separatrix) with the down-state
   basin shaded, the region of R2 start states, the region that holds 90% of passive
   (no-input) activity, and the example trajectory of (F).
-* (C) per-weight parameter sensitivity ||dv/dw|| on one color scale, with the passive region
+* (C) per-weight parameter sensitivity ||dv/dtheta_i|| on one color scale, with the passive region
   and separatrix from (B).
 
 Right block, one column per observation condition of the degraded-observation study
@@ -425,7 +425,7 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
                                      transform=fig.transFigure)
             ax.xaxis.label.set(ha="center", va="bottom")
     _colorbar(fig, image, _inch_axes(fig, c_right + 0.06, c_bottom, 0.045, c_size),
-              r"$\|\partial\mathbf{v}/\partial w\|$")
+              r"$\|\partial\mathbf{v}/\partial\theta_i\|$")
     _letter(fig, "C", 0.02, c_bottom + c_size + 0.05)
     _title(fig, "Parameter sensitivity", c_left, c_right, c_bottom + c_size + 0.05)
 

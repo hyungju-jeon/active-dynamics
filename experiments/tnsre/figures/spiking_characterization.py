@@ -77,93 +77,113 @@ def generate_circuit(experiment_dir: Path, output: Path) -> Path:
 
     Counts, weights, currents, and recording selection follow WangDecisionNetwork
     and the saved experiment preset. The spike glyph is schematic, not data.
+    Paired edges are straight and parallel, so every tip and bar ends on its
+    target rim; the layout has no crossing edges.
     """
-    from matplotlib.patches import Circle, FancyArrowPatch, FancyBboxPatch
     from matplotlib.colors import to_rgba
+    from matplotlib.patches import ArrowStyle, Circle, FancyArrowPatch, FancyBboxPatch
+    from matplotlib.path import Path as MPath
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
-    fig = plt.figure(figsize=(516/72.27, 2.6))
-    ax = fig.add_axes([.015,.02,.97,.96])
-    ax.set(xlim=(0,16),ylim=(0,5.8),aspect='equal')
-    ax.axis('off'); ax.set_xticks([]); ax.set_yticks([])
-    blue, orange, inhibitory = '#3E6FB0', '#D4512E', '#686078'
-    nodes = {'p1':(2.0,3.0,.70,blue,'Pool 1\n240 E'),
-             'p2':(8.0,3.0,.70,orange,'Pool 2\n240 E'),
-             'n':(5.0,4.55,.76,'#777777','Nonselective\n1120 E'),
-             'i':(5.0,1.45,.67,inhibitory,'Inhibitory\n400 I')}
-    patches = {}
-    for key,(x,y,r,color,label) in nodes.items():
-        node=Circle((x,y),r,facecolor=to_rgba(color,.15),edgecolor=color,lw=.85,zorder=3)
-        patches[key]=node; ax.add_patch(node)
-        ax.text(x,y,label,ha='center',va='center',fontsize=_ASSET_LABEL_SIZE,zorder=4)
+    width, height = 516/72.27, 4.0  # inches; data units are 16 across and 4 high
+    fig = plt.figure(figsize=(width, height/16*width))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set(xlim=(0, 16), ylim=(0, height), aspect='equal', xticks=[], yticks=[])
+    ax.axis('off')
+    blue, orange, inhibitory, grey = '#3E6FB0', '#D4512E', '#686078', '#777777'
+    excite = ArrowStyle('-|>', head_length=.55, head_width=.25)
+    inhibit = ArrowStyle('-[', widthB=.5, lengthB=0)
+    gap = .05  # space between a tip or bar and the target rim
+    nodes = {'p1': ((2.75, 2.45), .58, blue, 'Pool 1', '240 E'),
+             'p2': ((6.65, 2.45), .58, orange, 'Pool 2', '240 E'),
+             'i': ((4.7, .98), .63, inhibitory, 'Inhibitory', '400 I'),
+             'n': ((1.05, .98), .85, grey, 'Nonselective', '1120 E')}
+    # Network block: inputs enter from above and read-outs leave on the right.
+    ax.add_patch(FancyBboxPatch((.1, .07), 8.25, 3.2, boxstyle='round,pad=0,rounding_size=.2',
+                                facecolor='#F7F6F3', edgecolor='#CFCAC2', lw=.6, zorder=0))
+    for (x, y), r, color, name, count in nodes.values():
+        ax.add_patch(Circle((x, y), r, facecolor=to_rgba(color, .15), edgecolor=color, lw=.85, zorder=3))
+        ax.text(x, y+.03, name, ha='center', va='bottom', fontsize=_ASSET_LABEL_SIZE, zorder=4)
+        ax.text(x, y-.06, count, ha='center', va='top', fontsize=_ASSET_TICK_SIZE, zorder=4)
 
-    def connect(start,end,*,inhibit=False,rad=.15,color=None,lw=.85):
-        x,y,_,c,_=nodes[start]; u,v,*_=nodes[end]
-        ax.add_patch(FancyArrowPatch((x,y),(u,v),patchA=patches[start],patchB=patches[end],
-                     connectionstyle=f'arc3,rad={rad}',arrowstyle='-[' if inhibit else '-|>',
-                     mutation_scale=3.5 if inhibit else 7,shrinkA=2,shrinkB=2,
-                     lw=lw,color=color or c,zorder=2))
+    def arrow(tail, tip, style=excite, color=STROKE_COLOR, lw=.8):
+        ax.add_patch(FancyArrowPatch(tail, tip, arrowstyle=style, mutation_scale=7,
+                                     shrinkA=0, shrinkB=0, lw=lw, color=color, zorder=2))
 
-    # Shared inhibition receives excitation from every excitatory population.
-    for pool in ('p1','p2','n'):
-        connect(pool,'i',rad=.17 if pool!='n' else .12,lw=.75)
-        connect('i',pool,inhibit=True,rad=.17 if pool!='n' else .12,lw=.75)
-    # Weaker cross-pool excitation; recurrent loops are stronger within each pool.
-    connect('p1','p2',rad=-.17)
-    connect('p2','p1',rad=-.17)
-    # Keep weight labels off the central nonselective/inhibitory connections.
-    for x,y in [(3.6,3.48),(6.4,2.52)]:
-        ax.text(x,y,r'$w_-$',ha='center',va='center',fontsize=_ASSET_TICK_SIZE,
-                bbox=dict(facecolor='white',edgecolor='none',pad=.2),zorder=5)
-    for key,side in [('p1',-1),('p2',1)]:
-        x,y,r,c,_=nodes[key]
-        ax.add_patch(FancyArrowPatch((x+side*.61,y+.36),(x+side*.61,y-.36),
-                     connectionstyle=f'arc3,rad={-side*1.45}',arrowstyle='-|>',mutation_scale=7,
-                     lw=1.0,color=c,zorder=2))
-        ax.text(x+side*1.08,y+.8,r'$w_+$',ha='center',fontsize=_ASSET_LABEL_SIZE,color=c)
-        idx=1 if key=='p1' else 2
-        ax.annotate('',xy=(x,y+r+.03),xytext=(x,5.10),
-                    arrowprops=dict(arrowstyle='-|>',lw=.9,color=STROKE_COLOR,mutation_scale=7))
-        ax.text(x,5.45,rf'$I_{idx}=20u_{idx}$ pA',ha='center',fontsize=_ASSET_LABEL_SIZE)
-        ax.text(x,5.12,'per neuron',ha='center',fontsize=_ASSET_TICK_SIZE)
-    ax.add_patch(FancyArrowPatch((4.63,.90),(5.37,.90),connectionstyle='arc3,rad=.8',
-                 arrowstyle='-[',mutation_scale=3.5,lw=.75,color=inhibitory,zorder=2))
+    def edge(start, end, offset, *, inhibitory_edge=False):
+        """Straight edge parallel to the centre line, from rim to rim."""
+        (a, ra, color, *_), (b, rb, *_) = nodes[start], nodes[end]
+        a, b = np.asarray(a), np.asarray(b)
+        u = (b-a)/np.linalg.norm(b-a)
+        n = np.array([-u[1], u[0]])*offset
+        arrow(a + (np.sqrt(ra**2-offset**2)+gap)*u + n, b - (np.sqrt(rb**2-offset**2)+gap)*u + n,
+              inhibit if inhibitory_edge else excite, inhibitory if inhibitory_edge else color)
 
-    # Explicit synaptic symbols, matching the main-text circuit schematic.
-    ax.annotate('',xy=(1.1,.58),xytext=(.35,.58),
-                arrowprops=dict(arrowstyle='-|>',lw=.8,color=blue,mutation_scale=7))
-    ax.text(1.25,.58,'AMPA + NMDA',va='center',fontsize=_ASSET_TICK_SIZE)
-    ax.annotate('',xy=(7.2,.58),xytext=(6.45,.58),
-                arrowprops=dict(arrowstyle='-[',lw=.8,color=inhibitory,mutation_scale=3.5))
-    ax.text(7.35,.58,r'GABA$_A$',va='center',fontsize=_ASSET_TICK_SIZE)
-    ax.text(5,.08,'Independent Poisson drive: 2400 Hz per neuron',ha='center',
-            va='bottom',fontsize=_ASSET_TICK_SIZE)
+    def loop(key, angle, sign, *, inhibitory_edge=False, spread=36, tilt=18, reach=.42):
+        """Self-connection around the outward direction `angle`; sign=+1 runs clockwise."""
+        (x, y), r, color, *_ = nodes[key]
+        ray = lambda deg: np.array([np.cos(np.radians(deg)), np.sin(np.radians(deg))])
+        start = np.array([x, y]) + (r+gap)*ray(angle+sign*spread)
+        end = np.array([x, y]) + (r+gap)*ray(angle-sign*spread)
+        path = MPath([start, start+reach*ray(angle+sign*tilt), end+reach*ray(angle-sign*tilt), end],
+                     [MPath.MOVETO, MPath.CURVE4, MPath.CURVE4, MPath.CURVE4])
+        ax.add_patch(FancyArrowPatch(path=path, arrowstyle=inhibit if inhibitory_edge else excite,
+                                     mutation_scale=7, lw=.8 if inhibitory_edge else 1.0,
+                                     color=inhibitory if inhibitory_edge else color, zorder=2))
 
-    # The observation branch is separate from the network's recurrent edges.
-    ax.annotate('',xy=(11.0,3.0),xytext=(9.1,3.0),
-                arrowprops=dict(arrowstyle='-|>',lw=.8,color=STROKE_COLOR,mutation_scale=7))
-    ax.text(10.05,3.28,'Record',ha='center',fontsize=_ASSET_LABEL_SIZE)
-    ax.text(10.05,2.42,'40 neurons\nfrom each pool',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
-    ax.text(13.25,5.15,'Spiking observations',ha='center',fontsize=_ASSET_LABEL_SIZE)
-    # Three stylized rows per pool indicate recorded spikes, not sample data.
-    for pool,color in enumerate((blue,orange)):
+    # Selective pools excite each other weakly (w_-) and themselves strongly (w_+).
+    edge('p1', 'p2', .13)
+    edge('p2', 'p1', .13)
+    ax.text(4.7, 2.66, r'$w_-$', ha='center', va='bottom', fontsize=_ASSET_LABEL_SIZE)
+    for key, angle, side in (('p1', 180, -1), ('p2', 0, 1)):
+        loop(key, angle, side)
+        (x, y), r, color, *_ = nodes[key]
+        ax.text(x+side*(r+.66), y, r'$w_+$', ha='center', va='center', fontsize=_ASSET_LABEL_SIZE, color=color)
+    # Shared inhibition: every excitatory population drives it and receives GABA_A back.
+    for key in ('p1', 'p2', 'n'):
+        edge(key, 'i', .1)
+        edge('i', key, .1, inhibitory_edge=True)
+    loop('i', -35, 1, inhibitory_edge=True, spread=32, tilt=16, reach=.36)
+
+    # External current into each selective pool.
+    for key, idx in (('p1', 1), ('p2', 2)):
+        (x, y), r, *_ = nodes[key]
+        arrow((x, 3.58), (x, y+r+gap))
+        ax.text(x, 3.62, rf'$I_{idx}$', ha='center', va='bottom', fontsize=_ASSET_LABEL_SIZE)
+    ax.text(4.7, 3.55, r'$I_k=20\,u_k$ pA per neuron', ha='center', va='center', fontsize=_ASSET_TICK_SIZE)
+
+    # Synapse legend and background drive.
+    for y, style, color, label in ((1.22, excite, blue, 'AMPA + NMDA'), (.9, inhibit, inhibitory, r'GABA$_A$')):
+        arrow((6.0, y), (6.52, y), style, color)
+        ax.text(6.64, y, label, va='center', fontsize=_ASSET_TICK_SIZE)
+    ax.text(6.0, .45, 'Poisson drive:\n2400 Hz per neuron', va='center', fontsize=_ASSET_TICK_SIZE,
+            linespacing=1.1)
+
+    # Two read-outs: observed spike counts (solid) and the latent proxy (dashed).
+    top, bottom, x0 = 2.45, 1.0, 8.35
+    arrow((x0, top), (9.35, top))
+    rng = np.random.default_rng(3)  # jitter for the schematic spike marks
+    for pool, color in enumerate((blue, orange)):
         for row in range(3):
-            y=4.6-pool*.58-row*.14
-            for x in (11.65+.12*row,12.2+.18*row,13.1-.1*row,14.1+.08*row,14.8-.1*row):
-                ax.plot([x,x],[y-.05,y+.05],color=color,lw=.7)
-    ax.text(13.25,3.5,'5-ms bins; 80 count channels',ha='center',fontsize=_ASSET_LABEL_SIZE)
-    box=FancyBboxPatch((11.0,2.38),4.5,.72,boxstyle='round,pad=.06,rounding_size=.16',
-                      facecolor='#F2F0EC',edgecolor=STROKE_COLOR,lw=.6)
-    ax.add_patch(box)
-    ax.text(13.25,2.74,r'Observed counts $\mathbf{y}_t\in\mathbb{N}^{80}$',
-            ha='center',va='center',fontsize=_ASSET_LABEL_SIZE)
-    ax.annotate('',xy=(13.25,3.13),xytext=(13.25,3.38),
-                arrowprops=dict(arrowstyle='-|>',lw=.7,color=STROKE_COLOR,mutation_scale=6))
-    ax.text(13.25,1.7,'Pool-averaged NMDA gating',ha='center',fontsize=_ASSET_LABEL_SIZE)
-    ax.text(13.25,1.2,r'$\mathbf{z}_t=4(\mathbf{s}_t-\frac{1}{2}\mathbf{1})$',
-            ha='center',fontsize=_ASSET_LABEL_SIZE)
-    ax.text(13.25,.62,'Latent proxy for calibration\nand evaluation',ha='center',va='center',
-            fontsize=_ASSET_TICK_SIZE)
-    return save_figure(fig,output,plt_module=plt)
+            y = top+.42-pool*.5-row*.17
+            for x in np.linspace(9.62, 11.28, 6) + rng.uniform(-.1, .1, 6):
+                ax.plot([x, x], [y-.055, y+.055], color=color, lw=.7, solid_capstyle='butt')
+    ax.text(10.45, top+.6, '40 neurons per pool', ha='center', va='bottom', fontsize=_ASSET_TICK_SIZE)
+    arrow((11.65, top), (12.7, top))
+    ax.text(12.18, top+.1, '5-ms bins', ha='center', va='bottom', fontsize=_ASSET_TICK_SIZE)
+    box = dict(boxstyle='round,pad=.06,rounding_size=.14', lw=.6, edgecolor=STROKE_COLOR)
+    ax.add_patch(FancyBboxPatch((12.85, top-.33), 2.95, .66, facecolor='#F2F0EC', **box))
+    ax.text(14.32, top, r'Counts $\mathbf{y}_t\in\mathbb{N}^{80}$', ha='center', va='center',
+            fontsize=_ASSET_LABEL_SIZE)
+    # Dashed shaft with a solid head, so the head keeps a clean outline.
+    ax.plot([x0, 12.45], [bottom, bottom], color=STROKE_COLOR, lw=.8, linestyle=(0, (3, 2)))
+    arrow((12.3, bottom), (12.7, bottom))
+    ax.text(10.45, bottom+.1, 'Pool-averaged NMDA gating', ha='center', va='bottom', fontsize=_ASSET_LABEL_SIZE)
+    ax.add_patch(FancyBboxPatch((12.85, bottom-.33), 2.95, .66, facecolor='white', linestyle=(0, (3, 2)), **box))
+    ax.text(14.32, bottom, r'$\mathbf{z}_t=4(\mathbf{s}_t-\frac{1}{2}\mathbf{1})$', ha='center',
+            va='center', fontsize=_ASSET_LABEL_SIZE)
+    ax.text(14.32, bottom-.45, 'Latent proxy for calibration\nand evaluation', ha='center', va='top',
+            fontsize=_ASSET_TICK_SIZE, linespacing=1.1)
+    return save_figure(fig, output, plt_module=plt)
 
 
 def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
@@ -193,7 +213,7 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
                 mfc=color if point['stable'] else 'white', mec=color, mew=.7, zorder=5)
     styles = {'adaptive':'-', 'spread':'--'}
     records = {r['policy']:r for r in manifest['records']}
-    # Draw Uniform last to separate the two paths where they initially overlap.
+    # Draw Constant-amplitude last to separate the two paths where they initially overlap.
     for policy in ['adaptive','spread']:
         r = records[policy]
         z = np.load(phase_dir/f'{policy}.npz')['z'][r['onset']-1:]
@@ -207,9 +227,9 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
             ax.plot(*z[0], marker='s', ms=3.2, mfc='white', mec=STROKE_COLOR, mew=.7, zorder=7)
     ax.set(xlim=(-2.1,1.6), ylim=(-2.1,1.6), xlabel=r'$z_1$', ylabel=r'$z_2$')
     ax.set_xticks([-2,0,1]); ax.set_yticks([-2,0,1]); ax.set_aspect('equal')
-    ax.set_title(r'Fitted model, $\mathbf{u}=0$', fontsize=_ASSET_LABEL_SIZE, pad=2)
+    ax.set_title('Fitted model', fontsize=_ASSET_LABEL_SIZE, pad=2)
     ax.legend(handles=[Line2D([],[],color=_asset_baseline_policy_color('adaptive'),lw=1.65,label='PALDI'),
-                       Line2D([],[],color='#4F4F4F',lw=1.65,ls='--',label='Uniform')],
+                       Line2D([],[],color='#4F4F4F',lw=1.65,ls='--',label='Const.')],
               loc='upper right',fontsize=_ASSET_TICK_SIZE,frameon=True,facecolor='white',
               edgecolor='none',framealpha=.9,handlelength=1.4,handletextpad=.4,borderpad=.25)
     style_experiment_axis(ax)

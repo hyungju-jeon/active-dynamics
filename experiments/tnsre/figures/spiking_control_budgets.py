@@ -28,7 +28,7 @@ WIDTH = 516 / 72.27
 POLICIES = ("adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random")
 REFERENCES = ("reduced_fit", "spread", "front")
 METHODS = POLICIES + REFERENCES
-REF_LABELS = dict(reduced_fit="Fitted", spread="Uniform", front="Full")
+REF_LABELS = dict(reduced_fit="Fitted", spread="Constant-\namplitude", front="Maximum-\namplitude")
 REF_COLORS = dict(reduced_fit="#A0A0A0", spread="#C4C4C4", front="#D6C5AE")
 EXTENSION = Path("results/tnsre/20260929_spiking_control_budgets/extension")
 
