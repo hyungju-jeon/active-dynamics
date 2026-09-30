@@ -367,3 +367,12 @@ def test_dynamics_only_learning_carries_nominal_multistep_sensitivity():
         # Closed-form derivative of the open-loop affine trajectory.
         expected = sum(torch.linalg.matrix_power(a, j) @ b for j in range(step))
         torch.testing.assert_close(model._theta_sensitivity[0], expected)
+
+
+def test_reset_restores_the_configured_parameter_prior() -> None:
+    model = _build_model()
+    model.e["P"] = 5.0 * model.e["P"]
+    model.reset(torch.zeros(1, 1, 2))
+    # _build_model sets the prior covariance 0.1 I; reset must not replace it with I.
+    assert torch.allclose(model.e["P"], 0.1 * torch.eye(2).unsqueeze(0))
+    assert torch.allclose(model.e["L"], 10.0 * torch.eye(2).unsqueeze(0))

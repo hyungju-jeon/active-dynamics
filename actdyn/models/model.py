@@ -660,6 +660,9 @@ class FilteringEmbedding(BaseModel):
         self.e: Belief = e
         self.e_clip = max(float(e_clip), 1e-3)
         self._normalize_embedding_belief()
+        # Prior parameter covariance and precision, (1, d_e, d_e); reset() restores them.
+        self._prior_embedding_P = self.e["P"][:1].detach().clone()
+        self._prior_embedding_L = self.e["L"][:1].detach().clone()
         self.state_init_uncertainty = max(float(state_init_uncertainty), 1e-9)
         initial_batch = self.e["m"].shape[0]
         self.state_initial_mean = None
@@ -948,18 +951,14 @@ class FilteringEmbedding(BaseModel):
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
         observation, info = super().reset(observation)
-        d_embed = self.e["m"].shape[-1]
         batch = self.e["m"].shape[0]
         if self.state_initial_mean is not None:
             self._state = self.state_initial_mean.expand(batch, -1, -1).clone()
             info["latent_state"] = self._state
-        eye_embed = (
-            torch.eye(d_embed, device=self.device).unsqueeze(0).expand(batch, -1, -1).clone()
-        )
         self.e.update(
             {
-                "P": eye_embed,
-                "L": eye_embed.clone(),
+                "P": self._prior_embedding_P.to(self.device).expand(batch, -1, -1).clone(),
+                "L": self._prior_embedding_L.to(self.device).expand(batch, -1, -1).clone(),
             }
         )
         self._normalize_embedding_belief()
