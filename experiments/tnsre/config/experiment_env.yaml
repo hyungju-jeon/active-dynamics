@@ -626,6 +626,41 @@ environments:
     observation_loading_direction_mismatch_max_deg: 30.0
     observation_loading_gain_mismatch_max_factor: 1.5
 
+  # Wilson & Cowan (1972) with the input inside the sigmoids, as the external drives
+  # (P, Q) = g u, g = 1 (wilson_cowan_1972_native_input): the input is in units of the
+  # sigmoid argument (thresholds 2.8 and 4), and noise-free rates stay in
+  # [-0.034, 0.486]. All other settings as in tbme_wilson_cowan (additive input). The
+  # input bound is chosen in
+  # results/archive/experiments/20260930_wilson_cowan_1972_native_input_pilot; 1.75 is
+  # the smallest bound (0.25 grid) that switches down->up and up->down within 100 steps.
+  tbme_wilson_cowan_native_input:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan E-I population / input inside the sigmoids
+    dynamics_type: wilson_cowan_1972_native_input
+    action_max: 1.75
+
+  tbme_wilson_cowan_native_input_asymmetric:
+    extends: tbme_wilson_cowan_native_input
+    system_label: Wilson-Cowan / input inside the sigmoids / asymmetric loading
+    asymmetric_loading: true
+    observation_primary_scale: 5.0
+
+  tbme_wilson_cowan_native_input_challenging:
+    extends: tbme_wilson_cowan_native_input_asymmetric
+    system_label: Wilson-Cowan / input inside the sigmoids / challenging
+    state_noise: 0.25
+    loading_target_snr_db: -10.0
+
+  tbme_wilson_cowan_native_input_observation_bottleneck_mild:
+    extends: tbme_wilson_cowan_native_input
+    system_label: Wilson-Cowan / input inside the sigmoids / mild observation SNR bottleneck
+    loading_target_snr_db: -10.0
+
+  tbme_wilson_cowan_native_input_observation_bottleneck_strong:
+    extends: tbme_wilson_cowan_native_input
+    system_label: Wilson-Cowan / input inside the sigmoids / strong observation SNR bottleneck
+    loading_target_snr_db: -15.0
+
 
   # Wang (2002) spiking decision circuit as the environment, run as decision sessions.
   # A session starts in the quiet state; a decision is made when |z1 - z2| > 2, and

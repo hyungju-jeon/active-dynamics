@@ -106,6 +106,18 @@ def test_neural_presets_resolve_from_tbme_catalog(tbme_catalog):
     assert wc.embedding_dim == 4
     assert wc.state_noise == pytest.approx(0.1)
     assert not basin_switch_enabled(wc)
+    # The input-inside-the-sigmoid presets differ from the additive ones only in the
+    # dynamics type and the input bound.
+    for suffix in ("", "_asymmetric", "_challenging", "_observation_bottleneck_mild",
+                   "_observation_bottleneck_strong"):
+        additive = get_environment_preset(f"tbme_wilson_cowan{suffix}")
+        native = get_environment_preset(f"tbme_wilson_cowan_native_input{suffix}")
+        assert native.resolved_dynamics_type() == "wilson_cowan_1972_native_input"
+        assert native.resolved_dynamics_type(estimator=True) == "wilson_cowan_1972_native_input"
+        for field in ("true_params", "parameter_scale", "initial_parameter_nonnegative", "state_noise",
+                      "loading_target_snr_db", "asymmetric_loading", "observation_primary_scale",
+                      "state_low", "state_high", "trajectory_eval_state_low", "trajectory_eval_state_high"):
+            assert getattr(native, field) == getattr(additive, field), (suffix, field)
 
     ww = get_environment_preset("tbme_wong_wang")
     assert ww.resolved_dynamics_type() == "wong_wang"
