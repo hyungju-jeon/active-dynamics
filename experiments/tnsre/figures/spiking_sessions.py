@@ -530,10 +530,24 @@ def _control_legend(fig: Any, plt: Any) -> None:
                        for name, label in (("spread", "Const."), ("front", "Max."))]
     options = dict(fontsize=_ASSET_TICK_SIZE, columnspacing=0.9, handlelength=1.4,
                    handletextpad=0.3, frameon=False, borderaxespad=0)
-    fig.legend(handles=model_handles, loc="upper left", bbox_to_anchor=(0.11, 0.99),
-               ncol=len(model_handles), **options)
-    fig.legend(handles=control_handles, loc="upper right", bbox_to_anchor=(0.985, 0.99),
-               ncol=len(control_handles), **options)
+    model_legend = fig.legend(handles=model_handles, loc="upper left", bbox_to_anchor=(0, 0.99),
+                              ncol=len(model_handles), **options)
+    control_legend = fig.legend(handles=control_handles, loc="upper left", bbox_to_anchor=(0, 0.99),
+                                ncol=len(control_handles), **options)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    model_box = model_legend.get_window_extent(renderer).transformed(fig.transFigure.inverted())
+    control_box = control_legend.get_window_extent(renderer).transformed(fig.transFigure.inverted())
+    gap = 8 / 72 / fig.get_figwidth()
+    left = (1 - model_box.width - gap - control_box.width) / 2
+    model_legend.set_bbox_to_anchor((left, 0.99))
+    control_legend.set_bbox_to_anchor((left + model_box.width + gap, 0.99))
+    separator_x = left + model_box.width + gap / 2
+    center_y = (model_box.y0 + model_box.y1) / 2
+    half_height = 3.5 / 72 / fig.get_figheight()
+    fig.add_artist(plt.Line2D([separator_x, separator_x],
+                             [center_y - half_height, center_y + half_height],
+                             transform=fig.transFigure, color=STROKE_COLOR, lw=0.6))
 
 
 def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = "task_summary_warm.csv") -> Path:

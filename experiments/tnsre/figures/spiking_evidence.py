@@ -16,9 +16,9 @@ whose push suppresses the winning pool (``diag_control_gap`` recordings; dotted:
 Usage:
     python -m experiments.tnsre.figures.spiking_evidence \\
         --run "without evidence=results/tnsre/20260924_snn_sessions_m2" \\
-        --run "with evidence=results/tnsre/20260928_snn_sessions_m2_evidence" \\
-        --run "with evidence, |u| <= 2=results/tnsre/20260929_snn_sessions_m2_evidence_u2" \\
-        --out results/tnsre/20260929_snn_sessions_m2_evidence_u2/eval/figures/tnsre_fig_spiking_evidence.pdf
+        --run "with evidence=results/archive/experiments/20260928_snn_sessions_m2_evidence" \\
+        --run "with evidence, |u| <= 2=results/archive/experiments/20260929_snn_sessions_m2_evidence_u2" \\
+        --out results/archive/experiments/20260929_snn_sessions_m2_evidence_u2/eval/figures/tnsre_fig_spiking_evidence.pdf
 """
 
 from __future__ import annotations
