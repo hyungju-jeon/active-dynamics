@@ -60,6 +60,10 @@ class EnvironmentPreset:
     initial_parameter_nonnegative: bool = False
     state_low: tuple[float, ...] | None = None
     state_high: tuple[float, ...] | None = None
+    # Box of the run's start state; None uses the state box. The observation calibration
+    # always samples the state box, so the start box does not change the loading.
+    start_state_low: tuple[float, ...] | None = None
+    start_state_high: tuple[float, ...] | None = None
     min_embedding_dim: int | None = None
     dynamics_alpha: float = 1.0
     state_noise: float = 0.2
@@ -255,6 +259,15 @@ class EnvironmentPreset:
 
     def sample_initial_state(self, seed: int) -> np.ndarray:
         low, high = self.resolved_state_bounds()
+        rng = np.random.default_rng(int(seed))
+        return (low + (high - low) * rng.random(low.shape[0])).astype(np.float32)
+
+    def sample_start_state(self, seed: int) -> np.ndarray:
+        """Start state of a run, shape (latent_dim,): uniform in the start box, else the state box."""
+        if self.start_state_low is None or self.start_state_high is None:
+            return self.sample_initial_state(seed)
+        low = np.asarray(self.start_state_low, dtype=np.float32)
+        high = np.asarray(self.start_state_high, dtype=np.float32)
         rng = np.random.default_rng(int(seed))
         return (low + (high - low) * rng.random(low.shape[0])).astype(np.float32)
 
@@ -678,6 +691,12 @@ def load_catalog_bundle(
             ),
             state_high=_as_state_vector(
                 spec.get("state_high"), label=f"environments.{preset_id}.state_high"
+            ),
+            start_state_low=_as_state_vector(
+                spec.get("start_state_low"), label=f"environments.{preset_id}.start_state_low"
+            ),
+            start_state_high=_as_state_vector(
+                spec.get("start_state_high"), label=f"environments.{preset_id}.start_state_high"
             ),
             min_embedding_dim=(
                 None

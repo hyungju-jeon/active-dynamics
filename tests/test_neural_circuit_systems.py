@@ -136,6 +136,21 @@ def test_neural_presets_resolve_from_tbme_catalog(tbme_catalog):
     assert ww.basin_switch_eval_interval == 100
 
 
+def test_start_box_sets_the_start_state_but_not_the_observation_loading(tbme_catalog):
+    import dataclasses
+
+    from actdyn.utils.experiment_runtime import shared_loglinear_loading
+
+    wc = get_environment_preset("tbme_wilson_cowan_native_input")
+    for seed in range(5):  # without a start box the start state is the state-box draw
+        np.testing.assert_array_equal(wc.sample_start_state(seed), wc.sample_initial_state(seed))
+    rest = dataclasses.replace(wc, start_state_low=(-2.0, -2.0), start_state_high=(-1.8, -1.8))
+    starts = np.stack([rest.sample_start_state(seed) for seed in range(50)])
+    assert np.all(starts >= -2.0) and np.all(starts <= -1.8)
+    for a, b in zip(shared_loglinear_loading(wc), shared_loglinear_loading(rest)):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+
 def _switch_kwargs(**overrides):
     kwargs = dict(
         estimator_dynamics_type="wong_wang",

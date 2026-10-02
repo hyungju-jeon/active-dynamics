@@ -935,7 +935,7 @@ def _run_single_parameter_identification(
     set_matplotlib_style()
     device = configure_runtime(seed=seed)
 
-    init_state = env_preset.sample_initial_state(seed)
+    init_state = env_preset.sample_start_state(seed)
     dz = int(env_preset.latent_dim)
     de = int(env_preset.embedding_dim)
     e_true = torch.as_tensor(
