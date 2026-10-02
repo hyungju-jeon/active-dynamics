@@ -1162,16 +1162,21 @@ class WilsonCowan1972(VectorField):
         """Shifted logistic S(x) with S(0) = 0."""
         return torch.sigmoid(a * (x - theta)) - float(1.0 / (1.0 + np.exp(a * theta)))
 
+    def _thresholds(self, x: torch.Tensor):
+        """Sigmoid thresholds (theta_E, theta_I); fixed constants in this class."""
+        return self.theta_e, self.theta_i
+
     def _drift(self, x: torch.Tensor, p, q) -> torch.Tensor:
         """Latent drift for state shape (..., 2) at external drives P, Q (scalars or shape (...))."""
         c1 = self.weight_scale * self._broadcast_param(self.w_ee, x)
         c2 = self.weight_scale * self._broadcast_param(self.w_ei, x)
         c3 = self.weight_scale * self._broadcast_param(self.w_ie, x)
         c4 = self.weight_scale * self._broadcast_param(self.w_ii, x)
+        theta_e, theta_i = self._thresholds(x)
         rate_e = x[..., 0] / self.state_scale + self.rate_offset
         rate_i = x[..., 1] / self.state_scale + self.rate_offset
-        gain_e = self._sigmoid(c1 * rate_e - c2 * rate_i + p, self.a_e, self.theta_e)
-        gain_i = self._sigmoid(c3 * rate_e - c4 * rate_i + q, self.a_i, self.theta_i)
+        gain_e = self._sigmoid(c1 * rate_e - c2 * rate_i + p, self.a_e, theta_e)
+        gain_i = self._sigmoid(c3 * rate_e - c4 * rate_i + q, self.a_i, theta_i)
         d_rate_e = (-rate_e + (self.k_e - self.r_e * rate_e) * gain_e) / self.tau_e
         d_rate_i = (-rate_i + (self.k_i - self.r_i * rate_i) * gain_i) / self.tau_i
         U = self.alpha * self.state_scale * d_rate_e
@@ -1217,6 +1222,42 @@ class WilsonCowan1972NativeInput(WilsonCowan1972):
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         """Latent drift without input, shape (..., 2)."""
         return self.compute_with_input(x, torch.zeros_like(x))
+
+
+class WilsonCowan1972NativeInputThresholds(WilsonCowan1972NativeInput):
+    """:class:`WilsonCowan1972NativeInput` with the two sigmoid thresholds also learned.
+
+    Equation as in :class:`WilsonCowan1972NativeInput`, with S_j(x) = 1 / (1 + exp(-a_j (x -
+    theta_j))) - 1 / (1 + exp(a_j theta_j)). S_j(0) = 0 for any theta_j, so E = I = 0 stays
+    an equilibrium for every parameter value.
+
+    Learned parameters (c_1, c_2, c_3, c_4, vartheta_E, vartheta_I) with theta_j =
+    ``threshold_scale`` x vartheta_j, threshold_scale = 0.4: the true thresholds (2.8, 4) are
+    vartheta = (7, 10), on the scale of the weights, so the shared parameter prior (std
+    ``parameter_scale``) and the initial guesses fit both. The gains a_j and the other
+    constants stay fixed.
+    """
+
+    def __init__(self, dyn_param=None, device: str = "cpu", **kwargs):
+        self.threshold_scale = float(kwargs.get("threshold_scale", 0.4))
+        if dyn_param is None:
+            dyn_param = [12.0, 4.0, 13.0, 11.0, 7.0, 10.0]
+        super().__init__(dyn_param=dyn_param, device=device, **kwargs)
+
+    def _set_params(self, w_ee=12.0, w_ei=4.0, w_ie=13.0, w_ii=11.0, th_e_raw=7.0, th_i_raw=10.0):
+        super()._set_params(w_ee, w_ei, w_ie, w_ii)
+        self.th_e_raw = th_e_raw
+        self.th_i_raw = th_i_raw
+
+    def _thresholds(self, x: torch.Tensor):
+        """Learned thresholds broadcast to the state batch, shapes (...)."""
+        return (self.threshold_scale * self._broadcast_param(self.th_e_raw, x),
+                self.threshold_scale * self._broadcast_param(self.th_i_raw, x))
+
+    @staticmethod
+    def _sigmoid(x: torch.Tensor, a: float, theta: torch.Tensor) -> torch.Tensor:
+        """Shifted logistic S(x) with S(0) = 0 for a tensor threshold."""
+        return torch.sigmoid(a * (x - theta)) - torch.sigmoid(-a * theta)
 
 
 class WongWang(VectorField):

@@ -65,6 +65,7 @@ def tbme_catalog():
     [
         ("wilson_cowan_1972", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 4),
         ("wilson_cowan_1972_native_input", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 4),
+        ("wilson_cowan_1972_native_input_thresholds", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 6),
         ("wong_wang", np.concatenate([WONG_WANG_ATTRACTORS, WONG_WANG_SADDLE]), 2),
     ],
 )
@@ -296,6 +297,34 @@ def test_wilson_cowan_1972_native_input_keeps_rates_in_range():
     rates = z.numpy() / 8.0 + 0.25
     assert rates[:, 0].min() > -0.034 - 1e-3 and rates[:, 0].max() < 0.477 + 1e-3
     assert rates[:, 1].min() > -0.018 - 1e-3 and rates[:, 1].max() < 0.486 + 1e-3
+
+
+def test_wilson_cowan_1972_learned_thresholds_reduce_to_the_fixed_model():
+    from actdyn.environment.vectorfield import jacobian_embedding_torch
+
+    z, u = _wc_native_states(seed=3)
+    true6 = torch.tensor([12.0, 4.0, 13.0, 11.0, 7.0, 10.0])  # theta = 0.4 x (7, 10) = (2.8, 4)
+    vf6 = build_vectorfield("wilson_cowan_1972_native_input_thresholds", true6)
+    vf4 = build_vectorfield("wilson_cowan_1972_native_input", torch.as_tensor(WILSON_COWAN_1972_TRUE))
+    np.testing.assert_allclose(vf6.compute_with_input(z, u).numpy(), vf4.compute_with_input(z, u).numpy(),
+                               rtol=1e-6, atol=1e-6)
+    # E = I = 0 stays an equilibrium for any thresholds (S(0) = 0).
+    other = build_vectorfield("wilson_cowan_1972_native_input_thresholds", torch.tensor([9.0, 6.0, 11.0, 8.0, 3.0, 15.0]))
+    np.testing.assert_allclose(other.compute(torch.tensor([[-2.0, -2.0]])).numpy(), 0.0, atol=1e-6)
+    # The threshold columns of d f / d theta match central differences of the drift.
+    e = true6.expand(len(z), 6)
+    jac = jacobian_embedding_torch("wilson_cowan_1972_native_input_thresholds", z, e, full_params=tuple(true6.tolist()),
+                                   min_embedding_dim=6, dynamics_alpha=1.0, u=u).detach()
+    assert jac.shape == (len(z), 2, 6)
+    h = 1e-2
+    for k in (4, 5):
+        step = torch.zeros(6)
+        step[k] = h
+        plus = build_vectorfield("wilson_cowan_1972_native_input_thresholds", true6 + step).compute_with_input(z, u)
+        minus = build_vectorfield("wilson_cowan_1972_native_input_thresholds", true6 - step).compute_with_input(z, u)
+        np.testing.assert_allclose(jac[..., k].numpy(), ((plus - minus) / (2 * h)).numpy(), rtol=1e-2, atol=1e-3)
+    assert float(jac[..., 0, 4].abs().max()) > 1e-3 and float(jac[..., 1, 5].abs().max()) > 1e-3
+    assert torch.all(jac[..., 0, 5] == 0) and torch.all(jac[..., 1, 4] == 0)  # theta_E drives E only
 
 
 def test_flex_wilson_cowan_1972_native_input_matches_field_and_input_jacobian():

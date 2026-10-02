@@ -27,6 +27,7 @@ from actdyn.utils.vectorfields_eqn import (
     ThreeGateTradeoff,
     WilsonCowan1972,
     WilsonCowan1972NativeInput,
+    WilsonCowan1972NativeInputThresholds,
     WongWang,
     WongWangInsideGain,
 )
@@ -58,6 +59,7 @@ vf_from_string = {
     "snowman": SnowMan,
     "wilson_cowan_1972": WilsonCowan1972,
     "wilson_cowan_1972_native_input": WilsonCowan1972NativeInput,
+    "wilson_cowan_1972_native_input_thresholds": WilsonCowan1972NativeInputThresholds,
     "wong_wang": WongWang,
     "wong_wang_inside_gain": WongWangInsideGain,
 }
