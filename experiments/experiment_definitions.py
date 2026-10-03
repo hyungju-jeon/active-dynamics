@@ -401,6 +401,11 @@ class PolicySpec:
     async_anytime_prefix_steps: int | None = 0
     async_anytime_min_iteration: int = 1
     async_anytime_std_tolerance: float = 0.5
+    # iCEM budget of the parameter-identification planners; None keeps the runner's
+    # defaults (24 samples, 4 iterations, 6 elites).
+    mpc_num_samples: int | None = None
+    mpc_num_iterations: int | None = None
+    mpc_num_elite: int | None = None
 
 
 @dataclass(frozen=True)
@@ -1049,6 +1054,9 @@ def load_catalog_bundle(
             async_anytime_std_tolerance=float(
                 spec.get("async_anytime_std_tolerance", 0.5)
             ),
+            mpc_num_samples=None if spec.get("mpc_num_samples") is None else int(spec["mpc_num_samples"]),
+            mpc_num_iterations=None if spec.get("mpc_num_iterations") is None else int(spec["mpc_num_iterations"]),
+            mpc_num_elite=None if spec.get("mpc_num_elite") is None else int(spec["mpc_num_elite"]),
         )
         for policy_id, spec in model_raw.items()
     }

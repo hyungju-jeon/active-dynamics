@@ -151,6 +151,18 @@ def test_start_box_sets_the_start_state_but_not_the_observation_loading(tbme_cat
         torch.testing.assert_close(a, b, rtol=0, atol=0)
 
 
+def test_mpc_budget_defaults_and_policy_fields(tbme_catalog):
+    import dataclasses
+
+    from experiments.experiment_definitions import get_policy_spec
+    from experiments.run import _mpc_budget
+
+    spec = get_policy_spec("active_myopic")
+    assert _mpc_budget(spec) == (24, 4, 6)  # unchanged default budget
+    larger = dataclasses.replace(spec, mpc_num_samples=64, mpc_num_iterations=6, mpc_num_elite=12)
+    assert _mpc_budget(larger) == (64, 6, 12)
+
+
 def _switch_kwargs(**overrides):
     kwargs = dict(
         estimator_dynamics_type="wong_wang",

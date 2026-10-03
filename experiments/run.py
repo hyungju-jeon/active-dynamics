@@ -211,6 +211,15 @@ class _EnvParameterFormatter:
         )
 
 
+def _mpc_budget(policy_spec: Any | None) -> tuple[int, int, int]:
+    """iCEM (samples, iterations, elites) of a parameter-identification planner; defaults 24, 4, 6."""
+    def value(name: str, default: int) -> int:
+        configured = getattr(policy_spec, name, None)
+        return default if configured is None else int(configured)
+
+    return value("mpc_num_samples", 24), value("mpc_num_iterations", 4), value("mpc_num_elite", 6)
+
+
 def _resolved_policy_type(policy_id: str, policy_spec: Any | None) -> str:
     configured = (
         None if policy_spec is None else getattr(policy_spec, "policy_type", None)
@@ -1339,9 +1348,9 @@ def _run_single_parameter_identification(
         policy_spec=policy_spec,
         schedule_spec=schedule_spec,
         seed=seed,
-        mpc_num_iterations=4,
-        mpc_num_samples=24,
-        mpc_num_elite=6,
+        mpc_num_iterations=_mpc_budget(policy_spec)[1],
+        mpc_num_samples=_mpc_budget(policy_spec)[0],
+        mpc_num_elite=_mpc_budget(policy_spec)[2],
     )
     # Decision sessions: planners simulate the environment's decide-wait-reset rule.
     session_rule = getattr(true_vec_env, "session_rule", None)
@@ -2220,6 +2229,9 @@ def _run_single_parameter_identification(
             "replan_interval": int(schedule_spec.replan_interval),
             "planning_horizon": int(schedule_spec.planning_horizon),
             "coarse_dt_factor": int(getattr(policy_spec, "coarse_dt_factor", 1)),
+            "mpc_num_samples": _mpc_budget(policy_spec)[0],
+            "mpc_num_iterations": _mpc_budget(policy_spec)[1],
+            "mpc_num_elite": _mpc_budget(policy_spec)[2],
             "coarse_action_mapping": str(
                 getattr(policy_spec, "coarse_action_mapping", "hold")
             ),
