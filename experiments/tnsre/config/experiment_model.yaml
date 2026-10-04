@@ -125,6 +125,13 @@ models:
     adaptive_replan_min_interval: 5
     adaptive_replan_state_error_threshold: 3.0
 
+  # PALDI reacting at every step (2026-10-04): the parameter block may be applied, and a replan
+  # triggered, after one step instead of five; the maximum intervals (20 steps) are unchanged.
+  adaptive_reactive:
+    extends: adaptive
+    adaptive_update_min_interval: 1
+    adaptive_replan_min_interval: 1
+
   adaptive_async_realtime:
     extends: adaptive
     policy_type: async-mpc-icem

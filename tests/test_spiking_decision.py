@@ -103,3 +103,17 @@ def test_reset_with_same_seed_repeats_the_trial_exactly(small_network):
     trial(12, (-0.5, 0.8), 17)  # different history, ending mid-trial
     second = trial(11, (1.0, 0.0), 40)
     np.testing.assert_array_equal(first, second)
+
+
+def test_unequal_recording_takes_the_first_neurons_of_each_pool():
+    net = WangDecisionNetwork(n_e=200, n_i=50, observed_per_pool=(10, 3), control_bin_ms=5.0, sim_dt_ms=0.1, seed=0)
+    try:
+        pool1, pool2 = net.pool_slices[1], net.pool_slices[2]
+        np.testing.assert_array_equal(net.observed_indices, np.r_[pool1.start:pool1.start + 10, pool2.start:pool2.start + 3])
+        assert net.n_observed == 13
+        counts, _ = net.step(np.zeros(2))
+        assert counts.shape == (13,)
+    finally:
+        net.close()
+    with pytest.raises(ValueError):
+        WangDecisionNetwork(n_e=200, n_i=50, observed_per_pool=(10, 31), seed=0)  # pools of 30

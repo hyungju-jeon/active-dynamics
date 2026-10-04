@@ -474,3 +474,34 @@ def test_fixed_length_preset_ends_sessions_only_at_the_time_limit():
         ends.append(info["session_end"])
     assert [i + 1 for i, e in enumerate(ends) if e] == [400, 800]  # environment
     assert [s["decision"] for s in env.session_log] == [1, 1]  # decisions are still recorded
+
+
+def test_observation_presets_change_only_the_recorded_neurons():
+    """Low-SNR and biased fixed-trial presets record (4, 4), (2, 2), and (40, 2) neurons; nothing else changes."""
+    from dataclasses import replace
+
+    from actdyn.environment.spiking_decision import observed_counts
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    configure_tbme_catalogs(suite_entries={})
+    base = get_environment_preset("tbme_wong_wang_snn_sessions_m2_fixed")
+    assert observed_counts(base) == (40, 40)
+    for name, counts in (("lowsnr4", (4, 4)), ("lowsnr2", (2, 2)), ("biased", (40, 2))):
+        p = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2_fixed_{name}")
+        assert observed_counts(p) == counts and p.observation_dim == sum(counts)
+        same = replace(p, preset_id=base.preset_id, system_label=base.system_label, observation_dim=base.observation_dim,
+                       spiking_observed_per_pool=base.spiking_observed_per_pool, spiking_observed_pool2=None)
+        assert same == base
+
+
+def test_reactive_paldi_changes_only_the_minimum_intervals():
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    bundle = configure_tbme_catalogs(suite_entries={})
+    base, fast = bundle.policy_specs["adaptive"], bundle.policy_specs["adaptive_reactive"]
+    sb, sf = bundle.schedule_specs[base.schedule_id], bundle.schedule_specs[fast.schedule_id]
+    assert (sb.adaptive_update_min_interval, sb.adaptive_replan_min_interval) == (5, 5)
+    assert (sf.adaptive_update_min_interval, sf.adaptive_replan_min_interval) == (1, 1)
+    assert (sf.planning_horizon, sf.replan_interval, sf.update_interval) == (sb.planning_horizon, sb.replan_interval, sb.update_interval)
+    assert fast.objective_kind == base.objective_kind and fast.coarse_dt_factor == base.coarse_dt_factor

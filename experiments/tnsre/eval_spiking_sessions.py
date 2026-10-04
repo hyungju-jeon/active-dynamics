@@ -136,19 +136,23 @@ EXAMPLES: dict[str, Any] = {
 
 
 # ------------------------------------------------------------------ network and held-out data
-def build_network(seed: int = 0):
-    """Wang (2002) network with the configuration of the experiment's preset."""
-    from actdyn.environment.spiking_decision import TAU_NMDA_MS, WangDecisionNetwork
+def build_network(seed: int = 0, preset_id: str = PRESET_ID):
+    """Wang (2002) network with the configuration of a preset (default: the experiment's).
+
+    The task stage passes the identification runs' preset, so the network records the same
+    neurons as the runs' readouts.
+    """
+    from actdyn.environment.spiking_decision import TAU_NMDA_MS, WangDecisionNetwork, observed_counts
     from experiments.experiment_definitions import get_environment_preset
     from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
     configure_tbme_catalogs(suite_entries={})
-    p = get_environment_preset(PRESET_ID)
+    p = get_environment_preset(preset_id)
     return WangDecisionNetwork(
         n_e=int(p.spiking_n_e), n_i=int(p.spiking_n_i), f_sel=float(p.spiking_f_sel),
         w_plus=float(p.spiking_w_plus), sim_dt_ms=float(p.spiking_sim_dt_ms),
         control_bin_ms=float(p.dt) * TAU_NMDA_MS, stim_gain_pa=float(p.spiking_stim_gain_pa),
-        observed_per_pool=int(p.spiking_observed_per_pool),
+        observed_per_pool=observed_counts(p),
         background_rate_hz=float(p.spiking_background_rate_hz), seed=int(seed),
         codegen_target=str(p.spiking_codegen_target),
     )
@@ -235,6 +239,7 @@ def load_session_runs(runs_root: Path) -> list[dict[str, Any]]:
             "C": np.asarray(meta["observation_loading_matrix"], dtype=np.float64),
             "b": np.asarray(meta["observation_loading_bias"], dtype=np.float64),
             "session_log": meta.get("session_log", []),
+            "preset_id": str(meta.get("env_preset_id", PRESET_ID)),
         })
     return runs
 
@@ -515,7 +520,10 @@ def stage_task(out: Path, runs_root: Path, worker_index: int, n_workers: int, co
         with open(other) as fh:
             done |= {(r["controller"], r["policy"], int(r["seed"]), int(r["checkpoint"]), r["task"], float(r["budget"]),
                       int(r["task_seed"])) for r in csv.DictReader(fh)}
-    net = build_network()
+    presets = {run["preset_id"] for run in runs}
+    if len(presets) != 1:
+        raise ValueError(f"runs under {runs_root} come from several presets: {sorted(presets)}")
+    net = build_network(preset_id=presets.pop())  # record the neurons of the runs' readouts
     dt = float(net.dt_latent)
     new_file = not path.exists()
     with open(path, "a", newline="") as fh:

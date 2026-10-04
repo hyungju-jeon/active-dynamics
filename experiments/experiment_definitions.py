@@ -83,6 +83,7 @@ class EnvironmentPreset:
     spiking_sim_dt_ms: float = 0.1
     spiking_stim_gain_pa: float = 20.0
     spiking_observed_per_pool: int = 40
+    spiking_observed_pool2: int | None = None  # neurons recorded from pool 2 (None: as pool 1)
     spiking_background_rate_hz: float = 2400.0
     spiking_calibration_steps: int = 800
     spiking_calibration_hold_steps: int = 50
@@ -761,6 +762,8 @@ def load_catalog_bundle(
             spiking_sim_dt_ms=float(spec.get("spiking_sim_dt_ms", 0.1)),
             spiking_stim_gain_pa=float(spec.get("spiking_stim_gain_pa", 20.0)),
             spiking_observed_per_pool=int(spec.get("spiking_observed_per_pool", 40)),
+            spiking_observed_pool2=(None if spec.get("spiking_observed_pool2") is None
+                                    else int(spec["spiking_observed_pool2"])),
             spiking_background_rate_hz=float(spec.get("spiking_background_rate_hz", 2400.0)),
             spiking_calibration_steps=int(spec.get("spiking_calibration_steps", 800)),
             spiking_calibration_hold_steps=int(spec.get("spiking_calibration_hold_steps", 50)),

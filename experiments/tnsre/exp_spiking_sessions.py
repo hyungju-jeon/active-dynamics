@@ -17,6 +17,8 @@ filters, learners, and planners use the action plus the evidence as the circuit'
 with the same evidence; the readout is calibrated as before (amplitude 1).
 ``wong_wang_snn_sessions_m2_fixed`` keeps every session for the full 400 bins: a decision
 does not end it, so the data include the held choice (fixed-length trials).
+The ``_obs`` suites compare PALDI (also with its reactive cadence) and RHC-US on fixed trials
+with the default, two low-SNR (4 or 2 neurons per pool), and a biased (40 + 2 neurons) recording.
 """
 
 DEFAULT_SEED_COUNT = 20
@@ -43,6 +45,15 @@ EXPERIMENT_SUITES = {
     }
     for exp_id in DEFAULT_EXP_IDS
 }
+
+OBS_MODEL_IDS = ["adaptive_reactive", "adaptive", "rhc"]
+for _suite, _preset, _models in (
+    ("wong_wang_snn_sessions_m2_fixed_obs_default", "tbme_wong_wang_snn_sessions_m2_fixed", ["adaptive_reactive"]),
+    ("wong_wang_snn_sessions_m2_fixed_obs_lowsnr4", "tbme_wong_wang_snn_sessions_m2_fixed_lowsnr4", OBS_MODEL_IDS),
+    ("wong_wang_snn_sessions_m2_fixed_obs_lowsnr2", "tbme_wong_wang_snn_sessions_m2_fixed_lowsnr2", OBS_MODEL_IDS),
+    ("wong_wang_snn_sessions_m2_fixed_obs_biased", "tbme_wong_wang_snn_sessions_m2_fixed_biased", OBS_MODEL_IDS),
+):
+    EXPERIMENT_SUITES[_suite] = {**SHARED_EXP_ARGS, "model_ids": _models, "env_preset_id": _preset}
 
 from experiments.tnsre.run_tbme_experiments import run_experiment_entrypoint
 

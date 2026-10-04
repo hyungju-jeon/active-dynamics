@@ -693,6 +693,29 @@ environments:
     system_label: Wong-Wang (input inside the gain) / spiking network, fixed 2-s sessions
     spiking_post_decision_bins: 400
 
+  # Degraded observation of the fixed-trial identification (2026-10-04). Readout Fisher SNR
+  # (median over the 20 seeds' calibrated readouts, rows of the recorded neurons): 0.7 dB with
+  # 40 neurons per pool. Low SNR: 4 neurons per pool, -9.9 dB, or 2 per pool, -13.5 dB. Biased:
+  # 40 neurons from pool 1 and 2 from pool 2, -5.6 dB, loading concentrated on pool 1.
+  tbme_wong_wang_snn_sessions_m2_fixed_lowsnr4:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 4 neurons per pool
+    observation_dim: 8
+    spiking_observed_per_pool: 4
+
+  tbme_wong_wang_snn_sessions_m2_fixed_lowsnr2:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 2 neurons per pool
+    observation_dim: 4
+    spiking_observed_per_pool: 2
+
+  tbme_wong_wang_snn_sessions_m2_fixed_biased:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 40 + 2 neurons
+    observation_dim: 42
+    spiking_observed_per_pool: 40
+    spiking_observed_pool2: 2
+
   # The M2 identification with sensory evidence in every session (2026-09-28): 6 pA
   # (0.3 units) to a random pool (drawn per session from its network seed) for the
   # first 1 s, as in the task sessions. Agents know the schedule and the pool.

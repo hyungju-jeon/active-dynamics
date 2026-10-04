@@ -125,7 +125,8 @@ class WangDecisionNetwork:
             still resolves to one winner and an antisymmetric drive of 0.7 flips
             a committed choice within about 1 s; from 25 pA upward a symmetric
             drive co-activates both pools, a regime the reduced model lacks.
-        observed_per_pool: Number of neurons recorded from each selective pool.
+        observed_per_pool: Neurons recorded from each selective pool: one count for both
+            pools, or ``(pool 1, pool 2)`` for an unequal (biased) recording.
         background_rate_hz: Rate of the independent external Poisson drive.
         state_scale: Latent proxy scale, ``z = state_scale (s - 1/2)``.
         seed: Seed of the Brian2 random streams.
@@ -144,7 +145,7 @@ class WangDecisionNetwork:
         sim_dt_ms: float = 0.1,
         control_bin_ms: float = 5.0,
         stim_gain_pa: float = 20.0,
-        observed_per_pool: int = 40,
+        observed_per_pool: int | tuple[int, int] = 40,
         background_rate_hz: float = 2400.0,
         state_scale: float = 4.0,
         seed: int = 0,
@@ -158,13 +159,15 @@ class WangDecisionNetwork:
         self.control_bin_ms = float(control_bin_ms)
         self.stim_gain_pa = float(stim_gain_pa)
         self.state_scale = float(state_scale)
-        self.observed_per_pool = int(observed_per_pool)
+        self.observed_per_pool = (
+            (int(observed_per_pool),) * 2 if np.isscalar(observed_per_pool) else tuple(int(n) for n in observed_per_pool)
+        )
         self.seed = int(seed)
         params = _model_parameters(
             b2, n_e=n_e, n_i=n_i, f_sel=f_sel, w_plus=w_plus, background_rate_hz=background_rate_hz
         )
         self.params = params
-        if self.observed_per_pool > params["N1"]:
+        if len(self.observed_per_pool) != 2 or max(self.observed_per_pool) > params["N1"]:
             raise ValueError(
                 f"observed_per_pool={observed_per_pool} exceeds pool size {params['N1']}."
             )
@@ -242,9 +245,9 @@ class WangDecisionNetwork:
         self.spike_monitor = b2.SpikeMonitor(net["E"], record=False, name="spikes_E")
         self.net = net
         self.exc = exc
-        # Observed neurons: the first ``observed_per_pool`` neurons of each selective pool.
+        # Observed neurons: the first ``observed_per_pool[k]`` neurons of selective pool k.
         self.observed_indices = np.concatenate(
-            [np.arange(s.start, s.start + self.observed_per_pool) for s in self.pool_slices[1:]]
+            [np.arange(s.start, s.start + n) for s, n in zip(self.pool_slices[1:], self.observed_per_pool)]
         )
         self._prev_count = np.zeros(params["N_E"], dtype=np.int64)
         self._stim = np.zeros(params["N_E"], dtype=np.float64)
@@ -716,15 +719,15 @@ def build_spiking_environment(
         sim_dt_ms=float(env_preset.spiking_sim_dt_ms),
         control_bin_ms=dt * TAU_NMDA_MS,
         stim_gain_pa=float(env_preset.spiking_stim_gain_pa),
-        observed_per_pool=int(env_preset.spiking_observed_per_pool),
+        observed_per_pool=observed_counts(env_preset),
         background_rate_hz=float(env_preset.spiking_background_rate_hz),
         seed=int(seed),
         codegen_target=str(env_preset.spiking_codegen_target),
     )
     if int(env_preset.observation_dim) != network.n_observed:
         raise ValueError(
-            f"observation_dim={env_preset.observation_dim} must equal 2 * spiking_observed_per_pool "
-            f"= {network.n_observed} for {env_preset.preset_id}."
+            f"observation_dim={env_preset.observation_dim} must equal the recorded neurons "
+            f"{observed_counts(env_preset)} = {network.n_observed} for {env_preset.preset_id}."
         )
     weight, bias, diagnostics = calibrate_spike_readout(
         network,
@@ -740,6 +743,14 @@ def build_spiking_environment(
                              device=device)
     obs_model = SpikeCountObservation(env, weight=weight, bias=bias, dt=dt, device=device)
     return env, obs_model, diagnostics
+
+
+def observed_counts(env_preset: Any) -> tuple[int, int]:
+    """Neurons recorded from (pool 1, pool 2): ``spiking_observed_per_pool``, with pool 2 overridden
+    by ``spiking_observed_pool2`` when the preset sets it (biased recording)."""
+    n1 = int(env_preset.spiking_observed_per_pool)
+    n2 = getattr(env_preset, "spiking_observed_pool2", None)
+    return n1, n1 if n2 is None else int(n2)
 
 
 def session_rule_from_preset(env_preset: Any, state_scale: float) -> Optional[SessionRule]:
