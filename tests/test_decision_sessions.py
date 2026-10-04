@@ -449,3 +449,28 @@ def test_warm_controller_paths_keep_the_fresh_results():
     fresh, warm = controller_paths(Path("e"), "fresh"), controller_paths(Path("e"), "warm")
     assert fresh == {"task": Path("e/task"), "summary": Path("e/task_summary.csv")}
     assert warm == {"task": Path("e/task_warm"), "summary": Path("e/task_summary_warm.csv")}
+
+
+def test_fixed_length_preset_ends_sessions_only_at_the_time_limit():
+    """Preset ``tbme_wong_wang_snn_sessions_m2_fixed``: a decision does not end the session."""
+    from dataclasses import replace
+
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    configure_tbme_catalogs(suite_entries={})
+    fixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_fixed"), 4.0)
+    base = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2"), 4.0)
+    assert replace(fixed, post_decision_bins=base.post_decision_bins) == base  # only the session end differs
+    assert fixed.max_session_bins == 400 and fixed.post_decision_bins >= fixed.max_session_bins
+    decisions, resets = _run_clock([0.0] * 50 + [3.0] * 360, fixed)
+    assert decisions.index(True) == 50 and resets.index(True) == 399  # planner clock
+    env = SpikingDecisionEnv(ScriptedNetwork(rate=0.3), session_rule=replace(fixed, max_sessions=2))
+    env.reset(seed=7)
+    ends, terminated = [], False
+    while not terminated:
+        _z, _r, terminated, _trunc, info = env.step(np.zeros(2))
+        ends.append(info["session_end"])
+    assert [i + 1 for i, e in enumerate(ends) if e] == [400, 800]  # environment
+    assert [s["decision"] for s in env.session_log] == [1, 1]  # decisions are still recorded

@@ -84,7 +84,9 @@ PROTOCOL: dict[str, Any] = {
     "reduced_fit": "results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json",
     "r2_horizon": 100,
     "r2_stride": 20,
-    "task_checkpoints": [0, 1, 2, 5, 20],       # completed identification sessions
+    # Completed identification sessions. 10 fixed-length sessions (4000 bins) hold about as many
+    # bins as PALDI's 20 decision-ended sessions in the manuscript (median 3978 bins).
+    "task_checkpoints": [0, 1, 2, 5, 10, 20],
     "task_sessions": 8,                        # task sessions per task
     "task_seeds": {"force": 90000, "overturn": 91000},
     "evidence_amplitude": 0.3,                 # 6 pA in action units (x 20 pA)

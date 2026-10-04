@@ -15,6 +15,8 @@ random pool for the first 1 s, as in the task sessions); the agents know it, so 
 filters, learners, and planners use the action plus the evidence as the circuit's input.
 ``wong_wang_snn_sessions_m2_evidence_u2`` doubles the agents' input bound (|u| <= 2, 40 pA)
 with the same evidence; the readout is calibrated as before (amplitude 1).
+``wong_wang_snn_sessions_m2_fixed`` keeps every session for the full 400 bins: a decision
+does not end it, so the data include the held choice (fixed-length trials).
 """
 
 DEFAULT_SEED_COUNT = 20
@@ -22,6 +24,7 @@ DEFAULT_EXP_IDS = (
     "wong_wang_snn_sessions_m2",
     "wong_wang_snn_sessions_m2_evidence",
     "wong_wang_snn_sessions_m2_evidence_u2",
+    "wong_wang_snn_sessions_m2_fixed",
 )
 # Matched comparison set of the manuscript (PALDI, Myopic, FLEX, RHC-US, PRBS, Random).
 MODEL_IDS = ["adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random"]
