@@ -309,6 +309,35 @@ def diagnostic(models, root, plan, arm, shard, nshards):
         net.close()
 
 
+def replay_check(models, root, arm, expected_path):
+    """Check saved SNN outcomes on this host, for one input condition per process."""
+    configure_arm(arm)
+    units = load_models(models, arm)
+    entries = [r for r in json.loads(expected_path.read_text()) if r['arm'] == arm]
+    if not entries:
+        raise ValueError('No saved reference outcomes for this input condition')
+    checks = []
+    net = ev.build_network()
+    try:
+        for entry in entries:
+            expected = entry['expected']
+            unit = next(u for u in units if u['policy'] == expected['policy']
+                        and u['seed'] == int(expected['seed']))
+            seed = int(expected['task_seed'])
+            ctrl = None if unit['theta'] is None else make_controller(unit, seed, net.dt_latent)
+            actual = run_session(net, ControlTask(budget=float(expected['budget'])), seed,
+                                 controller=ctrl, baseline=unit['controller'])
+            for key in ('valid', 'target', 'onset', 'success', 'outcome_bin'):
+                if actual[key] != int(expected[key]):
+                    raise AssertionError((arm, unit['policy'], key, actual, expected))
+            np.testing.assert_allclose(actual['energy'], float(expected['energy']), rtol=1e-6, atol=1e-7)
+            checks.append(dict(policy=unit['policy'], expected=expected, actual=actual, passed=True))
+            write_json(root/'preflight'/f'{arm}.json', dict(arm=arm, checks=checks,
+                models_sha256=hashlib.sha256(models.read_bytes()).hexdigest()))
+    finally:
+        net.close()
+
+
 def campaign(args, plan):
     """Launch bounded independent process shards; keep every attempt log."""
     out = args.root/plan['name']
@@ -375,11 +404,12 @@ def campaign(args, plan):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--stage', choices=['export', 'evaluate', 'diagnostic', 'campaign'], required=True)
+    p.add_argument('--stage', choices=['export', 'evaluate', 'diagnostic', 'campaign', 'replay-check'], required=True)
     p.add_argument('--root', type=Path, required=True)
     p.add_argument('--parent', type=Path)
     p.add_argument('--models', type=Path)
     p.add_argument('--plan', type=Path)
+    p.add_argument('--expected', type=Path, help='Saved outcome JSON for the one-arm replay check')
     p.add_argument('--arm', choices=EVAL_ARMS)
     p.add_argument('--shard', type=int, default=0)
     p.add_argument('--nshards', type=int, default=16)
@@ -392,6 +422,11 @@ def main():
     torch.set_num_threads(1)
     if args.stage == 'export':
         export_models(args.parent, args.root)
+        return
+    if args.stage == 'replay-check':
+        if args.expected is None or args.arm is None or args.models is None:
+            p.error('replay-check requires --expected, --arm, and --models')
+        replay_check(args.models, args.root, args.arm, args.expected)
         return
     plan = json.loads(args.plan.read_text())
     if args.stage == 'campaign':
