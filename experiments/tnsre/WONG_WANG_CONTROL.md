@@ -105,3 +105,24 @@ PI settings (eight gain pairs at 50 ms smoothing, plus two smoothing ablations).
 Tune each on all 16 calibration task seeds and two matched readouts where needed.
 The calibrated readouts are identical across response families; the selection
 code checks that identity before sharing model-free settings between families.
+
+## Reproducible comparison figures
+
+After a phase has complete verified rows and a comparison report, run:
+
+```sh
+.venv/bin/python -m experiments.tnsre.figures.wong_wang_control \
+  --models results/tnsre/20261005_wong_wang_control/inputs/models.json \
+  --phase-dir results/tnsre/20261005_wong_wang_control/results/calibration_v1
+```
+
+The same command accepts diagnostic, smoke, development, and confirmation phase
+directories. It checks the summary against raw outcomes and writes PDF, SVG,
+color and grayscale previews, plotted values, captions, and input hashes under
+`comparison/figures`. The canvas uses the existing 516-pt manuscript width.
+
+Constraint curves show pointwise crossed-bootstrap intervals of mean success;
+they do not test paired differences. Paired comparison panels use the report's
+simultaneous intervals. Single-model-seed smoke panels have descriptive points
+without confidence intervals. Diagnostic bars show complete open-loop plan
+replays on the declared reused seeds, not closed-loop MPC success rates.
