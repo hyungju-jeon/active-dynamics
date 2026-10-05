@@ -101,6 +101,31 @@ def test_tracking_never_stops_at_a_single_threshold_crossing(monkeypatch):
     assert net.k == 2 and result['success'] == 1
 
 
+@pytest.mark.parametrize('failure_step', [1, 2])
+def test_observer_failure_retains_the_applied_step_and_energy(monkeypatch, failure_step):
+    from experiments.tnsre.wong_wang_control_study import failure_outcome
+    monkeypatch.setattr(ev, 'PROTOCOL', dict(ev.PROTOCOL))
+
+    class FailingObserver:
+        m = np.zeros(2)
+        observations = 0
+
+        def observe(self, counts, drive):
+            self.observations += 1
+            if self.observations == failure_step:
+                raise np.linalg.LinAlgError('forced observer failure')
+
+    net, trace = SequenceNetwork(), []
+    task = ControlTask(name='neutral', budget=1., window=20, warmup=0, replan=10)
+    with pytest.raises(np.linalg.LinAlgError, match='forced observer failure'):
+        run_session(net, task, 3, controller=FailingObserver(), baseline='front', trace=trace)
+    assert net.k == len(trace) == failure_step
+    result = failure_outcome(net, task, 3, trace)
+    assert result['valid'] == 1 and result['onset'] == 1 and result['target'] == 1
+    assert result['success'] == 0 and result['rmse'] == 5.
+    assert result['energy'] == pytest.approx((failure_step-1)*net.dt_latent)
+
+
 def test_front_and_spread_match_existing_overturn_inputs(monkeypatch):
     monkeypatch.setattr(ev, 'PROTOCOL', dict(ev.PROTOCOL, action_max=.75))
     task = ControlTask(bound=.75, budget=10.)

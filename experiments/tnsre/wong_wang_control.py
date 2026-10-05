@@ -256,10 +256,11 @@ def run_session(net, task, seed, *, controller=None, baseline='none', parameters
     for t in range(int(ev.PROTOCOL['max_session_bins'])):
         evidence = ev.evidence_drive(t, pool)
         counts, z = net.step(np.zeros(2), evidence=evidence)
-        if controller is not None:
-            controller.observe(counts, evidence)
+        # Record the applied step even if the following observer update fails.
         if trace is not None:
             trace.append(dict(bin=t, u=np.zeros(2), z=z.copy(), evidence=evidence, counts=counts.copy()))
+        if controller is not None:
+            controller.observe(counts, evidence)
         if abs(z[0]-z[1]) > ev.PROTOCOL['decision_gap']:
             break
     else:
@@ -293,10 +294,10 @@ def run_session(net, task, seed, *, controller=None, baseline='none', parameters
             energy += dt*float(u@u)
         evidence = ev.evidence_drive(onset+k, pool)
         counts, z = net.step(u, evidence=evidence)
-        if controller is not None:
-            controller.observe(counts, u+evidence)
         if trace is not None:
             trace.append(dict(bin=onset+k, u=u.copy(), z=z.copy(), evidence=evidence, counts=counts.copy()))
+        if controller is not None:
+            controller.observe(counts, u+evidence)
         gap = float(z[target]-z[1-target])
         gaps.append(gap)
         if task.name == 'overturn' and gap > ev.PROTOCOL['decision_gap']:

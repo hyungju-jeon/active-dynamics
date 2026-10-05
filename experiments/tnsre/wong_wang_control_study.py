@@ -325,13 +325,17 @@ def replay_check(models, root, arm, expected_path):
                         and u['seed'] == int(expected['seed']))
             seed = int(expected['task_seed'])
             ctrl = None if unit['theta'] is None else make_controller(unit, seed, net.dt_latent)
+            trace = []
             actual = run_session(net, ControlTask(budget=float(expected['budget'])), seed,
-                                 controller=ctrl, baseline=unit['controller'])
+                                 controller=ctrl, baseline=unit['controller'], trace=trace)
             for key in ('valid', 'target', 'onset', 'success', 'outcome_bin'):
                 if actual[key] != int(expected[key]):
                     raise AssertionError((arm, unit['policy'], key, actual, expected))
             np.testing.assert_allclose(actual['energy'], float(expected['energy']), rtol=1e-6, atol=1e-7)
-            checks.append(dict(policy=unit['policy'], expected=expected, actual=actual, passed=True))
+            logged_energy = net.dt_latent * sum(float(r['u'] @ r['u']) for r in trace)
+            np.testing.assert_allclose(logged_energy, actual['energy'], rtol=1e-6, atol=1e-7)
+            checks.append(dict(policy=unit['policy'], expected=expected, actual=actual,
+                               logged_steps=len(trace), logged_energy=logged_energy, passed=True))
             write_json(root/'preflight'/f'{arm}.json', dict(arm=arm, checks=checks,
                 models_sha256=hashlib.sha256(models.read_bytes()).hexdigest()))
     finally:
