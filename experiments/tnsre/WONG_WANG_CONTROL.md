@@ -59,7 +59,7 @@ planner's controls and scores on deterministic replay fixtures.
 
 - Diagnostics may reuse 91000–91007 to explain the previously reported outcomes.
 - Smoke and calibration seeds: 120000–120015. Initial smoke uses four of these.
-- Development comparison: 121000–121031.
+- Development comparison: 121000–121007.
 - Untouched confirmation: 122000–122063, extended with a new disjoint block only
   if a precision calculation made before that extension requires it.
 - Existing training seeds 0–19 stay paired across identification methods. This
@@ -90,8 +90,10 @@ invalid uncontrolled trials and check that validity is identical across methods.
 Each phase has an immutable plan, expected row keys, source snapshot, input
 hashes, per-attempt logs, and append-only result shards. Verify complete unique
 coverage, finite scores, amplitude and energy constraints, and copyback before
-claiming completion. Preserve failed attempts. Heavy simulations run on Lambda
-or the previously approved CPU VMs, not on the busy local workstation.
+claiming completion. Preserve failed attempts. All remaining simulations run
+on the previously approved four GCP CPU VMs. The stopped Lambda development
+run's completed trials are preserved and checked before resuming its unfinished
+shards with the same source commit, models, plan, and seeds on GCP.
 
 Run one network/input condition per Python process, as the campaign workers do.
 A replay check that created two different conditions sequentially in one process
@@ -105,6 +107,18 @@ PI settings (eight gain pairs at 50 ms smoothing, plus two smoothing ablations).
 Tune each on all 16 calibration task seeds and two matched readouts where needed.
 The calibrated readouts are identical across response families; the selection
 code checks that identity before sharing model-free settings between families.
+
+The diagnostic report also reads each saved action/state trace and writes
+`diagnostic_actions.csv` and `diagnostic_actions_summary.csv`. It resolves input
+energy into orthogonal common and differential components, and reports energy
+delivered in the first 40 and 100 bins plus the bin when half the energy has been
+delivered. A bin is 5 ms in this experiment. These fractions describe prescribed
+complete open-loop plans, including stimulation after a threshold crossing.
+Common input is not necessarily ineffective in a nonlinear network. Differences
+in timing and direction suggest mechanisms; only matched ablations can establish
+their causal effects. Trace hashes, peak-bound checks, reconstructed peak gaps,
+and the orthogonal energy identity are recorded in
+`diagnostic_action_verification.json`.
 
 ## Reproducible comparison figures
 

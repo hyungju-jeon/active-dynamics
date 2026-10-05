@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -104,11 +105,47 @@ def simultaneous_comparisons(data, plan, *, draws=20000, seed=20261005):
     return pd.DataFrame(comparisons)
 
 
+def action_geometry(actions, target):
+    """Describe float64 (time, 2) actions without assuming a physical time unit.
+
+    The orthogonal components are c=(u0+u1)/sqrt(2) and
+    d=(u_target-u_other)/sqrt(2). Their squared energies sum to ||u||^2.
+    The half-energy bin counts elapsed bins, starting at one; it is undefined
+    for zero energy. Fractions use the complete prescribed open-loop sequence.
+    """
+    actions = np.asarray(actions, dtype=np.float64)
+    if (actions.ndim != 2 or actions.shape[1] != 2 or not len(actions)
+            or not np.isfinite(actions).all() or target not in (0, 1)):
+        raise ValueError('Need finite (time, 2) actions and a binary target')
+    power = np.sum(actions**2, axis=1)
+    total = float(power.sum())
+    common = (actions[:, 0]+actions[:, 1])/np.sqrt(2.)
+    differential = (actions[:, target]-actions[:, 1-target])/np.sqrt(2.)
+    against = np.minimum(differential, 0.)
+    common_energy, differential_energy = float(common@common), float(differential@differential)
+    np.testing.assert_allclose(common_energy+differential_energy, total, rtol=1e-12, atol=1e-12)
+    return dict(peak_action_norm=float(np.sqrt(power.max())),
+        common_mode_energy_fraction=common_energy/total if total else 0.,
+        differential_energy_fraction=differential_energy/total if total else 0.,
+        against_target_energy_fraction=float(against@against)/total if total else 0.,
+        first_40_bins_energy_fraction=float(power[:40].sum())/total if total else 0.,
+        first_100_bins_energy_fraction=float(power[:100].sum())/total if total else 0.,
+        half_energy_bin=int(np.searchsorted(np.cumsum(power), .5*total))+1 if total else None)
+
+
 def report_diagnostic(rows, out):
-    flat = []
+    flat, geometry, trace_hashes = [], [], {}
     for r in rows:
         if not r['valid']:
             continue
+        path = out.parent/r['arm']/'traces'/f'{r["key"]}.npz'
+        with np.load(path) as trace:
+            actions, states = trace['actions'], trace['states']
+        assert actions.shape[0] == states.shape[0] == len(r['candidates'])
+        np.testing.assert_allclose(
+            (states[:, :, r['target']]-states[:, :, 1-r['target']]).max(axis=1),
+            [a['peak_gap'] for a in r['actual']], rtol=1e-7, atol=1e-7)
+        trace_hashes[str(path.relative_to(out.parent))] = hashlib.sha256(path.read_bytes()).hexdigest()
         for i, name in enumerate(r['candidates']):
             flat.append({k: r[k] for k in ('arm', 'policy', 'seed', 'task_seed', 'condition', 'state_error')} |
                 dict(candidate=name, actual_success=r['actual'][i]['success'],
@@ -117,6 +154,10 @@ def report_diagnostic(rows, out):
                     predicted_hard=r['prediction']['filtered']['hard'][i],
                     true_onset_soft=r['prediction']['true_onset']['soft'][i],
                     true_onset_hard=r['prediction']['true_onset']['hard'][i]))
+            metrics = action_geometry(actions[i], r['target'])
+            assert metrics['peak_action_norm'] <= r['bound']+1e-6
+            geometry.append({k: flat[-1][k] for k in ('arm', 'policy', 'seed', 'task_seed',
+                'condition', 'candidate', 'actual_success', 'energy')} | metrics)
     frame = pd.DataFrame(flat)
     frame.to_csv(out/'diagnostic_all.csv', index=False)
     summary = frame.groupby(['arm', 'policy', 'condition', 'candidate']).agg(
@@ -124,6 +165,19 @@ def report_diagnostic(rows, out):
         predicted_hard=('predicted_hard', 'mean'), true_onset_hard=('true_onset_hard', 'mean'),
         state_error=('state_error', 'mean'), n=('task_seed', 'size')).reset_index()
     summary.to_csv(out/'diagnostic_summary.csv', index=False)
+    action_frame = pd.DataFrame(geometry)
+    action_frame.to_csv(out/'diagnostic_actions.csv', index=False)
+    groups = ['arm', 'policy', 'condition', 'candidate']
+    measures = [name for name in action_frame if name not in groups+['seed', 'task_seed']]
+    grouped = action_frame.groupby(groups)
+    action_summary = grouped[measures].mean()
+    action_summary['n'] = grouped.size()
+    action_summary.reset_index().to_csv(out/'diagnostic_actions_summary.csv', index=False)
+    write_json(out/'diagnostic_action_verification.json', dict(
+        traces=len(trace_hashes), candidate_rows=len(geometry), trace_sha256=trace_hashes,
+        peak_gaps_match_saved_outcomes=True, peak_bounds_passed=True,
+        orthogonal_energy_identity_passed=True,
+        interpretation='Descriptive complete open-loop replays; not a causal ablation or fresh confirmation'))
     write_json(out/'verification.json', dict(rows=len(rows), valid=sum(r['valid'] for r in rows),
         complete_unique_coverage=True, candidates_replayed=['selected', 'front', 'spread']))
     return summary

@@ -164,6 +164,35 @@ def test_paired_comparison_broadcasts_pulse_without_inventing_replications():
         paired_matrix(rows, 'front', [0, 1], [40, 41, 42], 'success')
 
 
+def test_action_geometry_distinguishes_common_and_target_opposing_energy():
+    from experiments.tnsre.wong_wang_control_report import action_geometry
+    # Equal energy in a common input, a target-favoring input, and its reverse.
+    actions = np.array([[1., 1.], [-1., 1.], [1., -1.]])
+    score = action_geometry(actions, target=1)
+    np.testing.assert_allclose(
+        [score['common_mode_energy_fraction'], score['differential_energy_fraction'],
+         score['against_target_energy_fraction']], [1/3, 2/3, 1/3])
+    assert score['half_energy_bin'] == 2
+    swapped = action_geometry(actions[:, ::-1], target=0)
+    for key in score:
+        assert swapped[key] == pytest.approx(score[key])
+
+
+def test_action_geometry_detects_front_loading_and_zero_energy():
+    from experiments.tnsre.wong_wang_control_report import action_geometry
+    pulse = np.zeros((400, 2))
+    pulse[:200] = [-1/np.sqrt(2), 1/np.sqrt(2)]
+    score = action_geometry(pulse, target=1)
+    assert score['first_40_bins_energy_fraction'] == pytest.approx(.2)
+    assert score['first_100_bins_energy_fraction'] == pytest.approx(.5)
+    assert score['half_energy_bin'] == 100
+    assert score['common_mode_energy_fraction'] == pytest.approx(0.)
+    zero = action_geometry(np.zeros_like(pulse), target=1)
+    assert zero['half_energy_bin'] is None
+    assert zero['peak_action_norm'] == 0.
+    assert zero['differential_energy_fraction'] == 0.
+
+
 def test_simultaneous_intervals_detect_a_variable_paired_tracking_advantage():
     import pandas as pd
     from experiments.tnsre.wong_wang_control_report import simultaneous_comparisons
