@@ -485,14 +485,16 @@ def test_observation_presets_change_only_the_recorded_neurons():
     from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
     configure_tbme_catalogs(suite_entries={})
-    base = get_environment_preset("tbme_wong_wang_snn_sessions_m2_fixed")
-    assert observed_counts(base) == (40, 40)
-    for name, counts in (("lowsnr4", (4, 4)), ("lowsnr2", (2, 2)), ("biased", (40, 2))):
-        p = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2_fixed_{name}")
-        assert observed_counts(p) == counts and p.observation_dim == sum(counts)
-        same = replace(p, preset_id=base.preset_id, system_label=base.system_label, observation_dim=base.observation_dim,
-                       spiking_observed_per_pool=base.spiking_observed_per_pool, spiking_observed_pool2=None)
-        assert same == base
+    for protocol in ("_fixed", ""):  # fixed trials and the manuscript's decision-ended trials
+        base = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}")
+        assert observed_counts(base) == (40, 40)
+        names = (("lowsnr4", (4, 4)), ("lowsnr2", (2, 2)), ("biased", (40, 2))) if protocol else (("lowsnr4", (4, 4)), ("biased", (40, 2)))
+        for name, counts in names:
+            p = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}_{name}")
+            assert observed_counts(p) == counts and p.observation_dim == sum(counts)
+            same = replace(p, preset_id=base.preset_id, system_label=base.system_label, observation_dim=base.observation_dim,
+                           spiking_observed_per_pool=base.spiking_observed_per_pool, spiking_observed_pool2=None)
+            assert same == base
 
 
 def test_reactive_paldi_changes_only_the_minimum_intervals():
@@ -505,3 +507,16 @@ def test_reactive_paldi_changes_only_the_minimum_intervals():
     assert (sf.adaptive_update_min_interval, sf.adaptive_replan_min_interval) == (1, 1)
     assert (sf.planning_horizon, sf.replan_interval, sf.update_interval) == (sb.planning_horizon, sb.replan_interval, sb.update_interval)
     assert fast.objective_kind == base.objective_kind and fast.coarse_dt_factor == base.coarse_dt_factor
+
+
+def test_runs_root_and_preset_come_from_the_experiment(tmp_path):
+    from experiments.tnsre.eval_spiking_sessions import runs_preset, runs_root_of
+
+    (tmp_path / "tracks" / "wong_wang_snn_sessions_m2_biased").mkdir(parents=True)
+    assert runs_root_of(tmp_path).name == "wong_wang_snn_sessions_m2_biased"
+    (tmp_path / "tracks" / "other").mkdir()
+    with pytest.raises(ValueError):
+        runs_root_of(tmp_path)
+    assert runs_preset([{"preset_id": "a"}, {"preset_id": "a"}]) == "a"
+    with pytest.raises(ValueError):
+        runs_preset([{"preset_id": "a"}, {"preset_id": "b"}])

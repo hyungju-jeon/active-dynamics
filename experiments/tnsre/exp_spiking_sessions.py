@@ -27,6 +27,11 @@ DEFAULT_EXP_IDS = (
     "wong_wang_snn_sessions_m2_evidence",
     "wong_wang_snn_sessions_m2_evidence_u2",
     "wong_wang_snn_sessions_m2_fixed",
+    # Control-strategy matrix (2026-10-05): six policies, decision or fixed trials, low-SNR or biased recording.
+    "wong_wang_snn_sessions_m2_lowsnr4",
+    "wong_wang_snn_sessions_m2_biased",
+    "wong_wang_snn_sessions_m2_fixed_lowsnr4",
+    "wong_wang_snn_sessions_m2_fixed_biased",
 )
 # Matched comparison set of the manuscript (PALDI, Myopic, FLEX, RHC-US, PRBS, Random).
 MODEL_IDS = ["adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random"]

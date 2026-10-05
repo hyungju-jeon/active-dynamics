@@ -684,6 +684,21 @@ environments:
     - 1.5
     - 0.0
 
+  # The manuscript protocol (decision ends the session 200 ms later) with the degraded recordings of
+  # the fixed-trial presets below (2026-10-05): 4 neurons per pool (-9.9 dB), or 40 + 2 (biased, -5.6 dB).
+  tbme_wong_wang_snn_sessions_m2_lowsnr4:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions, 4 neurons per pool
+    observation_dim: 8
+    spiking_observed_per_pool: 4
+
+  tbme_wong_wang_snn_sessions_m2_biased:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions, 40 + 2 neurons
+    observation_dim: 42
+    spiking_observed_per_pool: 40
+    spiking_observed_pool2: 2
+
   # Fixed-length identification trials (2026-10-04): every session runs the full 400 bins
   # (2 s). A decision no longer ends the session (the post-decision period is at least the
   # session length), so the circuit stays near its attractor for the rest of the trial. The

@@ -11,7 +11,7 @@ import json
 import numpy as np
 import torch
 from experiments.tnsre.eval_spiking_sessions import (
-    EXAMPLES, PROTOCOL, IcemController, build_network, load_session_runs, run_task_session,
+    EXAMPLES, PROTOCOL, IcemController, build_network, load_session_runs, run_task_session, runs_preset, runs_root_of,
 )
 
 
@@ -30,7 +30,8 @@ def main():
     checkpoint = int(EXAMPLES['checkpoint'])
     task_seed, budget = EXAMPLES['sessions']['overturn']
     policies = ['adaptive', 'spread']
-    runs = {(r['policy'], r['seed']): r for r in load_session_runs(root/'tracks/wong_wang_snn_sessions_m2')}
+    runs_root = runs_root_of(root)
+    runs = {(r['policy'], r['seed']): r for r in load_session_runs(runs_root)}
     sources = sorted((root/'eval/task_warm').glob('worker_*.csv')) + sorted((root/'eval/task').glob('worker_*.csv'))
     rows = []
     for path in sources:
@@ -43,7 +44,7 @@ def main():
                 and int(r['task_seed'])==task_seed and float(r['budget'])==budget}
     saved = np.load(root/'eval/examples/example_sessions.npz')
     records = []
-    net = build_network()
+    net = build_network(preset_id=runs_preset(list(runs.values())))
     try:
         for policy in policies:
             model = None
@@ -70,7 +71,7 @@ def main():
     finally:
         net.close()
     inputs = [*sources, root/'eval/examples/example_sessions.npz']
-    inputs += [p for p in (root/'tracks/wong_wang_snn_sessions_m2').glob('*/seed_0/repeat_01/*')
+    inputs += [p for p in runs_root.glob('*/seed_0/repeat_01/*')
                if p.name in ('run_metadata.json','embedding_estimate_trace.csv') and p.parts[-4] in policies]
     inputs += [Path(__file__), Path('experiments/tnsre/eval_spiking_sessions.py'),
                Path('actdyn/environment/spiking_decision.py'),

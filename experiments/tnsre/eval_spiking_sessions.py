@@ -214,6 +214,22 @@ def learner_transition(dynamics_type: str, theta: np.ndarray, full_params: np.nd
     return transition
 
 
+def runs_root_of(experiment_dir: Path) -> Path:
+    """The single run folder ``<experiment_dir>/tracks/<environment slug>`` of an experiment."""
+    roots = [p for p in sorted((Path(experiment_dir) / "tracks").iterdir()) if p.is_dir()]
+    if len(roots) != 1:
+        raise ValueError(f"expected one run folder under {experiment_dir}/tracks, found {[p.name for p in roots]}")
+    return roots[0]
+
+
+def runs_preset(runs: Sequence[dict[str, Any]]) -> str:
+    """The environment preset shared by ``runs`` (the task network records the same neurons)."""
+    presets = {run["preset_id"] for run in runs}
+    if len(presets) != 1:
+        raise ValueError(f"runs come from several presets: {sorted(presets)}")
+    return presets.pop()
+
+
 def load_session_runs(runs_root: Path) -> list[dict[str, Any]]:
     """Estimates after each completed session, readout, and prior of every completed run."""
     runs = []
@@ -520,10 +536,7 @@ def stage_task(out: Path, runs_root: Path, worker_index: int, n_workers: int, co
         with open(other) as fh:
             done |= {(r["controller"], r["policy"], int(r["seed"]), int(r["checkpoint"]), r["task"], float(r["budget"]),
                       int(r["task_seed"])) for r in csv.DictReader(fh)}
-    presets = {run["preset_id"] for run in runs}
-    if len(presets) != 1:
-        raise ValueError(f"runs under {runs_root} come from several presets: {sorted(presets)}")
-    net = build_network(preset_id=presets.pop())  # record the neurons of the runs' readouts
+    net = build_network(preset_id=runs_preset(runs))  # record the neurons of the runs' readouts
     dt = float(net.dt_latent)
     new_file = not path.exists()
     with open(path, "a", newline="") as fh:
@@ -557,7 +570,7 @@ def stage_examples(out: Path, runs_root: Path) -> None:
     dyn = {"dynamics_type": run["dynamics_type"], "full_params": run["full_params"],
            "min_embedding_dim": run["min_embedding_dim"]}
     controllers = {"learned": run["est"][int(EXAMPLES["checkpoint"])], "fit": reference_fit()}
-    net = build_network()
+    net = build_network(preset_id=runs_preset(list(runs.values())))
     dt = float(net.dt_latent)
     arrays: dict[str, np.ndarray] = {}
     rows = []

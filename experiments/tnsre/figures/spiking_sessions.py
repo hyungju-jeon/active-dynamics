@@ -55,7 +55,6 @@ from .theme import NEUTRAL_LIGHT, STROKE_COLOR, style_experiment_axis
 
 POLICIES = ("adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random")
 ACTIVE = ("adaptive", "active_myopic", "rhc")
-EXP_ID = "wong_wang_snn_sessions_m2"
 FINAL_SESSIONS = 20
 POOL_COLORS = ("#3E6FB0", "#C9562C")
 # Area shading shared by the spiking figures: identification input (gray), control input in the
@@ -233,7 +232,9 @@ def _example_run(experiment_dir: Path, policy: str = "adaptive", seed: int = 0) 
     """Spike counts, network latent, filtered state, input, and session ends of one run."""
     import pickle
 
-    run = experiment_dir / "tracks" / EXP_ID / policy / f"seed_{seed}" / "repeat_01"
+    from experiments.tnsre.eval_spiking_sessions import runs_root_of
+
+    run = runs_root_of(experiment_dir) / policy / f"seed_{seed}" / "repeat_01"
     with open(sorted(glob.glob(str(run / "*" / "rollouts" / "*.pkl")))[0], "rb") as fh:
         rollout = pickle.load(fh)
     rows = _read(run / "state_action_trace.csv")
@@ -568,7 +569,11 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
     _panel_label(_draw_example_session(fig, example[0], eval_dir, task), "A", dx=-30)
     from .spiking_characterization import draw_control_phase
     ax = fig.add_axes([0.565, 0.20, 0.175, 0.60])
-    draw_control_phase(ax, experiment_dir, Path("results/tnsre/20260929_manuscript_update/control_phase_uniform"))
+    # The experiment's own replay (replay_control_phase --output-dir <experiment>/control_phase) when present.
+    phase_dir = experiment_dir / "control_phase"
+    if not phase_dir.exists():
+        phase_dir = Path("results/tnsre/20260929_manuscript_update/control_phase_uniform")
+    draw_control_phase(ax, experiment_dir, phase_dir)
     _panel_label(ax, "B", dx=-18)
     ax = fig.add_subplot(comparison[0])
     _draw_session_panel(ax, look, task, checkpoints, ylabel=True)
