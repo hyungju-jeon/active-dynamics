@@ -15,13 +15,7 @@ import colorednoise
 from .base import BaseMPC
 from actdyn.utils.torch_utils import safe_cholesky, symmetrize
 from actdyn.utils.rollout import RolloutBuffer
-from actdyn.environment.session import (
-    NO_EVIDENCE,
-    SessionRule,
-    advance_session_clock,
-    session_clock_from_context,
-    session_evidence,
-)
+from actdyn.environment.session import SessionRule, session_evidence
 
 
 _PROCESS_PLANNER: Any | None = None
@@ -303,8 +297,8 @@ class MpcICem(BaseMPC):
         self._foreground_active = None
         self._yield_to_foreground = False
         # Decision sessions (see actdyn.environment.session): the rule is set by the
-        # runner; the agent refreshes the clock after every environment step.
-        self._session_rule: SessionRule | None = None
+        # runner; the agent refreshes the session context after every environment step.
+        self.session_rule: SessionRule | None = None
         self.session_context: dict[str, Any] | None = None
         self._planning_step_bins = 1
         action_seed = int(torch.initial_seed()) if seed is None else int(seed)
@@ -422,18 +416,6 @@ class MpcICem(BaseMPC):
         actions = self._project_actions(actions)
         return actions
 
-    @property
-    def session_rule(self) -> SessionRule | None:
-        return self._session_rule
-
-    @session_rule.setter
-    def session_rule(self, rule: SessionRule | None) -> None:
-        """Set the session rule and give its reset variance to the planning metrics."""
-        self._session_rule = rule
-        for metric in getattr(self.metric, "metric_list", [self.metric]):
-            if metric is not None and rule is not None:
-                setattr(metric, "session_reset_variance", float(rule.reset_variance))
-
     def on_session_reset(self, state: torch.Tensor) -> None:
         """Drop the plan of the session that ended and plan again at the next query."""
         if getattr(self, "mean", None) is not None:
@@ -447,68 +429,44 @@ class MpcICem(BaseMPC):
         self._last_action_index = None
         self.request_replan("session_reset")
 
-    def _simulate_sessions(self, actions: torch.Tensor, rule: SessionRule) -> RolloutBuffer:
-        """Mean rollout that applies the decide-wait-reset rule of decision sessions.
+    def _simulate_session(self, actions: torch.Tensor) -> RolloutBuffer:
+        """Mean rollout inside the current decision session, with its known evidence.
 
-        Each step starts from the state after any reset: ``model_state[:, t]`` is
-        the start of step ``t``, ``next_model_state[:, t]`` its prediction before
-        a reset (the state the step's observation sees), and
-        ``session_reset_after[:, t]`` is 1 where the session resets after step ``t``.
-
-        With session evidence the model input of each step is the action plus the
-        known evidence of the session clock (:func:`session_evidence`): the current
-        session's pool until a simulated reset, the expected evidence after it (none for
-        a simulated session before the rule's first evidence session).
-        ``env_action`` records that total input.
+        Agents learn of a reset only when the environment reports it, so the rollout
+        simulates neither the decision rule nor a reset: the current session goes on for
+        the whole horizon. With session evidence the model input of step ``t`` is the
+        action plus the current session's evidence (:meth:`_known_evidence` at the
+        planning step); ``env_action`` records that total input.
         """
         with torch.inference_mode():
             a_enc = actions if self.model.action_encoder is None else self.model.action_encoder(actions)
             batch, horizon = actions.shape[0], actions.shape[1]
+            evidence = self._known_evidence(horizon, self._planning_step_bins)
+            if evidence is not None:
+                a_enc = a_enc + evidence.to(a_enc.device, a_enc.dtype)
             z = self.model._state.reshape(1, 1, -1).repeat(batch, 1, 1)
-            reset_state = torch.as_tensor(rule.reset_state, dtype=z.dtype, device=z.device).view(1, 1, -1)
-            clock = session_clock_from_context(self.session_context, batch, device=z.device)
-            with_evidence = float(rule.evidence_amplitude) > 0.0
-            pool = torch.full((batch,), int((self.session_context or {}).get("evidence_pool", -1)),
-                              dtype=torch.long, device=z.device)
-            index = torch.full((batch,), int((self.session_context or {}).get("session_index", 0)),
-                               dtype=torch.long, device=z.device)
-            first = int(getattr(rule, "evidence_first_session", 0))
-            starts, predictions, resets, inputs = [], [], [], []
+            starts, predictions = [], []
             for t in range(horizon):
-                u_t = a_enc[:, t : t + 1]
-                if with_evidence:
-                    evidence = session_evidence(clock["bins"], pool, rule, self._planning_step_bins)
-                    u_t = u_t + evidence.to(u_t.dtype).unsqueeze(1)
                 _samples, next_states, _vars = self.model.dynamics.sample_forward(
-                    init_z=z, action=u_t, k_step=1, add_noise=False, return_traj=True
+                    init_z=z, action=a_enc[:, t : t + 1], k_step=1, add_noise=False, return_traj=True
                 )
-                z_next = next_states[-1]
-                clock, _decision_now, reset_now = advance_session_clock(
-                    clock, z_next[:, 0, 0] - z_next[:, 0, 1], rule, self._planning_step_bins
-                )
-                index = index + reset_now.long()
-                pool = torch.where(reset_now, torch.where(index >= first, torch.full_like(pool, -1),
-                                                          torch.full_like(pool, NO_EVIDENCE)), pool)
                 starts.append(z)
-                predictions.append(z_next)
-                resets.append(reset_now)
-                inputs.append(u_t)
-                z = torch.where(reset_now.view(batch, 1, 1), reset_state.expand_as(z_next), z_next)
+                z = next_states[-1]
+                predictions.append(z)
         rollout = RolloutBuffer(device=self.device)
         rollout.add_dict(
             {
                 "action": actions,
-                "env_action": torch.cat(inputs, dim=1),
+                "env_action": a_enc,
                 "model_state": torch.cat(starts, dim=-2),
                 "next_model_state": torch.cat(predictions, dim=-2),
-                "session_reset_after": torch.stack(resets, dim=1).to(z.dtype).unsqueeze(-1),
             }
         )
         return rollout
 
     def simulate(self, initial_state: torch.Tensor, actions: torch.Tensor):
-        if self._session_rule is not None:
-            return self._simulate_sessions(actions, self._session_rule)
+        if self.session_rule is not None:
+            return self._simulate_session(actions)
         # Simulated trajectories using mean prediction. Use no_grad to avoid
         # accumulating autograd history for planning.
         with torch.inference_mode():
@@ -597,19 +555,19 @@ class MpcICem(BaseMPC):
             return actions
         return self.model.action_encoder(actions)
 
-    def _known_evidence(self, n_steps: int) -> torch.Tensor | None:
-        """Evidence of the next ``n_steps`` bins of the current session, shape (1, n_steps, 2).
+    def _known_evidence(self, n_steps: int, step_bins: int = 1) -> torch.Tensor | None:
+        """Evidence of the next ``n_steps`` steps of ``step_bins`` bins in the current session.
 
-        None without session evidence. No reset is simulated: the planned state trace
-        that uses it ignores resets as well.
+        Shape (1, n_steps, 2); None without session evidence. No reset is simulated: the
+        session goes on past its end (the evidence is zero after its period).
         """
-        rule = self._session_rule
+        rule = self.session_rule
         if rule is None or float(rule.evidence_amplitude) <= 0.0:
             return None
         context = self.session_context or {}
-        bins = int(context.get("bins", 0)) + torch.arange(int(n_steps))
+        bins = int(context.get("bins", 0)) + int(step_bins) * torch.arange(int(n_steps))
         pool = torch.full((int(n_steps),), int(context.get("evidence_pool", -1)), dtype=torch.long)
-        return session_evidence(bins, pool, rule).unsqueeze(0)
+        return session_evidence(bins, pool, rule, step_bins).unsqueeze(0)
 
     def _predict_action_trajectory(self, actions: torch.Tensor) -> torch.Tensor:
         encoded_actions = self._encoded_actions(actions)

@@ -701,8 +701,8 @@ environments:
 
   # Fixed-length identification trials (2026-10-04): every session runs the full 400 bins
   # (2 s). A decision no longer ends the session (the post-decision period is at least the
-  # session length), so the circuit stays near its attractor for the rest of the trial. The
-  # environment and the agents' planners use the same rule. 20 sessions are 8000 bins.
+  # session length), so the circuit stays near its attractor for the rest of the trial. Agents
+  # learn of the session end when it happens. 20 sessions are 8000 bins.
   tbme_wong_wang_snn_sessions_m2_fixed:
     extends: tbme_wong_wang_snn_sessions_m2
     system_label: Wong-Wang (input inside the gain) / spiking network, fixed 2-s sessions
@@ -804,6 +804,29 @@ environments:
   tbme_wong_wang_snn_sessions_m2_evmix_n20_5:
     extends: tbme_wong_wang_snn_sessions_m2_evmix
     system_label: Wong-Wang (input inside the gain) / spiking network, mixed-evidence sessions, 20 + 5 neurons
+    observation_dim: 25
+    spiking_observed_per_pool: 20
+    spiking_observed_pool2: 5
+
+  # Mixed evidence with fixed 2-s trials (2026-10-05): sessions 1-10 without evidence, sessions 11-20
+  # with the task's evidence, known to the agents; every session runs the full 400 bins.
+  tbme_wong_wang_snn_sessions_m2_fixed_evmix:
+    extends: tbme_wong_wang_snn_sessions_m2_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 10 without and 10 with evidence
+    spiking_post_decision_bins: 400
+  tbme_wong_wang_snn_sessions_m2_fixed_evmix_n10_10:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed mixed-evidence sessions, 10 + 10 neurons
+    observation_dim: 20
+    spiking_observed_per_pool: 10
+  tbme_wong_wang_snn_sessions_m2_fixed_evmix_n20_20:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed mixed-evidence sessions, 20 + 20 neurons
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+  tbme_wong_wang_snn_sessions_m2_fixed_evmix_n20_5:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed mixed-evidence sessions, 20 + 5 neurons
     observation_dim: 25
     spiking_observed_per_pool: 20
     spiking_observed_pool2: 5

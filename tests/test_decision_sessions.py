@@ -1,4 +1,4 @@
-"""Contracts for decision sessions: environment rule, planner rollouts, EIG, and filter reset."""
+"""Contracts for decision sessions: environment rule, planner rollouts, and filter reset."""
 
 from __future__ import annotations
 
@@ -10,16 +10,8 @@ import torch
 
 from actdyn.core.agent import _apply_session_reset, _model_input, _session_fields
 from actdyn.environment.action import IdentityActionEncoder
-from actdyn.environment.session import (
-    SessionRule,
-    advance_session_clock,
-    new_session_clock,
-    session_clock_from_context,
-    session_evidence,
-    session_evidence_pool,
-)
+from actdyn.environment.session import NO_EVIDENCE, SessionRule, session_evidence, session_evidence_pool
 from actdyn.environment.spiking_decision import SpikingDecisionEnv
-from actdyn.metrics.information import EmbeddingFisherMetric
 from actdyn.models.model import FilteringEmbedding
 from actdyn.policy.mpc import MpcICem
 
@@ -52,38 +44,7 @@ class ScriptedNetwork:
         return np.full(2, float(self.t), dtype=np.float32), z
 
 
-def _run_clock(gaps, rule, step_bins=1):
-    clock = new_session_clock(1)
-    resets, decisions = [], []
-    for g in gaps:
-        clock, decided, reset = advance_session_clock(clock, torch.tensor([float(g)]), rule, step_bins)
-        resets.append(bool(reset[0]))
-        decisions.append(bool(decided[0]))
-    return decisions, resets
-
-
-def test_clock_resets_after_the_post_decision_delay_and_at_the_time_limit():
-    rule = SessionRule(decision_gap=1.0, post_decision_bins=3, max_session_bins=10)
-    decisions, resets = _run_clock([0.0, 2.0, 2.0, 0.0, -2.0, 0.0], rule)
-    assert decisions == [False, True, False, False, False, False]  # later crossings do not count
-    assert resets == [False, False, False, False, True, False]
-    _, resets = _run_clock([0.0] * 12, rule)
-    assert resets.index(True) == 9  # 10 bins without a decision
-    _, resets = _run_clock([0.0] * 3, rule, step_bins=5)
-    assert resets == [False, True, False]  # coarse steps of 5 bins
-
-
-def test_clock_from_context_continues_the_environment_session():
-    rule = SessionRule(decision_gap=1.0, post_decision_bins=3, max_session_bins=10)
-    clock = session_clock_from_context({"bins": 4, "decided": True, "since": 2}, 3)
-    assert clock["bins"].tolist() == [4, 4, 4] and clock["decided"].all()
-    _, _, reset = advance_session_clock(clock, torch.zeros(3), rule)
-    assert reset.all()
-    fresh = session_clock_from_context(None, 2)
-    assert fresh["bins"].tolist() == [0, 0] and not fresh["decided"].any()
-
-
-def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
+def test_environment_ends_sessions_after_the_post_decision_delay():
     rule = SessionRule(decision_gap=2.0, post_decision_bins=4, max_session_bins=30, max_sessions=3)
     network = ScriptedNetwork(rate=0.3)
     env = SpikingDecisionEnv(network, session_rule=rule)
@@ -101,8 +62,6 @@ def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
                                                "session_index": len(env.session_log)}
     # The gap first exceeds 2 at bin 7; the reset follows 4 bins later.
     assert [i + 1 for i, e in enumerate(ends) if e] == [11, 22, 33]
-    _, clock_resets = _run_clock([0.3 * (t + 1) for t in range(11)], rule)
-    assert clock_resets.index(True) == 10
     assert [s["decision"] for s in env.session_log] == [1, 1, 1]
     assert [s["decision_bin"] for s in env.session_log] == [7, 7, 7]
     assert network.reset_seeds == [SpikingDecisionEnv.session_seed(7, k) for k in range(4)]
@@ -205,48 +164,35 @@ def _session_planner(rule):
     return planner, metric
 
 
-def test_planner_rollout_resets_the_state_and_marks_the_step():
-    rule = SessionRule(decision_gap=2.0, post_decision_bins=2, max_session_bins=100, reset_variance=0.02)
-    planner, metric = _session_planner(rule)
-    assert metric.session_reset_variance == pytest.approx(0.02)
+def test_planner_rollout_stays_in_the_current_session():
+    """Agents learn of a reset only when it happens: a rollout never simulates the decision rule."""
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=2, max_session_bins=4)
+    planner, _ = _session_planner(rule)
+    planner.session_context = {"bins": 3, "decided": True, "since": 1, "evidence_pool": -1, "session_index": 0}
     actions = torch.tensor([[1.0, 0.0]]).repeat(1, 6, 1)
     rollout = planner.simulate(None, actions)
-    start, pred = rollout["model_state"][0], rollout["next_model_state"][0]
-    mask = rollout["session_reset_after"][0, :, 0]
-    # Gap 3 > 2 after step 2; reset 2 bins later, after step 4.
-    assert mask.tolist() == [0, 0, 0, 0, 1, 0]
-    torch.testing.assert_close(pred[4], torch.tensor([3.0, -2.0]))  # the step's observation sees z before the reset
-    torch.testing.assert_close(start[5], torch.tensor([-2.0, -2.0]))
-    torch.testing.assert_close(pred[5], torch.tensor([-1.0, -2.0]))
+    # The gap passes 2 after step 2 and the session time limit is near, but the state keeps going.
+    expected = torch.tensor([[-2.0 + t, -2.0] for t in range(1, 7)])
+    torch.testing.assert_close(rollout["next_model_state"][0], expected)
+    torch.testing.assert_close(rollout["model_state"][0, 1:], expected[:-1])
+    torch.testing.assert_close(rollout["env_action"], actions)
+    assert rollout.flat.get("session_reset_after") is None
 
 
-def test_planner_rollout_uses_the_session_context_and_coarse_bins():
-    rule = SessionRule(decision_gap=2.0, post_decision_bins=40, max_session_bins=400)
-    planner, _ = _session_planner(rule)
-    planner.session_context = {"bins": 100, "decided": True, "since": 25}
-    planner._planning_step_bins = 10
-    rollout = planner.simulate(None, torch.zeros(1, 6, 2))
-    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 1, 0, 0, 0, 0]  # 25 + 10 + 10 >= 40
-    planner.session_rule = None
-    planner.model.predict = lambda a: planner.model._state + torch.cumsum(a, dim=-2)
-    plain = planner.simulate(None, torch.zeros(1, 6, 2))
-    assert plain.flat.get("session_reset_after") is None
-
-
-def test_planner_rollout_adds_the_known_evidence_until_a_reset():
+def test_planner_rollout_adds_the_current_session_evidence_at_coarse_steps():
     rule = SessionRule(decision_gap=2.0, post_decision_bins=1, max_session_bins=100,
-                       evidence_amplitude=2.0, evidence_bins=2)
+                       evidence_amplitude=2.0, evidence_bins=125)
     planner, _ = _session_planner(rule)
-    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": 0}
+    planner.session_context = {"bins": 100, "decided": False, "since": 0, "evidence_pool": 0}
+    planner._planning_step_bins = 10
     rollout = planner.simulate(None, torch.zeros(1, 5, 2))
-    # z1 rises by 2 per evidence bin: the gap reaches 4 > 2 in step 1 (the decision), the
-    # evidence ends after bin 2, and the session resets after step 2. The next session's
-    # pool is unknown, so its evidence is split between the pools.
-    expected_inputs = [[2.0, 0.0], [2.0, 0.0], [0.0, 0.0], [1.0, 1.0], [1.0, 1.0]]
+    # Steps start at bins 100, 110, 120, 130, 140; the step over bins 120-129 has evidence for half its bins.
+    # The gap passes 2 in step 1 and the session would end, but the rollout stays in the session.
+    expected_inputs = [[2.0, 0.0], [2.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
     torch.testing.assert_close(rollout["env_action"][0], torch.tensor(expected_inputs))
-    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 0, 1, 0, 0]
-    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([0.0, 0.0]))
-    torch.testing.assert_close(planner._known_evidence(3)[0], torch.tensor([[2.0, 0.0]] * 2 + [[0.0, 0.0]]))
+    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([3.0, -2.0]))
+    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": 0}
+    torch.testing.assert_close(planner._known_evidence(3)[0], torch.zeros(3, 2) + torch.tensor([2.0, 0.0]))
 
 
 def test_planner_session_reset_forces_a_new_plan():
@@ -257,66 +203,6 @@ def test_planner_session_reset_forces_a_new_plan():
     planner.on_session_reset(torch.tensor([[[-2.0, -2.0]]]))
     assert planner.action_list == [] and planner._chunk_step == 0
     assert planner._force_replan_next and planner._force_replan_reason == "session_reset"
-
-
-class LinearGaussianDecoder:
-    def __init__(self, h, r):
-        self.h, self.r, self.noise = h, r, object()
-
-    def __call__(self, z):
-        return z @ self.h.to(z).T
-
-    def jacobian(self, z):
-        return self.h.to(z).expand(*z.shape[:-1], *self.h.shape)
-
-    def var(self, z):
-        return self.r.diagonal().to(z).expand(*z.shape[:-1], self.r.shape[-1])
-
-
-def _information_problem(p0):
-    a = torch.tensor([[0.1, 0.3], [-0.2, -0.1]])
-    b = torch.tensor([[1.0, 0.2], [0.1, 0.5]])
-    model = SimpleNamespace(
-        e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
-        z={"m": torch.zeros(1, 1, 2), "P": p0.unsqueeze(0)},
-        dynamics=SimpleNamespace(logvar=torch.log(torch.expm1(torch.tensor([[0.05, 0.02]])))),
-        decoder=LinearGaussianDecoder(torch.tensor([[1.0, 0.2], [0.0, 1.0]]), torch.diag(torch.tensor([0.5, 0.8]))),
-        dt=1.0,
-    )
-
-    def fe(z, e):
-        return z[..., :1, None] * b.to(z)
-
-    def fz(z, e):
-        return a.to(z).expand(*z.shape[:-1], 2, 2)
-
-    return model, fe, fz
-
-
-@pytest.mark.parametrize("planning_rollout", ["prediction_only", "measurement_conditioned"])
-def test_information_after_a_reset_adds_as_a_fresh_start(planning_rollout):
-    torch.manual_seed(0)
-    z = torch.randn(1, 7, 2) + 1.0
-    p0 = torch.tensor([[0.9, 0.1], [0.1, 0.6]])
-    reset_after = torch.zeros(1, 7, 1)
-    reset_after[0, 3, 0] = 1.0
-
-    def information(model, fe, fz, states, mask=None):
-        metric = EmbeddingFisherMetric(model, Fe_net=fe, Fz_net=fz, device="cpu", gamma=1.0,
-                                       planning_rollout=planning_rollout, session_reset_variance=0.03)
-        rollout = {"model_state": states, "next_model_state": states.clone()}
-        if mask is not None:
-            rollout["session_reset_after"] = mask
-        return metric._rollout_parameter_information(rollout, fe, fz)
-
-    model, fe, fz = _information_problem(p0)
-    joint = information(model, fe, fz, z, reset_after)
-    prefix = information(model, fe, fz, z[:, :4])
-    fresh_model, fe, fz = _information_problem(0.03 * torch.eye(2))
-    suffix = information(fresh_model, fe, fz, z[:, 4:])
-    torch.testing.assert_close(joint, prefix + suffix)
-    no_reset = information(model, fe, fz, z)
-    assert not torch.allclose(joint, no_reset)
 
 
 def test_filter_reset_keeps_the_parameter_belief_and_clears_the_sensitivity():
@@ -465,8 +351,6 @@ def test_fixed_length_preset_ends_sessions_only_at_the_time_limit():
     base = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2"), 4.0)
     assert replace(fixed, post_decision_bins=base.post_decision_bins) == base  # only the session end differs
     assert fixed.max_session_bins == 400 and fixed.post_decision_bins >= fixed.max_session_bins
-    decisions, resets = _run_clock([0.0] * 50 + [3.0] * 360, fixed)
-    assert decisions.index(True) == 50 and resets.index(True) == 399  # planner clock
     env = SpikingDecisionEnv(ScriptedNetwork(rate=0.3), session_rule=replace(fixed, max_sessions=2))
     env.reset(seed=7)
     ends, terminated = [], False
@@ -487,11 +371,11 @@ def test_observation_presets_change_only_the_recorded_neurons():
 
     configure_tbme_catalogs(suite_entries={})
     second = (("n10_10", (10, 10)), ("n20_20", (20, 20)), ("n20_5", (20, 5)))
-    for protocol in ("_fixed", "", "_evmix"):  # fixed, decision-ended, and mixed-evidence trials
+    for protocol in ("_fixed", "", "_evmix", "_fixed_evmix"):  # fixed, decision-ended, mixed evidence (both)
         base = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}")
         assert observed_counts(base) == (40, 40)
         names = {"_fixed": (("lowsnr4", (4, 4)), ("lowsnr2", (2, 2)), ("biased", (40, 2))),
-                 "": (("lowsnr4", (4, 4)), ("biased", (40, 2))), "_evmix": ()}[protocol] + second
+                 "": (("lowsnr4", (4, 4)), ("biased", (40, 2))), "_evmix": (), "_fixed_evmix": ()}[protocol] + second
         for name, counts in names:
             p = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}_{name}")
             assert observed_counts(p) == counts and p.observation_dim == sum(counts)
@@ -537,11 +421,12 @@ def test_mixed_evidence_preset_starts_the_evidence_at_session_eleven():
     mixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evmix"), 4.0)
     assert mixed.evidence_first_session == 10 and evidence.evidence_first_session == 0
     assert replace(mixed, evidence_first_session=0) == evidence  # same evidence and session end otherwise
+    fixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_fixed"), 4.0)
+    fixed_mixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_fixed_evmix"), 4.0)
+    assert fixed_mixed == replace(mixed, post_decision_bins=fixed.post_decision_bins)  # fixed 2-s sessions
 
 
 def test_sessions_before_the_first_evidence_session_have_no_evidence():
-    from actdyn.environment.session import NO_EVIDENCE
-
     rule = SessionRule(evidence_amplitude=0.3, evidence_bins=50)
     zero = session_evidence(torch.tensor([0, 10]), torch.tensor([NO_EVIDENCE, NO_EVIDENCE]), rule)
     torch.testing.assert_close(zero, torch.zeros(2, 2))
@@ -563,18 +448,14 @@ def test_sessions_before_the_first_evidence_session_have_no_evidence():
     assert env.session_log[1]["evidence_pool"] in (0, 1)
 
 
-@pytest.mark.parametrize("first_session,last_input", [(1, [2.0, 1.0]), (2, [1.0, 0.0])])
-def test_planner_rollout_knows_which_simulated_session_has_evidence(first_session, last_input):
-    from actdyn.environment.session import NO_EVIDENCE
-
+def test_planner_rollout_adds_no_evidence_in_a_session_without_evidence():
+    """A rollout in a no-evidence session stays without evidence, also past the session end."""
     rule = SessionRule(decision_gap=2.0, post_decision_bins=1, max_session_bins=100,
-                       evidence_amplitude=2.0, evidence_bins=2, evidence_first_session=first_session)
+                       evidence_amplitude=2.0, evidence_bins=2, evidence_first_session=1)
     planner, _ = _session_planner(rule)
     planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": NO_EVIDENCE,
                                "session_index": 0}
-    rollout = planner.simulate(None, torch.tensor([[1.0, 0.0]]).repeat(1, 5, 1))
-    # No evidence in session 0: the gap reaches 3 > 2 after step 2, the session resets after step 3;
-    # the simulated session 1 gets the expected evidence only when it is an evidence session.
-    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 0, 0, 1, 0]
-    torch.testing.assert_close(rollout["env_action"][0, :4], torch.tensor([[1.0, 0.0]] * 4))
-    torch.testing.assert_close(rollout["env_action"][0, 4], torch.tensor(last_input))
+    actions = torch.tensor([[1.0, 0.0]]).repeat(1, 5, 1)
+    rollout = planner.simulate(None, actions)
+    torch.testing.assert_close(rollout["env_action"], actions)
+    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([3.0, -2.0]))

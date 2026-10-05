@@ -6,8 +6,9 @@ The learner's drift is Wong-Wang with the input inside the transfer function
 (``wong_wang_inside_gain``). Each run is ``spiking_sessions`` (20) decision sessions: the circuit starts in the
 quiet state, the agent drives it until a decision (``|z1 - z2| > 2``), and 200 ms
 later, or after 2 s without a decision, the circuit resets. Agents are given the
-session rule: their filters jump to the known reset state and the iCEM planners
-simulate resets inside their rollouts. The run stops after the last session;
+session rule: they learn of a reset when it happens and their filters then jump to
+the known reset state. The iCEM planners do not simulate resets: a model rollout stays
+in the current session for the whole horizon. The run stops after the last session;
 ``total_steps`` is only an upper bound (20 sessions x 400 bins).
 
 ``wong_wang_snn_sessions_m2_evidence`` adds sensory evidence to every session (6 pA to a
@@ -18,7 +19,8 @@ with the same evidence; the readout is calibrated as before (amplitude 1).
 ``wong_wang_snn_sessions_m2_fixed`` keeps every session for the full 400 bins: a decision
 does not end it, so the data include the held choice (fixed-length trials).
 ``wong_wang_snn_sessions_m2_evmix_*`` run 10 decision-ended sessions without evidence, then 10 with
-the task's evidence, which the agents know.
+the task's evidence, which the agents know; ``wong_wang_snn_sessions_m2_fixed_evmix_*`` do the same
+with fixed 2-s sessions.
 The ``_obs`` suites compare PALDI (also with its reactive cadence) and RHC-US on fixed trials
 with the default, two low-SNR (4 or 2 neurons per pool), and a biased (40 + 2 neurons) recording.
 """
@@ -44,6 +46,9 @@ DEFAULT_EXP_IDS = (
     "wong_wang_snn_sessions_m2_evmix_n10_10",
     "wong_wang_snn_sessions_m2_evmix_n20_20",
     "wong_wang_snn_sessions_m2_evmix_n20_5",
+    "wong_wang_snn_sessions_m2_fixed_evmix_n10_10",
+    "wong_wang_snn_sessions_m2_fixed_evmix_n20_20",
+    "wong_wang_snn_sessions_m2_fixed_evmix_n20_5",
 )
 # Matched comparison set of the manuscript (PALDI, Myopic, FLEX, RHC-US, PRBS, Random).
 MODEL_IDS = ["adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random"]
