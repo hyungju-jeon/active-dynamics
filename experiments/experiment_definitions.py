@@ -100,6 +100,7 @@ class EnvironmentPreset:
     # Evidence in every decision session (SessionRule.evidence_*); amplitude 0 = none.
     spiking_session_evidence_amplitude: float = 0.0
     spiking_session_evidence_bins: int = 0
+    spiking_session_evidence_first_session: int = 0  # sessions before this index have no evidence
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
@@ -777,6 +778,7 @@ def load_catalog_bundle(
             spiking_reset_variance=float(spec.get("spiking_reset_variance", 0.01)),
             spiking_session_evidence_amplitude=float(spec.get("spiking_session_evidence_amplitude", 0.0)),
             spiking_session_evidence_bins=int(spec.get("spiking_session_evidence_bins", 0)),
+            spiking_session_evidence_first_session=int(spec.get("spiking_session_evidence_first_session", 0)),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
             action_dim=int(spec.get("action_dim", 2)),

@@ -8,10 +8,11 @@ to the initial point, and a session without a decision ends after
 are given the same rule, so their filters know the reset state and their
 planners can simulate resets inside model rollouts.
 
-A rule with ``evidence_amplitude > 0`` adds sensory evidence to every session:
-the input ``evidence_amplitude`` drives one pool, drawn per session, during the
-first ``evidence_bins`` bins, on top of the agent's input. Agents know the
-schedule and the pool of the current session.
+A rule with ``evidence_amplitude > 0`` adds sensory evidence to every session from
+``evidence_first_session`` on: the input ``evidence_amplitude`` drives one pool, drawn
+per session, during the first ``evidence_bins`` bins, on top of the agent's input.
+Earlier sessions have no evidence (pool ``NO_EVIDENCE``). Agents know the schedule and
+the pool of the current session.
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ class SessionRule:
         max_sessions: The environment terminates after this many sessions (None: never).
         evidence_amplitude: Evidence input to the evidence pool, in action units (0: none).
         evidence_bins: Bins from the session start during which the evidence is on.
+        evidence_first_session: Sessions with a lower index have no evidence.
     """
 
     decision_gap: float = 2.0
@@ -45,6 +47,15 @@ class SessionRule:
     max_sessions: int | None = None
     evidence_amplitude: float = 0.0
     evidence_bins: int = 0
+    evidence_first_session: int = 0
+
+
+NO_EVIDENCE = -2  # evidence pool of a session without evidence (-1: pool not known yet)
+
+
+def session_has_evidence(rule: SessionRule, session_index: int) -> bool:
+    """Whether session ``session_index`` (0-based) receives evidence under ``rule``."""
+    return float(rule.evidence_amplitude) > 0.0 and int(session_index) >= int(rule.evidence_first_session)
 
 
 def session_evidence_pool(session_seed: int) -> int:
@@ -59,9 +70,10 @@ def session_evidence(
 
     Args:
         bins: Bins elapsed in the session at the start of the step, shape (B,).
-        pool: Evidence pool per rollout, shape (B,): 0 or 1, or -1 for a session whose
+        pool: Evidence pool per rollout, shape (B,): 0 or 1; -1 for a session whose
             pool is not known yet (a later session inside a planner rollout), which gets
-            the expected evidence, half the amplitude to each pool.
+            the expected evidence, half the amplitude to each pool; or ``NO_EVIDENCE``
+            for a session without evidence (zero).
         step_bins: Bins per step; a step that straddles the end of the evidence period
             gets the evidence averaged over its bins.
     """
@@ -70,6 +82,7 @@ def session_evidence(
     onehot = torch.nn.functional.one_hot(pool.clamp(min=0).long(), 2).to(torch.float32)
     split = torch.full_like(onehot, 0.5)
     share = torch.where((pool >= 0).unsqueeze(-1), onehot, split)
+    share = torch.where((pool == NO_EVIDENCE).unsqueeze(-1), torch.zeros_like(share), share)
     return float(rule.evidence_amplitude) * on.unsqueeze(-1) * share
 
 

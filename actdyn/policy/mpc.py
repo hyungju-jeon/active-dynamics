@@ -16,6 +16,7 @@ from .base import BaseMPC
 from actdyn.utils.torch_utils import safe_cholesky, symmetrize
 from actdyn.utils.rollout import RolloutBuffer
 from actdyn.environment.session import (
+    NO_EVIDENCE,
     SessionRule,
     advance_session_clock,
     session_clock_from_context,
@@ -456,7 +457,8 @@ class MpcICem(BaseMPC):
 
         With session evidence the model input of each step is the action plus the
         known evidence of the session clock (:func:`session_evidence`): the current
-        session's pool until a simulated reset, the expected evidence after it.
+        session's pool until a simulated reset, the expected evidence after it (none for
+        a simulated session before the rule's first evidence session).
         ``env_action`` records that total input.
         """
         with torch.inference_mode():
@@ -468,6 +470,9 @@ class MpcICem(BaseMPC):
             with_evidence = float(rule.evidence_amplitude) > 0.0
             pool = torch.full((batch,), int((self.session_context or {}).get("evidence_pool", -1)),
                               dtype=torch.long, device=z.device)
+            index = torch.full((batch,), int((self.session_context or {}).get("session_index", 0)),
+                               dtype=torch.long, device=z.device)
+            first = int(getattr(rule, "evidence_first_session", 0))
             starts, predictions, resets, inputs = [], [], [], []
             for t in range(horizon):
                 u_t = a_enc[:, t : t + 1]
@@ -481,7 +486,9 @@ class MpcICem(BaseMPC):
                 clock, _decision_now, reset_now = advance_session_clock(
                     clock, z_next[:, 0, 0] - z_next[:, 0, 1], rule, self._planning_step_bins
                 )
-                pool = torch.where(reset_now, torch.full_like(pool, -1), pool)
+                index = index + reset_now.long()
+                pool = torch.where(reset_now, torch.where(index >= first, torch.full_like(pool, -1),
+                                                          torch.full_like(pool, NO_EVIDENCE)), pool)
                 starts.append(z)
                 predictions.append(z_next)
                 resets.append(reset_now)

@@ -97,7 +97,8 @@ def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
         if info["session_end"]:
             np.testing.assert_allclose(info["latent_state"], rule.reset_state)
             np.testing.assert_allclose(info["session_pre_reset_state"], [-2.0 + 0.3 * 11, -2.0], rtol=1e-6)
-            assert info["session_context"] == {"bins": 0, "decided": False, "since": 0, "evidence_pool": -1}
+            assert info["session_context"] == {"bins": 0, "decided": False, "since": 0, "evidence_pool": -1,
+                                               "session_index": len(env.session_log)}
     # The gap first exceeds 2 at bin 7; the reset follows 4 bins later.
     assert [i + 1 for i, e in enumerate(ends) if e] == [11, 22, 33]
     _, clock_resets = _run_clock([0.3 * (t + 1) for t in range(11)], rule)
@@ -485,10 +486,12 @@ def test_observation_presets_change_only_the_recorded_neurons():
     from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
     configure_tbme_catalogs(suite_entries={})
-    for protocol in ("_fixed", ""):  # fixed trials and the manuscript's decision-ended trials
+    second = (("n10_10", (10, 10)), ("n20_20", (20, 20)), ("n20_5", (20, 5)))
+    for protocol in ("_fixed", "", "_evmix"):  # fixed, decision-ended, and mixed-evidence trials
         base = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}")
         assert observed_counts(base) == (40, 40)
-        names = (("lowsnr4", (4, 4)), ("lowsnr2", (2, 2)), ("biased", (40, 2))) if protocol else (("lowsnr4", (4, 4)), ("biased", (40, 2)))
+        names = {"_fixed": (("lowsnr4", (4, 4)), ("lowsnr2", (2, 2)), ("biased", (40, 2))),
+                 "": (("lowsnr4", (4, 4)), ("biased", (40, 2))), "_evmix": ()}[protocol] + second
         for name, counts in names:
             p = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}_{name}")
             assert observed_counts(p) == counts and p.observation_dim == sum(counts)
@@ -520,3 +523,58 @@ def test_runs_root_and_preset_come_from_the_experiment(tmp_path):
     assert runs_preset([{"preset_id": "a"}, {"preset_id": "a"}]) == "a"
     with pytest.raises(ValueError):
         runs_preset([{"preset_id": "a"}, {"preset_id": "b"}])
+
+
+def test_mixed_evidence_preset_starts_the_evidence_at_session_eleven():
+    from dataclasses import replace
+
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    configure_tbme_catalogs(suite_entries={})
+    evidence = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evidence"), 4.0)
+    mixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evmix"), 4.0)
+    assert mixed.evidence_first_session == 10 and evidence.evidence_first_session == 0
+    assert replace(mixed, evidence_first_session=0) == evidence  # same evidence and session end otherwise
+
+
+def test_sessions_before_the_first_evidence_session_have_no_evidence():
+    from actdyn.environment.session import NO_EVIDENCE
+
+    rule = SessionRule(evidence_amplitude=0.3, evidence_bins=50)
+    zero = session_evidence(torch.tensor([0, 10]), torch.tensor([NO_EVIDENCE, NO_EVIDENCE]), rule)
+    torch.testing.assert_close(zero, torch.zeros(2, 2))
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=4, max_session_bins=30, max_sessions=2,
+                       evidence_amplitude=0.3, evidence_bins=5, evidence_first_session=1)
+    env = SpikingDecisionEnv(ScriptedNetwork(rate=0.3), session_rule=rule)
+    env.reset(seed=7)
+    assert env.session_context()["evidence_pool"] == NO_EVIDENCE and env.session_context()["session_index"] == 0
+    seen = {0: [], 1: []}
+    terminated = False
+    while not terminated:
+        index = env.session_index
+        _z, _r, terminated, _trunc, info = env.step(np.zeros(2))
+        seen[index].append(np.asarray(info["evidence"]))
+    assert np.all(np.stack(seen[0]) == 0.0)
+    first = np.stack(seen[1][:5])
+    assert np.allclose(first.sum(axis=1), 0.3) and np.all(np.stack(seen[1][5:]) == 0.0)
+    assert [s["evidence_pool"] for s in env.session_log][0] == NO_EVIDENCE
+    assert env.session_log[1]["evidence_pool"] in (0, 1)
+
+
+@pytest.mark.parametrize("first_session,last_input", [(1, [2.0, 1.0]), (2, [1.0, 0.0])])
+def test_planner_rollout_knows_which_simulated_session_has_evidence(first_session, last_input):
+    from actdyn.environment.session import NO_EVIDENCE
+
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=1, max_session_bins=100,
+                       evidence_amplitude=2.0, evidence_bins=2, evidence_first_session=first_session)
+    planner, _ = _session_planner(rule)
+    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": NO_EVIDENCE,
+                               "session_index": 0}
+    rollout = planner.simulate(None, torch.tensor([[1.0, 0.0]]).repeat(1, 5, 1))
+    # No evidence in session 0: the gap reaches 3 > 2 after step 2, the session resets after step 3;
+    # the simulated session 1 gets the expected evidence only when it is an evidence session.
+    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 0, 0, 1, 0]
+    torch.testing.assert_close(rollout["env_action"][0, :4], torch.tensor([[1.0, 0.0]] * 4))
+    torch.testing.assert_close(rollout["env_action"][0, 4], torch.tensor(last_input))

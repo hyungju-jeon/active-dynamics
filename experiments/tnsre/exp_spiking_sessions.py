@@ -17,6 +17,8 @@ filters, learners, and planners use the action plus the evidence as the circuit'
 with the same evidence; the readout is calibrated as before (amplitude 1).
 ``wong_wang_snn_sessions_m2_fixed`` keeps every session for the full 400 bins: a decision
 does not end it, so the data include the held choice (fixed-length trials).
+``wong_wang_snn_sessions_m2_evmix_*`` run 10 decision-ended sessions without evidence, then 10 with
+the task's evidence, which the agents know.
 The ``_obs`` suites compare PALDI (also with its reactive cadence) and RHC-US on fixed trials
 with the default, two low-SNR (4 or 2 neurons per pool), and a biased (40 + 2 neurons) recording.
 """
@@ -32,6 +34,16 @@ DEFAULT_EXP_IDS = (
     "wong_wang_snn_sessions_m2_biased",
     "wong_wang_snn_sessions_m2_fixed_lowsnr4",
     "wong_wang_snn_sessions_m2_fixed_biased",
+    # Second matrix (2026-10-05): 10 + 10, 20 + 20, 20 + 5 neurons; decision, fixed, and mixed-evidence trials.
+    "wong_wang_snn_sessions_m2_n10_10",
+    "wong_wang_snn_sessions_m2_n20_20",
+    "wong_wang_snn_sessions_m2_n20_5",
+    "wong_wang_snn_sessions_m2_fixed_n10_10",
+    "wong_wang_snn_sessions_m2_fixed_n20_20",
+    "wong_wang_snn_sessions_m2_fixed_n20_5",
+    "wong_wang_snn_sessions_m2_evmix_n10_10",
+    "wong_wang_snn_sessions_m2_evmix_n20_20",
+    "wong_wang_snn_sessions_m2_evmix_n20_5",
 )
 # Matched comparison set of the manuscript (PALDI, Myopic, FLEX, RHC-US, PRBS, Random).
 MODEL_IDS = ["adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random"]
