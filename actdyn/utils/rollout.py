@@ -92,6 +92,7 @@ class Rollout:
         "model_state",  # belief about the state of the model
         "next_model_state",  # belief about the next state of the model
         "model_action",  # action of the model
+        "session_reset_after",  # 1 where a decision session resets after the step
     }
 
     def __init__(self, verbose=False, device="cpu"):

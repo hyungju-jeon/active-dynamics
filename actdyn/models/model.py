@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Callable, Dict, Optional, Tuple
 
+import numpy as np
 import torch
 from einops import rearrange, repeat, einsum
 from torch.nn.functional import softplus
@@ -659,6 +660,9 @@ class FilteringEmbedding(BaseModel):
         self.e: Belief = e
         self.e_clip = max(float(e_clip), 1e-3)
         self._normalize_embedding_belief()
+        # Prior parameter covariance and precision, (1, d_e, d_e); reset() restores them.
+        self._prior_embedding_P = self.e["P"][:1].detach().clone()
+        self._prior_embedding_L = self.e["L"][:1].detach().clone()
         self.state_init_uncertainty = max(float(state_init_uncertainty), 1e-9)
         initial_batch = self.e["m"].shape[0]
         self.state_initial_mean = None
@@ -947,18 +951,14 @@ class FilteringEmbedding(BaseModel):
     def reset(self, observation: torch.Tensor) -> Tuple[torch.Tensor, Dict[str, Any]]:
         """Reset the environment to initial state."""
         observation, info = super().reset(observation)
-        d_embed = self.e["m"].shape[-1]
         batch = self.e["m"].shape[0]
         if self.state_initial_mean is not None:
             self._state = self.state_initial_mean.expand(batch, -1, -1).clone()
             info["latent_state"] = self._state
-        eye_embed = (
-            torch.eye(d_embed, device=self.device).unsqueeze(0).expand(batch, -1, -1).clone()
-        )
         self.e.update(
             {
-                "P": eye_embed,
-                "L": eye_embed.clone(),
+                "P": self._prior_embedding_P.to(self.device).expand(batch, -1, -1).clone(),
+                "L": self._prior_embedding_L.to(self.device).expand(batch, -1, -1).clone(),
             }
         )
         self._normalize_embedding_belief()
@@ -991,6 +991,39 @@ class FilteringEmbedding(BaseModel):
         super().set_state(state)
 
     @property
+    def input_dependent_dynamics(self) -> bool:
+        """True when the learner's drift takes the input inside (dz/dt = f(z, u; theta))."""
+        return bool(getattr(getattr(self.dynamics, "network", None), "input_dependent", False))
+
+    def _jac_state(self, z: torch.Tensor, e: torch.Tensor, u: torch.Tensor | None) -> torch.Tensor:
+        """d f / d z; the input enters only for input-dependent drifts."""
+        if self.input_dependent_dynamics and u is not None:
+            return self.Fz(z, e, u=u)
+        return self.Fz(z, e)
+
+    def _jac_embedding(self, z: torch.Tensor, e: torch.Tensor, u: torch.Tensor | None) -> torch.Tensor:
+        """d f / d theta; the input enters only for input-dependent drifts."""
+        if self.input_dependent_dynamics and u is not None:
+            return self.Fe(z, e, u=u)
+        return self.Fe(z, e)
+
+    def reset_session_state(self, mean: torch.Tensor | np.ndarray, variance: float) -> None:
+        """Known session reset: the latent jumps to ``mean`` (shape (d,)).
+
+        The state belief becomes N(mean, variance I). The parameter belief and the
+        accumulated parameter-information block are kept. The sensitivity of the
+        state to the parameters restarts at zero, because the reset state does not
+        depend on the parameters.
+        """
+        batch = int(self.e["m"].shape[0])
+        m = torch.as_tensor(np.asarray(mean), dtype=torch.float32, device=self.device).reshape(1, 1, -1)
+        m = m.expand(batch, 1, self.latent_dim).clone()
+        eye = torch.eye(self.latent_dim, device=self.device).reshape(1, 1, self.latent_dim, self.latent_dim)
+        self._state = m
+        self.z = {"m": m.clone(), "P": (float(variance) * eye).expand(batch, 1, -1, -1).clone()}
+        self._theta_sensitivity = torch.zeros_like(self._theta_sensitivity)
+
+    @property
     def embedding(self):
         return self.e["m"]
 
@@ -999,14 +1032,14 @@ class FilteringEmbedding(BaseModel):
         Q = softplus(self.dynamics.logvar).diag_embed().unsqueeze(0) * self.dt
         I = torch.eye(self.latent_dim, device=self.device).unsqueeze(0).unsqueeze(0)
 
-        # Transition linearization at current posterior mean
-        Fz = self.Fz(self.z["m"], self.e["m"])
-        dfdz = Fz * self.dt + I
-
         if u is not None and self.action_encoder is not None:
             u_enc = self.action_encoder(u, self.z["m"])
         else:
             u_enc = u
+
+        # Transition linearization at current posterior mean
+        Fz = self._jac_state(self.z["m"], self.e["m"], u_enc)
+        dfdz = Fz * self.dt + I
 
         # Predict
         z_pred = {
@@ -1044,9 +1077,10 @@ class FilteringEmbedding(BaseModel):
                 )[1]
             )
             # 1. Propagate dzde forward using dynamics sensitivity
-            Fz = self.Fz(replay["model_state"][:, t : t + 1], self.e["m"])
+            u_t = replay["model_action"][:, t : t + 1]
+            Fz = self._jac_state(replay["model_state"][:, t : t + 1], self.e["m"], u_t)
             dfdz = Fz * self.dt + I
-            Fe = self.Fe(replay["model_state"][:, t : t + 1], self.e["m"])
+            Fe = self._jac_embedding(replay["model_state"][:, t : t + 1], self.e["m"], u_t)
             dfde = Fe * self.dt
             P = dfdz @ P @ dfdz.transpose(-1, -2) + Q  # (B, 1, Dz, Dz)
 
@@ -1116,7 +1150,7 @@ class FilteringEmbedding(BaseModel):
 
         # Final EKF update for latent state
         # Re-propagate dynamics with updated e
-        Fz = self.Fz(self.z["m"], self.e["m"])
+        Fz = self._jac_state(self.z["m"], self.e["m"], u_enc)
         dfdz = Fz * self.dt + I
 
         z_pred = {
@@ -1203,15 +1237,16 @@ class FilteringEmbedding(BaseModel):
         if e_eval.shape[0] == 1 and batch_size > 1:
             e_eval = e_eval.expand(batch_size, -1)
 
-        # Transition linearization at current posterior mean
-        Fz = self.Fz(z_prev, e_eval)
-        dfdz = Fz * self.dt + I
-        F_theta = self.Fe(z_prev, e_eval) * self.dt
-
         if u is not None and self.action_encoder is not None:
             u_enc = self.action_encoder(u, self.z["m"])
         else:
             u_enc = u
+
+        # Transition linearization at current posterior mean (and at the bin's input
+        # for input-dependent drifts).
+        Fz = self._jac_state(z_prev, e_eval, u_enc)
+        dfdz = Fz * self.dt + I
+        F_theta = self._jac_embedding(z_prev, e_eval, u_enc) * self.dt
 
         # Predict
 

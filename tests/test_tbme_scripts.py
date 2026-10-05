@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_figure_roots_use_tracks_directly(tmp_path: Path, monkeypatch) -> None:
-    from experiments.tbme.figures import groups, summary, diagnostics
+    from experiments.tnsre.figures import groups, summary, diagnostics
 
     # A leftover session folder must not redirect a selected result cohort.
     (tmp_path / "session_99" / "tracks").mkdir(parents=True)
@@ -35,8 +35,8 @@ def test_figure_roots_use_tracks_directly(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_figure_cli_forwards_saved_asset_inputs(tmp_path: Path) -> None:
-    from experiments.tbme import generate_figures
-    from experiments.tbme.figures.assets import _assets_build_parser
+    from experiments.tnsre import generate_figures
+    from experiments.tnsre.figures.assets import _assets_build_parser
 
     args = generate_figures.build_parser().parse_args([
         "assets", "--results-dir", str(tmp_path),
@@ -50,9 +50,21 @@ def test_figure_cli_forwards_saved_asset_inputs(tmp_path: Path) -> None:
     assert forwarded.tri_gate_exemplar_seed == 90
 
 
+def test_figure_cli_registry_covers_every_group() -> None:
+    from experiments.tnsre import generate_figures
+    from experiments.tnsre.figures import cli, groups
+
+    assert set(generate_figures.EXPERIMENT_PLOTS_BY_GROUP) == set(groups.groups())
+    plot_ids = generate_figures._experiment_plot_ids(generate_figures.DEFAULT_GROUPS)
+    assert set(plot_ids) <= set(cli.EXPERIMENT_PLOTS)
+    assert "true_dynamics_neural" in plot_ids
+    env_ids = generate_figures.DIAGNOSTIC_ENV_IDS
+    assert len(env_ids) == len(set(env_ids))
+
+
 def test_mechanistic_assets_render_saved_arrays(tmp_path: Path, monkeypatch) -> None:
     from experiments import eig_1d_example as scalar
-    from experiments.tbme.figures.assets import _asset_plot_eig_components
+    from experiments.tnsre.figures.assets import _asset_plot_eig_components
 
     source = tmp_path / "scalar"
     source.mkdir()
@@ -96,7 +108,7 @@ def _load_module(name: str, rel_path: str):
 
 def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatch):
     module = _load_module(
-        "tbme_run_current", "experiments/tbme/run_tbme_experiments.py"
+        "tbme_run_current", "experiments/tnsre/run_tbme_experiments.py"
     )
     captured: dict[str, object] = {}
 
@@ -116,7 +128,7 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
             "--seeds",
             "0,10",
             "--base-dir",
-            "results/tbme",
+            "results/tnsre",
             "--planning-rollout",
             "measurement_conditioned",
             "--learning-sensitivity",
@@ -135,7 +147,7 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
             "--exp-ids",
             "duffing",
             "--base-dir",
-            "results/tbme",
+            "results/tnsre",
             "--seeds",
             "0,10",
             "--path-layout",
@@ -154,7 +166,7 @@ def test_tbme_runner_parser_accepts_expected_args(monkeypatch: pytest.MonkeyPatc
     assert sorted(captured["suite_entries"]) == [
         "damped_pendulum",
         "duffing",
-        "gated_duffing",
+        "wilson_cowan",
     ]
 
 
@@ -177,7 +189,7 @@ def _write_r2_ceiling_metadata(suite_dir: Path, *, state_noise: float) -> None:
 
 
 def test_asset_true_model_r2_ceiling_is_one_without_process_noise(tmp_path: Path):
-    from experiments.tbme.figures import assets as module
+    from experiments.tnsre.figures import assets as module
 
     _write_r2_ceiling_metadata(tmp_path, state_noise=0.0)
 
@@ -188,7 +200,7 @@ def test_asset_true_model_r2_ceiling_reflects_process_noise(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    from experiments.tbme.figures import assets as module
+    from experiments.tnsre.figures import assets as module
 
     monkeypatch.setattr(module, "_ASSET_R2_CEILING_REPEATS", 4)
     _write_r2_ceiling_metadata(tmp_path, state_noise=0.8)
@@ -200,7 +212,7 @@ def test_asset_true_model_r2_ceiling_reflects_process_noise(
 
 
 def test_true_reference_uses_evaluation_noise_and_coordinates(tmp_path: Path, monkeypatch) -> None:
-    from experiments.tbme.figures import assets
+    from experiments.tnsre.figures import assets
     from actdyn.utils import validation
 
     _write_r2_ceiling_metadata(tmp_path, state_noise=.8)
@@ -236,7 +248,7 @@ def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from experiments.tbme.figures import assets as module
+    from experiments.tnsre.figures import assets as module
 
     summary_dir = tmp_path / "summary"
     write_trace_csv(
@@ -350,7 +362,7 @@ def test_asset_median_iqr_uses_summary_quantiles_and_seed_final_values(
 
 
 def test_asset_r2_summary_selection_is_explicit() -> None:
-    from experiments.tbme.figures import assets as module
+    from experiments.tnsre.figures import assets as module
 
     assert module._ASSET_PREDICTIVE_R2_LABEL == r"$R^2_{\mathrm{VF}\text{-}\mathrm{roll}}$"
     assert module._ASSET_FINAL_R2_LABEL == module._ASSET_PREDICTIVE_R2_LABEL
@@ -366,7 +378,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from experiments.tbme.figures import assets as module
+    from experiments.tnsre.figures import assets as module
 
     policy_ids = ("flex", "flex_filter", "flex_true", "flex_rollback")
     refs = []
@@ -374,11 +386,11 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
         (
             "duffing",
             "damped_pendulum",
-            "gated_duffing",
-            "gated_duffing_asymmetric",
-            "gated_duffing_challenging",
-            "gated_duffing_observation_bottleneck_mild",
-            "gated_duffing_observation_bottleneck_strong",
+            "wilson_cowan",
+            "wilson_cowan_asymmetric",
+            "wilson_cowan_challenging",
+            "wilson_cowan_observation_bottleneck_mild",
+            "wilson_cowan_observation_bottleneck_strong",
         )
     ):
         suite_dir = tmp_path / "tracks" / exp_id
@@ -419,7 +431,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
                     "status": "completed",
                     "trajectory_r2_final_mean": (
                         ""
-                        if exp_id == "gated_duffing"
+                        if exp_id == "wilson_cowan"
                         and policy_id == "flex_filter"
                         and seed == 1
                         else 0.75 + 0.01 * seed
@@ -445,7 +457,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
             )
         )
 
-    from experiments.tbme.figures import groups as groups_mod
+    from experiments.tnsre.figures import groups as groups_mod
 
     monkeypatch.setitem(groups_mod.groups(), "flex_comparison", refs)
     mean_path = tmp_path / "assets" / "tbme_fig_flex_comparison.pdf"
@@ -484,7 +496,7 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     failed_row = next(
         row
         for row in mean_rows
-        if row["experiment"] == "gated_duffing" and row["policy_id"] == "flex_filter"
+        if row["experiment"] == "wilson_cowan" and row["policy_id"] == "flex_filter"
     )
     assert failed_row["policy_label"] == "FLEX (EKF)"
     assert failed_row["n_total"] == "2"
@@ -493,23 +505,23 @@ def test_flex_comparison_asset_writes_mean_and_median_r2(
     assert failed_row["r2_nonfinite_rate"] == "0.5"
     # The matched cohort has no Challenging FLEX runs. Its remaining single
     # condition still needs enough width for the legend and must pass the audit.
-    (tmp_path / "tracks/gated_duffing_challenging/summary/metrics.csv").unlink()
+    (tmp_path / "tracks/wilson_cowan_challenging/summary/metrics.csv").unlink()
     hard_group = next(group for group in module._asset_flex_groups() if group[0] == "hard")
     monkeypatch.setattr(module, "_asset_flex_groups", lambda: (hard_group,))
     skipped = []
     subset = module._asset_plot_flex_comparison(
         tmp_path / "subset" / "flex.pdf", r2_summary="mean_sem", skipped=skipped)
     assert len(subset) == 2 and all(path.exists() for path in subset)
-    assert len(skipped) == 1 and "gated_duffing_challenging" in skipped[0][0]
+    assert len(skipped) == 1 and "wilson_cowan_challenging" in skipped[0][0]
 
 
 def test_asset_subsets_report_absent_experiments(tmp_path: Path, monkeypatch) -> None:
-    from experiments.tbme.figures import assets, groups
+    from experiments.tnsre.figures import assets, groups
 
     monkeypatch.setattr(groups, "_groups", groups._build_groups(tmp_path))
-    suites = ["gated_duffing", "gated_duffing_asymmetric",
-              "gated_duffing_observation_bottleneck_mild",
-              "gated_duffing_observation_bottleneck_strong"]
+    suites = ["wilson_cowan", "wilson_cowan_asymmetric",
+              "wilson_cowan_observation_bottleneck_mild",
+              "wilson_cowan_observation_bottleneck_strong"]
     for suite in suites:
         (tmp_path / "tracks" / suite).mkdir(parents=True)
     monkeypatch.setattr(assets, "_asset_method_metric_rows", lambda *a, **k: [])
@@ -522,7 +534,8 @@ def test_asset_subsets_report_absent_experiments(tmp_path: Path, monkeypatch) ->
     assert [p.stem for p in written] == ["constraints_snr", "constraints_snr_recovery",
                                         "constraints_asymmetry", "constraints_asymmetry_recovery",
                                         "constraints"]
-    assert len(skipped) == 1 and "action_bottleneck" in skipped[0][1]
+    # Fig. 4 needs only the default, SNR, and asymmetric suites; action suites are unused.
+    assert skipped == []
     # No suite has FLEX rows: report the missing data instead of drawing empty panels.
     skipped = []
     assert assets._asset_plot_flex_comparison(tmp_path / "flex.pdf",
@@ -565,7 +578,7 @@ def _write_tri_gate_run(
 
 def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
-    from experiments.tbme.figures import assets as module
+    from experiments.tnsre.figures import assets as module
 
     for seed in (0, 1):
         _write_tri_gate_run(
@@ -601,7 +614,7 @@ def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None
     # resolve its result tracks directory as the default result root.
     assert any(
         ref.suite_id == module._ASSET_TRI_GATE_EXP_ID
-        for ref in __import__("experiments.tbme.figures.groups", fromlist=["groups"]).groups()["objective_ablation"]
+        for ref in __import__("experiments.tnsre.figures.groups", fromlist=["groups"]).groups()["objective_ablation"]
     )
     rows = read_trace_csv(output_path.with_suffix(".csv"))
     assert [row["policy_id"] for row in rows] == [
@@ -638,7 +651,7 @@ def test_gate_diagnostic_asset_writes_figure_and_summary(tmp_path: Path) -> None
 
 def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:
     pytest.importorskip("matplotlib")
-    from experiments.tbme.figures.ablation import plot_objective_ablation
+    from experiments.tnsre.figures.ablation import plot_objective_ablation
 
     policy_id = "active_dynamics"
     sources = [
@@ -684,7 +697,7 @@ def test_objective_ablation_plot_handles_three_sources(tmp_path: Path) -> None:
 
 def test_tbme_catalog_define_expected_matrices():
     module = _load_module(
-        "tbme_catalogs_current", "experiments/tbme/run_tbme_experiments.py"
+        "tbme_catalogs_current", "experiments/tnsre/run_tbme_experiments.py"
     )
     bundle = module.configure_tbme_catalogs()
     paths = module.tbme_catalog_paths()
@@ -823,20 +836,20 @@ def test_tbme_catalog_define_expected_matrices():
     )
     assert "baseline_prbs" not in duffing.policy_ids
     assert "active_planning_u5_r5_h40" not in duffing.policy_ids
-    assert "active_e_optimality" in bundle.experiment_specs["gated_duffing"].policy_ids
-    objective_ablation = bundle.experiment_specs["gated_duffing_asymmetric"]
+    assert "active_e_optimality" in bundle.experiment_specs["wilson_cowan"].policy_ids
+    objective_ablation = bundle.experiment_specs["wilson_cowan_asymmetric"]
     assert "active_observation_variance" in objective_ablation.policy_ids
     assert "active_state_variance" in objective_ablation.policy_ids
     confounded_suite = _load_module(
         "tbme_confounded_gate_suite",
-        "experiments/tbme/exp_objective_ablation.py",
+        "experiments/tnsre/exp_objective_ablation.py",
     ).EXPERIMENT_SUITES["confounded_gate"]
     assert confounded_suite["env_preset_id"] == "tbme_confounded_gate"
     assert "active_planning" in confounded_suite["model_ids"]
     assert "random" in confounded_suite["model_ids"]
     rank_suite = _load_module(
         "tbme_rank_imbalanced_gate_suite",
-        "experiments/tbme/exp_objective_ablation.py",
+        "experiments/tnsre/exp_objective_ablation.py",
     ).EXPERIMENT_SUITES["rank_imbalanced_gate"]
     assert rank_suite["env_preset_id"] == "tbme_rank_imbalanced_gate"
     assert rank_suite["model_ids"] == [
@@ -847,7 +860,7 @@ def test_tbme_catalog_define_expected_matrices():
     ]
     compound_suite = _load_module(
         "tbme_compound_tri_gate_suite",
-        "experiments/tbme/exp_objective_ablation.py",
+        "experiments/tnsre/exp_objective_ablation.py",
     ).EXPERIMENT_SUITES["compound_tri_gate"]
     assert compound_suite["env_preset_id"] == "tbme_compound_tri_gate"
     assert compound_suite["total_steps"] == 2000
@@ -864,7 +877,7 @@ def test_tbme_catalog_define_expected_matrices():
     ]
     simple_suite = _load_module(
         "tbme_three_gate_diagnostic_suite",
-        "experiments/tbme/exp_objective_ablation.py",
+        "experiments/tnsre/exp_objective_ablation.py",
     ).EXPERIMENT_SUITES["three_gate_diagnostic"]
     assert simple_suite["env_preset_id"] == "tbme_three_gate_diagnostic"
     assert simple_suite["total_steps"] == 2000
@@ -886,7 +899,7 @@ def test_tbme_catalog_define_expected_matrices():
 
 def test_tbme_runtime_config_respects_catalog_policy_type_for_prbs(tmp_path: Path):
     catalogs = _load_module(
-        "tbme_catalogs_runtime_prbs", "experiments/tbme/run_tbme_experiments.py"
+        "tbme_catalogs_runtime_prbs", "experiments/tnsre/run_tbme_experiments.py"
     )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     runner = _load_module("experiment_runner_runtime_prbs", "experiments/run.py")
@@ -909,7 +922,7 @@ def test_tbme_runtime_config_respects_catalog_policy_type_for_prbs(tmp_path: Pat
 def test_tbme_runner_seeds_sync_icem_action_sampling():
     catalogs = _load_module(
         "tbme_catalogs_runtime_icem",
-        "experiments/tbme/run_tbme_experiments.py",
+        "experiments/tnsre/run_tbme_experiments.py",
     )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     runner = _load_module("experiment_runner_runtime_icem", "experiments/run.py")
@@ -942,7 +955,7 @@ def test_tbme_runner_seeds_sync_icem_action_sampling():
 
 def test_tbme_runner_instantiates_flex_policy_as_exact_flex():
     catalogs = _load_module(
-        "tbme_catalogs_runtime_flex", "experiments/tbme/run_tbme_experiments.py"
+        "tbme_catalogs_runtime_flex", "experiments/tnsre/run_tbme_experiments.py"
     )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     runner = _load_module("experiment_runner_runtime_flex", "experiments/run.py")
@@ -988,7 +1001,7 @@ def test_tbme_runner_instantiates_additive_flex_variants(
     use_true_state: bool,
     rollback: bool,
 ) -> None:
-    catalogs = _load_module("tbme_catalogs_runtime_flex_variants", "experiments/tbme/run_tbme_experiments.py")
+    catalogs = _load_module("tbme_catalogs_runtime_flex_variants", "experiments/tnsre/run_tbme_experiments.py")
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     runner = _load_module("experiment_runner_runtime_flex_variants", "experiments/run.py")
     import actdyn
@@ -1019,15 +1032,15 @@ def test_tbme_runner_instantiates_additive_flex_variants(
 
 
 def test_flex_comparison_suite_has_requested_environments_and_models() -> None:
-    suite = _load_module("tbme_flex_comparison", "experiments/tbme/exp_flex_comparison.py")
+    suite = _load_module("tbme_flex_comparison", "experiments/tnsre/exp_flex_comparison.py")
     assert tuple(suite.EXPERIMENT_SUITES) == (
         "duffing",
         "damped_pendulum",
-        "gated_duffing",
-        "gated_duffing_asymmetric",
-        "gated_duffing_challenging",
-        "gated_duffing_observation_bottleneck_mild",
-        "gated_duffing_observation_bottleneck_strong",
+        "wilson_cowan",
+        "wilson_cowan_asymmetric",
+        "wilson_cowan_challenging",
+        "wilson_cowan_observation_bottleneck_mild",
+        "wilson_cowan_observation_bottleneck_strong",
     )
     assert suite.MODEL_IDS == ["flex", "flex_filter", "flex_true", "flex_rollback"]
     assert all(
@@ -1039,7 +1052,7 @@ def test_flex_comparison_suite_has_requested_environments_and_models() -> None:
 def test_tbme_runner_instantiates_exact_rhc_policy():
     pytest.importorskip("casadi")
     catalogs = _load_module(
-        "tbme_catalogs_runtime_rhc", "experiments/tbme/run_tbme_experiments.py"
+        "tbme_catalogs_runtime_rhc", "experiments/tnsre/run_tbme_experiments.py"
     )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     runner = _load_module("experiment_runner_runtime_rhc", "experiments/run.py")
@@ -1207,7 +1220,7 @@ def test_rhc_rejects_existing_results_without_fixed_revision(tmp_path, monkeypat
 
 def test_tbme_family_scripts_define_expected_suite_sets():
     module = _load_module(
-        "tbme_run_family_current", "experiments/tbme/run_tbme_experiments.py"
+        "tbme_run_family_current", "experiments/tnsre/run_tbme_experiments.py"
     )
     suites, groups = module._shared_tbme_data()
     assert set(groups) == {
@@ -1217,22 +1230,24 @@ def test_tbme_family_scripts_define_expected_suite_sets():
         "objective_ablation",
         "scheduling",
         "flex_comparison",
+        "neural_circuits",
+        "spiking_sessions",
     }
     assert [entry["suite_id"] for entry in groups["simple_system_identification"]] == [
         "duffing",
         "damped_pendulum",
-        "gated_duffing",
+        "wilson_cowan",
     ]
-    assert "gated_duffing_parameter_mismatch_mild" in suites
-    assert "gated_duffing_observation_bottleneck_mild" in suites
+    assert "wilson_cowan_parameter_mismatch_mild" in suites
+    assert "wilson_cowan_observation_bottleneck_mild" in suites
     assert [entry["suite_id"] for entry in groups["flex_comparison"]] == [
         "duffing",
         "damped_pendulum",
-        "gated_duffing",
-        "gated_duffing_asymmetric",
-        "gated_duffing_challenging",
-        "gated_duffing_observation_bottleneck_mild",
-        "gated_duffing_observation_bottleneck_strong",
+        "wilson_cowan",
+        "wilson_cowan_asymmetric",
+        "wilson_cowan_challenging",
+        "wilson_cowan_observation_bottleneck_mild",
+        "wilson_cowan_observation_bottleneck_strong",
     ]
     assert all(
         entry["policy_ids"] == ("flex_filter", "flex_true", "flex_rollback")
@@ -1242,7 +1257,7 @@ def test_tbme_family_scripts_define_expected_suite_sets():
 
 def test_duffing_parameter_mismatch_uses_fixed_non_inferred_cubic():
     catalogs = _load_module(
-        "tbme_catalogs_param_mismatch", "experiments/tbme/run_tbme_experiments.py"
+        "tbme_catalogs_param_mismatch", "experiments/tnsre/run_tbme_experiments.py"
     )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     preset = specs.environment_presets["tbme_duffing_parameter_mismatch"]
@@ -1255,7 +1270,7 @@ def test_duffing_parameter_mismatch_uses_fixed_non_inferred_cubic():
 def test_trajectory_r2_accounts_for_estimator_system_mismatch():
     catalogs = _load_module(
         "tbme_catalogs_traj_r2_param_mismatch",
-        "experiments/tbme/run_tbme_experiments.py",
+        "experiments/tnsre/run_tbme_experiments.py",
     )
     specs = catalogs.configure_tbme_catalogs(suite_entries={})
     true_preset = specs.environment_presets["tbme_duffing"]
@@ -1438,7 +1453,7 @@ def test_trajectory_r2_many_scores_all_three_gate_diagnostic_parameters():
 
 
 def test_three_gate_diagnostic_reach_hold_baseline_separates_transit_from_dwell():
-    from experiments.tbme.figures.gates import (
+    from experiments.tnsre.figures.gates import (
         reach_hold_selector_occupancy as _reach_hold_selector_occupancy,
     )
 
@@ -1465,7 +1480,7 @@ def test_tbme_all_runner_parser_accepts_expected_args(
     monkeypatch: pytest.MonkeyPatch,
 ):
     module = _load_module(
-        "tbme_run_all_current", "experiments/tbme/run_tbme_experiments.py"
+        "tbme_run_all_current", "experiments/tnsre/run_tbme_experiments.py"
     )
     captured: dict[str, object] = {}
 
@@ -1521,13 +1536,13 @@ def test_root_runner_catalog_preparse_does_not_treat_mode_as_model_catalog():
                 "--env-catalog",
                 "experiments/experiment_env.yaml",
                 "--env-catalog",
-                "experiments/tbme/config/experiment_env.yaml",
+                "experiments/tnsre/config/experiment_env.yaml",
                 "--model-catalog",
                 "experiments/experiment_model.yaml",
                 "--model-catalog",
-                "experiments/tbme/config/experiment_model.yaml",
+                "experiments/tnsre/config/experiment_model.yaml",
                 "--suite-catalog",
-                "experiments/tbme/config/experiment_suite.yaml",
+                "experiments/tnsre/config/experiment_suite.yaml",
                 "--mode",
                 "summary",
             ]
@@ -1535,14 +1550,14 @@ def test_root_runner_catalog_preparse_does_not_treat_mode_as_model_catalog():
 
     assert captured["env_catalog_paths"] == [
         "experiments/experiment_env.yaml",
-        "experiments/tbme/config/experiment_env.yaml",
+        "experiments/tnsre/config/experiment_env.yaml",
     ]
     assert captured["model_catalog_paths"] == [
         "experiments/experiment_model.yaml",
-        "experiments/tbme/config/experiment_model.yaml",
+        "experiments/tnsre/config/experiment_model.yaml",
     ]
     assert captured["suite_catalog_paths"] == [
-        "experiments/tbme/config/experiment_suite.yaml"
+        "experiments/tnsre/config/experiment_suite.yaml"
     ]
     assert captured["suite_entries"] is None
 

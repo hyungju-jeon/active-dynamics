@@ -13,6 +13,7 @@ separate map from actions to reachable probe states.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
@@ -225,9 +226,16 @@ def build_figure(
     """Build the 1D planning figure from arrays returned by ``compute_eig_curve``.
 
     Args:
-        single_column: Lay the panels out for a 3.5 in column instead of the
-            516 TeX point double-column width used by the manuscript.
+        single_column: Use the compact trajectory, information-factor, and
+            cumulative-information layout at the manuscript's 252 TeX point
+            column width. The full diagnostic
+            layout uses the 516 TeX point text width.
     """
+    if single_column:
+        return build_compact_figure(
+            curve, theta_mean=theta_mean, theta_var=theta_var,
+            plt=plt,
+        )
     z_probe = curve["z_probe"]
     horizon = curve["theta_information_steps"].shape[0]
     candidate_indices = [
@@ -240,35 +248,13 @@ def build_figure(
         theta_var * np.cumsum(curve["theta_information_steps"], axis=0),
     )
 
-    # Both widths give the EIG landscape (E) a wide, short cell on the closing
-    # row so the panels stay the same shape across the two versions.
-    if single_column:
-        fig = plt.figure(figsize=(3.5, 4.6))
-        grid = fig.add_gridspec(
-            3,
-            2,
-            height_ratios=[1.0, 1.0, 1.15],
-            left=0.135,
-            right=0.895,
-            top=0.9,
-            bottom=0.085,
-            wspace=0.4,
-            hspace=0.55,
-        )
-        slots = [grid[0, 0], grid[0, 1], grid[1, 0], grid[1, 1], grid[2, :]]
-    else:
-        fig = plt.figure(figsize=(516 / 72.27, 3.7))
-        grid = fig.add_gridspec(
-            2,
-            3,
-            left=0.055,
-            right=0.95,
-            top=0.87,
-            bottom=0.105,
-            wspace=0.3,
-            hspace=0.5,
-        )
-        slots = [grid[0, 0], grid[0, 1], grid[0, 2], grid[1, 0], grid[1, 1:3]]
+    # Preserve the complete diagnostic view for the supplementary material.
+    fig = plt.figure(figsize=(516 / 72.27, 3.7))
+    grid = fig.add_gridspec(
+        2, 3, left=0.055, right=0.95, top=0.87, bottom=0.105,
+        wspace=0.3, hspace=0.5,
+    )
+    slots = [grid[0, 0], grid[0, 1], grid[0, 2], grid[1, 0], grid[1, 1:3]]
     # B splits into a rate panel stacked directly on a state panel, sharing one
     # time axis with no gap between them.
     b_grid = slots[1].subgridspec(2, 1, hspace=0.0)
@@ -513,6 +499,146 @@ def build_figure(
     return fig
 
 
+def attenuated_state_information(curve: dict[str, np.ndarray]) -> np.ndarray:
+    """Return I_{z,k}/(1+P_k^- I_{z,k}) with shape ``(horizon, n)``.
+
+    This is the attenuated state Fisher information of the p-EIG increment
+    (Supplementary A.6), so ``sensitivity_path[1:]**2`` times it equals
+    ``theta_information_steps``.
+    """
+    state_information = curve["state_information_steps"]
+    return state_information / (1.0 + curve["state_variance_path"][1:] * state_information)
+
+
+def build_compact_figure(
+    curve: dict[str, np.ndarray], *, theta_mean: float, theta_var: float,
+    plt,
+):
+    """Show why the preferred initial state changes with the planning horizon.
+
+    Inputs are the saved arrays from ``compute_eig_curve``. No observations are
+    sampled. (A) Nominal trajectories. (B) Squared sensitivity S_k^2. (C) Attenuated
+    state Fisher information, so that B times C is the per-step parameter
+    information I_theta,k. (D) Cumulative information over the first
+    H steps, with the gain I_theta,H in parentheses; shading encodes the gain.
+    The outline marks the maximizer of 0.5 log(1 + P_theta * cumulative), the
+    p-EIG choice. Printed values are rounded; rankings use unrounded values.
+    """
+    from matplotlib.colors import LinearSegmentedColormap
+    from matplotlib.patches import Rectangle
+    from matplotlib.ticker import FixedLocator, MaxNLocator
+
+    indices = [int(np.argmin(abs(curve["z_probe"] - z))) for z in _CANDIDATE_Z]
+    paths = curve["z_path"][:, indices]
+    sensitivity_sq = curve["sensitivity_path"][1:, indices] ** 2
+    attenuated_information = attenuated_state_information(curve)[:, indices]
+    gain = curve["theta_information_steps"][:, indices].T
+    cumulative = np.cumsum(gain, axis=1)
+    winners = (0.5 * np.log1p(theta_var * cumulative)).argmax(axis=0)
+    n_candidates, horizon = gain.shape
+    colors = _C_STEP[:n_candidates]
+    markers = ("o", "s", "^", "D")
+    # z0=3 is drawn last so it stays visible where candidates coincide.
+    draw_order = (0, 1, 3, 2)
+
+    width, height = 252 / 72.27, 2.5
+    fig = plt.figure(figsize=(width, height))
+
+    def axes_at(x0, y0, dx, dy):
+        """Place axes by physical position in inches."""
+        return fig.add_axes([x0 / width, y0 / height, dx / width, dy / height])
+
+    state = axes_at(0.27, 1.55, 0.86, 0.66)
+    sensitivity = axes_at(1.43, 1.55, 0.86, 0.66)
+    observation = axes_at(2.58, 1.55, 0.86, 0.66)
+    table = axes_at(0.50, 0.08, 2.94, 0.74)
+
+    def trace(ax, steps, values, title):
+        for i in draw_order:
+            ax.plot(steps, values[:, i], color=colors[i], marker=markers[i],
+                    markersize=2.6, markeredgecolor="white", markeredgewidth=0.3,
+                    linewidth=1)
+        ax.set_title(title, fontsize=_ASSET_LABEL_SIZE, pad=3, loc="left")
+        ax.set_xticks(steps)
+        ax.tick_params(pad=1.2)
+        ax.grid(axis="y", alpha=0.15)
+        for spine in ax.spines.values():
+            spine.set_linewidth(0.5)
+
+    steps = np.arange(horizon + 1)
+    trace(state, steps, paths, r"State $z_k$")
+    state_upper = max(4.85, float(paths.max()) * 1.07)
+    if theta_mean > 0 and np.pi / theta_mean < state_upper:
+        state.axhline(np.pi / theta_mean, color=".35", lw=0.6, ls="--", zorder=0)
+    state.set(xlim=(-0.2, horizon + 0.2), ylim=(-0.12, state_upper), yticks=[0, 2, 4])
+
+    trace(sensitivity, steps[1:], sensitivity_sq, r"Sensitivity $S_k^2$")
+    sensitivity_upper = 1.08 * float(sensitivity_sq.max())
+    sensitivity.set(xlim=(0.8, horizon + 0.2),
+                    ylim=(-0.035 * sensitivity_upper, sensitivity_upper))
+    sensitivity.yaxis.set_major_locator(MaxNLocator(nbins=3))
+
+    trace(observation, steps[1:], attenuated_information,
+          r"Attenuated $\tilde I_{z,k}$")
+    observation.set_yscale("log")
+    low, high = float(attenuated_information.min()), float(attenuated_information.max())
+    observation.set(xlim=(0.8, horizon + 0.2), ylim=(0.8 * low, 1.8 * high))
+    decades = 10.0 ** np.arange(np.floor(np.log10(low)), np.ceil(np.log10(high)) + 1)
+    observation.yaxis.set_major_locator(FixedLocator(decades))
+    observation.set_yticklabels([f"{value:g}" for value in decades])
+    observation.minorticks_off()
+    fig.text(1.86 / width, 1.27 / height, r"Future step $k$", ha="center",
+             fontsize=_ASSET_LABEL_SIZE)
+
+    # Shading encodes the gain at step H; cell text leads with the cumulative sum.
+    gain_max = max(0.1, float(np.ceil(gain.max() * 10) / 10))
+    table.imshow(
+        gain, vmin=0, vmax=gain_max, aspect="auto", interpolation="nearest",
+        cmap=LinearSegmentedColormap.from_list("gain", ["#FFFFFF", "#4A4A4A"]),
+        extent=(0.5, horizon + 0.5, n_candidates - 0.5, -0.5),
+    )
+    table.set(
+        xlim=(0.5, horizon + 0.5), ylim=(n_candidates - 0.5, -0.5),
+        xticks=steps[1:], xticklabels=[rf"$H={h}$" for h in steps[1:]],
+        yticks=np.arange(n_candidates),
+        yticklabels=[rf"$z_0={z:g}$" for z in _CANDIDATE_Z],
+    )
+    table.xaxis.tick_top()
+    table.tick_params(axis="both", length=0, pad=2)
+    for label, color in zip(table.get_yticklabels(), colors, strict=True):
+        label.set_color(color)
+
+    def rounded(value):
+        return f"{value:.2f}" if value >= 0.01 else f"{value:.3f}"
+
+    for row in range(n_candidates):
+        for col in range(horizon):
+            table.text(col + 1, row,
+                       f"{rounded(cumulative[row, col])} (+{rounded(gain[row, col])})",
+                       ha="center", va="center", fontsize=_ASSET_TICK_SIZE,
+                       color="white" if gain[row, col] / gain_max > 0.6 else "#222222")
+    # Unclipped so the edge lines are not cut in half at the axes border.
+    for edge in np.arange(0.5, horizon + 0.6, 1):
+        table.axvline(edge, color="white", lw=1, clip_on=False)
+    for edge in np.arange(-0.5, n_candidates, 1):
+        table.axhline(edge, color="white", lw=1, clip_on=False)
+    for spine in table.spines.values():
+        spine.set_visible(False)
+    for h, winner in enumerate(winners, start=1):
+        table.add_patch(Rectangle((h - 0.47, winner - 0.44), 0.94, 0.88, fill=False,
+                                  edgecolor=colors[int(winner)], lw=1.6, zorder=5,
+                                  clip_on=False))
+    fig.text(0.50 / width, 0.99 / height,
+             r"Cumulative information $\Sigma_{k\leq H}\, I_{\theta,k}$ (gain at step $H$)",
+             fontsize=_ASSET_LABEL_SIZE, va="bottom")
+
+    for x, y, letter in ((0.0, height - 0.01, "A"), (1.18, height - 0.01, "B"),
+                         (2.33, height - 0.01, "C"), (0.0, 1.16, "D")):
+        fig.text(x / width, y / height, letter, fontsize=_ASSET_PANEL_LABEL_SIZE,
+                 weight="bold", va="top")
+    return fig
+
+
 def build_detailed_figure(
     curve: dict[str, np.ndarray],
     *,
@@ -647,6 +773,10 @@ def main(argv: list[str] | None = None) -> Path:
         default=default_output,
     )
     parser.add_argument(
+        "--input", type=Path,
+        help="Render saved NPZ arrays using model settings from the sibling JSON.",
+    )
+    parser.add_argument(
         "--detailed",
         action="store_true",
         help="Write the two-step diagnostic plot.",
@@ -655,7 +785,7 @@ def main(argv: list[str] | None = None) -> Path:
         "--column",
         choices=("double", "single"),
         default="double",
-        help="Panel layout width: 516 TeX pt double column or 3.5 in single column.",
+        help="Full diagnostics at 516 TeX pt, or compact panels at 252 TeX pt.",
     )
     parser.add_argument("--theta-mean", type=float, default=1)
     parser.add_argument("--theta-var", type=float, default=2)
@@ -671,19 +801,36 @@ def main(argv: list[str] | None = None) -> Path:
     parser.add_argument("--num-points", type=int, default=1801)
     args = parser.parse_args(argv)
 
+    source_hashes = {}
+    if args.input is not None:
+        metadata_path = args.input.with_suffix(".json")
+        saved_metadata = json.loads(metadata_path.read_text())
+        for key in ("theta_mean", "theta_var", "c", "b", "state_var",
+                    "state_noise", "planning_rollout", "dt", "horizon",
+                    "z_min", "z_max", "num_points"):
+            setattr(args, key, saved_metadata[key])
+        with np.load(args.input, allow_pickle=False) as saved:
+            curve = {key: saved[key] for key in saved.files}
+        source_hashes = {
+            str(path.resolve()): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in (args.input, metadata_path)
+        }
+        if args.detailed and args.horizon != 2:
+            parser.error("--detailed requires saved arrays with horizon 2")
+
     if args.detailed:
         args.horizon = 2
         if args.output == default_output:
             args.output = Path("results/eig_1d_example/eig_1d_example_detailed.pdf")
 
-    z_probe = np.sort(
+    z_probe = curve["z_probe"] if args.input is not None else np.sort(
         np.unique(
             np.concatenate(
                 [np.linspace(args.z_min, args.z_max, args.num_points), _CANDIDATE_Z],
             ),
         ),
     )
-    curve = compute_eig_curve(
+    curve = curve if args.input is not None else compute_eig_curve(
         z_probe,
         theta_mean=args.theta_mean,
         theta_var=args.theta_var,
@@ -724,15 +871,19 @@ def main(argv: list[str] | None = None) -> Path:
             single_column=args.column == "single",
         )
     # Preserve the audited physical width and export an SVG with the PDF.
-    from experiments.tbme.figures.assets import save_figure
+    from experiments.tnsre.figures.assets import save_figure
 
     with plt.rc_context({"savefig.dpi": 300}):
         output = save_figure(fig, args.output, plt_module=plt)
     np.savez_compressed(args.output.with_suffix(".npz"), **curve)
     scores = 0.5 * np.log1p(args.theta_var * np.cumsum(curve["theta_information_steps"], axis=0))
     indices = [int(np.argmin(np.abs(z_probe-z))) for z in _CANDIDATE_Z]
+    ranked_scores = np.sort(scores[:, indices], axis=1)
     metadata = vars(args) | {
         "output": str(args.output),
+        "input": str(args.input) if args.input is not None else None,
+        "source_sha256": source_hashes,
+        "rendered_from_saved_arrays": args.input is not None,
         "candidates": list(_CANDIDATE_Z),
         "objective_kind": "local_gaussian_mean_term_parameter_eig_surrogate",
         "parameter_prior_expectation": False,
@@ -741,6 +892,7 @@ def main(argv: list[str] | None = None) -> Path:
         "sampled_observations": False,
         "candidate_scores_nats": scores[:, indices].tolist(),
         "candidate_winners": np.asarray(_CANDIDATE_Z)[scores[:, indices].argmax(axis=1)].tolist(),
+        "candidate_winner_margins_nats": (ranked_scores[:, -1] - ranked_scores[:, -2]).tolist(),
         "grid_maximizers": z_probe[scores.argmax(axis=1)].tolist(),
     }
     args.output.with_suffix(".json").write_text(json.dumps(metadata, indent=2))

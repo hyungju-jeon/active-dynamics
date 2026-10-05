@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 from datetime import datetime, timezone
 import inspect
 import json
@@ -151,7 +152,7 @@ class _EnvJacobianEmbedding:
         self.min_embedding_dim = int(min_embedding_dim)
         self.dynamics_alpha = float(dynamics_alpha)
 
-    def __call__(self, z: Any, e: Any):
+    def __call__(self, z: Any, e: Any, u: Any = None):
         return jacobian_embedding_torch(
             self.dynamics_type,
             z,
@@ -159,6 +160,7 @@ class _EnvJacobianEmbedding:
             full_params=self.full_params,
             min_embedding_dim=self.min_embedding_dim,
             dynamics_alpha=self.dynamics_alpha,
+            u=u,
         )
 
 
@@ -178,7 +180,7 @@ class _EnvJacobianState:
         self.min_embedding_dim = int(min_embedding_dim)
         self.dynamics_alpha = float(dynamics_alpha)
 
-    def __call__(self, z: Any, e: Any):
+    def __call__(self, z: Any, e: Any, u: Any = None):
         return jacobian_state_torch(
             self.dynamics_type,
             z,
@@ -188,6 +190,7 @@ class _EnvJacobianState:
                 min_embedding_dim=self.min_embedding_dim,
             ),
             dynamics_alpha=self.dynamics_alpha,
+            u=u,
         )
 
 
@@ -714,6 +717,19 @@ def _boundary_visibility_mean(states: Any, env_preset: Any) -> float | None:
         return None
 
 
+def _flex_parameter_settings(policy_spec: Any, env_preset: Any) -> dict[str, float | None]:
+    """FLEX prior precision, step clip and bounds in the units of ``env_preset.parameter_scale``."""
+    scale = float(env_preset.parameter_scale)
+    regularization = 1e-2 if policy_spec.flex_regularization is None else float(policy_spec.flex_regularization)
+    scaled = lambda value: None if value is None else float(value) * scale
+    return {
+        "regularization": regularization / scale**2,
+        "parameter_step_clip": scaled(policy_spec.flex_parameter_step_clip),
+        "parameter_min": scaled(policy_spec.flex_parameter_min),
+        "parameter_max": scaled(policy_spec.flex_parameter_max),
+    }
+
+
 def _instantiate_synthetic_policy(
     *,
     actdyn_module: Any,
@@ -762,14 +778,7 @@ def _instantiate_synthetic_policy(
             initial_parameter_mean=initial_parameter_mean,
             use_observed_state=use_observed_state,
             rollback_unstable_update=policy_name == "flex_safe",
-            regularization=(
-                1e-2
-                if policy_spec.flex_regularization is None
-                else float(policy_spec.flex_regularization)
-            ),
-            parameter_step_clip=policy_spec.flex_parameter_step_clip,
-            parameter_min=policy_spec.flex_parameter_min,
-            parameter_max=policy_spec.flex_parameter_max,
+            **_flex_parameter_settings(policy_spec, env_preset),
             lr=policy_spec.flex_lr,
             device=device,
         )
@@ -789,14 +798,7 @@ def _instantiate_synthetic_policy(
             initial_parameter_mean=initial_parameter_mean,
             use_observed_state=bool(policy_spec.use_true_state),
             rollback_unstable_update=policy_type == "flex-rollback",
-            regularization=(
-                1e-2
-                if policy_spec.flex_regularization is None
-                else float(policy_spec.flex_regularization)
-            ),
-            parameter_step_clip=policy_spec.flex_parameter_step_clip,
-            parameter_min=policy_spec.flex_parameter_min,
-            parameter_max=policy_spec.flex_parameter_max,
+            **_flex_parameter_settings(policy_spec, env_preset),
             lr=policy_spec.flex_lr,
             device=device,
         )
@@ -924,6 +926,10 @@ def _run_single_parameter_identification(
     policy_spec = get_policy_spec(policy_id)
     schedule_spec = get_schedule_spec(policy_spec.schedule_id)
     env_preset = get_environment_preset(exp_spec.env_preset_id)
+    # Parameter-space settings are given for unit-scale parameters (see parameter_scale).
+    parameter_scale = float(env_preset.parameter_scale)
+    q_theta = float(q_theta) * parameter_scale**2
+    parameter_prior_covariance = float(parameter_prior_covariance) * parameter_scale**2
 
     start_time = utc_now()
     set_matplotlib_style()
@@ -969,7 +975,22 @@ def _run_single_parameter_identification(
     )
     loading_seed = DEFAULT_LOG_LINEAR_LOADING_SEED
     loading_snr_seed = DEFAULT_LOG_LINEAR_SNR_SEED
-    if observation_model == "linear":
+    environment_kind = str(getattr(env_preset, "environment_kind", "vectorfield"))
+    spiking_diagnostics: dict[str, float] = {}
+    if environment_kind == "spiking_decision":
+        # Wang (2002) spiking network as the environment; spikes come from the
+        # network and the log-linear readout is calibrated, not designed.
+        from actdyn.environment.spiking_decision import build_spiking_environment
+
+        if observation_model != "log_linear":
+            raise ValueError("spiking_decision environments require observation_model='log_linear'.")
+        true_vec_env, obs_model, spiking_diagnostics = build_spiking_environment(
+            env_preset, seed=int(seed), action_max=action_max, device=device
+        )
+        # Calibrated readout, recorded in the run metadata like a designed loading.
+        c = obs_model.network[0].weight.data
+        bias = obs_model.network[0].bias.data
+    elif observation_model == "linear":
         if str(env_preset.observation_noise_type).lower() != "gaussian":
             raise ValueError(
                 "Linear observations require observation_noise_type='gaussian'."
@@ -1039,27 +1060,28 @@ def _run_single_parameter_identification(
             "expected 'log_linear' or 'linear'."
         )
 
-    true_vec_env = actdyn.VectorFieldEnv(
-        env_preset.resolved_dynamics_type(),
-        d_state=dz,
-        d_action=du,
-        x_range=5,
-        dyn_params=None,
-        dt=dt,
-        alpha=alpha,
-        Q=noise_scale,
-        action_bounds=[action_model.action_space.low, action_model.action_space.high],
-        state_bounds=[-5.0, 5.0],
-        initial_state=init_state.tolist(),
-        device=device,
-        **_boundary_env_kwargs(env_preset),
-    )
-    true_vec_env.set_params(
-        torch.as_tensor(
-            env_preset.params_from_embedding(e_true.reshape(-1)),
+    if environment_kind != "spiking_decision":
+        true_vec_env = actdyn.VectorFieldEnv(
+            env_preset.resolved_dynamics_type(),
+            d_state=dz,
+            d_action=du,
+            x_range=5,
+            dyn_params=None,
+            dt=dt,
+            alpha=alpha,
+            Q=noise_scale,
+            action_bounds=[action_model.action_space.low, action_model.action_space.high],
+            state_bounds=[-5.0, 5.0],
+            initial_state=init_state.tolist(),
             device=device,
-        ),
-    )
+            **_boundary_env_kwargs(env_preset),
+        )
+        true_vec_env.set_params(
+            torch.as_tensor(
+                env_preset.params_from_embedding(e_true.reshape(-1)),
+                device=device,
+            ),
+        )
     env = actdyn.environment.EnvWrapper(
         true_vec_env, obs_model, action_model, dt=dt, device=device
     )
@@ -1188,13 +1210,15 @@ def _run_single_parameter_identification(
     if initial_parameter_variance > 0.0:
         initial_parameter_generator = torch.Generator(device="cpu")
         initial_parameter_generator.manual_seed(int(seed))
-        initial_parameter_std = float(initial_parameter_variance) ** 0.5
+        initial_parameter_std = parameter_scale * float(initial_parameter_variance) ** 0.5
         initial_parameter_noise = torch.randn(
             1,
             de,
             generator=initial_parameter_generator,
             dtype=torch.float32,
         ).to(device)
+        if env_preset.initial_parameter_nonnegative:
+            initial_parameter_noise = initial_parameter_noise.abs()
         initial_parameter = (
             initial_parameter_mean + initial_parameter_std * initial_parameter_noise
         )
@@ -1218,6 +1242,9 @@ def _run_single_parameter_identification(
     fe_init = inspect.signature(actdyn.models.FilteringEmbedding.__init__)
     if "q_theta" in fe_init.parameters:
         model_kwargs["q_theta"] = q_theta
+    if "e_clip" in fe_init.parameters:
+        # The filter clamps parameter estimates to +-5 unit-scale parameters.
+        model_kwargs["e_clip"] = 5.0 * parameter_scale
     if "k_theta" in fe_init.parameters:
         model_kwargs["k_theta"] = int(schedule_spec.update_interval)
     if "adaptive_update" in fe_init.parameters:
@@ -1316,6 +1343,10 @@ def _run_single_parameter_identification(
         mpc_num_samples=24,
         mpc_num_elite=6,
     )
+    # Decision sessions: planners simulate the environment's decide-wait-reset rule.
+    session_rule = getattr(true_vec_env, "session_rule", None)
+    if session_rule is not None and hasattr(policy, "session_rule"):
+        policy.session_rule = session_rule
 
     exp_config = _build_runtime_experiment_config(
         run_dir=run_dir,
@@ -1370,6 +1401,9 @@ def _run_single_parameter_identification(
             "cpu_time_sec": cpu_time_sec,
             "cov_diag_mean": cov_diag_mean,
         }
+        if session_rule is not None:
+            emb_row["session_index"] = int(transition.get("session_index", 0))
+            emb_row["session_end"] = bool(transition.get("session_end", False))
         e_vec = e_est.reshape(-1)
         embedding_dim_active = int(e_vec.numel())
         emb_row["embedding_dim"] = embedding_dim_active
@@ -1684,6 +1718,12 @@ def _run_single_parameter_identification(
             "loop_plan_executed": loop_plan_executed,
             "loop_plan_reason": loop_plan_reason,
         }
+        if session_rule is not None:
+            state_action_row.update(
+                session_index=int(transition.get("session_index", 0)),
+                session_end=as_bool(transition.get("session_end", False)),
+                session_decision=int(transition.get("session_decision", 0)),
+            )
         for prefix, value in (
             ("true_z", env_state),
             ("model_z", model_state),
@@ -1787,6 +1827,7 @@ def _run_single_parameter_identification(
         [
             "step",
             "cpu_time_sec",
+            *(("session_index", "session_end") if session_rule is not None else ()),
             "embedding_dim",
             "full_param_dim",
             *emb_value_fields,
@@ -1862,6 +1903,11 @@ def _run_single_parameter_identification(
         [
             "step",
             "cpu_time_sec",
+            *(
+                ("session_index", "session_end", "session_decision")
+                if session_rule is not None
+                else ()
+            ),
             "true_x",
             "true_v",
             "model_x",
@@ -2103,6 +2149,12 @@ def _run_single_parameter_identification(
                 getattr(env_preset, "information_boundary_temperature", 0.15)
             ),
             "initial_state_true": [float(x) for x in init_state.tolist()],
+            "environment_kind": environment_kind,
+            "spiking_diagnostics": spiking_diagnostics,
+            "session_rule": (
+                None if session_rule is None else dataclasses.asdict(session_rule)
+            ),
+            "session_log": list(getattr(true_vec_env, "session_log", []) or []),
             "embedding_true": [float(x) for x in e_true_flat.tolist()],
             "embedding_estimate": [
                 float(x)
@@ -2219,6 +2271,8 @@ def _run_single_parameter_identification(
             ),
             "q_theta": float(q_theta),
             "parameter_prior_covariance": float(parameter_prior_covariance),
+            "parameter_scale": float(parameter_scale),
+            "initial_parameter_nonnegative": bool(env_preset.initial_parameter_nonnegative),
             "initial_parameter_mean": [
                 float(x) for x in initial_parameter_mean.reshape(-1).tolist()
             ],
@@ -2637,6 +2691,7 @@ def _build_session_experiment_entry(
                 getattr(env_preset, "information_boundary_visibility_enabled", False)
             ),
             "true_embedding": env_summary["true_embedding"],
+            "environment_kind": str(getattr(env_preset, "environment_kind", "vectorfield")),
         },
         "policies": policies,
         "seeds": [int(seed) for seed in seeds],

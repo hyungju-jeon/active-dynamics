@@ -51,6 +51,13 @@ class EnvironmentPreset:
     estimator_true_params: tuple[float, ...] | None = None
     initial_parameter_mean: float | tuple[float, ...] = 1.0
     initial_parameter_variance: float = 0.0
+    # Unit of the learned parameters: the initial-draw std, prior covariance, q_theta, and
+    # FLEX step clip, bounds and prior precision are given for unit-scale parameters and
+    # rescaled by this factor (std, clip, bounds x s; variances x s^2; precision / s^2).
+    parameter_scale: float = 1.0
+    # Draw the initial guess as mean + std |xi| for parameters of known sign (for example
+    # connection strengths); False keeps mean + std xi.
+    initial_parameter_nonnegative: bool = False
     state_low: tuple[float, ...] | None = None
     state_high: tuple[float, ...] | None = None
     min_embedding_dim: int | None = None
@@ -63,6 +70,35 @@ class EnvironmentPreset:
     trajectory_eval_state_high: tuple[float, ...] | None = None
     trajectory_eval_state_indices: tuple[int, ...] | None = None
     trajectory_eval_coordinate_balanced: bool = False
+    basin_switch_source: tuple[float, ...] | None = None
+    basin_switch_target: tuple[float, ...] | None = None
+    basin_switch_horizon: int = 300
+    basin_switch_eval_interval: int = 100
+    # Spiking-network environment (Wang 2002) instead of the vector-field simulator.
+    environment_kind: str = "vectorfield"
+    spiking_n_e: int = 1600
+    spiking_n_i: int = 400
+    spiking_f_sel: float = 0.15
+    spiking_w_plus: float = 1.7
+    spiking_sim_dt_ms: float = 0.1
+    spiking_stim_gain_pa: float = 20.0
+    spiking_observed_per_pool: int = 40
+    spiking_background_rate_hz: float = 2400.0
+    spiking_calibration_steps: int = 800
+    spiking_calibration_hold_steps: int = 50
+    # Input amplitude of the readout calibration episode; None = action_max. Fixing it keeps
+    # the calibrated readout when a variant changes the agents' input bound.
+    spiking_calibration_amplitude: float | None = None
+    spiking_codegen_target: str = "cython"
+    # Decision sessions (actdyn.environment.session.SessionRule); None = one continuous trial.
+    spiking_sessions: int | None = None
+    spiking_decision_gap: float = 2.0
+    spiking_post_decision_bins: int = 40
+    spiking_max_session_bins: int = 400
+    spiking_reset_variance: float = 0.01
+    # Evidence in every decision session (SessionRule.evidence_*); amplitude 0 = none.
+    spiking_session_evidence_amplitude: float = 0.0
+    spiking_session_evidence_bins: int = 0
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
@@ -635,6 +671,8 @@ def load_catalog_bundle(
             initial_parameter_variance=float(
                 spec.get("initial_parameter_variance", 0.0)
             ),
+            parameter_scale=float(spec.get("parameter_scale", 1.0)),
+            initial_parameter_nonnegative=bool(spec.get("initial_parameter_nonnegative", False)),
             state_low=_as_state_vector(
                 spec.get("state_low"), label=f"environments.{preset_id}.state_low"
             ),
@@ -703,6 +741,39 @@ def load_catalog_bundle(
             trajectory_eval_coordinate_balanced=bool(
                 spec.get("trajectory_eval_coordinate_balanced", False)
             ),
+            basin_switch_source=_as_state_vector(
+                spec.get("basin_switch_source"),
+                label=f"environments.{preset_id}.basin_switch_source",
+            ),
+            basin_switch_target=_as_state_vector(
+                spec.get("basin_switch_target"),
+                label=f"environments.{preset_id}.basin_switch_target",
+            ),
+            basin_switch_horizon=int(spec.get("basin_switch_horizon", 300)),
+            basin_switch_eval_interval=int(
+                spec.get("basin_switch_eval_interval", 100)
+            ),
+            environment_kind=str(spec.get("environment_kind", "vectorfield")),
+            spiking_n_e=int(spec.get("spiking_n_e", 1600)),
+            spiking_n_i=int(spec.get("spiking_n_i", 400)),
+            spiking_f_sel=float(spec.get("spiking_f_sel", 0.15)),
+            spiking_w_plus=float(spec.get("spiking_w_plus", 1.7)),
+            spiking_sim_dt_ms=float(spec.get("spiking_sim_dt_ms", 0.1)),
+            spiking_stim_gain_pa=float(spec.get("spiking_stim_gain_pa", 20.0)),
+            spiking_observed_per_pool=int(spec.get("spiking_observed_per_pool", 40)),
+            spiking_background_rate_hz=float(spec.get("spiking_background_rate_hz", 2400.0)),
+            spiking_calibration_steps=int(spec.get("spiking_calibration_steps", 800)),
+            spiking_calibration_hold_steps=int(spec.get("spiking_calibration_hold_steps", 50)),
+            spiking_calibration_amplitude=(None if spec.get("spiking_calibration_amplitude") is None
+                                           else float(spec["spiking_calibration_amplitude"])),
+            spiking_codegen_target=str(spec.get("spiking_codegen_target", "cython")),
+            spiking_sessions=(None if spec.get("spiking_sessions") is None else int(spec["spiking_sessions"])),
+            spiking_decision_gap=float(spec.get("spiking_decision_gap", 2.0)),
+            spiking_post_decision_bins=int(spec.get("spiking_post_decision_bins", 40)),
+            spiking_max_session_bins=int(spec.get("spiking_max_session_bins", 400)),
+            spiking_reset_variance=float(spec.get("spiking_reset_variance", 0.01)),
+            spiking_session_evidence_amplitude=float(spec.get("spiking_session_evidence_amplitude", 0.0)),
+            spiking_session_evidence_bins=int(spec.get("spiking_session_evidence_bins", 0)),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
             action_dim=int(spec.get("action_dim", 2)),

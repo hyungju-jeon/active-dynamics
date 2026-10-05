@@ -218,7 +218,31 @@ class BaseDynamics(nn.Module):
         # If action is longer than the initial trajectory, adjust k_step
 
         samples, mus, vars = [init_z], [], []
+        # Input-dependent drifts (dz/dt = f(z, u)) take the input inside the drift.
+        input_dependent = bool(getattr(self.network, "input_dependent", False))
         for k in range(1, k_step + 1):
+            if input_dependent and action is not None and action.shape[-1] > 0:
+                z_prev = samples[k - 1]
+                valid_T = min(z_prev.shape[-2], action.shape[-2])
+                z_prev = z_prev[..., :valid_T, :]
+                mu = self.network.compute_dynamics_with_input(z_prev, action[..., :valid_T, :])
+                var = softplus(self.logvar) + eps
+                z_pred = z_prev + mu * self.dt if self.is_residual else mu
+                if len(z_pred.shape) == 2:
+                    z_pred = z_pred.unsqueeze(0)
+                action = action[..., 1:, :]
+                if hasattr(self.network, "project_state"):
+                    z_pred = self.network.project_state(z_pred)
+                mus.append(z_pred)
+                vars.append(var)
+                z_sample = z_pred
+                if add_noise:
+                    z_sample = z_sample + torch.sqrt(var * self.dt) * torch.randn_like(z_pred, device=self.device)
+                    if hasattr(self.network, "project_state"):
+                        z_sample = self.network.project_state(z_sample)
+                samples.append(z_sample)
+                continue
+
             mu, var = self.compute_param(samples[k - 1])
             if self.is_residual:
                 z_pred = samples[k - 1] + mu * self.dt  # Residual connection

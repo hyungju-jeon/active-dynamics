@@ -1,0 +1,703 @@
+environments:
+  tbme_duffing:
+    system_id: bistable_attractor
+    system_label: duffing oscillator
+    dynamics_type: duffing
+    x_range: 5.0
+    dt: 0.01
+    latent_dim: 2
+    action_dim: 2
+    embedding_dim: 2
+    min_embedding_dim: 2
+    initial_parameter_mean: 0.0
+    initial_parameter_variance: 0.25
+    observation_dim: 20
+    dynamics_alpha: 1.0
+    state_noise: 0.25
+    state_init_uncertainty: 1.0
+    action_max: 1.0
+    asymmetric_loading: false
+    loading_target_snr_db: -5.0
+    firing_rate_scale: 1
+    observation_noise_scale: 1
+    observation_noise_type: poisson
+    mean_firing_rate_target: 20.0
+    max_firing_rate_target: 100.0
+    true_params:
+    - -0.5
+    - -0.75
+    - 0.1
+    state_low:
+    - -5
+    - -5
+    state_high:
+    - 5
+    - 5
+    boundary_enabled: true
+    boundary_type: radial
+    boundary_radius: 8.0
+    boundary_barrier_enabled: true
+    boundary_projection_enabled: true
+    boundary_barrier_width: 0.5
+    boundary_barrier_strength: 5.0
+    boundary_barrier_temperature: 0.1
+    information_boundary_visibility_enabled: true
+    information_boundary_margin: 1.0
+    information_boundary_temperature: 0.15
+
+  tbme_duffing_asymmetric:
+    extends: tbme_duffing
+    system_label: hard duffing oscillator with asymmetric loading
+    asymmetric_loading: true
+    observation_primary_scale: 5.0
+
+  tbme_duffing_parameter_mismatch:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mid fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.2
+
+  tbme_duffing_parameter_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.15
+
+  tbme_duffing_parameter_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong fixed cubic-coefficient mismatch
+    estimator_dynamics_type: duffing
+    estimator_true_params:
+    - -0.5
+    - -0.75
+    - 0.3
+
+  tbme_duffing_observation_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild observation-loading mismatch
+    observation_loading_mismatch_variance: 0.01
+
+  tbme_duffing_observation_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong observation-loading mismatch
+    observation_loading_mismatch_variance: 0.1
+
+  tbme_duffing_observation_tuning_mismatch_mild:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / mild observation tuning mismatch
+    observation_loading_direction_mismatch_max_deg: 15.0
+    observation_loading_gain_mismatch_max_factor: 1.25
+
+  tbme_duffing_observation_tuning_mismatch_strong:
+    extends: tbme_duffing
+    system_label: Duffing oscillator / strong observation tuning mismatch
+    observation_loading_direction_mismatch_max_deg: 30.0
+    observation_loading_gain_mismatch_max_factor: 1.5
+
+  tbme_damped_pendulum:
+    extends: tbme_duffing
+    system_id: damped_pendulum
+    system_label: damped pendulum
+    dynamics_type: damped_pendulum
+    true_params:
+    - -0.5
+    - 1.0
+
+  tbme_damped_pendulum_asymmetric:
+    extends: tbme_duffing_asymmetric
+    system_id: damped_pendulum
+    system_label: damped pendulum with asymmetric loading
+    dynamics_type: damped_pendulum
+    true_params:
+    - -0.5
+    - 1.0
+
+
+  tbme_gated_duffing:
+    extends: tbme_duffing
+    system_id: gated_duffing
+    system_label: Gated Duffing
+    dynamics_type: gated_duffing
+    embedding_dim: 4
+    true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - 1.1
+
+  tbme_gated_duffing_asymmetric:
+    extends: tbme_duffing_asymmetric
+    system_id: gated_duffing
+    system_label: Gated Duffing
+    dynamics_type: gated_duffing
+    embedding_dim: 4
+    true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - 1.1
+
+  tbme_gated_duffing_challenging:
+    extends: tbme_gated_duffing_asymmetric
+    system_label: Gated Duffing / challenging
+    state_noise: 0.5
+    loading_target_snr_db: -10.0
+    action_max: 0.75
+
+  tbme_confounded_gate:
+    extends: tbme_duffing
+    system_id: confounded_gate
+    system_label: Confounded-gate latent nuisance
+    dynamics_type: confounded_gate
+    latent_dim: 3
+    action_dim: 2
+    embedding_dim: 1
+    min_embedding_dim: 1
+    true_params:
+    - 0.5
+    initial_parameter_mean: 0.0
+    initial_parameter_variance: 0.0
+    state_low:
+    - -0.51
+    - -0.01
+    - -0.01
+    state_high:
+    - -0.49
+    - 0.01
+    - 0.01
+    state_noise: 0.1
+    state_init_uncertainty: 4.0
+    filter_initial_state_mean:
+    - -0.5
+    - 0.0
+    - 0.0
+    action_max: 1.0
+    observation_dim: 30
+    asymmetric_loading: true
+    observation_primary_scale: 1.0
+    observation_secondary_scale: 2.0
+    observation_nuisance_scale: 0.02
+    loading_target_snr_db: null
+    boundary_radius: 4.0
+
+  tbme_rank_imbalanced_gate:
+    extends: tbme_duffing
+    system_id: rank_imbalanced_gate
+    system_label: Rank-imbalanced information gates
+    dynamics_type: rank_imbalanced_gate
+    latent_dim: 4
+    action_dim: 1
+    embedding_dim: 3
+    min_embedding_dim: 3
+    true_params:
+    - 1.0
+    - 0.5
+    - 0.0
+    initial_parameter_mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    initial_parameter_variance: 0.0
+    state_low:
+    - -0.51
+    - -0.01
+    - -0.01
+    - -0.01
+    state_high:
+    - -0.49
+    - 0.01
+    - 0.01
+    - 0.01
+    state_noise: 0.01
+    state_init_uncertainty: 0.25
+    action_max: 1.0
+    observation_dim: 40
+    asymmetric_loading: true
+    observation_primary_scale: 1.0
+    observation_secondary_scale: 1.0
+    observation_nuisance_scale: 1.0
+    loading_target_snr_db: null
+    boundary_radius: 4.0
+
+  tbme_compound_tri_gate:
+    extends: tbme_duffing
+    system_id: compound_tri_gate
+    system_label: Compound three-gate objective stress test
+    dynamics_type: compound_tri_gate
+    latent_dim: 5
+    action_dim: 1
+    embedding_dim: 3
+    min_embedding_dim: 3
+    true_params:
+    - 1.0
+    - 1.0
+    - 0.0
+    initial_parameter_mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    initial_parameter_variance: 0.0
+    state_low:
+    - -0.5
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    state_high:
+    - -0.5
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    state_noise: 0.01
+    state_init_uncertainty: 1.0
+    trajectory_eval_state_noise: 0.0
+    trajectory_eval_state_low:
+    - -0.55
+    - -0.25
+    - -0.25
+    - -0.25
+    - 0.0
+    trajectory_eval_state_high:
+    - 0.05
+    - 0.25
+    - 0.25
+    - 0.25
+    - 0.0
+    # Average coordinate-wise R2 over the three parameter-sensitive responses.
+    # This prevents the large A-gate theta_1 coefficient and parameter-independent
+    # selector/nuisance coordinates from dominating the recovery score.
+    trajectory_eval_state_indices:
+    - 1
+    - 2
+    - 3
+    trajectory_eval_coordinate_balanced: true
+    filter_initial_state_mean:
+    - -0.5
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    action_max: 1.0
+    observation_model: linear
+    observation_dim: 5
+    observation_noise_type: gaussian
+    # For the linear-Gaussian path this is the per-coordinate variance.
+    observation_noise_scale: 1.0
+    # C^T R^-1 C: h is observed weakly, so theta_1 and h remain confounded at A.
+    observation_information_diag:
+    - 1.0
+    - 1.0
+    - 1.0
+    - 1.0
+    - 0.01
+    asymmetric_loading: false
+    loading_target_snr_db: null
+    information_boundary_visibility_enabled: false
+    boundary_radius: 6.0
+
+  tbme_compound_tri_gate_poisson:
+    extends: tbme_compound_tri_gate
+    system_label: Compound three-gate stress test / paired Poisson observations
+    observation_model: log_linear
+    observation_dim: 160
+    observation_noise_type: poisson
+    observation_noise_scale: 1.0
+    observation_information_diag: null
+    # Sixteen +/- neurons per state coordinate. At z=0 this gives
+    # I_z=diag(1,1,1,1,0.01), matching the Gaussian benchmark exactly.
+    observation_loading_design: paired_diagonal
+    observation_loading_gains:
+    - 0.35
+    - 0.35
+    - 0.35
+    - 0.35
+    - 0.035
+    observation_loading_repeats_per_sign: 16
+    mean_firing_rate_target: 25.51020408163265
+    # Peak rate is 208.34 Hz over the radius-six state domain.
+    max_firing_rate_target: 210.0
+    loading_target_snr_db: null
+
+  # Formerly tbme_simple_tri_gate_poisson; nuisance ratio h/theta1=5, M gate
+  # theta3 loading 0.75, compact paired-Poisson observations.
+  tbme_three_gate_diagnostic:
+    extends: tbme_compound_tri_gate
+    system_id: three_gate_diagnostic
+    system_label: Three-gate diagnostic / compact Poisson observations
+    dynamics_type: three_gate_diagnostic
+    latent_dim: 5
+    action_dim: 1
+    embedding_dim: 3
+    min_embedding_dim: 3
+    true_params:
+    - 1.0
+    - 1.0
+    - 1.0
+    initial_parameter_mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    initial_parameter_variance: 0.0
+    state_low:
+    - -1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    state_high:
+    - -1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    state_noise: 0.01
+    state_init_uncertainty: 1.0
+    trajectory_eval_state_noise: 0.0
+    trajectory_eval_state_low:
+    - -1.05
+    - -0.25
+    - -0.25
+    - -0.25
+    - 0.0
+    trajectory_eval_state_high:
+    - 0.35
+    - 0.25
+    - 0.25
+    - 0.25
+    - 0.0
+    filter_initial_state_mean:
+    - -1.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    action_max: 1.5
+    observation_model: log_linear
+    observation_dim: 10
+    observation_noise_type: poisson
+    observation_noise_scale: 1.0
+    observation_information_diag: null
+    # One +/- neuron per state coordinate gives a transparent ten-neuron
+    # population. At z=0, I_z=diag(0.09,0.09,0.09,0.09,0.0025).
+    observation_loading_design: paired_diagonal
+    observation_loading_gains:
+    - 0.3
+    - 0.3
+    - 0.3
+    - 0.3
+    - 0.05
+    observation_loading_repeats_per_sign: 1
+    mean_firing_rate_target: 50.0
+    # The radius-three bound gives 50 exp(0.3 * 3) = 122.98 Hz.
+    max_firing_rate_target: 125.0
+    loading_target_snr_db: null
+    information_boundary_visibility_enabled: false
+    boundary_radius: 3.0
+
+  # Variant-B (corrected learning, prediction-only planning) retuning of the
+  # three-gate diagnostic: B loading 0.6, M loading (5,5,0.4), A nuisance ratio 15.
+  tbme_three_gate_tradeoff:
+    extends: tbme_three_gate_diagnostic
+    system_id: three_gate_tradeoff
+    system_label: Three-gate tradeoff / compact Poisson observations
+    dynamics_type: three_gate_tradeoff
+
+  tbme_gated_duffing_state_noise_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild state noise
+    state_noise: 0.5
+  
+  tbme_gated_duffing_state_noise_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong state noise
+    state_noise: 0.75
+
+  tbme_gated_duffing_observation_bottleneck_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild observation SNR bottleneck
+    loading_target_snr_db: -10.0
+
+  tbme_gated_duffing_observation_bottleneck_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong observation SNR bottleneck
+    loading_target_snr_db: -15.0
+
+  tbme_gated_duffing_action_bottleneck_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild action bottleneck
+    action_max: 0.75
+
+  tbme_gated_duffing_action_bottleneck_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong action bottleneck
+    action_max: 0.5
+
+  tbme_gated_duffing_parameter_mismatch_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild fixed-parameter mismatch
+    estimator_dynamics_type: gated_duffing
+    estimator_true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - 0.55
+    embedding_dim: 3
+
+  tbme_gated_duffing_parameter_mismatch_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong fixed-parameter mismatch
+    estimator_dynamics_type: gated_duffing
+    estimator_true_params:
+    - -1.2
+    - -0.8
+    - 0.5
+    - -1.0
+    embedding_dim: 3
+
+  tbme_gated_duffing_observation_mismatch_mild:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / mild observation mismatch
+    observation_loading_direction_mismatch_max_deg: 15.0
+    observation_loading_gain_mismatch_max_factor: 1.25
+
+  tbme_gated_duffing_observation_mismatch_strong:
+    extends: tbme_gated_duffing
+    system_label: Gated Duffing / strong observation mismatch
+    observation_loading_direction_mismatch_max_deg: 30.0
+    observation_loading_gain_mismatch_max_factor: 1.5
+
+  # Wilson & Cowan (1972) with their multiple-steady-state weights (c_1..c_4) =
+  # (12, 4, 13, 11), learned as is. parameter_scale 10 sets the prior, q_theta and FLEX
+  # settings on that scale (initial-draw std 10, prior covariance 100 I).
+  # z = 8 (r - 1/4) maps rates [0, 1/2] to [-2, 2] (see WilsonCowan1972). The input bound
+  # 3 in these units is the rate drive of the bound 1.5 in the old z = 4 (r - 1/2).
+  # The couplings are positive by definition, so the initial guesses are drawn with that
+  # sign: c0 = 10 |xi|, xi ~ N(0, I).
+  tbme_wilson_cowan:
+    extends: tbme_duffing
+    system_id: wilson_cowan
+    system_label: Wilson-Cowan E-I population
+    dynamics_type: wilson_cowan_1972
+    embedding_dim: 4
+    min_embedding_dim: 4
+    initial_parameter_variance: 1.0
+    initial_parameter_nonnegative: true
+    parameter_scale: 10.0
+    action_max: 3.0
+    state_noise: 0.1
+    true_params:
+    - 12.0
+    - 4.0
+    - 13.0
+    - 11.0
+    state_low:
+    - -2.0
+    - -2.0
+    state_high:
+    - 2.0
+    - 2.0
+    trajectory_eval_state_low:
+    - -2.2
+    - -2.2
+    trajectory_eval_state_high:
+    - 2.2
+    - 2.2
+
+  tbme_wong_wang:
+    extends: tbme_duffing
+    system_id: wong_wang
+    system_label: Wong-Wang decision circuit
+    dynamics_type: wong_wang
+    embedding_dim: 2
+    min_embedding_dim: 2
+    initial_parameter_variance: 1.0
+    state_noise: 0.1
+    true_params:
+    - 1.2
+    - 0.8
+    # Trials start in the undecided low-activity state before the circuit
+    # commits to one of the two choice attractors.
+    state_low:
+    - -1.8
+    - -1.8
+    state_high:
+    - -1.4
+    - -1.4
+    trajectory_eval_state_low:
+    - -2.2
+    - -2.2
+    trajectory_eval_state_high:
+    - 2.2
+    - 2.2
+    # Choice attractors of the true circuit (latent coordinates).
+    basin_switch_source:
+    - -0.1291
+    - -1.8443
+    basin_switch_target:
+    - -1.8443
+    - -0.1291
+    basin_switch_horizon: 300
+    basin_switch_eval_interval: 100
+
+  # Wilson-Cowan variants mirroring the former gated-Duffing constraint suites.
+  tbme_wilson_cowan_asymmetric:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / asymmetric loading
+    asymmetric_loading: true
+    observation_primary_scale: 5.0
+
+  tbme_wilson_cowan_challenging:
+    extends: tbme_wilson_cowan_asymmetric
+    system_label: Wilson-Cowan / challenging
+    state_noise: 0.25
+    loading_target_snr_db: -10.0
+    action_max: 3.0
+
+  tbme_wilson_cowan_state_noise_mild:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / mild state noise
+    state_noise: 0.25
+
+  tbme_wilson_cowan_state_noise_strong:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / strong state noise
+    state_noise: 0.5
+
+  tbme_wilson_cowan_observation_bottleneck_mild:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / mild observation SNR bottleneck
+    loading_target_snr_db: -10.0
+
+  tbme_wilson_cowan_observation_bottleneck_strong:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / strong observation SNR bottleneck
+    loading_target_snr_db: -15.0
+
+  tbme_wilson_cowan_action_bottleneck_mild:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / mild action bottleneck
+    action_max: 0.75
+
+  tbme_wilson_cowan_action_bottleneck_strong:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / strong action bottleneck
+    action_max: 0.5
+
+  tbme_wilson_cowan_parameter_mismatch_mild:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / mild fixed-parameter mismatch
+    estimator_dynamics_type: wilson_cowan_1972
+    estimator_true_params:
+    - 12.0
+    - 4.0
+    - 13.0
+    - 14.0
+    embedding_dim: 3
+    min_embedding_dim: 3
+
+  tbme_wilson_cowan_parameter_mismatch_strong:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / strong fixed-parameter mismatch
+    estimator_dynamics_type: wilson_cowan_1972
+    estimator_true_params:
+    - 12.0
+    - 4.0
+    - 13.0
+    - 3.0
+    embedding_dim: 3
+    min_embedding_dim: 3
+
+  tbme_wilson_cowan_observation_mismatch_mild:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / mild observation mismatch
+    observation_loading_direction_mismatch_max_deg: 15.0
+    observation_loading_gain_mismatch_max_factor: 1.25
+
+  tbme_wilson_cowan_observation_mismatch_strong:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan / strong observation mismatch
+    observation_loading_direction_mismatch_max_deg: 30.0
+    observation_loading_gain_mismatch_max_factor: 1.5
+
+
+  # Wang (2002) spiking decision circuit as the environment, run as decision sessions.
+  # A session starts in the quiet state; a decision is made when |z1 - z2| > 2, and
+  # 200 ms later (or after 2 s without a decision) the circuit resets to z = (-2, -2).
+  # Agents know the rule and the reset state; no evidence is given in identification
+  # sessions. Control bin 5 ms = dt 0.05 in units of tau_NMDA.
+  # The learner's drift is Wong-Wang with the input inside the transfer function
+  # (wong_wang_inside_gain). Parameters (w_+, w_-, h_raw, gamma_raw, g_raw); h = h_raw /
+  # beta, gamma and g are softplus of the raw values. The network has no true
+  # parameters: true_params is the reduced model fitted to network data
+  # (results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json), a reference only. Prior: unit
+  # Gaussian around (0, 0, 0, 1.5, 0), i.e. a generic gain scale gamma ~ 1.7 (Wong &
+  # Wang 2006 give ~2.6).
+  tbme_wong_wang_snn_sessions_m2:
+    extends: tbme_wong_wang
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions
+    environment_kind: spiking_decision
+    dt: 0.05
+    observation_dim: 80
+    spiking_observed_per_pool: 40
+    spiking_stim_gain_pa: 20.0
+    spiking_calibration_steps: 800
+    spiking_calibration_hold_steps: 50
+    state_noise: 0.1
+    initial_parameter_variance: 1.0
+    loading_target_snr_db: null
+    spiking_sessions: 20
+    spiking_decision_gap: 2.0
+    spiking_post_decision_bins: 40
+    spiking_max_session_bins: 400
+    spiking_reset_variance: 0.01
+    filter_initial_state_mean:
+    - -2.0
+    - -2.0
+    state_init_uncertainty: 0.01
+    dynamics_type: wong_wang_inside_gain
+    estimator_dynamics_type: wong_wang_inside_gain
+    true_params:
+    - 1.444
+    - 0.586
+    - -1.278
+    - 2.447
+    - -1.599
+    estimator_true_params:
+    - 1.444
+    - 0.586
+    - -1.278
+    - 2.447
+    - -1.599
+    embedding_dim: 5
+    min_embedding_dim: 5
+    initial_parameter_mean:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 1.5
+    - 0.0
+
+  # The M2 identification with sensory evidence in every session (2026-09-28): 6 pA
+  # (0.3 units) to a random pool (drawn per session from its network seed) for the
+  # first 1 s, as in the task sessions. Agents know the schedule and the pool.
+  tbme_wong_wang_snn_sessions_m2_evidence:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions with evidence
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+
+  # The evidence identification with twice the agents' input bound (2026-09-29): |u| <= 2
+  # (40 pA per pool) during identification. The readout calibration keeps amplitude 1, so
+  # each seed's readout matches the other M2 runs; the task evaluation keeps |u| <= 1.
+  tbme_wong_wang_snn_sessions_m2_evidence_u2:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    system_label: Wong-Wang (input inside the gain) / spiking network, sessions with evidence, input bound 2
+    action_max: 2.0
+    spiking_calibration_amplitude: 1.0
