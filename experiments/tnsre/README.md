@@ -431,6 +431,10 @@ The `spiking_sessions` suite identifies the Wang (2002) spiking decision network
 LIF neurons, 40 neurons per selective pool observed in 5 ms bins) with a reduced
 model, preset `tbme_wong_wang_snn_sessions_m2`.
 
+The separate [Wong–Wang/input pilot](WONG_WANG_INPUTS.md) compares the logistic
+learner with the published transfer response and independently tests partial
+current targeting and synaptic sensory evidence.
+
 - **Learner.** `wong_wang_inside_gain`
   (`actdyn.utils.vectorfields_eqn.WongWangInsideGain`): Wong-Wang gating
   dynamics with the input inside the sigmoid gain, dz/dt = f(z, u; theta).

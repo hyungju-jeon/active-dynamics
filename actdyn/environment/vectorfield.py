@@ -28,6 +28,7 @@ from actdyn.utils.vectorfields_eqn import (
     WilsonCowan1972,
     WongWang,
     WongWangInsideGain,
+    WongWangTransfer,
 )
 from typing import Optional, Tuple, Dict, Any, Sequence, Callable
 from actdyn.utils.plotting import plot_vector_field
@@ -58,6 +59,7 @@ vf_from_string = {
     "wilson_cowan_1972": WilsonCowan1972,
     "wong_wang": WongWang,
     "wong_wang_inside_gain": WongWangInsideGain,
+    "wong_wang_transfer": WongWangTransfer,
 }
 
 
