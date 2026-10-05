@@ -676,8 +676,6 @@ def icem_reversal_plan(
         ``u`` (window, d_u) planned fine inputs, ``soft_probability`` and
         ``probability`` (the hard success fraction) of the plan, and its ``energy``.
     """
-    import colorednoise
-
     if objective not in ("reach", "first_decision"):
         raise ValueError(f"unknown objective {objective!r}")
     w = torch.as_tensor(np.asarray(drive), dtype=torch.float32, device=device)
@@ -687,12 +685,8 @@ def icem_reversal_plan(
     window, factor = int(window), int(coarse_factor)
     if window % factor != 0 or n_t < window:
         raise ValueError("window must be a multiple of coarse_factor and covered by drive.")
-    hc = window // factor
-    b = torch.tensor(float(budget), device=device)
-    coarse_dt = float(dt) * factor
     gen = torch.Generator(device="cpu").manual_seed(int(mc_seed))
     xi = torch.randn(n_t, int(mc_samples), d, generator=gen).to(device) * float(np.sqrt(max(noise_var, 0.0) * dt))
-    rng = np.random.default_rng(int(action_seed))
     s_mc = int(mc_samples)
 
     def score(u_coarse: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -714,6 +708,39 @@ def icem_reversal_plan(
         hard = (best > float(success_gap)).float().mean(dim=-1)
         return soft, hard
 
+    out = optimize_icem(score, window=window, coarse_factor=factor, input_dim=d_u,
+        dt=dt, budget=budget, action_max=action_max, action_seed=action_seed,
+        num_samples=num_samples, num_elites=num_elites, num_iterations=num_iterations,
+        init_std=init_std, alpha=alpha, noise_beta=noise_beta,
+        factor_decrease=factor_decrease, frac_elites_reused=frac_elites_reused,
+        seed_candidates=seed_candidates, device=device)
+    return {"u": out["u"], "soft_probability": out["score"],
+            "probability": out["statistic"], "energy": out["energy"]}
+
+
+def optimize_icem(score, *, window: int, coarse_factor: int, input_dim: int,
+                  dt: float, budget: float, action_max: float, action_seed: int,
+                  num_samples: int = 64, num_elites: int = 8, num_iterations: int = 8,
+                  init_std: float = .5, alpha: float = .1, noise_beta: float = 1.,
+                  factor_decrease: float = 1.25, frac_elites_reused: float = .3,
+                  seed_candidates=None, device="cpu") -> dict:
+    """Maximize a supplied rollout score under amplitude and quadratic-energy bounds.
+
+    score maps float32 coarse inputs (1, candidates, H, d_u) to a pair of
+    (1, candidates) tensors: search score and a reported diagnostic statistic.
+    Sampling, seeded candidates, and elite retention match icem_reversal_plan.
+    Returns fine float64 controls (window, d_u), both scores, and energy.
+    """
+    import colorednoise
+
+    factor, d_u, m = int(coarse_factor), int(input_dim), 1
+    if window <= 0 or window % factor or budget < 0 or action_max <= 0:
+        raise ValueError("Need a positive divisible window, nonnegative budget, positive bound")
+    if num_iterations < 1 or not 2 <= num_elites <= num_samples:
+        raise ValueError("Need iterations >= 1 and 2 <= elites <= samples")
+    hc, coarse_dt = int(window) // factor, float(dt) * factor
+    b = torch.tensor(float(budget), device=device)
+    rng = np.random.default_rng(int(action_seed))
     mean = torch.zeros(m, hc, d_u, device=device)
     std = torch.full((m, hc, d_u), float(init_std) * float(action_max), device=device)
     elites, elite_scores = None, None
@@ -751,14 +778,11 @@ def icem_reversal_plan(
             best_u = torch.where(improved.view(m, 1, 1), elites[:, 0], best_u)
             mean = (1.0 - float(alpha)) * elites.mean(dim=1) + float(alpha) * mean
             std = (1.0 - float(alpha)) * elites.std(dim=1, unbiased=False) + float(alpha) * std
-        soft, hard = score(best_u.unsqueeze(1))
+        primary, secondary = score(best_u.unsqueeze(1))
     u_fine = best_u.repeat_interleave(factor, dim=1)[0]
-    return {
-        "u": u_fine.cpu().numpy().astype(np.float64),
-        "soft_probability": float(soft[0, 0]),
-        "probability": float(hard[0, 0]),
-        "energy": float(float(dt) * torch.sum(u_fine * u_fine)),
-    }
+    return {"u": u_fine.cpu().numpy().astype(np.float64),
+            "score": float(primary[0, 0]), "statistic": float(secondary[0, 0]),
+            "energy": float(float(dt) * torch.sum(u_fine * u_fine))}
 
 
 def poisson_ekf_update(
