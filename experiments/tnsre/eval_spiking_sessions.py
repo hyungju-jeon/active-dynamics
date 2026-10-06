@@ -230,6 +230,15 @@ def runs_preset(runs: Sequence[dict[str, Any]]) -> str:
     return presets.pop()
 
 
+# PALDI variants evaluated as PALDI ("adaptive"); their run metadata keeps the variant's id and settings.
+PALDI_VARIANTS = ("adaptive_c2",)
+
+
+def evaluated_policy(policy_id: str) -> str:
+    """Policy name of a run in the evaluation: a PALDI variant counts as PALDI."""
+    return "adaptive" if policy_id in PALDI_VARIANTS else policy_id
+
+
 def load_session_runs(runs_root: Path) -> list[dict[str, Any]]:
     """Estimates after each completed session, readout, and prior of every completed run."""
     runs = []
@@ -248,7 +257,7 @@ def load_session_runs(runs_root: Path) -> list[dict[str, Any]]:
                 est[k] = np.array([float(r[f"e{i}"]) for i in range(n_e)])
                 bins[k] = int(float(r["step"]))
         runs.append({
-            "policy": str(meta["policy_id"]), "seed": int(meta["seed"]), "est": est, "bins": bins,
+            "policy": evaluated_policy(str(meta["policy_id"])), "seed": int(meta["seed"]), "est": est, "bins": bins,
             "dynamics_type": str(meta["estimator_dynamics_type"]),
             "full_params": np.asarray(meta["estimator_true_params_full"], dtype=np.float64),
             "min_embedding_dim": int(meta["min_embedding_dim"]),
@@ -257,6 +266,9 @@ def load_session_runs(runs_root: Path) -> list[dict[str, Any]]:
             "session_log": meta.get("session_log", []),
             "preset_id": str(meta.get("env_preset_id", PRESET_ID)),
         })
+    keys = [(run["policy"], run["seed"]) for run in runs]
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"several runs per policy and seed in {runs_root} (PALDI and a PALDI variant?)")
     return runs
 
 

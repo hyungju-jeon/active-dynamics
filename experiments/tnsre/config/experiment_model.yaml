@@ -132,6 +132,16 @@ models:
     adaptive_update_min_interval: 1
     adaptive_replan_min_interval: 1
 
+  # PALDI on a 2-bin planning grid with a faster cadence (SNN, 2026-10-06): planning step 2 bins
+  # (10 ms) instead of 20, the same 4-s horizon (400 steps), and parameter updates and replans at
+  # least 3 bins apart instead of 5; the maximum intervals (20 bins) are unchanged.
+  adaptive_c2:
+    extends: adaptive
+    coarse_dt_factor: 2
+    planning_horizon: 400
+    adaptive_update_min_interval: 3
+    adaptive_replan_min_interval: 3
+
   adaptive_async_realtime:
     extends: adaptive
     policy_type: async-mpc-icem

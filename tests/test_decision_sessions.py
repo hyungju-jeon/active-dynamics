@@ -396,6 +396,23 @@ def test_reactive_paldi_changes_only_the_minimum_intervals():
     assert fast.objective_kind == base.objective_kind and fast.coarse_dt_factor == base.coarse_dt_factor
 
 
+def test_paldi_c2_changes_only_the_planning_step_horizon_and_cadence():
+    from experiments.tnsre.eval_spiking_sessions import evaluated_policy
+    from experiments.tnsre.exp_spiking_sessions import EXPERIMENT_SUITES
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    bundle = configure_tbme_catalogs(suite_entries={})
+    base, c2 = bundle.policy_specs["adaptive"], bundle.policy_specs["adaptive_c2"]
+    sb, sc = bundle.schedule_specs[base.schedule_id], bundle.schedule_specs[c2.schedule_id]
+    assert (base.coarse_dt_factor, c2.coarse_dt_factor) == (20, 2)
+    assert base.coarse_dt_factor * sb.planning_horizon == c2.coarse_dt_factor * sc.planning_horizon == 800  # 4 s
+    assert (sc.adaptive_update_min_interval, sc.adaptive_replan_min_interval) == (3, 3)
+    assert (sc.replan_interval, sc.update_interval) == (sb.replan_interval, sb.update_interval)
+    assert c2.objective_kind == base.objective_kind
+    assert all("adaptive_c2" in s["model_ids"] for k, s in EXPERIMENT_SUITES.items() if "_obs_" not in k)
+    assert evaluated_policy("adaptive_c2") == "adaptive" and evaluated_policy("rhc") == "rhc"
+
+
 def test_runs_root_and_preset_come_from_the_experiment(tmp_path):
     from experiments.tnsre.eval_spiking_sessions import runs_preset, runs_root_of
 
