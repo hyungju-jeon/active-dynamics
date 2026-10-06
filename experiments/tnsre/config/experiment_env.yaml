@@ -830,3 +830,27 @@ environments:
     observation_dim: 25
     spiking_observed_per_pool: 20
     spiking_observed_pool2: 5
+
+  # Reversed mixed protocol (2026-10-06): sessions 1-10 decision-ended with the task's evidence (known to
+  # the agents), then sessions 11-20 fixed 2-s sessions without evidence (self exploration).
+  tbme_wong_wang_snn_sessions_m2_evfirst:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    system_label: Wong-Wang (input inside the gain) / spiking network, 10 evidence sessions, then 10 fixed sessions
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_wong_wang_snn_sessions_m2_evfirst_n10_10:
+    extends: tbme_wong_wang_snn_sessions_m2_evfirst
+    system_label: Wong-Wang (input inside the gain) / spiking network, evidence then fixed sessions, 10 + 10 neurons
+    observation_dim: 20
+    spiking_observed_per_pool: 10
+  tbme_wong_wang_snn_sessions_m2_evfirst_n20_20:
+    extends: tbme_wong_wang_snn_sessions_m2_evfirst
+    system_label: Wong-Wang (input inside the gain) / spiking network, evidence then fixed sessions, 20 + 20 neurons
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+  tbme_wong_wang_snn_sessions_m2_evfirst_n20_5:
+    extends: tbme_wong_wang_snn_sessions_m2_evfirst
+    system_label: Wong-Wang (input inside the gain) / spiking network, evidence then fixed sessions, 20 + 5 neurons
+    observation_dim: 25
+    spiking_observed_per_pool: 20
+    spiking_observed_pool2: 5

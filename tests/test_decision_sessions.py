@@ -371,11 +371,11 @@ def test_observation_presets_change_only_the_recorded_neurons():
 
     configure_tbme_catalogs(suite_entries={})
     second = (("n10_10", (10, 10)), ("n20_20", (20, 20)), ("n20_5", (20, 5)))
-    for protocol in ("_fixed", "", "_evmix", "_fixed_evmix"):  # fixed, decision-ended, mixed evidence (both)
+    for protocol in ("_fixed", "", "_evmix", "_fixed_evmix", "_evfirst"):  # fixed, decision-ended, mixed evidence
         base = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}")
         assert observed_counts(base) == (40, 40)
         names = {"_fixed": (("lowsnr4", (4, 4)), ("lowsnr2", (2, 2)), ("biased", (40, 2))),
-                 "": (("lowsnr4", (4, 4)), ("biased", (40, 2))), "_evmix": (), "_fixed_evmix": ()}[protocol] + second
+                 "": (("lowsnr4", (4, 4)), ("biased", (40, 2))), "_evmix": (), "_fixed_evmix": (), "_evfirst": ()}[protocol] + second
         for name, counts in names:
             p = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}_{name}")
             assert observed_counts(p) == counts and p.observation_dim == sum(counts)
@@ -482,3 +482,34 @@ def test_planner_rollout_adds_no_evidence_in_a_session_without_evidence():
     rollout = planner.simulate(None, actions)
     torch.testing.assert_close(rollout["env_action"], actions)
     torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([3.0, -2.0]))
+
+
+def test_evidence_sessions_then_fixed_sessions():
+    """Evidence (decision-ended) sessions before ``evidence_last_session``; fixed-length sessions from ``fixed_first_session``."""
+    from dataclasses import replace
+
+    from actdyn.environment.session import session_post_decision_bins
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=4, max_session_bins=30, max_sessions=2,
+                       evidence_amplitude=0.3, evidence_bins=5, evidence_last_session=1, fixed_first_session=1)
+    assert [session_post_decision_bins(rule, k) for k in (0, 1)] == [4, 30]
+    env = SpikingDecisionEnv(ScriptedNetwork(rate=0.3), session_rule=rule)
+    env.reset(seed=7)
+    ends, seen, terminated = [], {0: [], 1: []}, False
+    while not terminated:
+        index = env.session_index
+        _z, _r, terminated, _trunc, info = env.step(np.zeros(2))
+        ends.append(info["session_end"])
+        seen[index].append(np.asarray(info.get("evidence", np.zeros(2))))
+    assert [i + 1 for i, e in enumerate(ends) if e] == [11, 41]  # decision at bin 7 + 4; then the full 30 bins
+    assert np.allclose(np.stack(seen[0][:5]).sum(axis=1), 0.3) and np.all(np.stack(seen[1]) == 0.0)
+    assert env.session_log[0]["evidence_pool"] in (0, 1) and env.session_log[1]["evidence_pool"] == NO_EVIDENCE
+    assert [s["decision"] for s in env.session_log] == [1, 1]  # the decision is still recorded
+
+    configure_tbme_catalogs(suite_entries={})
+    evidence = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evidence"), 4.0)
+    first = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evfirst_n20_5"), 4.0)
+    assert first == replace(evidence, evidence_last_session=10, fixed_first_session=10)

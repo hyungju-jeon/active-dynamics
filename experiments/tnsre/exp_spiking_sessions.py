@@ -20,7 +20,8 @@ with the same evidence; the readout is calibrated as before (amplitude 1).
 does not end it, so the data include the held choice (fixed-length trials).
 ``wong_wang_snn_sessions_m2_evmix_*`` run 10 decision-ended sessions without evidence, then 10 with
 the task's evidence, which the agents know; ``wong_wang_snn_sessions_m2_fixed_evmix_*`` do the same
-with fixed 2-s sessions.
+with fixed 2-s sessions. ``wong_wang_snn_sessions_m2_evfirst_*`` reverse the order: 10 decision-ended
+sessions with evidence, then 10 fixed 2-s sessions without it.
 The ``_obs`` suites compare PALDI (also with its reactive cadence) and RHC-US on fixed trials
 with the default, two low-SNR (4 or 2 neurons per pool), and a biased (40 + 2 neurons) recording.
 """
@@ -49,6 +50,9 @@ DEFAULT_EXP_IDS = (
     "wong_wang_snn_sessions_m2_fixed_evmix_n10_10",
     "wong_wang_snn_sessions_m2_fixed_evmix_n20_20",
     "wong_wang_snn_sessions_m2_fixed_evmix_n20_5",
+    "wong_wang_snn_sessions_m2_evfirst_n10_10",
+    "wong_wang_snn_sessions_m2_evfirst_n20_20",
+    "wong_wang_snn_sessions_m2_evfirst_n20_5",
 )
 # Matched comparison set of the manuscript (PALDI, Myopic, FLEX, RHC-US, PRBS, Random).
 MODEL_IDS = ["adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random"]

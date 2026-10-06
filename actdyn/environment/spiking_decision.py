@@ -38,6 +38,7 @@ from gymnasium import spaces
 
 from actdyn.environment.session import (
     NO_EVIDENCE, SessionRule, session_evidence, session_evidence_pool, session_has_evidence,
+    session_post_decision_bins,
 )
 
 # Wang (2002) time constant of NMDA gating, the unit of time of the reduced model.
@@ -496,7 +497,7 @@ class SpikingDecisionEnv(gym.Env):
             self.evidence_pool = -1
         elif session_has_evidence(self.session_rule, session_index):
             self.evidence_pool = session_evidence_pool(self.session_seed(self._run_seed, session_index))
-        else:  # a session before the first evidence session (mixed protocols)
+        else:  # a session outside the evidence sessions (mixed protocols)
             self.evidence_pool = NO_EVIDENCE
 
     def _has_evidence(self) -> bool:
@@ -557,7 +558,7 @@ class SpikingDecisionEnv(gym.Env):
                 self.decision = 1 if gap > 0 else 2
                 self.decision_bin = self.session_bins
             decided = self.decision != 0
-            end = (decided and self.session_bins - self.decision_bin >= int(rule.post_decision_bins)) or (
+            end = (decided and self.session_bins - self.decision_bin >= session_post_decision_bins(rule, self.session_index)) or (
                 self.session_bins >= int(rule.max_session_bins))
             info.update(session_index=self.session_index, decision=self.decision, session_end=bool(end))
             if end:
@@ -777,5 +778,7 @@ def session_rule_from_preset(env_preset: Any, state_scale: float) -> Optional[Se
         evidence_amplitude=float(env_preset.spiking_session_evidence_amplitude),
         evidence_bins=int(env_preset.spiking_session_evidence_bins),
         evidence_first_session=int(getattr(env_preset, "spiking_session_evidence_first_session", 0)),
+        evidence_last_session=getattr(env_preset, "spiking_session_evidence_last_session", None),
+        fixed_first_session=getattr(env_preset, "spiking_fixed_first_session", None),
     )
 

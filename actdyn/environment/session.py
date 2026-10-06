@@ -9,10 +9,12 @@ learn of a reset only when it happens; their filters then jump to the known rese
 state. Planners do not simulate resets: a model rollout stays in the current session.
 
 A rule with ``evidence_amplitude > 0`` adds sensory evidence to every session from
-``evidence_first_session`` on: the input ``evidence_amplitude`` drives one pool, drawn
-per session, during the first ``evidence_bins`` bins, on top of the agent's input.
-Earlier sessions have no evidence (pool ``NO_EVIDENCE``). Agents know the schedule and
-the pool of the current session.
+``evidence_first_session`` up to (not including) ``evidence_last_session``: the input
+``evidence_amplitude`` drives one pool, drawn per session, during the first
+``evidence_bins`` bins, on top of the agent's input. Other sessions have no evidence
+(pool ``NO_EVIDENCE``). Agents know the schedule and the pool of the current session.
+From ``fixed_first_session`` on, a decision no longer ends a session: it runs the full
+``max_session_bins`` (fixed-length sessions).
 """
 
 from __future__ import annotations
@@ -37,6 +39,9 @@ class SessionRule:
         evidence_amplitude: Evidence input to the evidence pool, in action units (0: none).
         evidence_bins: Bins from the session start during which the evidence is on.
         evidence_first_session: Sessions with a lower index have no evidence.
+        evidence_last_session: Sessions with this or a higher index have no evidence (None: no limit).
+        fixed_first_session: Sessions with this or a higher index end only at ``max_session_bins``
+            (None: never).
     """
 
     decision_gap: float = 2.0
@@ -48,6 +53,8 @@ class SessionRule:
     evidence_amplitude: float = 0.0
     evidence_bins: int = 0
     evidence_first_session: int = 0
+    evidence_last_session: int | None = None
+    fixed_first_session: int | None = None
 
 
 NO_EVIDENCE = -2  # evidence pool of a session without evidence (-1: pool not known yet)
@@ -55,7 +62,17 @@ NO_EVIDENCE = -2  # evidence pool of a session without evidence (-1: pool not kn
 
 def session_has_evidence(rule: SessionRule, session_index: int) -> bool:
     """Whether session ``session_index`` (0-based) receives evidence under ``rule``."""
-    return float(rule.evidence_amplitude) > 0.0 and int(session_index) >= int(rule.evidence_first_session)
+    k = int(session_index)
+    last = rule.evidence_last_session
+    return float(rule.evidence_amplitude) > 0.0 and k >= int(rule.evidence_first_session) and (last is None or k < int(last))
+
+
+def session_post_decision_bins(rule: SessionRule, session_index: int) -> int:
+    """Bins from the decision to the end of session ``session_index``; a fixed-length session never ends early."""
+    first = rule.fixed_first_session
+    if first is not None and int(session_index) >= int(first):
+        return int(rule.max_session_bins)
+    return int(rule.post_decision_bins)
 
 
 def session_evidence_pool(session_seed: int) -> int:

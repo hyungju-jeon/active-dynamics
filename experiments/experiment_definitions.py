@@ -101,6 +101,8 @@ class EnvironmentPreset:
     spiking_session_evidence_amplitude: float = 0.0
     spiking_session_evidence_bins: int = 0
     spiking_session_evidence_first_session: int = 0  # sessions before this index have no evidence
+    spiking_session_evidence_last_session: int | None = None  # sessions from this index have no evidence
+    spiking_fixed_first_session: int | None = None  # sessions from this index run the full length
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
@@ -779,6 +781,10 @@ def load_catalog_bundle(
             spiking_session_evidence_amplitude=float(spec.get("spiking_session_evidence_amplitude", 0.0)),
             spiking_session_evidence_bins=int(spec.get("spiking_session_evidence_bins", 0)),
             spiking_session_evidence_first_session=int(spec.get("spiking_session_evidence_first_session", 0)),
+            spiking_session_evidence_last_session=(None if spec.get("spiking_session_evidence_last_session") is None
+                                                   else int(spec["spiking_session_evidence_last_session"])),
+            spiking_fixed_first_session=(None if spec.get("spiking_fixed_first_session") is None
+                                         else int(spec["spiking_fixed_first_session"])),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
             action_dim=int(spec.get("action_dim", 2)),
