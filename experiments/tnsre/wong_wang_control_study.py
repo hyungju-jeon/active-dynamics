@@ -89,25 +89,42 @@ def configure_arm(arm):
     configure_eval(Path('.'), arm)
 
 
-def make_controller(unit, seed, dt, *, tracking=False):
+def make_controller(unit, seed, dt, *, tracking=False, feedback_gain=None):
     cls = TrackingController if tracking else ev.IcemController
+    extra = {}
+    if feedback_gain is not None:
+        if not tracking:
+            raise ValueError('Feedback variant requires a tracking task')
+        from experiments.tnsre.wong_wang_feedback import FeedbackTrackingController
+        cls, extra = FeedbackTrackingController, dict(feedback_gain=feedback_gain)
     return cls(unit['theta'], unit['C'], unit['b'], dt, seed=seed,
         dynamics_type=unit['dynamics_type'], full_params=unit['full_params'],
-        min_embedding_dim=unit['min_embedding_dim'], warm_start=True)
+        min_embedding_dim=unit['min_embedding_dim'], warm_start=True, **extra)
 
 
 def planned_jobs(plan, units, arm=None):
     """Generate exact expected rows before execution; no result-dependent filtering."""
     jobs = []
+    learned_parameters = {}
+    if 'learned_controller' in plan:
+        config = plan['learned_controller']
+        if set(config) != {'name', 'gain'} or config['name'] != 'feedback_tracking':
+            raise ValueError('Unknown learned-controller specification')
+        if not np.isfinite(config['gain']) or config['gain'] < 0:
+            raise ValueError('Feedback gain must be finite and nonnegative')
+        learned_parameters = dict(feedback_gain=float(config['gain']))
     for task_dict in plan['tasks']:
         task = ControlTask(**task_dict)
+        if learned_parameters and task.name == 'overturn':
+            raise ValueError('Feedback variant requires a tracking task')
         for unit in units:
             if unit['policy'] not in plan['policies']:
                 continue
             if unit['seed'] >= 0 and unit['seed'] not in plan['training_seeds']:
                 continue
             for seed in plan['task_seeds']:
-                jobs.append(dict(task=asdict(task), unit=unit, task_seed=seed, parameters={}))
+                parameters = dict(learned_parameters) if unit['theta'] is not None else {}
+                jobs.append(dict(task=asdict(task), unit=unit, task_seed=seed, parameters=parameters))
         priors = [u for u in units if u['policy'] == 'prior' and u['seed'] in plan['training_seeds']]
         for spec in plan.get('baselines', []):
             if 'arms' in spec and arm not in spec['arms']:
@@ -177,7 +194,8 @@ def evaluate(models, root, plan, arm, shard, nshards):
                 unit, task, seed = job['unit'], ControlTask(**job['task']), job['task_seed']
                 controller = None
                 if unit['theta'] is not None:
-                    controller = make_controller(unit, seed, net.dt_latent, tracking=task.name != 'overturn')
+                    controller = make_controller(unit, seed, net.dt_latent,
+                        tracking=task.name != 'overturn', **job['parameters'])
                 elif unit['controller'] in ('relay', 'pi'):
                     controller = CountObserver(unit['C'], unit['b'], net.dt_latent,
                                                tau=job['parameters'].get('tau', .05))

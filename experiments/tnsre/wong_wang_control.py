@@ -143,6 +143,10 @@ def tracking_plan(transition, z0, drive, reference, weights, *, task: ControlTas
 class TrackingController(ev.IcemController):
     """Frozen learned dynamics and spike-count EKF, with a tracking objective."""
 
+    def apply_input(self, planned, *, task, k, target, remaining):
+        """Original controller: hold the planned input until its next update."""
+        return planned
+
     def plan_tracking(self, task, t, k, target, pool, budget_left):
         horizon = task.window - k
         drive = np.stack([ev.evidence_drive(t + j, pool) for j in range(horizon)])
@@ -282,6 +286,9 @@ def run_session(net, task, seed, *, controller=None, baseline='none', parameters
                         plan = controller.plan_tracking(task, onset+k, k, target, pool, task.budget-energy)
                     plan_k = k
                 u = plan[k-plan_k]
+                if isinstance(controller, TrackingController):
+                    u = controller.apply_input(u, task=task, k=k, target=target,
+                                               remaining=task.budget-energy)
             else:
                 u, integral = baseline_action(baseline, task=task, k=k, target=target,
                     dt=dt, remaining=task.budget-energy, integral=integral,

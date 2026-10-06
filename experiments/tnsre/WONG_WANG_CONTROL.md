@@ -80,6 +80,49 @@ primary comparisons. A rank from means alone does not establish an advantage.
 For overturn, success is primary and energy is reported for all valid sessions.
 Do not compare energy only among successes without also showing success rates.
 
+## Feedback controller experiment after confirmation
+
+The completed `confirmation_v1` did not establish an advantage over every
+baseline. Its results and frozen plan remain the original confirmation. Saved
+traces motivate a separate controller experiment: the original planner scores
+fixed future inputs, while the PI and relay baselines correct inputs every
+5 ms. Retrospective scoring of their realized input sequences cannot separate
+model error from the benefit of future feedback. It is not a causal test.
+
+An opt-in plan field selects the shared controller in `wong_wang_feedback.py`:
+
+```json
+"learned_controller": {"name": "feedback_tracking", "gain": 2.0}
+```
+
+In target-swapped coordinates, let `d = (-1, 1) / sqrt(2)`. The policy is
+`u_t = project(v_t + gain * (r_t - (z_1 - z_0)) * d)`. iCEM optimizes the
+feedforward sequence `v_t`, with a correction in every simulated 5-ms bin.
+Each simulated trajectory has its own remaining energy, and every action is
+projected onto both the peak limit and that remaining budget. The reported
+planner `feedforward_energy` is not the physical energy; trial reports continue
+to compute physical energy from the actions actually sent to the SNN.
+
+Execution uses the latest spike-count EKF estimate at every input bin. It has
+no access to the true SNN state. The forecast assumes feedback on its simulated
+state and omits future observation errors; this approximation must be assessed
+in the SNN. Feedforward replanning remains every 200 ms, with 50-ms input blocks.
+All six learned methods, the initial model, and the privileged fit receive the
+same controller variant. Pulse, relay, and PI settings and scoring stay fixed.
+
+The first matched GCP smoke comparison uses gains absent (original controller)
+and 2, training indices 0 and 1, all eight input/model arms, all 14 controllers,
+and calibration task seeds 120000--120003. Gain 2 is a declared prototype,
+not a fit to confirmation scores. These reused seeds provide integration and
+development evidence only. Freeze another fresh task-seed block before any new
+confirmation, and retain the unsuccessful original confirmation in the report.
+Do not interpret a smoke ranking as an all-baseline advantage.
+
+Plans without the new field keep their original job keys and controller path.
+Mathematical checks cover causal feedback under known additive noise, exact
+linear dynamics, per-trajectory bounds, pool exchange, correction between
+replans, and the zero-gain limit.
+
 ## Failures and provenance
 
 Numerical controller failures count as unsuccessful valid tasks. Tracking
