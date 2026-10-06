@@ -93,6 +93,7 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         rbf_epsilon: float = 0.01,
         state_bound: float | np.ndarray = 5.0,
         rbf_include_bias: bool = False,
+        action_radius: float | None = None,
         **_: Any,
     ) -> None:
         super().__init__(action_space=action_space, chunk=max(1, int(horizon)), device=device)
@@ -124,6 +125,8 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         self.rbf_epsilon = float(np.clip(rbf_epsilon, 1e-8, 0.5))
         self.state_bound = state_bound
         self.rbf_include_bias = bool(rbf_include_bias)
+        # Ball constraint ||u|| <= action_radius on the planned inputs; None keeps the action-space box.
+        self.action_radius = None if action_radius is None else float(action_radius)
         self._rng = np.random.default_rng(int(seed))
         self._internal_model: RFFBayesianLinearDynamics | LocalRBFBayesianLinearDynamics | None = None
         self._planner: RhcMultipleShootingPlanner | None = None
@@ -266,4 +269,5 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
             planner_maxiter=self.planner_maxiter,
             warm_start=self.warm_start,
             rng=self._rng,
+            action_radius=self.action_radius,
         )

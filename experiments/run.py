@@ -220,6 +220,18 @@ def _mpc_budget(policy_spec: Any | None) -> tuple[int, int, int]:
     return value("mpc_num_samples", 24), value("mpc_num_iterations", 4), value("mpc_num_elite", 6)
 
 
+def _action_ball_radius(policy_spec: Any | None, env_preset: Any) -> float | None:
+    """Radius of the ball constraint ||u|| <= r for a policy with ``action_constraint: radius``.
+
+    The radius is the policy's ``action_radius`` or, by default, the preset's ``action_max``.
+    None (box constraint |u_j| <= action_max) otherwise.
+    """
+    if str(getattr(policy_spec, "action_constraint", None) or "box").strip().lower() != "radius":
+        return None
+    radius = getattr(policy_spec, "action_radius", None)
+    return float(env_preset.action_max if radius is None else radius)
+
+
 def _resolved_policy_type(policy_id: str, policy_spec: Any | None) -> str:
     configured = (
         None if policy_spec is None else getattr(policy_spec, "policy_type", None)
@@ -756,15 +768,17 @@ def _instantiate_synthetic_policy(
     mpc_num_elite: int = 10,
 ) -> Any:
     policy_type = _resolved_policy_type(policy_id, policy_spec)
+    ball_radius = _action_ball_radius(policy_spec, env_preset)
     if policy_type == "random":
         return actdyn_module.policy.RandomPolicy(
-            action_space=env.action_space, device=device
+            action_space=env.action_space, device=device, action_radius=ball_radius
         )
     if policy_type == "baseline-random":
         return actdyn_module.policy.BaselineRandomPolicy(
             action_space=env.action_space,
             device=device,
             seed=int(seed),
+            action_radius=ball_radius,
         )
     if policy_type == "baseline-prbs":
         return actdyn_module.policy.BaselinePRBSPolicy(
@@ -773,6 +787,7 @@ def _instantiate_synthetic_policy(
             seed=int(seed),
             hold_steps=max(1, int(getattr(schedule_spec, "replan_interval", 1))),
             amplitude=1.0,
+            action_radius=ball_radius,
         )
     if policy_type == "flex":
         initial_parameter_mean = None
@@ -825,6 +840,7 @@ def _instantiate_synthetic_policy(
             planner_maxiter=500,
             warm_start=False,
             seed=int(seed),
+            action_radius=ball_radius,
         )
     if policy_type == "off-policy":
         return actdyn_module.policy.OffPolicy(
@@ -2232,6 +2248,8 @@ def _run_single_parameter_identification(
             "mpc_num_samples": _mpc_budget(policy_spec)[0],
             "mpc_num_iterations": _mpc_budget(policy_spec)[1],
             "mpc_num_elite": _mpc_budget(policy_spec)[2],
+            "action_constraint": str(getattr(policy_spec, "action_constraint", None) or "box"),
+            "action_ball_radius": _action_ball_radius(policy_spec, env_preset),
             "coarse_action_mapping": str(
                 getattr(policy_spec, "coarse_action_mapping", "hold")
             ),

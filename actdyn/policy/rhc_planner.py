@@ -28,7 +28,10 @@ class RhcMultipleShootingPlanner:
         state_bounds: np.ndarray | None = None,
         warm_start: bool = False,
         rng: np.random.Generator | None = None,
+        action_radius: float | None = None,
     ) -> None:
+        """``action_radius``: when set, each planned input also satisfies ||u_k|| <= action_radius
+        (ball constraint) besides the box [action_low, action_high]; None keeps the box only."""
         self.model = model
         self.action_low = np.asarray(action_low, dtype=np.float64).reshape(-1)
         self.action_high = np.asarray(action_high, dtype=np.float64).reshape(-1)
@@ -39,6 +42,7 @@ class RhcMultipleShootingPlanner:
         self._warm_start: np.ndarray | None = None
         self._rng = rng or np.random.default_rng(0)
         self.model_diff = True
+        self.action_radius = None if action_radius is None else float(action_radius)
 
     @property
     def action_dim(self) -> int:
@@ -98,15 +102,27 @@ class RhcMultipleShootingPlanner:
         elif objective != 'rhc_us':
             raise ValueError(f'Unsupported RHC objective {objective!r}')
 
+        lbg, ubg = 0, 0
+        if self.action_radius is not None:
+            # Ball constraint: sum_j u_kj^2 <= r^2 for every planned step, after the dynamics.
+            n_dynamics = int(g.numel())
+            g = cas.horzcat(g, cas.horzcat(*[cas.sumsqr(u[i, :]) for i in range(self.horizon)]))
+            lbg = np.concatenate((np.zeros(n_dynamics), np.full(self.horizon, -np.inf)))
+            ubg = np.concatenate((np.zeros(n_dynamics), np.full(self.horizon, self.action_radius ** 2)))
+
         xu_flat = cas.reshape(xu, -1, 1)
         nlp = {'x': xu_flat, 'f': obj, 'g': g}
         opts = {'ipopt.max_iter': self.planner_maxiter}
         solver = cas.nlpsol('solver', 'ipopt', nlp, opts)
 
         xopt_0 = self._initial_guess(xu_flat.shape[0])
-        sol = solver(x0=xopt_0, lbx=xu_l.T.flatten(), ubx=xu_u.T.flatten(), lbg=0, ubg=0)
+        sol = solver(x0=xopt_0, lbx=xu_l.T.flatten(), ubx=xu_u.T.flatten(), lbg=lbg, ubg=ubg)
         opt_xu = np.array(cas.reshape(sol['x'], xu.shape[0], xu.shape[1]))
         opt_a = np.array(opt_xu[:, -self.action_dim:])
+        if self.action_radius is not None:
+            # Remove the solver's constraint tolerance so executed inputs lie in the ball.
+            norms = np.linalg.norm(opt_a, axis=1, keepdims=True)
+            opt_a = opt_a * np.minimum(1.0, self.action_radius / np.maximum(norms, 1e-12))
         opt_x = np.array(cas.vcat((x0_arr, opt_xu[:, : self.state_dim])))
         cost = float(sol['f'])
         if self.warm_start:
