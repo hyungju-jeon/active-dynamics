@@ -86,7 +86,7 @@ PROTOCOL: dict[str, Any] = {
     "r2_stride": 20,
     # Completed identification sessions. 10 fixed-length sessions (4000 bins) hold about as many
     # bins as PALDI's 20 decision-ended sessions in the manuscript (median 3978 bins).
-    "task_checkpoints": [0, 1, 2, 5, 10, 20],
+    "task_checkpoints": [0, 1, 2, 5, 10, 15, 20],
     "task_sessions": 8,                        # task sessions per task
     "task_seeds": {"force": 90000, "overturn": 91000},
     "evidence_amplitude": 0.3,                 # 6 pA in action units (x 20 pA)

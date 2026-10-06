@@ -72,6 +72,18 @@ def draw_phase_portrait(ax, experiment_dir: Path) -> list[dict]:
     return records
 
 
+def _recorded_per_pool(experiment_dir: Path) -> tuple[int, int]:
+    """Recorded neurons in pools 1 and 2 under the environment preset of the experiment's runs."""
+    from actdyn.environment.spiking_decision import observed_counts
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.eval_spiking_sessions import runs_root_of
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    meta = next(runs_root_of(experiment_dir).glob("*/seed_*/repeat_*/run_metadata.json"))
+    configure_tbme_catalogs(suite_entries={})
+    return observed_counts(get_environment_preset(json.loads(meta.read_text())["env_preset_id"]))
+
+
 def generate_circuit(experiment_dir: Path, output: Path) -> Path:
     """Population schematic in the style of Wilson-Cowan Fig. 2A.
 
@@ -83,6 +95,7 @@ def generate_circuit(experiment_dir: Path, output: Path) -> Path:
     from matplotlib.colors import to_rgba
     from matplotlib.patches import ArrowStyle, Circle, FancyArrowPatch, FancyBboxPatch
     from matplotlib.path import Path as MPath
+    n1, n2 = _recorded_per_pool(experiment_dir)
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     width, height = 516/72.27, 4.0  # inches; data units are 16 across and 4 high
     fig = plt.figure(figsize=(width, height/16*width))
@@ -167,12 +180,13 @@ def generate_circuit(experiment_dir: Path, output: Path) -> Path:
             y = top+.42-pool*.5-row*.17
             for x in np.linspace(9.62, 11.28, 6) + rng.uniform(-.1, .1, 6):
                 ax.plot([x, x], [y-.055, y+.055], color=color, lw=.7, solid_capstyle='butt')
-    ax.text(10.45, top+.6, '40 neurons per pool', ha='center', va='bottom', fontsize=_ASSET_TICK_SIZE)
+    ax.text(10.45, top+.6, f'{n1} neurons per pool' if n1 == n2 else f'{n1} + {n2} neurons',
+            ha='center', va='bottom', fontsize=_ASSET_TICK_SIZE)
     arrow((11.65, top), (12.7, top))
     ax.text(12.18, top+.1, '5-ms bins', ha='center', va='bottom', fontsize=_ASSET_TICK_SIZE)
     box = dict(boxstyle='round,pad=.06,rounding_size=.14', lw=.6, edgecolor=STROKE_COLOR)
     ax.add_patch(FancyBboxPatch((12.85, top-.33), 2.95, .66, facecolor='#F2F0EC', **box))
-    ax.text(14.32, top, r'Counts $\mathbf{y}_t\in\mathbb{N}^{80}$', ha='center', va='center',
+    ax.text(14.32, top, rf'Counts $\mathbf{{y}}_t\in\mathbb{{N}}^{{{n1 + n2}}}$', ha='center', va='center',
             fontsize=_ASSET_LABEL_SIZE)
     # Dashed shaft with a solid head, so the head keeps a clean outline.
     ax.plot([x0, 12.45], [bottom, bottom], color=STROKE_COLOR, lw=.8, linestyle=(0, (3, 2)))

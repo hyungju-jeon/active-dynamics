@@ -75,6 +75,7 @@ TASK_TITLES = {"force": "Force", "overturn": "Overturn"}
 CURRENT_PA = 20.0
 BUDGET_PA2_S = CURRENT_PA ** 2 * 0.1  # normalized time unit = 100 ms
 CURVE_BUDGETS = {"force": 1.0, "overturn": 12.0}
+CONTROL_CHECKPOINTS = (0, 1, 5, 10, 15, 20)  # identification trials shown in the control figure's success panel
 
 
 # ------------------------------------------------------------------ data helpers
@@ -616,7 +617,7 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
 
     eval_dir = experiment_dir / "eval"
     look = _summary_lookup(eval_dir / summary_name)
-    checkpoints = [int(k) for k in PROTOCOL["task_checkpoints"]]
+    checkpoints = list(CONTROL_CHECKPOINTS)
     task = "overturn"
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
