@@ -411,6 +411,12 @@ def test_paldi_c2_changes_only_the_planning_step_horizon_and_cadence():
     assert c2.objective_kind == base.objective_kind
     assert all("adaptive_c2" in s["model_ids"] for k, s in EXPERIMENT_SUITES.items() if "_obs_" not in k)
     assert evaluated_policy("adaptive_c2") == "adaptive" and evaluated_policy("rhc") == "rhc"
+    h20 = bundle.policy_specs["adaptive_c2h20"]
+    sh = bundle.schedule_specs[h20.schedule_id]
+    assert h20.coarse_dt_factor * sh.planning_horizon == 40  # 200 ms
+    assert (sh.adaptive_update_min_interval, sh.adaptive_replan_min_interval, sh.replan_interval) == (3, 3, 20)
+    assert all("adaptive_c2h20" in s["model_ids"] for k, s in EXPERIMENT_SUITES.items() if "_obs_" not in k)
+    assert evaluated_policy("adaptive_c2h20") == "adaptive"
 
 
 def test_runs_root_and_preset_come_from_the_experiment(tmp_path):

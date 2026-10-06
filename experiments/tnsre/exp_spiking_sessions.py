@@ -52,8 +52,9 @@ DEFAULT_EXP_IDS = (
 )
 # Matched comparison set of the manuscript (PALDI, Myopic, FLEX, RHC-US, PRBS, Random).
 MODEL_IDS = ["adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random"]
-# PALDI with a 2-bin planning step and a 3-bin minimum cadence (2026-10-06), run in every suite on request.
-PALDI_VARIANTS = ["adaptive_c2"]
+# PALDI with a 2-bin planning step and a 3-bin minimum cadence, with a 4-s or a 200-ms horizon (2026-10-06),
+# run in every suite on request.
+PALDI_VARIANTS = ["adaptive_c2", "adaptive_c2h20"]
 SHARED_EXP_ARGS = {
     "experiment_kind": "parameter",
     "total_steps": 8000,

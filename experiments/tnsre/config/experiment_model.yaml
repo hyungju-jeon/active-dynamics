@@ -142,6 +142,12 @@ models:
     adaptive_update_min_interval: 3
     adaptive_replan_min_interval: 3
 
+  # PALDI c2 with a 200-ms horizon (SNN, 2026-10-06): 20 planning steps of 2 bins instead of 400, so a
+  # rollout covers 200 ms of the 2-s trial; step and cadence as adaptive_c2.
+  adaptive_c2h20:
+    extends: adaptive_c2
+    planning_horizon: 20
+
   adaptive_async_realtime:
     extends: adaptive
     policy_type: async-mpc-icem

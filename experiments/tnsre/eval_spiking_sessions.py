@@ -231,7 +231,7 @@ def runs_preset(runs: Sequence[dict[str, Any]]) -> str:
 
 
 # PALDI variants evaluated as PALDI ("adaptive"); their run metadata keeps the variant's id and settings.
-PALDI_VARIANTS = ("adaptive_c2",)
+PALDI_VARIANTS = ("adaptive_c2", "adaptive_c2h20")
 
 
 def evaluated_policy(policy_id: str) -> str:
