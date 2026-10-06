@@ -238,13 +238,47 @@ def _example_run(experiment_dir: Path, policy: str = "adaptive", seed: int = 0) 
     with open(sorted(glob.glob(str(run / "*" / "rollouts" / "*.pkl")))[0], "rb") as fh:
         rollout = pickle.load(fh)
     rows = _read(run / "state_action_trace.csv")
+    meta = json.loads((run / "run_metadata.json").read_text())
+    session_end = np.array([r["session_end"] == "True" for r in rows])
+    # The environment input is the agent's input plus the session's evidence (pool, amplitude, first bins).
+    pools = [int(s["evidence_pool"]) for s in meta.get("session_log", [])]
+    rule = meta.get("session_rule") or {}
+    evidence = np.zeros((len(rows), 2))
+    for (a, b), pool in zip(_session_bounds(session_end), pools):
+        if pool >= 0:
+            evidence[a:min(b, a + int(rule["evidence_bins"])), pool] = float(rule["evidence_amplitude"])
+    u_env = np.array([[float(r["env_action_x"]), float(r["env_action_v"])] for r in rows])
     return {
         "counts": rollout["obs"].reshape(len(rows), -1).numpy(),
         "z": np.array([[float(r["true_z0"]), float(r["true_z1"])] for r in rows]),
         "m": np.array([[float(r["model_z0"]), float(r["model_z1"])] for r in rows]),
-        "u": np.array([[float(r["env_action_x"]), float(r["env_action_v"])] for r in rows]),
-        "session_end": np.array([r["session_end"] == "True" for r in rows]),
+        "u": u_env - evidence,
+        "evidence": evidence,
+        "evidence_pool": pools,
+        "session_end": session_end,
     }
+
+
+def _evidence_trials(experiment_dir: Path) -> tuple[int, int] | None:
+    """First and last identification trial (1-based) with evidence in PALDI's seed-0 run; None without."""
+    from experiments.tnsre.eval_spiking_sessions import runs_root_of
+
+    meta_path = next((runs_root_of(experiment_dir) / "adaptive" / "seed_0").glob("repeat_*/run_metadata.json"))
+    trials = [int(s["session"]) + 1 for s in json.loads(meta_path.read_text()).get("session_log", [])
+              if int(s["evidence_pool"]) >= 0]
+    return (min(trials), max(trials)) if trials else None
+
+
+def _shade_evidence_trials(ax: Any, start: float, stop: float, *, vertical_label: bool = False) -> None:
+    """Light band over the identification trials with evidence; label at the top, or upright in a narrow band."""
+    ax.axvspan(start, stop, color=NEUTRAL_LIGHT, alpha=0.45, lw=0, zorder=0)
+    x = 0.5 * (start + stop)
+    if vertical_label:
+        ax.text(x, 0.8, "evidence", transform=ax.get_xaxis_transform(), ha="center", va="center", rotation=90,
+                fontsize=_ASSET_TICK_SIZE, color=PROBE_TEXT)
+    else:
+        ax.text(x, 0.985, "evidence", transform=ax.get_xaxis_transform(), ha="center", va="top",
+                fontsize=_ASSET_TICK_SIZE, color=PROBE_TEXT)
 
 
 def _session_bounds(session_end: np.ndarray) -> list[tuple[int, int]]:
@@ -310,6 +344,10 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         ax_r.set_ylim(-1, n_obs)
         ax_r.set_yticks([20, 60])
         ax_r.set_yticklabels(["1", "2"])
+        pool = ex["evidence_pool"][k - 1] if k - 1 < len(ex["evidence_pool"]) else -1
+        if pool >= 0:  # evidence of this trial: light area under its current, in the pool's color
+            ax_u.fill_between(t_ms, 0.0, CURRENT_PA * ex["evidence"][a:b, pool], color=POOL_COLORS[pool],
+                              alpha=0.25, lw=0, step="post", zorder=1)
         for i in range(2):
             ax_z.plot(t_ms, ex["z"][a:b, i], color=POOL_COLORS[i], lw=0.8)
             ax_z.plot(t_ms, ex["m"][a:b, i], color=POOL_COLORS[i], lw=0.55, ls="--", alpha=0.8)
@@ -325,7 +363,8 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         ax_t.add_patch(Rectangle((0, .25), decision_ms, .6, color=PROBE_SHADE, lw=0))
         ax_t.add_patch(Rectangle((decision_ms,.25), end_ms-decision_ms,.6,
                                 color=DECISION_SHADE, alpha=DECISION_ALPHA, lw=0))
-        ax_t.text(decision_ms/2,.55,'input',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
+        ax_t.text(decision_ms/2,.55,'input + evidence' if pool >= 0 else 'input',ha='center',va='center',
+                  fontsize=_ASSET_TICK_SIZE)
         if decided.size:
             ax_t.axvline(decision_ms,color=STROKE_COLOR,ls='--',lw=.6)
             ax_t.text((decision_ms+end_ms)/2,.55,'hold',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
@@ -369,6 +408,9 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         ax.fill_between(ks, [np.percentile(v, 25) for v in vals], [np.percentile(v, 75) for v in vals],
                         color=color, alpha=0.1, lw=0)
     ax.axhline(fit_r2, color=REFERENCE_STYLE["reduced_fit"]["color"], ls=":", lw=0.8)
+    evidence_trials = _evidence_trials(experiment_dir)
+    if evidence_trials is not None:  # R2 after trial k sits at x = k; trial k spans (k - 1, k]
+        _shade_evidence_trials(ax, evidence_trials[0] - 1, evidence_trials[1])
     ax.set_xlim(0, FINAL_SESSIONS)
     ax.set_ylim(-0.2, 1.0)
     ax.set_xticks([0, 5, 10, 15, 20])
@@ -410,9 +452,17 @@ def _draw_budget_panel(ax: Any, look: dict, task: str, budgets: list[float], *, 
     style_experiment_axis(ax)
 
 
-def _draw_session_panel(ax: Any, look: dict, task: str, checkpoints: list[int], *, ylabel: bool) -> None:
-    """Task success at budget ``CURVE_BUDGETS[task]`` along identification (0 = shared initial estimate)."""
+def _draw_session_panel(ax: Any, look: dict, task: str, checkpoints: list[int], *, ylabel: bool,
+                        evidence_trials: tuple[int, int] | None = None) -> None:
+    """Task success at budget ``CURVE_BUDGETS[task]`` along identification (0 = shared initial estimate).
+
+    ``evidence_trials`` (first, last; 1-based) shades the checkpoints whose added trials had evidence.
+    """
     pos = np.arange(len(checkpoints))
+    if evidence_trials is not None:
+        inside = [i for i, k in enumerate(checkpoints) if k >= evidence_trials[0]]
+        if inside:
+            _shade_evidence_trials(ax, inside[0] - 1, inside[-1], vertical_label=True)
     b = CURVE_BUDGETS[task]
     prior = look.get(("prior", 0, task, b), (np.nan, 0.0))
     for policy in POLICIES:
@@ -576,7 +626,7 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
     draw_control_phase(ax, experiment_dir, phase_dir)
     _panel_label(ax, "B", dx=-18)
     ax = fig.add_subplot(comparison[0])
-    _draw_session_panel(ax, look, task, checkpoints, ylabel=True)
+    _draw_session_panel(ax, look, task, checkpoints, ylabel=True, evidence_trials=_evidence_trials(experiment_dir))
     _panel_label(ax, "C", dx=-28)
     _control_legend(fig, plt)
     return save_figure(fig, output, plt_module=plt)
