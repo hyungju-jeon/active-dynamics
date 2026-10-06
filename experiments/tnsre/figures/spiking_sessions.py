@@ -23,7 +23,7 @@ in the manuscript asset style:
   the fit and batch refits on PALDI's session data.
 
 Usage:
-    python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20261006_snn_evidence_second_n20_20 \\
+    python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20261006_snn_evidence_first_n20_20 \\
         --figure all
 """
 
@@ -255,6 +255,8 @@ def _example_run(experiment_dir: Path, policy: str = "adaptive", seed: int = 0) 
         "u": u_env - evidence,
         "evidence": evidence,
         "evidence_pool": pools,
+        # Trials from fixed_first_session (0-based) on run the full length: no post-decision hold.
+        "fixed_first_trial": None if rule.get("fixed_first_session") is None else int(rule["fixed_first_session"]) + 1,
         "session_end": session_end,
     }
 
@@ -269,15 +271,17 @@ def _evidence_trials(experiment_dir: Path) -> tuple[int, int] | None:
     return (min(trials), max(trials)) if trials else None
 
 
-def _shade_evidence_trials(ax: Any, start: float, stop: float, *, vertical_label: bool = False) -> None:
-    """Light band over the identification trials with evidence; label at the top, or upright in a narrow band."""
+def _shade_evidence_trials(ax: Any, start: float, stop: float, *, vertical_label: bool = False,
+                           label_y: float = 0.985) -> None:
+    """Light band over the identification trials with evidence; label near the top (axes fraction
+    ``label_y``), or upright in a narrow band."""
     ax.axvspan(start, stop, color=NEUTRAL_LIGHT, alpha=0.45, lw=0, zorder=0)
     x = 0.5 * (start + stop)
     if vertical_label:
         ax.text(x, 0.8, "evidence", transform=ax.get_xaxis_transform(), ha="center", va="center", rotation=90,
                 fontsize=_ASSET_TICK_SIZE, color=PROBE_TEXT)
     else:
-        ax.text(x, 0.985, "evidence", transform=ax.get_xaxis_transform(), ha="center", va="top",
+        ax.text(x, label_y, "evidence", transform=ax.get_xaxis_transform(), ha="center", va="top",
                 fontsize=_ASSET_TICK_SIZE, color=PROBE_TEXT)
 
 
@@ -319,8 +323,9 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     row = fig.add_gridspec(1, 2, width_ratios=[2.5, 1.05], left=0.365, right=0.99,
                           top=top, bottom=bottom, wspace=0.33)
     bounds = [_session_bounds(ex["session_end"])[k - 1] for k in sessions_shown]
+    longest = max(b - a for a, b in bounds)
     sub = row[0].subgridspec(4, len(bounds), height_ratios=[0.5, 0.7, 1.15, 0.9],
-                           hspace=0.1, wspace=0.1, width_ratios=[b-a for a,b in bounds])
+                           hspace=0.1, wspace=0.1, width_ratios=[max(b - a, 0.35 * longest) for a, b in bounds])
     n_obs = ex["counts"].shape[1]
     shared_y = []
     for col, (k, (a, b)) in enumerate(zip(sessions_shown, bounds)):
@@ -340,11 +345,12 @@ def generate_identification(experiment_dir: Path, output: Path, *,
             ax_r.scatter(t_ms[spikes], np.full(spikes.size, j), s=2.0, marker="|", linewidths=0.6,
                          color=POOL_COLORS[0 if j < n_obs // 2 else 1], rasterized=True)
         rmse = _filter_rmse(ex["z"][a:b], ex["m"][a:b])
+        pool = ex["evidence_pool"][k - 1] if k - 1 < len(ex["evidence_pool"]) else -1
+        fixed = ex["fixed_first_trial"] is not None and k >= ex["fixed_first_trial"]
         ax_t.set_title(f"Trial {k}", fontsize=_ASSET_LABEL_SIZE, pad=2.0, loc="left")
         ax_r.set_ylim(-1, n_obs)
         ax_r.set_yticks([20, 60])
         ax_r.set_yticklabels(["1", "2"])
-        pool = ex["evidence_pool"][k - 1] if k - 1 < len(ex["evidence_pool"]) else -1
         if pool >= 0:  # evidence of this trial: light area under its current, in the pool's color
             ax_u.fill_between(t_ms, 0.0, CURRENT_PA * ex["evidence"][a:b, pool], color=POOL_COLORS[pool],
                               alpha=0.25, lw=0, step="post", zorder=1)
@@ -363,11 +369,11 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         ax_t.add_patch(Rectangle((0, .25), decision_ms, .6, color=PROBE_SHADE, lw=0))
         ax_t.add_patch(Rectangle((decision_ms,.25), end_ms-decision_ms,.6,
                                 color=DECISION_SHADE, alpha=DECISION_ALPHA, lw=0))
-        ax_t.text(decision_ms/2,.55,'input + evidence' if pool >= 0 else 'input',ha='center',va='center',
-                  fontsize=_ASSET_TICK_SIZE)
+        ax_t.text(decision_ms/2,.55,'input',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
         if decided.size:
             ax_t.axvline(decision_ms,color=STROKE_COLOR,ls='--',lw=.6)
-            ax_t.text((decision_ms+end_ms)/2,.55,'hold',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
+            ax_t.text((decision_ms+end_ms)/2,.55,'after decision' if fixed else 'hold',ha='center',va='center',
+                      fontsize=_ASSET_TICK_SIZE)
         ax_t.plot([end_ms,end_ms],[.1,1.1],color=STROKE_COLOR,lw=.7,clip_on=False)
         ax_t.text(end_ms,1.12,'reset',ha='right',va='bottom',fontsize=_ASSET_TICK_SIZE)
         ax_t.set_ylim(0,1.8); ax_t.axis('off')
@@ -392,9 +398,10 @@ def generate_identification(experiment_dir: Path, output: Path, *,
                 axis.tick_params(axis="y", pad=1.0)
                 axis.set_ylabel(label, fontsize=_ASSET_LABEL_SIZE, labelpad=1.0)
             _panel_label(ax_t, "B", dx=-34)
+        if col == len(bounds) - 1:
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.8, label="network")
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.55, ls="--", label="filtered")
-            ax_z.legend(loc="upper left", fontsize=_ASSET_TICK_SIZE, frameon=False, ncol=2,
+            ax_z.legend(loc="upper right", fontsize=_ASSET_TICK_SIZE, frameon=False, ncol=2,
                         handlelength=1.4, borderaxespad=0.1)
     fig.align_ylabels(shared_y)
     # (D) held-out R2 after each identification session.
@@ -459,10 +466,10 @@ def _draw_session_panel(ax: Any, look: dict, task: str, checkpoints: list[int], 
     ``evidence_trials`` (first, last; 1-based) shades the checkpoints whose added trials had evidence.
     """
     pos = np.arange(len(checkpoints))
-    if evidence_trials is not None:
-        inside = [i for i, k in enumerate(checkpoints) if k >= evidence_trials[0]]
+    if evidence_trials is not None:  # checkpoint i covers the trials after checkpoint i - 1
+        inside = [i for i, k in enumerate(checkpoints) if evidence_trials[0] <= k <= evidence_trials[1]]
         if inside:
-            _shade_evidence_trials(ax, inside[0] - 1, inside[-1], vertical_label=True)
+            _shade_evidence_trials(ax, inside[0] - 1, inside[-1], vertical_label=len(inside) == 1, label_y=0.86)
     b = CURVE_BUDGETS[task]
     prior = look.get(("prior", 0, task, b), (np.nan, 0.0))
     for policy in POLICIES:
