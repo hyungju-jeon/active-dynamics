@@ -23,7 +23,7 @@ in the manuscript asset style:
   the fit and batch refits on PALDI's session data.
 
 Usage:
-    python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20260924_snn_sessions_m2 \\
+    python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20261006_snn_evidence_second_n20_20 \\
         --figure all
 """
 

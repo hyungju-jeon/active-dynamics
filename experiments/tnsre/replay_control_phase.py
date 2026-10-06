@@ -18,9 +18,9 @@ from experiments.tnsre.eval_spiking_sessions import (
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--experiment-dir', type=Path,
-                        default=Path('results/tnsre/20260924_snn_sessions_m2'))
+                        default=Path('results/tnsre/20261006_snn_evidence_second_n20_20'))
     parser.add_argument('--output-dir', type=Path,
-                        default=Path('results/tnsre/20260929_manuscript_update/control_phase_uniform'))
+                        default=Path('results/tnsre/20261006_snn_evidence_second_n20_20/control_phase'))
     args = parser.parse_args()
     torch.set_num_threads(1)
     root = args.experiment_dir

@@ -30,7 +30,7 @@ REFERENCES = ("reduced_fit", "spread", "front")
 METHODS = POLICIES + REFERENCES
 REF_LABELS = dict(reduced_fit="Fitted", spread="Constant-\namplitude", front="Maximum-\namplitude")
 REF_COLORS = dict(reduced_fit="#A0A0A0", spread="#C4C4C4", front="#D6C5AE")
-EXTENSION = Path("results/tnsre/20260929_spiking_control_budgets/extension")
+EXTENSION = Path("results/tnsre/20261006_snn_evidence_second_n20_20/budgets")  # budgets 5 and 15 of the main SNN result
 
 
 def load_scores(eval_dir: Path, extension_dir: Path = EXTENSION) -> tuple[pd.DataFrame, dict]:
@@ -146,9 +146,9 @@ def make_figure(scores: pd.DataFrame):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment-dir", type=Path,
-                        default=Path("results/tnsre/20260924_snn_sessions_m2"))
+                        default=Path("results/tnsre/20261006_snn_evidence_second_n20_20"))
     parser.add_argument("--output-dir", type=Path,
-                        default=Path("results/tnsre/20260929_spiking_control_budgets"))
+                        default=Path("results/tnsre/20261006_snn_evidence_second_n20_20/figures"))
     parser.add_argument("--extension-dir", type=Path, default=EXTENSION)
     args = parser.parse_args()
     scores, provenance = load_scores(args.experiment_dir / "eval", args.extension_dir)
