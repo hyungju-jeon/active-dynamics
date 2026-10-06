@@ -370,23 +370,28 @@ def main():
         paired='Saved simultaneous 95% paired crossed-bootstrap intervals; positive favors PALDI. If absent, descriptive means with no intervals.',
         inputs={str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in inputs})
     (out/'provenance.json').write_text(json.dumps(provenance, indent=2)+'\n')
-    caption=(f"Phase: {plan['name']}. {len(plan['training_seeds'])} frozen model/readout indices and "
+    context=(f"Phase: {plan['name']}. {len(plan['training_seeds'])} frozen model/readout indices and "
         f"{len(plan['task_seeds'])} planned network-noise seeds. Invalid initial decisions are excluded "
         f"identically across controllers within each input condition ({provenance['invalid_trials']} trial rows); "
         f"{provenance['numerical_failures']} numerical failures remain in the scores. "
+        "Fixed pulses have one result per network-noise seed, not independent repeats per model index. ")
+    constraint_caption=(
         "Constraint panels vary total energy at peak bound 1 and peak bound at energy budget 10 separately. "
         "B is the sum of squared input norms times the model time step (100-ms time units). "
         "Curves show mean first-passage success; shading shows pointwise 95% crossed-bootstrap intervals "
-        "over model/readout indices and network-noise seeds. Fixed pulses are broadcast across model indices, "
-        "not treated as independent repeat trials. Degenerate all-zero or all-one samples give collapsed "
+        "over model/readout indices and network-noise seeds. Degenerate all-zero or all-one samples give collapsed "
         "bootstrap intervals and do not establish population probabilities of zero or one. "
-        "These intervals of individual means are not tests of differences. Paired panels show baseline minus "
+        "These intervals of individual means are not tests of differences. ")
+    paired_caption=("Paired panels show baseline minus "
         "PALDI tracking RMSE, or PALDI minus baseline success in percentage points; positive favors PALDI. "
         "Their intervals use the saved simultaneous 95% paired analysis across all reported comparisons. "
-        "Hollow marks identify unavailable or degenerate intervals and cannot establish superiority. A single model "
+        "Hollow marks identify unavailable or degenerate intervals and cannot establish superiority. ")
+    limits=("A single model "
         "seed cannot establish an advantage across learned models. No smoothing or normalization is applied. "
         "Panels within a condition share limits across input arms and response families; "
         "policy order is fixed, not ranked.\n")
+    caption = (context + (constraint_caption if len(sweeps) else '')
+               + (paired_caption if len(points) else '') + limits)
     (out/'CAPTION.txt').write_text(caption)
     captions = {}
     if len(sweeps):
@@ -394,7 +399,8 @@ def main():
             low = group[group.bound == group.bound.min()]
             captions[arm+'_constraints'] = (
                 f"{arm_label(arm)}. At the smallest tested bound ({group.bound.min():g}), "
-                f"{int((low['mean'] > 0).sum())}/{len(low)} controller means are above zero. "+caption)
+                f"{int((low['mean'] > 0).sum())}/{len(low)} controller means are above zero. "
+                +context+constraint_caption+limits)
     if len(points):
         for condition, group in points.groupby('condition'):
             for family in ['logistic', 'transfer']:
@@ -406,7 +412,8 @@ def main():
                 captions[f'{family}_{condition}_paired'] = (
                     f"{FAMILIES[family]}, condition {condition}. "
                     f"Mean differences favor PALDI in {positive}/{len(panel)} comparisons; "
-                    f"{established} have nondegenerate simultaneous intervals entirely above zero. "+caption)
+                    f"{established} have nondegenerate simultaneous intervals entirely above zero. "
+                    +context+paired_caption+limits)
     (out/'captions.json').write_text(json.dumps(captions, indent=2)+'\n')
     print(json.dumps(dict(phase=plan['name'],verified_rows=len(data),output=str(out),
                          vector_figures=len(list(out.glob('*.pdf'))))))
