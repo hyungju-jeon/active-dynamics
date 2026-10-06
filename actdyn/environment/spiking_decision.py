@@ -41,7 +41,10 @@ import numpy as np
 import torch
 from gymnasium import spaces
 
-from actdyn.environment.session import SessionRule, session_evidence, session_evidence_pool
+from actdyn.environment.session import (
+    NO_EVIDENCE, SessionRule, session_evidence, session_evidence_pool,
+    session_has_evidence, session_post_decision_bins,
+)
 
 # Wang (2002) time constant of NMDA gating, the unit of time of the reduced model.
 TAU_NMDA_MS = 100.0
@@ -562,8 +565,12 @@ class SpikingDecisionEnv(gym.Env):
         self.session_bins = 0
         self.decision = 0
         self.decision_bin = -1
-        self.evidence_pool = (session_evidence_pool(self.session_seed(self._run_seed, session_index))
-                              if self._has_evidence() else -1)
+        if not self._has_evidence():
+            self.evidence_pool = -1
+        elif session_has_evidence(self.session_rule, session_index):
+            self.evidence_pool = session_evidence_pool(self.session_seed(self._run_seed, session_index))
+        else:
+            self.evidence_pool = NO_EVIDENCE
 
     def _has_evidence(self) -> bool:
         return self.session_rule is not None and float(self.session_rule.evidence_amplitude) > 0.0
@@ -588,7 +595,7 @@ class SpikingDecisionEnv(gym.Env):
         decided = self.decision != 0
         return {"bins": self.session_bins, "decided": decided,
                 "since": self.session_bins - self.decision_bin if decided else 0,
-                "evidence_pool": self.evidence_pool}
+                "evidence_pool": self.evidence_pool, "session_index": self.session_index}
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         if seed is not None:
@@ -622,7 +629,7 @@ class SpikingDecisionEnv(gym.Env):
                 self.decision = 1 if gap > 0 else 2
                 self.decision_bin = self.session_bins
             decided = self.decision != 0
-            end = (decided and self.session_bins - self.decision_bin >= int(rule.post_decision_bins)) or (
+            end = (decided and self.session_bins - self.decision_bin >= session_post_decision_bins(rule, self.session_index)) or (
                 self.session_bins >= int(rule.max_session_bins))
             info.update(session_index=self.session_index, decision=self.decision, session_end=bool(end))
             if end:
@@ -848,4 +855,7 @@ def session_rule_from_preset(env_preset: Any, state_scale: float) -> Optional[Se
         max_sessions=int(n_sessions),
         evidence_amplitude=float(env_preset.spiking_session_evidence_amplitude),
         evidence_bins=int(env_preset.spiking_session_evidence_bins),
+        evidence_first_session=int(env_preset.spiking_session_evidence_first_session),
+        evidence_last_session=env_preset.spiking_session_evidence_last_session,
+        fixed_first_session=env_preset.spiking_fixed_first_session,
     )

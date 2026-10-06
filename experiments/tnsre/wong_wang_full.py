@@ -34,7 +34,7 @@ def write_json(path, data):
     path.write_text(json.dumps(data, indent=2, allow_nan=False) + '\n')
 
 
-def configure_eval(root, arm):
+def configure_eval(root, arm, *, preset_id=None, runs_root=None):
     family, target, mode = arm.split('_')
     preset = ('tbme_wong_wang_snn_sessions_m2' if family == 'logistic' else 'tbme_wong_wang_transfer')
     if target == 'partial':
@@ -42,11 +42,11 @@ def configure_eval(root, arm):
     if mode == 'poisson':
         suffix = 'both' if target == 'partial' else 'synaptic'
         preset = f'tbme_wong_wang_{family}_{suffix}'
-    ev.PRESET_ID = preset
+    ev.PRESET_ID = preset_id or preset
     ev.TASKS = ('overturn',)
     ev.PROTOCOL['test_trajectories'] = str(root / 'data' / f'{target}_current' / 'test_trajectories.npz')
     ev.PROTOCOL['reduced_fit'] = str(root / 'reference' / f'{arm}.json')
-    return root / 'tracks' / f'ww_full_{family}_{target}'
+    return runs_root if runs_root is not None else root / 'tracks' / f'ww_full_{family}_{target}'
 
 
 def train(root, arm, policy, seed, *, total_steps=8000):
@@ -61,14 +61,14 @@ def train(root, arm, policy, seed, *, total_steps=8000):
         raise RuntimeError('Identification did not finish all 20 decision trials')
 
 
-def data(root, input_arm):
+def data(root, input_arm, *, preset_id=None):
     """Disjoint reference-training and manuscript test trajectories, float32 proxies.
 
     Reference data: 24 piecewise drives and 24 task-like drives. Task-like
     controls are 200 ms signed pushes in alternate 200 ms blocks. Their random
     schedule is fixed here because the historical fitting script was removed.
     """
-    configure_eval(root, f'logistic_{input_arm}')
+    configure_eval(root, f'logistic_{input_arm}', preset_id=preset_id)
     out = root / 'data' / input_arm
     out.mkdir(parents=True, exist_ok=True)
     if input_arm.endswith('current'):
@@ -172,9 +172,9 @@ def failed_control_outcome(trace, *, seed, dt, baseline=None):
             'outcome_bin': outcome, 'first_decision': 0}
 
 
-def task(root, arm, shard, nshards, *, recover_numerical_errors=False):
+def task(root, arm, shard, nshards, *, recover_numerical_errors=False, preset_id=None, runs_root=None):
     """Write one deterministic shard; keep model-free and warm-start jobs together."""
-    runs_root = configure_eval(root, arm)
+    runs_root = configure_eval(root, arm, preset_id=preset_id, runs_root=runs_root)
     runs = ev.load_session_runs(runs_root)
     assert len(runs) == 120 and all(set(range(21)) <= set(r['est']) for r in runs)
     units = ev.controller_units(runs)

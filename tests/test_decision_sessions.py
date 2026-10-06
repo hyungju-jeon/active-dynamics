@@ -1,4 +1,4 @@
-"""Contracts for decision sessions: environment rule, planner rollouts, EIG, and filter reset."""
+"""Contracts for decision sessions: environment rule, planner rollouts, and filter reset."""
 
 from __future__ import annotations
 
@@ -10,16 +10,8 @@ import torch
 
 from actdyn.core.agent import _apply_session_reset, _model_input, _session_fields
 from actdyn.environment.action import IdentityActionEncoder
-from actdyn.environment.session import (
-    SessionRule,
-    advance_session_clock,
-    new_session_clock,
-    session_clock_from_context,
-    session_evidence,
-    session_evidence_pool,
-)
+from actdyn.environment.session import NO_EVIDENCE, SessionRule, session_evidence, session_evidence_pool
 from actdyn.environment.spiking_decision import SpikingDecisionEnv
-from actdyn.metrics.information import EmbeddingFisherMetric
 from actdyn.models.model import FilteringEmbedding
 from actdyn.policy.mpc import MpcICem
 
@@ -52,38 +44,7 @@ class ScriptedNetwork:
         return np.full(2, float(self.t), dtype=np.float32), z
 
 
-def _run_clock(gaps, rule, step_bins=1):
-    clock = new_session_clock(1)
-    resets, decisions = [], []
-    for g in gaps:
-        clock, decided, reset = advance_session_clock(clock, torch.tensor([float(g)]), rule, step_bins)
-        resets.append(bool(reset[0]))
-        decisions.append(bool(decided[0]))
-    return decisions, resets
-
-
-def test_clock_resets_after_the_post_decision_delay_and_at_the_time_limit():
-    rule = SessionRule(decision_gap=1.0, post_decision_bins=3, max_session_bins=10)
-    decisions, resets = _run_clock([0.0, 2.0, 2.0, 0.0, -2.0, 0.0], rule)
-    assert decisions == [False, True, False, False, False, False]  # later crossings do not count
-    assert resets == [False, False, False, False, True, False]
-    _, resets = _run_clock([0.0] * 12, rule)
-    assert resets.index(True) == 9  # 10 bins without a decision
-    _, resets = _run_clock([0.0] * 3, rule, step_bins=5)
-    assert resets == [False, True, False]  # coarse steps of 5 bins
-
-
-def test_clock_from_context_continues_the_environment_session():
-    rule = SessionRule(decision_gap=1.0, post_decision_bins=3, max_session_bins=10)
-    clock = session_clock_from_context({"bins": 4, "decided": True, "since": 2}, 3)
-    assert clock["bins"].tolist() == [4, 4, 4] and clock["decided"].all()
-    _, _, reset = advance_session_clock(clock, torch.zeros(3), rule)
-    assert reset.all()
-    fresh = session_clock_from_context(None, 2)
-    assert fresh["bins"].tolist() == [0, 0] and not fresh["decided"].any()
-
-
-def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
+def test_environment_ends_sessions_after_the_post_decision_delay():
     rule = SessionRule(decision_gap=2.0, post_decision_bins=4, max_session_bins=30, max_sessions=3)
     network = ScriptedNetwork(rate=0.3)
     env = SpikingDecisionEnv(network, session_rule=rule)
@@ -97,11 +58,10 @@ def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
         if info["session_end"]:
             np.testing.assert_allclose(info["latent_state"], rule.reset_state)
             np.testing.assert_allclose(info["session_pre_reset_state"], [-2.0 + 0.3 * 11, -2.0], rtol=1e-6)
-            assert info["session_context"] == {"bins": 0, "decided": False, "since": 0, "evidence_pool": -1}
+            assert info["session_context"] == {"bins": 0, "decided": False, "since": 0, "evidence_pool": -1,
+                                               "session_index": len(env.session_log)}
     # The gap first exceeds 2 at bin 7; the reset follows 4 bins later.
     assert [i + 1 for i, e in enumerate(ends) if e] == [11, 22, 33]
-    _, clock_resets = _run_clock([0.3 * (t + 1) for t in range(11)], rule)
-    assert clock_resets.index(True) == 10
     assert [s["decision"] for s in env.session_log] == [1, 1, 1]
     assert [s["decision_bin"] for s in env.session_log] == [7, 7, 7]
     assert network.reset_seeds == [SpikingDecisionEnv.session_seed(7, k) for k in range(4)]
@@ -130,8 +90,7 @@ class RecordingNetwork(ScriptedNetwork):
         self.drives: list[np.ndarray] = []
 
     def step(self, action: np.ndarray, *, evidence=None):
-        self.drives.append(np.asarray(action, dtype=np.float64).copy()
-                           + (0 if evidence is None else evidence))
+        self.drives.append(np.asarray(action, dtype=np.float64).copy() + (0 if evidence is None else evidence))
         return super().step(action, evidence=evidence)
 
 
@@ -205,48 +164,35 @@ def _session_planner(rule):
     return planner, metric
 
 
-def test_planner_rollout_resets_the_state_and_marks_the_step():
-    rule = SessionRule(decision_gap=2.0, post_decision_bins=2, max_session_bins=100, reset_variance=0.02)
-    planner, metric = _session_planner(rule)
-    assert metric.session_reset_variance == pytest.approx(0.02)
+def test_planner_rollout_stays_in_the_current_session():
+    """Agents learn of a reset only when it happens: a rollout never simulates the decision rule."""
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=2, max_session_bins=4)
+    planner, _ = _session_planner(rule)
+    planner.session_context = {"bins": 3, "decided": True, "since": 1, "evidence_pool": -1, "session_index": 0}
     actions = torch.tensor([[1.0, 0.0]]).repeat(1, 6, 1)
     rollout = planner.simulate(None, actions)
-    start, pred = rollout["model_state"][0], rollout["next_model_state"][0]
-    mask = rollout["session_reset_after"][0, :, 0]
-    # Gap 3 > 2 after step 2; reset 2 bins later, after step 4.
-    assert mask.tolist() == [0, 0, 0, 0, 1, 0]
-    torch.testing.assert_close(pred[4], torch.tensor([3.0, -2.0]))  # the step's observation sees z before the reset
-    torch.testing.assert_close(start[5], torch.tensor([-2.0, -2.0]))
-    torch.testing.assert_close(pred[5], torch.tensor([-1.0, -2.0]))
+    # The gap passes 2 after step 2 and the session time limit is near, but the state keeps going.
+    expected = torch.tensor([[-2.0 + t, -2.0] for t in range(1, 7)])
+    torch.testing.assert_close(rollout["next_model_state"][0], expected)
+    torch.testing.assert_close(rollout["model_state"][0, 1:], expected[:-1])
+    torch.testing.assert_close(rollout["env_action"], actions)
+    assert rollout.flat.get("session_reset_after") is None
 
 
-def test_planner_rollout_uses_the_session_context_and_coarse_bins():
-    rule = SessionRule(decision_gap=2.0, post_decision_bins=40, max_session_bins=400)
-    planner, _ = _session_planner(rule)
-    planner.session_context = {"bins": 100, "decided": True, "since": 25}
-    planner._planning_step_bins = 10
-    rollout = planner.simulate(None, torch.zeros(1, 6, 2))
-    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 1, 0, 0, 0, 0]  # 25 + 10 + 10 >= 40
-    planner.session_rule = None
-    planner.model.predict = lambda a: planner.model._state + torch.cumsum(a, dim=-2)
-    plain = planner.simulate(None, torch.zeros(1, 6, 2))
-    assert plain.flat.get("session_reset_after") is None
-
-
-def test_planner_rollout_adds_the_known_evidence_until_a_reset():
+def test_planner_rollout_adds_the_current_session_evidence_at_coarse_steps():
     rule = SessionRule(decision_gap=2.0, post_decision_bins=1, max_session_bins=100,
-                       evidence_amplitude=2.0, evidence_bins=2)
+                       evidence_amplitude=2.0, evidence_bins=125)
     planner, _ = _session_planner(rule)
-    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": 0}
+    planner.session_context = {"bins": 100, "decided": False, "since": 0, "evidence_pool": 0}
+    planner._planning_step_bins = 10
     rollout = planner.simulate(None, torch.zeros(1, 5, 2))
-    # z1 rises by 2 per evidence bin: the gap reaches 4 > 2 in step 1 (the decision), the
-    # evidence ends after bin 2, and the session resets after step 2. The next session's
-    # pool is unknown, so its evidence is split between the pools.
-    expected_inputs = [[2.0, 0.0], [2.0, 0.0], [0.0, 0.0], [1.0, 1.0], [1.0, 1.0]]
+    # Steps start at bins 100, 110, 120, 130, 140; the step over bins 120-129 has evidence for half its bins.
+    # The gap passes 2 in step 1 and the session would end, but the rollout stays in the session.
+    expected_inputs = [[2.0, 0.0], [2.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
     torch.testing.assert_close(rollout["env_action"][0], torch.tensor(expected_inputs))
-    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 0, 1, 0, 0]
-    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([0.0, 0.0]))
-    torch.testing.assert_close(planner._known_evidence(3)[0], torch.tensor([[2.0, 0.0]] * 2 + [[0.0, 0.0]]))
+    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([3.0, -2.0]))
+    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": 0}
+    torch.testing.assert_close(planner._known_evidence(3)[0], torch.zeros(3, 2) + torch.tensor([2.0, 0.0]))
 
 
 def test_planner_session_reset_forces_a_new_plan():
@@ -257,66 +203,6 @@ def test_planner_session_reset_forces_a_new_plan():
     planner.on_session_reset(torch.tensor([[[-2.0, -2.0]]]))
     assert planner.action_list == [] and planner._chunk_step == 0
     assert planner._force_replan_next and planner._force_replan_reason == "session_reset"
-
-
-class LinearGaussianDecoder:
-    def __init__(self, h, r):
-        self.h, self.r, self.noise = h, r, object()
-
-    def __call__(self, z):
-        return z @ self.h.to(z).T
-
-    def jacobian(self, z):
-        return self.h.to(z).expand(*z.shape[:-1], *self.h.shape)
-
-    def var(self, z):
-        return self.r.diagonal().to(z).expand(*z.shape[:-1], self.r.shape[-1])
-
-
-def _information_problem(p0):
-    a = torch.tensor([[0.1, 0.3], [-0.2, -0.1]])
-    b = torch.tensor([[1.0, 0.2], [0.1, 0.5]])
-    model = SimpleNamespace(
-        e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
-        z={"m": torch.zeros(1, 1, 2), "P": p0.unsqueeze(0)},
-        dynamics=SimpleNamespace(logvar=torch.log(torch.expm1(torch.tensor([[0.05, 0.02]])))),
-        decoder=LinearGaussianDecoder(torch.tensor([[1.0, 0.2], [0.0, 1.0]]), torch.diag(torch.tensor([0.5, 0.8]))),
-        dt=1.0,
-    )
-
-    def fe(z, e):
-        return z[..., :1, None] * b.to(z)
-
-    def fz(z, e):
-        return a.to(z).expand(*z.shape[:-1], 2, 2)
-
-    return model, fe, fz
-
-
-@pytest.mark.parametrize("planning_rollout", ["prediction_only", "measurement_conditioned"])
-def test_information_after_a_reset_adds_as_a_fresh_start(planning_rollout):
-    torch.manual_seed(0)
-    z = torch.randn(1, 7, 2) + 1.0
-    p0 = torch.tensor([[0.9, 0.1], [0.1, 0.6]])
-    reset_after = torch.zeros(1, 7, 1)
-    reset_after[0, 3, 0] = 1.0
-
-    def information(model, fe, fz, states, mask=None):
-        metric = EmbeddingFisherMetric(model, Fe_net=fe, Fz_net=fz, device="cpu", gamma=1.0,
-                                       planning_rollout=planning_rollout, session_reset_variance=0.03)
-        rollout = {"model_state": states, "next_model_state": states.clone()}
-        if mask is not None:
-            rollout["session_reset_after"] = mask
-        return metric._rollout_parameter_information(rollout, fe, fz)
-
-    model, fe, fz = _information_problem(p0)
-    joint = information(model, fe, fz, z, reset_after)
-    prefix = information(model, fe, fz, z[:, :4])
-    fresh_model, fe, fz = _information_problem(0.03 * torch.eye(2))
-    suffix = information(fresh_model, fe, fz, z[:, 4:])
-    torch.testing.assert_close(joint, prefix + suffix)
-    no_reset = information(model, fe, fz, z)
-    assert not torch.allclose(joint, no_reset)
 
 
 def test_filter_reset_keeps_the_parameter_belief_and_clears_the_sensitivity():
@@ -403,6 +289,77 @@ def test_task_jobs_pair_every_controller_on_the_same_sessions():
                                                           ev.PROTOCOL["budgets"]["overturn"][0]}
 
 
+def test_first_passage_statistics_follow_the_task_rules():
+    from actdyn.utils.validation import update_decision_statistic
+
+    # Target lead over time: other pool decides first (path 0), target reaches 2.5 then falls
+    # back (path 1), target decides first and the other pool later (path 2), nobody decides (path 3).
+    leads = torch.tensor([[-2.5, 3.0, 3.0], [1.0, 2.5, -1.0], [2.5, -3.0, -3.0], [0.5, -1.0, 1.5]])
+    for objective, expected in (("reach", [3.0, 2.5, 2.5, 1.5]), ("first_decision", [-np.inf, 2.5, 2.5, 1.5])):
+        best = torch.full((4,), -float("inf"))
+        decided = torch.zeros(4, dtype=torch.bool)
+        for t in range(3):
+            best, decided = update_decision_statistic(best, decided, leads[:, t], objective=objective, threshold=2.0)
+        np.testing.assert_array_equal(best.numpy(), expected)
+    with pytest.raises(ValueError):
+        update_decision_statistic(best, decided, leads[:, 0], objective="terminal", threshold=2.0)
+
+
+def test_seed_pushes_spend_at_most_the_budget_toward_pool_two():
+    from experiments.tnsre import eval_spiking_sessions as ev
+
+    for window_left, budget in ((200, 0.5), (200, 1.0), (400, 12.0), (120, 12.0), (40, 0.07)):
+        pushes = ev.seed_pushes(window_left, budget, 0.05, 10)
+        assert pushes.shape == (6, window_left // 10, 2)
+        energy = 0.5 * np.sum(pushes ** 2, axis=(1, 2))  # coarse step = 10 bins of dt 0.05
+        assert np.all(energy <= budget + 1e-9) and np.all(np.abs(pushes) <= 1.0 + 1e-12)
+        assert np.all(pushes[..., 1] >= 0) and np.all(pushes[..., 0] <= 0)
+        np.testing.assert_allclose(energy[0], min(budget, 0.5 * (window_left // 10)))  # full push: all it can
+
+
+def test_carry_over_plan_returns_the_rest_in_planning_coordinates():
+    from experiments.tnsre.eval_spiking_sessions import carry_over_plan
+
+    fine = np.stack([np.arange(400.0), -np.arange(400.0)], axis=1)
+    rest = carry_over_plan((40, fine[40:]), 80, target=1, factor=10)  # plan made at bin 40, replan at 80
+    assert rest.shape == (32, 2)
+    np.testing.assert_array_equal(rest[0], fine[80])
+    np.testing.assert_array_equal(rest[1], fine[90])
+    np.testing.assert_array_equal(carry_over_plan((40, fine[40:]), 80, target=0, factor=10)[0], fine[80, ::-1])
+
+
+def test_warm_controller_paths_keep_the_fresh_results():
+    from pathlib import Path
+
+    from experiments.tnsre.eval_spiking_sessions import controller_paths
+
+    fresh, warm = controller_paths(Path("e"), "fresh"), controller_paths(Path("e"), "warm")
+    assert fresh == {"task": Path("e/task"), "summary": Path("e/task_summary.csv")}
+    assert warm == {"task": Path("e/task_warm"), "summary": Path("e/task_summary_warm.csv")}
+
+
+
+
+def _information_problem(p0):
+    a = torch.tensor([[0.1, 0.3], [-0.2, -0.1]])
+    b = torch.tensor([[1.0, 0.2], [0.1, 0.5]])
+    model = SimpleNamespace(
+        e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
+        z={"m": torch.zeros(1, 1, 2), "P": p0.unsqueeze(0)},
+        dynamics=SimpleNamespace(logvar=torch.log(torch.expm1(torch.tensor([[0.05, 0.02]])))),
+        decoder=LinearGaussianDecoder(torch.tensor([[1.0, 0.2], [0.0, 1.0]]), torch.diag(torch.tensor([0.5, 0.8]))),
+        dt=1.0,
+    )
+
+    def fe(z, e):
+        return z[..., :1, None] * b.to(z)
+
+    def fz(z, e):
+        return a.to(z).expand(*z.shape[:-1], 2, 2)
+
+    return model, fe, fz
+
+
 @pytest.mark.parametrize('bound', [.25, .5, 1.])
 def test_lower_action_bound_applies_to_fixed_pushes_and_planner_seeds(monkeypatch, bound):
     from experiments.tnsre import eval_spiking_sessions as ev
@@ -463,55 +420,6 @@ def test_control_dose_accounts_for_actual_neuron_weights():
     assert result['peak_neuron_current_pa'] == pytest.approx(15.)
     # dt_phys=.005 s; actual currents are [0,10,-2.5,-7.5] then [0,0,5,15] pA.
     assert result['total_squared_current_pa2_s'] == pytest.approx(.005 * (100 + 6.25 + 56.25 + 25 + 225))
-
-
-def test_first_passage_statistics_follow_the_task_rules():
-    from actdyn.utils.validation import update_decision_statistic
-
-    # Target lead over time: other pool decides first (path 0), target reaches 2.5 then falls
-    # back (path 1), target decides first and the other pool later (path 2), nobody decides (path 3).
-    leads = torch.tensor([[-2.5, 3.0, 3.0], [1.0, 2.5, -1.0], [2.5, -3.0, -3.0], [0.5, -1.0, 1.5]])
-    for objective, expected in (("reach", [3.0, 2.5, 2.5, 1.5]), ("first_decision", [-np.inf, 2.5, 2.5, 1.5])):
-        best = torch.full((4,), -float("inf"))
-        decided = torch.zeros(4, dtype=torch.bool)
-        for t in range(3):
-            best, decided = update_decision_statistic(best, decided, leads[:, t], objective=objective, threshold=2.0)
-        np.testing.assert_array_equal(best.numpy(), expected)
-    with pytest.raises(ValueError):
-        update_decision_statistic(best, decided, leads[:, 0], objective="terminal", threshold=2.0)
-
-
-def test_seed_pushes_spend_at_most_the_budget_toward_pool_two():
-    from experiments.tnsre import eval_spiking_sessions as ev
-
-    for window_left, budget in ((200, 0.5), (200, 1.0), (400, 12.0), (120, 12.0), (40, 0.07)):
-        pushes = ev.seed_pushes(window_left, budget, 0.05, 10)
-        assert pushes.shape == (6, window_left // 10, 2)
-        energy = 0.5 * np.sum(pushes ** 2, axis=(1, 2))  # coarse step = 10 bins of dt 0.05
-        assert np.all(energy <= budget + 1e-9) and np.all(np.abs(pushes) <= 1.0 + 1e-12)
-        assert np.all(pushes[..., 1] >= 0) and np.all(pushes[..., 0] <= 0)
-        np.testing.assert_allclose(energy[0], min(budget, 0.5 * (window_left // 10)))  # full push: all it can
-
-
-def test_carry_over_plan_returns_the_rest_in_planning_coordinates():
-    from experiments.tnsre.eval_spiking_sessions import carry_over_plan
-
-    fine = np.stack([np.arange(400.0), -np.arange(400.0)], axis=1)
-    rest = carry_over_plan((40, fine[40:]), 80, target=1, factor=10)  # plan made at bin 40, replan at 80
-    assert rest.shape == (32, 2)
-    np.testing.assert_array_equal(rest[0], fine[80])
-    np.testing.assert_array_equal(rest[1], fine[90])
-    np.testing.assert_array_equal(carry_over_plan((40, fine[40:]), 80, target=0, factor=10)[0], fine[80, ::-1])
-
-
-def test_warm_controller_paths_keep_the_fresh_results():
-    from pathlib import Path
-
-    from experiments.tnsre.eval_spiking_sessions import controller_paths
-
-    fresh, warm = controller_paths(Path("e"), "fresh"), controller_paths(Path("e"), "warm")
-    assert fresh == {"task": Path("e/task"), "summary": Path("e/task_summary.csv")}
-    assert warm == {"task": Path("e/task_warm"), "summary": Path("e/task_summary_warm.csv")}
 
 
 def test_task_evaluator_keeps_sensory_evidence_separate_from_control(monkeypatch):

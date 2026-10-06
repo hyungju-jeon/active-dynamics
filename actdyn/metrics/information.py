@@ -401,8 +401,6 @@ class EmbeddingFisherMetric(BaseMetric):
         self.boundary_visibility_enabled = bool(
             kwargs.get("boundary_visibility_enabled", False)
         )
-        # State variance after a decision-session reset (set by a session-aware planner).
-        self.session_reset_variance = float(kwargs.get("session_reset_variance", 0.01))
         self.boundary_type = str(kwargs.get("boundary_type", "none"))
         self.boundary_radius = kwargs.get("boundary_radius")
         self.boundary_margin = float(kwargs.get("boundary_margin", 1.0))
@@ -507,10 +505,7 @@ class EmbeddingFisherMetric(BaseMetric):
         Rollout states have shape (batch, horizon, latent_dim): ``model_state``
         supplies transition Jacobians and ``next_model_state`` supplies
         observation curvature. Score predictive covariance and sensitivity first,
-        then apply the selected measurement step before the next transition. An
-        optional ``session_reset_after`` mask (batch, horizon, 1) restarts the
-        sensitivity at zero and the covariance at ``session_reset_variance`` after
-        the marked steps.
+        then apply the selected measurement step before the next transition.
         """
         e_bel = self.model.e
         z_bel = self.model.z
@@ -578,13 +573,6 @@ class EmbeddingFisherMetric(BaseMetric):
         _, I_z_all, _, _ = diagonal_observation_information(decoder, z_next)
         I_z_all = I_z_all.to(self.device)
 
-        # Decision sessions: after a reset the state is known (small variance) and no
-        # longer depends on the parameters, so the sensitivity restarts at zero.
-        session_reset = _optional_rollout_field(rollout, "session_reset_after")
-        if session_reset is not None:
-            session_reset = session_reset.to(self.device).reshape(batch, T) > 0.5
-            reset_cov = self.session_reset_variance * eye_latent
-
         # Discounted accumulation of predicted parameter information.
         discounts = self.gamma ** torch.arange(T, device=self.device, dtype=z.dtype)
         J = torch.zeros(batch, d_embedding, d_embedding, device=self.device, dtype=z.dtype)
@@ -638,13 +626,6 @@ class EmbeddingFisherMetric(BaseMetric):
                 P_diag = _cov_diag(posterior_cov)
             else:
                 P_pred = posterior_cov
-            if session_reset is not None and bool(session_reset[:, i].any()):
-                reset_i = session_reset[:, i].view(batch, 1, 1)
-                S_sens = torch.where(reset_i, torch.zeros_like(S_sens), S_sens)
-                if self.diagonal_covariance:
-                    P_diag = torch.where(reset_i[:, :, 0], _cov_diag(reset_cov), P_diag)
-                else:
-                    P_pred = torch.where(reset_i, reset_cov, P_pred)
 
         return J
 

@@ -761,3 +761,41 @@ environments:
     extends: tbme_wong_wang_transfer_partial
     spiking_session_evidence_amplitude: 0.0
     spiking_session_evidence_bins: 0
+
+  # Updated manuscript: 20+20 observations, evidence trials 1-10, fixed trials 11-20.
+  tbme_ww_observation_logistic_uniform:
+    extends: tbme_ww_full_logistic_uniform
+    system_label: Updated manuscript / logistic_uniform / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_logistic_partial:
+    extends: tbme_ww_full_logistic_partial
+    system_label: Updated manuscript / logistic_partial / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_transfer_uniform:
+    extends: tbme_ww_full_transfer_uniform
+    system_label: Updated manuscript / transfer_uniform / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_transfer_partial:
+    extends: tbme_ww_full_transfer_partial
+    system_label: Updated manuscript / transfer_partial / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10

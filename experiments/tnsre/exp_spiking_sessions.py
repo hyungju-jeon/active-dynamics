@@ -6,8 +6,8 @@ The learner's drift is Wong-Wang with the input inside the transfer function
 (``wong_wang_inside_gain``). Each run is ``spiking_sessions`` (20) decision sessions: the circuit starts in the
 quiet state, the agent drives it until a decision (``|z1 - z2| > 2``), and 200 ms
 later, or after 2 s without a decision, the circuit resets. Agents are given the
-session rule: their filters jump to the known reset state and the iCEM planners
-simulate resets inside their rollouts. The run stops after the last session;
+session rule: their filters jump to the known reset state when it is reported;
+iCEM rollouts remain in the current session and do not simulate resets. The run stops after the last session;
 ``total_steps`` is only an upper bound (20 sessions x 400 bins).
 
 ``wong_wang_snn_sessions_m2_evidence`` adds sensory evidence to every session (6 pA to a
