@@ -37,7 +37,7 @@ class ScriptedNetwork:
         self.t = 0
         return self.latent_proxy()
 
-    def step(self, action: np.ndarray):
+    def step(self, action: np.ndarray, *, evidence=None):
         self.t += 1
         gap = self.rate * self.t
         z = np.array([-2.0 + gap, -2.0], dtype=np.float32)
@@ -89,9 +89,9 @@ class RecordingNetwork(ScriptedNetwork):
         super().__init__(rate)
         self.drives: list[np.ndarray] = []
 
-    def step(self, action: np.ndarray):
-        self.drives.append(np.asarray(action, dtype=np.float64).copy())
-        return super().step(action)
+    def step(self, action: np.ndarray, *, evidence=None):
+        self.drives.append(np.asarray(action, dtype=np.float64).copy() + (0 if evidence is None else evidence))
+        return super().step(action, evidence=evidence)
 
 
 def test_environment_adds_the_known_evidence_to_the_drive():
@@ -513,3 +513,153 @@ def test_evidence_sessions_then_fixed_sessions():
     evidence = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evidence"), 4.0)
     first = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evfirst_n20_5"), 4.0)
     assert first == replace(evidence, evidence_last_session=10, fixed_first_session=10)
+
+
+def _information_problem(p0):
+    a = torch.tensor([[0.1, 0.3], [-0.2, -0.1]])
+    b = torch.tensor([[1.0, 0.2], [0.1, 0.5]])
+    model = SimpleNamespace(
+        e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
+        z={"m": torch.zeros(1, 1, 2), "P": p0.unsqueeze(0)},
+        dynamics=SimpleNamespace(logvar=torch.log(torch.expm1(torch.tensor([[0.05, 0.02]])))),
+        decoder=LinearGaussianDecoder(torch.tensor([[1.0, 0.2], [0.0, 1.0]]), torch.diag(torch.tensor([0.5, 0.8]))),
+        dt=1.0,
+    )
+
+    def fe(z, e):
+        return z[..., :1, None] * b.to(z)
+
+    def fz(z, e):
+        return a.to(z).expand(*z.shape[:-1], 2, 2)
+
+    return model, fe, fz
+
+
+@pytest.mark.parametrize('bound', [.25, .5, 1.])
+def test_lower_action_bound_applies_to_fixed_pushes_and_planner_seeds(monkeypatch, bound):
+    from experiments.tnsre import eval_spiking_sessions as ev
+
+    monkeypatch.setitem(ev.PROTOCOL, 'action_max', bound)
+    dt, window = .05, 400
+    for budget in [0., .0037, *[b * bound**2 for b in (5., 10., 12., 15., 25.)]]:
+        expected = min(budget, dt * window * bound**2)
+        for name in ('front', 'spread'):
+            u = np.stack([ev.model_free_input(name, 'overturn', k, 1, budget, dt)
+                          for k in range(window + 2)])
+            assert np.linalg.norm(u, axis=-1).max() <= bound + 1e-12
+            assert dt * np.square(u).sum() == pytest.approx(expected, abs=1e-12)
+            assert not u[window:].any()
+        seeds = ev.seed_pushes(window, budget, dt, 10)
+        assert np.linalg.norm(seeds, axis=-1).max() <= bound + 1e-12
+        np.testing.assert_allclose(10 * dt * np.square(seeds).sum(axis=(1, 2)), expected, atol=1e-12)
+
+
+def test_task_icem_passes_the_reduced_bound_to_candidate_projection(monkeypatch):
+    from experiments.tnsre import eval_spiking_sessions as ev
+    from actdyn.utils import validation
+
+    monkeypatch.setitem(ev.PROTOCOL, 'action_max', .25)
+    calls = []
+
+    def capture(transition, z0, drive, **kw):
+        calls.append(kw)
+        return {'u': np.zeros((kw['window'], 2))}
+
+    monkeypatch.setattr(validation, 'icem_reversal_plan', capture)
+    model = object.__new__(ev.IcemController)
+    model.m, model.dt, model.seed = np.zeros(2), .05, 91000
+    model.warm_start, model._last_plan = False, None
+    model.transition = {'plan': None}
+    model.plan('overturn', 120, 0, 1, 0, .75)
+    assert calls[0]['action_max'] == .25
+    assert np.linalg.norm(calls[0]['seed_candidates'], axis=-1).max() <= .25 + 1e-12
+
+
+def test_task_loop_rejects_a_controller_that_exceeds_the_reduced_bound(monkeypatch):
+    from experiments.tnsre import eval_spiking_sessions as ev
+
+    monkeypatch.setitem(ev.PROTOCOL, 'action_max', .25)
+    model = SimpleNamespace(observe=lambda *args: None,
+                            plan=lambda *args: np.tile([.3, 0.], (400, 1)))
+    with pytest.raises(RuntimeError, match='action bound'):
+        ev.run_task_session(ScriptedNetwork(rate=3.), 'overturn', 91000, .75, 'icem', model)
+
+
+def test_control_dose_accounts_for_actual_neuron_weights():
+    from experiments.tnsre.wong_wang_budget import control_costs
+
+    trace = [{'u': [.25, -.25]}, {'u': [0., .5]}]
+    weights = np.array([[0., 2.], [.5, 1.5]])
+    result = control_costs(trace, weights, .05)
+    assert result['peak_action_norm'] == pytest.approx(.5)
+    assert result['peak_neuron_current_pa'] == pytest.approx(15.)
+    # dt_phys=.005 s; actual currents are [0,10,-2.5,-7.5] then [0,0,5,15] pA.
+    assert result['total_squared_current_pa2_s'] == pytest.approx(.005 * (100 + 6.25 + 56.25 + 25 + 225))
+
+
+def test_task_evaluator_keeps_sensory_evidence_separate_from_control(monkeypatch):
+    from experiments.tnsre import eval_spiking_sessions as ev
+
+    class RecordingNetwork:
+        dt_latent = .05
+
+        def reset(self, seed):
+            self.calls = []
+            return np.array([-2., -2.])
+
+        def step(self, action, *, evidence):
+            self.calls.append((np.asarray(action), np.asarray(evidence)))
+            # First bin decides pool 1; second bin reverses the choice.
+            state = np.array([1., -2.]) if len(self.calls) == 1 else np.array([-2., 1.])
+            return np.zeros(2), state
+
+    net = RecordingNetwork()
+    result = ev.run_task_session(net, 'overturn', 91000, 12., 'front', None)
+    assert result['valid'] == 1 and result['success'] == 1
+    np.testing.assert_allclose(net.calls[0][0], [0., 0.])
+    assert net.calls[0][1].sum() == pytest.approx(.3)
+    np.testing.assert_allclose(net.calls[1][0], ev.target_direction(1))
+    np.testing.assert_allclose(net.calls[1][1], net.calls[0][1])
+
+
+def test_full_wong_wang_training_presets_have_no_evidence():
+    from experiments.tnsre.wong_wang_full import TRAIN_ARMS, SUITES
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+    from experiments.experiment_definitions import get_environment_preset
+
+    configure_tbme_catalogs(suite_entries=SUITES)
+    for arm in TRAIN_ARMS:
+        p = get_environment_preset(f'tbme_ww_full_{arm}')
+        assert p.spiking_session_evidence_amplitude == 0
+        assert p.spiking_session_evidence_bins == 0
+        assert p.spiking_evidence_mode == 'current'
+        assert p.spiking_sessions == 20
+        assert len(SUITES[arm]['model_ids']) == 6
+
+
+def test_numerical_controller_failure_keeps_valid_task_in_denominator():
+    from experiments.tnsre.wong_wang_full import failed_control_outcome
+
+    trace = [{'u': [0., 0.], 'z': [-2., 1.]}, {'u': [.5, -.5], 'z': [-1., 1.]}]
+    result = failed_control_outcome(trace, seed=91000, dt=.05)
+    assert result['valid'] == 1 and result['success'] == 0
+    assert result['target'] == 0 and result['onset'] == 1
+    assert result['energy'] == pytest.approx(.025)
+    # A physical reversal already observed in the failed bin remains a success.
+    trace[-1]['z'] = [1., -2.]
+    result = failed_control_outcome(trace, seed=91000, dt=.05)
+    assert result['success'] == 1 and result['outcome_bin'] == 2
+
+
+def test_predecision_failure_requires_independent_task_validity():
+    from experiments.tnsre.wong_wang_full import failed_control_outcome
+
+    trace = [{'u': [0., 0.], 'z': [-2., -2.]}]
+    with pytest.raises(ValueError, match='uncontrolled validity'):
+        failed_control_outcome(trace, seed=91000, dt=.05)
+    result = failed_control_outcome(trace, seed=91000, dt=.05,
+                                   baseline={'valid': 1, 'onset': 120, 'target': 0})
+    assert result['valid'] == 1 and result['success'] == 0 and result['onset'] == 120
+    result = failed_control_outcome(trace, seed=91000, dt=.05,
+                                   baseline={'valid': 0, 'onset': -1, 'target': -1})
+    assert result['valid'] == 0 and result['success'] == 0

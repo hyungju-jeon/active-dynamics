@@ -854,3 +854,100 @@ environments:
     observation_dim: 25
     spiking_observed_per_pool: 20
     spiking_observed_pool2: 5
+  # Separate input ablations. Partial targeting preserves total pool current;
+  # individual peaks and squared-current dose increase and must be reported.
+  tbme_wong_wang_logistic_partial:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    spiking_stim_fraction: 0.5
+    spiking_stim_weight_cv: 0.25
+    spiking_stim_mask_seed: 87000
+
+  tbme_wong_wang_logistic_synaptic:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    spiking_evidence_mode: poisson
+
+  tbme_wong_wang_logistic_both:
+    extends: tbme_wong_wang_logistic_partial
+    spiking_evidence_mode: poisson
+
+  tbme_wong_wang_transfer:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    system_label: Wong-Wang transfer / spiking network
+    dynamics_type: wong_wang_transfer
+    estimator_dynamics_type: wong_wang_transfer
+    # Published Appendix mapping, NOT a fit to this SNN or biological truth.
+    true_params: [1.808037, 0.344421, 1.293138, -0.661183, -1.906063]
+    estimator_true_params: [1.808037, 0.344421, 1.293138, -0.661183, -1.906063]
+    # A generic prior, not the fitted or published parameters.
+    initial_parameter_mean: [0.0, 0.0, 0.0, -0.661183, 0.0]
+
+  tbme_wong_wang_transfer_partial:
+    extends: tbme_wong_wang_transfer
+    spiking_stim_fraction: 0.5
+    spiking_stim_weight_cv: 0.25
+    spiking_stim_mask_seed: 87000
+
+  tbme_wong_wang_transfer_synaptic:
+    extends: tbme_wong_wang_transfer
+    spiking_evidence_mode: poisson
+
+  tbme_wong_wang_transfer_both:
+    extends: tbme_wong_wang_transfer_partial
+    spiking_evidence_mode: poisson
+
+  # Full manuscript identification: no sensory evidence during training.
+  tbme_ww_full_logistic_uniform:
+    extends: tbme_wong_wang_snn_sessions_m2
+
+  tbme_ww_full_logistic_partial:
+    extends: tbme_wong_wang_logistic_partial
+    spiking_session_evidence_amplitude: 0.0
+    spiking_session_evidence_bins: 0
+
+  tbme_ww_full_transfer_uniform:
+    extends: tbme_wong_wang_transfer
+    spiking_session_evidence_amplitude: 0.0
+    spiking_session_evidence_bins: 0
+
+  tbme_ww_full_transfer_partial:
+    extends: tbme_wong_wang_transfer_partial
+    spiking_session_evidence_amplitude: 0.0
+    spiking_session_evidence_bins: 0
+
+  # Updated manuscript: 20+20 observations, evidence trials 1-10, fixed trials 11-20.
+  tbme_ww_observation_logistic_uniform:
+    extends: tbme_ww_full_logistic_uniform
+    system_label: Updated manuscript / logistic_uniform / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_logistic_partial:
+    extends: tbme_ww_full_logistic_partial
+    system_label: Updated manuscript / logistic_partial / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_transfer_uniform:
+    extends: tbme_ww_full_transfer_uniform
+    system_label: Updated manuscript / transfer_uniform / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_transfer_partial:
+    extends: tbme_ww_full_transfer_partial
+    system_label: Updated manuscript / transfer_partial / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10

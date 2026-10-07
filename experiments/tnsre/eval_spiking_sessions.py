@@ -90,6 +90,7 @@ PROTOCOL: dict[str, Any] = {
     "task_sessions": 8,                        # task sessions per task
     "task_seeds": {"force": 90000, "overturn": 91000},
     "evidence_amplitude": 0.3,                 # 6 pA in action units (x 20 pA)
+    "action_max": 1.0,                        # L2 norm bound on the two control inputs
     "evidence_bins": 200,
     "decision_gap": 2.0,
     "max_session_bins": 400,
@@ -155,6 +156,11 @@ def build_network(seed: int = 0, preset_id: str = PRESET_ID):
         observed_per_pool=observed_counts(p),
         background_rate_hz=float(p.spiking_background_rate_hz), seed=int(seed),
         codegen_target=str(p.spiking_codegen_target),
+        stim_fraction=float(p.spiking_stim_fraction),
+        stim_weight_cv=float(p.spiking_stim_weight_cv),
+        stim_mask_seed=int(p.spiking_stim_mask_seed),
+        evidence_mode=str(p.spiking_evidence_mode),
+        evidence_reference_mv=float(p.spiking_evidence_reference_mv),
     )
 
 
@@ -297,10 +303,12 @@ def model_free_input(name: str, task: str, k: int, target: int, budget: float, d
     window = int(PROTOCOL["window"][task])
     if name == "none" or k >= window:
         return np.zeros(2)
+    bound = float(PROTOCOL["action_max"])
     if name == "spread":
-        return min(1.0, float(np.sqrt(budget / (dt * window)))) * target_direction(target)
+        return min(bound, float(np.sqrt(budget / (dt * window)))) * target_direction(target)
     if name == "front":
-        return target_direction(target) if k < int(budget / dt + 1e-9) else np.zeros(2)
+        remaining = max(float(budget) - k * dt * bound**2, 0.0)
+        return min(bound, float(np.sqrt(remaining / dt))) * target_direction(target)
     raise ValueError(f"unknown model-free controller {name!r}")
 
 
@@ -314,12 +322,14 @@ def seed_pushes(window_left: int, budget_left: float, dt: float, factor: int) ->
     hc = int(window_left) // int(factor)
     coarse_dt = float(dt) * int(factor)
     directions = (np.array([-1.0, 1.0]) / np.sqrt(2.0), np.array([0.0, 1.0]), np.array([-1.0, 0.0]))
-    n_full = min(hc, int(np.floor(float(budget_left) / coarse_dt + 1e-9)))
+    bound = float(PROTOCOL["action_max"])
+    step_cost = coarse_dt * bound**2
+    n_full = min(hc, int(np.floor(float(budget_left) / step_cost + 1e-9)))
     front = np.zeros(hc)
-    front[:n_full] = 1.0
+    front[:n_full] = bound
     if n_full < hc:
-        front[n_full] = np.sqrt(max(float(budget_left) - n_full * coarse_dt, 0.0) / coarse_dt)
-    even = np.full(hc, min(1.0, float(np.sqrt(float(budget_left) / (coarse_dt * hc)))))
+        front[n_full] = min(bound, np.sqrt(max(float(budget_left) - n_full * step_cost, 0.0) / coarse_dt))
+    even = np.full(hc, min(bound, float(np.sqrt(float(budget_left) / (coarse_dt * hc)))))
     return np.stack([shape[:, None] * d[None, :] for d in directions for shape in (front, even)])
 
 
@@ -383,7 +393,7 @@ class IcemController:
             seeds = np.concatenate([seeds, carry_over_plan(self._last_plan, k, target, factor)[None]], axis=0)
         out = icem_reversal_plan(
             self.transition["plan"], z0, drive, dt=self.dt, window=window_left, coarse_factor=factor,
-            budget=float(budget_left), action_max=1.0, noise_var=float(PROTOCOL["planner_noise_var"]),
+            budget=float(budget_left), action_max=float(PROTOCOL["action_max"]), noise_var=float(PROTOCOL["planner_noise_var"]),
             objective=str(PROTOCOL["planner_objective"][task]), success_gap=float(PROTOCOL["decision_gap"]),
             mc_samples=int(PROTOCOL["planner_mc_samples"]), mc_seed=self.seed, action_seed=self.seed * 1000 + int(k),
             num_samples=int(PROTOCOL["icem_num_samples"]), num_elites=int(PROTOCOL["icem_num_elites"]),
@@ -414,7 +424,7 @@ def run_task_session(net, task: str, seed: int, budget: float, controller: str,
     if task == "overturn":
         while t < int(PROTOCOL["max_session_bins"]):
             drive = evidence_drive(t, pool)
-            counts, z = net.step(drive)
+            counts, z = net.step(np.zeros(2), evidence=drive)
             if model is not None:
                 model.observe(counts, drive)
             if trace is not None:
@@ -447,13 +457,15 @@ def run_task_session(net, task: str, seed: int, budget: float, controller: str,
                     plan = None
                 if plan is not None:
                     u = plan[k - plan_k]
+            if not np.isfinite(u).all() or np.linalg.norm(u) > float(PROTOCOL["action_max"]) + 1e-6:
+                raise RuntimeError(f"Control violates action bound: {u}")
             step_energy = dt * float(u @ u)
             if energy + step_energy > budget:  # numerical guard; plans are budget-projected
                 u = u * np.sqrt(max(budget - energy, 0.0) / max(step_energy, 1e-12))
                 step_energy = dt * float(u @ u)
             energy += step_energy
         drive = evidence_drive(t, pool) + u
-        counts, z = net.step(drive)
+        counts, z = net.step(u, evidence=evidence_drive(t, pool))
         if model is not None:
             model.observe(counts, drive)
         if trace is not None:

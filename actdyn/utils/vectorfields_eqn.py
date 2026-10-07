@@ -1290,3 +1290,64 @@ class WongWangInsideGain(WongWang):
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         """Latent drift without input, shape (..., 2)."""
         return self.compute_with_input(x, torch.zeros_like(x))
+
+
+def wong_wang_activation(q: torch.Tensor) -> torch.Tensor:
+    """Return q / (1 - exp(-q)), preserving floating dtype and shape.
+
+    Wong & Wang (2006), Appendix: H(I) = activation(d * (a * I - b)) / d.
+    The series gives the removable value 1 and derivative 1/2 at q = 0.
+    Both exponential branches stay finite, including inactive autograd branches.
+    """
+    cutoff = 1e-3
+    positive = q.clamp_min(cutoff)
+    negative = q.clamp_max(-cutoff)
+    small = q.clamp(-cutoff, cutoff)
+    series = 1 + small / 2 + small.square() / 12 - small.pow(4) / 720
+    return torch.where(
+        q > cutoff, positive / -torch.expm1(-positive),
+        torch.where(q < -cutoff, negative * torch.exp(negative) / torch.expm1(negative), series),
+    )
+
+
+class WongWangTransfer(WongWangInsideGain):
+    """Two NMDA gates with the published Wong-Wang transfer, without logistic saturation.
+
+    For float state/input (..., 2), return dz/d(t/tau_N), with z = 4(s - 1/2):
+        q_i = 6 * (w_plus*c_i - w_minus*c_j + h_raw/6 + softplus(g_raw)*u_i)
+        dz_i/d(t/tau_N) = 4 * [-s_i + (1-s_i)*softplus(gamma_raw)*q_i/(1-exp(-q_i))]
+
+    The same five effective coordinates as the logistic learner permit a matched
+    response-family ablation. Here gamma scales an unbounded response, not a
+    maximum rate. Published Appendix values map to beta*w = d*a*J,
+    h_raw = d*(a*(I0 + (J_self-J_cross)/2)-b), gamma = tau_N*gamma_N/d,
+    and beta*g = d*a*0.020 (input unit: 20 pA). Recurrent AMPA remains in the
+    generating SNN, so this Appendix reduction is still an approximate learner.
+    """
+
+    def __init__(self, dyn_param=None, device: str = "cpu", **kwargs):
+        if dyn_param is None:
+            a, b, d = 270.0, 108.0, 0.154
+            j_self, j_cross, i0 = 0.2609, 0.0497, 0.3255  # nA
+            dyn_param = [
+                d * a * j_self / 6, d * a * j_cross / 6,
+                d * (a * (i0 + (j_self - j_cross) / 2) - b),
+                float(np.log(np.expm1(0.1 * 0.641 / d))),
+                float(np.log(np.expm1(d * a * 0.020 / 6))),
+            ]
+        super().__init__(dyn_param=dyn_param, device=device, **kwargs)
+
+    def compute_with_input(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Compute the transfer-based latent drift for floating state/input (..., 2)."""
+        w_plus = self._broadcast_param(self.w_plus, x)
+        w_minus = self._broadcast_param(self.w_minus, x)
+        h = self._broadcast_param(self.h_raw, x) / self.beta
+        gamma = torch.nn.functional.softplus(self._broadcast_param(self.gamma_raw, x))
+        g = torch.nn.functional.softplus(self._broadcast_param(self.g_raw, x))
+        u = torch.as_tensor(u, dtype=x.dtype, device=x.device).expand_as(x)
+        c = x / self.state_scale
+        q = self.beta * (w_plus.unsqueeze(-1) * c - w_minus.unsqueeze(-1) * c.flip(-1)
+                         + h.unsqueeze(-1) + g.unsqueeze(-1) * u)
+        s = c + 0.5
+        return self.alpha * self.state_scale * (-s + (1 - s) * gamma.unsqueeze(-1)
+                                                * wong_wang_activation(q)) / self.tau

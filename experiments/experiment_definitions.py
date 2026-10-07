@@ -82,6 +82,11 @@ class EnvironmentPreset:
     spiking_w_plus: float = 1.7
     spiking_sim_dt_ms: float = 0.1
     spiking_stim_gain_pa: float = 20.0
+    spiking_stim_fraction: float = 1.0
+    spiking_stim_weight_cv: float = 0.0
+    spiking_stim_mask_seed: int = 0
+    spiking_evidence_mode: str = "current"
+    spiking_evidence_reference_mv: float = -55.0
     spiking_observed_per_pool: int = 40
     spiking_observed_pool2: int | None = None  # neurons recorded from pool 2 (None: as pool 1)
     spiking_background_rate_hz: float = 2400.0
@@ -764,6 +769,11 @@ def load_catalog_bundle(
             spiking_w_plus=float(spec.get("spiking_w_plus", 1.7)),
             spiking_sim_dt_ms=float(spec.get("spiking_sim_dt_ms", 0.1)),
             spiking_stim_gain_pa=float(spec.get("spiking_stim_gain_pa", 20.0)),
+            spiking_stim_fraction=float(spec.get("spiking_stim_fraction", 1.0)),
+            spiking_stim_weight_cv=float(spec.get("spiking_stim_weight_cv", 0.0)),
+            spiking_stim_mask_seed=int(spec.get("spiking_stim_mask_seed", 0)),
+            spiking_evidence_mode=str(spec.get("spiking_evidence_mode", "current")),
+            spiking_evidence_reference_mv=float(spec.get("spiking_evidence_reference_mv", -55.0)),
             spiking_observed_per_pool=int(spec.get("spiking_observed_per_pool", 40)),
             spiking_observed_pool2=(None if spec.get("spiking_observed_pool2") is None
                                     else int(spec["spiking_observed_pool2"])),

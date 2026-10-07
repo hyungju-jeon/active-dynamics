@@ -237,3 +237,11 @@ models:
     action_constraint: radius
     coarse_dt_factor: 20
     coarse_action_mapping: hold
+
+  # SNN manuscript PALDI: 200 ms horizon, 10 ms planning steps, 15 ms minimum cadence.
+  adaptive_c2h20:
+    extends: adaptive
+    coarse_dt_factor: 2
+    planning_horizon: 20
+    adaptive_update_min_interval: 3
+    adaptive_replan_min_interval: 3

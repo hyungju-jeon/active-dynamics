@@ -343,6 +343,22 @@ class FlexWongWangInsideGainModel(FlexWongWangModel):
         return torch.stack(rows).detach().numpy().astype(np.float64)
 
 
+class FlexWongWangTransferModel(FlexWongWangInsideGainModel):
+    """FLEX adapter for the published Wong-Wang response, with five coefficients."""
+
+    def forward(self, z):
+        from actdyn.utils.vectorfields_eqn import wong_wang_activation
+
+        params = self._full_params(dtype=z.dtype, device=z.device)
+        c = z[:, :2] / self.state_scale
+        u = z[:, 2:4] + self.input_offset.to(dtype=z.dtype, device=z.device)
+        gamma = torch.nn.functional.softplus(params[3])
+        g = torch.nn.functional.softplus(params[4])
+        q = self.beta * (params[0] * c - params[1] * c.flip(-1) + params[2] / self.beta + g * u)
+        ds = (-(c + 0.5) + (0.5 - c) * gamma * wong_wang_activation(q)) / self.tau
+        return self.alpha * self.state_scale * ds
+
+
 def build_flex_model(
     *,
     env_preset: Any,
@@ -376,6 +392,8 @@ def build_flex_model(
         return FlexWongWangModel(**kwargs)
     if dynamics_type == "wong_wang_inside_gain":
         return FlexWongWangInsideGainModel(**kwargs)
+    if dynamics_type == "wong_wang_transfer":
+        return FlexWongWangTransferModel(**kwargs)
     raise ValueError(f"Official FLEX wrapper does not support dynamics_type={dynamics_type!r}")
 
 
