@@ -27,8 +27,8 @@ from .assets import (
 from .theme import style_axis
 
 ROOT = Path(__file__).resolve().parents[3]
-SOURCE = ROOT / "results/tnsre/20260930_wilson_cowan_1972_u3_signed/tracks/wilson_cowan"
-OUTPUT = ROOT / "results/tnsre/20260930_wilson_cowan_1972_u3_signed/exploration"
+SOURCE = ROOT / "results/tnsre/20261007_tnsre_ball_rerun/tracks/wilson_cowan"
+OUTPUT = ROOT / "results/tnsre/20261007_tnsre_ball_rerun/exploration"
 WIDTH = 516 / 72.27
 # Visit-map domain [-7.5, 7.5]^2: the additive input moves states beyond the rate range
 # (z < -2 is a negative rate), and the grid must enclose every saved state (--half-width).
