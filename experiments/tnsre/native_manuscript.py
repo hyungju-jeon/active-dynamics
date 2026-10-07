@@ -113,6 +113,27 @@ def examples(root, out):
         for key in ['valid', 'target', 'onset', 'success', 'outcome_bin', 'energy']:
             np.testing.assert_allclose(row[key], expected.iloc[0][key], rtol=1e-5, atol=1e-6)
     write_json(out/'example_verification.json', dict(passed=True, rows=len(new), task_seed=91000, training_seed=0))
+    # The phase panel uses the same preselected trial plus constant-amplitude input.
+    net = ev.build_network(preset_id=ev.PRESET_ID)
+    trace = []
+    try:
+        spread = ev.run_task_session(net, 'overturn', 91000, 12., 'spread', None, trace)
+    finally:
+        net.close()
+    expected = old[(old.policy == 'spread') & (old.budget == 12.) & (old.task_seed == 91000)]
+    assert len(expected) == 1
+    for key in ['valid', 'target', 'onset', 'success', 'outcome_bin', 'energy']:
+        np.testing.assert_allclose(spread[key], expected.iloc[0][key], rtol=1e-5, atol=1e-6)
+    phase = out/'control_phase'; phase.mkdir()
+    arrays = np.load(out/'examples/example_sessions.npz')
+    np.savez(phase/'adaptive.npz', **{k: arrays[f'overturn_learned_{k}'] for k in ('z','u','evidence')})
+    np.savez(phase/'spread.npz', **{k: np.stack([r[k] for r in trace]) for k in ('z','u','evidence')})
+    learned = new[new.controller == 'learned'].iloc[0].to_dict()
+    write_json(phase/'manifest.json', dict(verified=True, training_seed=0, task_seed=91000,
+        checkpoint=20, budget_normalized=12., budget_pa2_s=480.,
+        records=[dict(policy='adaptive', **learned), dict(policy='spread', **spread)],
+        inputs={str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
+                for p in (root/'eval/task_warm').glob('worker_*.csv')}))
 
 
 def campaign(a):
