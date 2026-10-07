@@ -9,6 +9,25 @@ from experiments.experiment_definitions import get_environment_preset,get_policy
 from actdyn.environment.spiking_decision import SpikingDecisionEnv,session_rule_from_preset
 
 
+@pytest.mark.parametrize('arm',study.ARMS)
+def test_real_flex_dependency_generates_finite_bounded_controls(arm):
+    import gymnasium as gym
+    import torch
+    from actdyn.policy.baseline_flex import FLEXPolicy
+    configure_tbme_catalogs(suite_entries=study.SUITES)
+    p=get_environment_preset(f'tbme_ww_observation_{arm}')
+    policy=FLEXPolicy(
+        action_space=gym.spaces.Box(-1.,1.,shape=(2,),dtype=np.float32),
+        model=SimpleNamespace(),env_preset=p,
+        initial_parameter_mean=torch.tensor(p.initial_parameter_mean),
+        rollback_unstable_update=True,
+    )
+    policy.reset_policy_state(seed=0)
+    action=policy._flex_agent.policy(np.array([-2.,-2.]),0)
+    assert action.shape==(2,) and np.isfinite(action).all()
+    assert np.linalg.norm(action)==pytest.approx(p.action_max,rel=1e-5)
+
+
 def test_updated_presets_change_observation_and_trial_protocol_without_changing_inputs():
     configure_tbme_catalogs(suite_entries=study.SUITES)
     for arm in study.ARMS:

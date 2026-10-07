@@ -108,6 +108,9 @@ def worker(a):
 
 def campaign(a):
     """One VM per arm, eight bounded worker processes, durable immutable job records."""
+    # Check the real baseline dependency before spending time on any training.
+    from actdyn.policy.baseline_flex import _flex_policy_class
+    _flex_policy_class()
     root=a.root.resolve();root.mkdir(parents=True,exist_ok=True)
     ledger=root/'jobs.json';records=json.loads(ledger.read_text()) if ledger.exists() else {};lock=threading.Lock()
     env=os.environ|{k:'1' for k in ['OMP_NUM_THREADS','OPENBLAS_NUM_THREADS','MKL_NUM_THREADS','NUMEXPR_NUM_THREADS']}|{'PYTHONUNBUFFERED':'1','MPLBACKEND':'Agg'}
