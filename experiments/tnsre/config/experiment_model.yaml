@@ -68,6 +68,7 @@ models:
     replan_interval: 20
     planning_horizon: 20
     policy_type: rhc
+    action_constraint: radius   # ball ||u|| <= action_max, as every TBME policy
 
 
   prbs:
@@ -76,6 +77,15 @@ models:
     planning_horizon: 1
     policy_type: baseline-prbs
     passive: true
+    action_constraint: radius   # levels +-action_max / sqrt(2) per input: on the ball
+
+  random:
+    # The shared catalog's random policy (schedule u1_r1_h1) with the ball constraint: inputs uniform in
+    # ||u|| <= action_max, as every TBME policy.
+    schedule_id: u1_r1_h1
+    policy_type: random
+    passive: true
+    action_constraint: radius
 
 
 # Schedule Experiment

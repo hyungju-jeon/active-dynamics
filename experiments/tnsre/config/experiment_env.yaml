@@ -485,6 +485,14 @@ environments:
     system_id: wilson_cowan
     system_label: Wilson-Cowan E-I population
     dynamics_type: wilson_cowan_1972
+    # No boundary correction (inward drift, projection onto ||z|| <= 8, information visibility) for
+    # Wilson-Cowan: its states stay well inside the boundary (largest norm 6.6 with the additive input,
+    # 4.6 with the input inside the sigmoids). The synthetic systems keep it.
+    boundary_enabled: false
+    boundary_type: none
+    boundary_barrier_enabled: false
+    boundary_projection_enabled: false
+    information_boundary_visibility_enabled: false
     embedding_dim: 4
     min_embedding_dim: 4
     initial_parameter_variance: 1.0
