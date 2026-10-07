@@ -118,7 +118,7 @@ def _predictive_only_embedding_step(model: Any, action: Any) -> dict[str, Any]:
         '_normalize_embedding_belief',
         '_ensure_state_belief_shapes',
         'dynamics',
-        'Fz',
+        '_jac_state',
         'predict',
         '_project_spd',
         'z',
@@ -139,7 +139,7 @@ def _predictive_only_embedding_step(model: Any, action: Any) -> dict[str, Any]:
         u_enc = model.action_encoder(action_bt, model.z['m'])
     else:
         u_enc = action_bt
-    fz = model.Fz(model.z['m'], model.e['m'])
+    fz = model._jac_state(model.z['m'], model.e['m'], u_enc)
     dfdz = fz * model.dt + eye
     pred_m = model.predict(action=u_enc)
     pred_cov = model._project_spd(dfdz @ model.z['P'] @ dfdz.transpose(-1, -2) + q + 1e-6 * eye)

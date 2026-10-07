@@ -20,6 +20,8 @@ Right block, one column per observation condition of the degraded-observation st
   (B); shading marks the input pulse that switches it from the down to the up state.
 
 All quantities come from the environment presets; no experiment results are read.
+``generate_wilson_cowan_figure`` takes the three condition presets and the example pulse, so
+the same figure can show other settings (for example the input inside the sigmoids).
 """
 
 from __future__ import annotations
@@ -82,7 +84,11 @@ def _preset(env_id: str) -> Any:
 
 
 class _Model:
-    """True Wilson-Cowan drift v(z) and one environment step z + dt (v(z) + u), batched over rows."""
+    """True Wilson-Cowan drift v(z) and one environment step, batched over rows.
+
+    The step is z + dt (v(z) + u) for the additive input and z + dt f(z, u) for input-dependent
+    fields (input inside the sigmoids), as in the environment.
+    """
 
     def __init__(self, preset: Any) -> None:
         self.preset = preset
@@ -99,7 +105,10 @@ class _Model:
         return residual_np(self.kind, z.reshape(-1, 2), self.theta, dynamics_alpha=1.0).reshape(z.shape)
 
     def step(self, z: np.ndarray, u: np.ndarray) -> np.ndarray:
-        return np.clip(z + self.dt * (self.drift(z) + u), -self.clip, self.clip)
+        from actdyn.environment.vectorfield import step_np
+
+        return step_np(self.kind, z, u, dyn_params=self.theta, dt=self.dt, dynamics_alpha=1.0,
+                       clip_limit=self.clip)
 
     def jacobian(self, z: np.ndarray, h: float = 1e-5) -> np.ndarray:
         """d v / d z at one state ``z`` (2,), central differences."""
@@ -166,21 +175,22 @@ def _simulate(model: _Model, z0: np.ndarray, u: np.ndarray, rng: np.random.Gener
     return z
 
 
-def _example(model: _Model, down: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _example(model: _Model, down: np.ndarray, pulses: tuple, seed: int) -> tuple[np.ndarray, np.ndarray]:
     u = np.zeros((int(EXAMPLE["steps"]), 2))
-    for start, stop, u_e, u_i in EXAMPLE["pulses"]:
+    for start, stop, u_e, u_i in pulses:
         u[start:stop] = (u_e, u_i)
-    return _simulate(model, down, u, np.random.default_rng(int(EXAMPLE["seed"]))), u
+    return _simulate(model, down, u, np.random.default_rng(int(seed))), u
 
 
 def _passive_density(model: _Model) -> tuple[np.ndarray, np.ndarray, float]:
     """Smoothed histogram of passive states and the level that encloses ``PASSIVE['mass']`` of them.
 
-    Starts are the preset's initial-state distribution (uniform on [-2, 2]^2); no input.
+    Starts are the preset's run start states (its start box if set, else uniform on [-2, 2]^2);
+    no input.
     """
     from scipy.ndimage import gaussian_filter
 
-    z = np.stack([model.preset.sample_initial_state(s) for s in range(int(PASSIVE["n_trajectories"]))])
+    z = np.stack([model.preset.sample_start_state(s) for s in range(int(PASSIVE["n_trajectories"]))])
     z = z.astype(np.float64)
     rng = np.random.default_rng(0)
     noise = np.sqrt(model.q * model.dt)
@@ -340,16 +350,20 @@ def _title(fig: Any, text: str, left: float, right: float, y: float) -> None:
              fontsize=_ASSET_LABEL_SIZE)
 
 
-def generate_wilson_cowan_figure(output: Path) -> Path:
-    model = _Model(_preset(ENV_DEFAULT))
+def generate_wilson_cowan_figure(output: Path, *, conditions: tuple = CONDITIONS,
+                                  pulses: tuple = EXAMPLE["pulses"], seed: int = EXAMPLE["seed"]) -> Path:
+    """Draw Fig. 3. ``conditions``: three (preset id, label) pairs, the first one also gives the
+    dynamics of the left block; ``pulses``: (start, stop, u_E, u_I) of the example input;
+    ``seed``: noise seed of the example trajectory."""
+    model = _Model(_preset(conditions[0][0]))
     fixed = _fixed_points(model)
     saddle = next(z for z, stable in fixed if not stable)
     separatrix = _separatrix(model, saddle, limit=MAP_LIM)
     down = min((z for z, stable in fixed if stable), key=lambda z: z[0])
     up = max((z for z, stable in fixed if stable), key=lambda z: z[0])
-    traj, _u = _example(model, down)
+    traj, _u = _example(model, down, pulses, seed)
     centers, density, level = _passive_density(model)
-    loadings = {env: _loading(env) for env, _label in CONDITIONS}
+    loadings = {env: _loading(env) for env, _label in conditions}
     preset = model.preset
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
@@ -430,14 +444,14 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     _title(fig, "Parameter sensitivity", c_left, c_right, c_bottom + c_size + 0.05)
 
     # Right block: one column per observation condition.
-    cols = [RIGHT["x0"] + (RIGHT["col"] + RIGHT["gap"]) * k for k in range(len(CONDITIONS))]
+    cols = [RIGHT["x0"] + (RIGHT["col"] + RIGHT["gap"]) * k for k in range(len(conditions))]
     r_left, r_right = cols[0], cols[-1] + RIGHT["col"]
     letter_x = r_left - 0.42
 
     # (D) loading directions, one compass per condition on one scale.
     d_bottom, d_height = RIGHT["d"]
-    reach = max(float(np.max(np.linalg.norm(loadings[env][0], axis=1))) for env, _l in CONDITIONS)
-    for k, (env, label) in enumerate(CONDITIONS):
+    reach = max(float(np.max(np.linalg.norm(loadings[env][0], axis=1))) for env, _l in conditions)
+    for k, (env, label) in enumerate(conditions):
         ax = _inch_axes(fig, cols[k], d_bottom, RIGHT["col"], d_height)
         ax.add_patch(plt.Circle((0, 0), reach, fill=False, lw=0.4, color="#D5D0C9"))
         ax.plot([-1.08 * reach, 1.08 * reach], [0, 0], color="#D5D0C9", lw=0.4)
@@ -461,7 +475,7 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     from matplotlib.colors import LinearSegmentedColormap, LogNorm
 
     e_bottom, e_size = RIGHT["e"]
-    dets = [_fisher_det(*loadings[env]) for env, _label in CONDITIONS]
+    dets = [_fisher_det(*loadings[env]) for env, _label in conditions]
     pooled = np.concatenate([d[np.isfinite(d) & (d > 0)] for d in dets])
     norm = LogNorm(vmin=float(np.percentile(pooled, 1.0)), vmax=float(np.percentile(pooled, 99.0)))
     # Keep one logarithmic scale; omit magma's near-black end so low information
@@ -498,9 +512,9 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
     # (F) spike trains along the shared trajectory drawn prominently in (B).
     fr_bottom, fr_height = RIGHT["f_raster"]
     raster_axes = []
-    for k, (env, _label) in enumerate(CONDITIONS):
+    for k, (env, _label) in enumerate(conditions):
         weights, bias, dt = loadings[env]
-        rng = np.random.default_rng(int(EXAMPLE["seed"]) + 1 + k)
+        rng = np.random.default_rng(int(seed) + 1 + k)
         counts = rng.poisson(np.clip(dt * np.exp(traj @ weights.T + bias), 0.0, 1e6))
         order = np.argsort(np.arctan2(weights[:, 1], weights[:, 0]))
         ax_r = _inch_axes(fig, cols[k], fr_bottom, RIGHT["col"], fr_height)
@@ -512,7 +526,7 @@ def generate_wilson_cowan_figure(output: Path) -> Path:
         ax_r.vlines(steps, neurons - 0.28, neurons + 0.28, color=STROKE_COLOR, lw=0.18, rasterized=True)
         ax_r.set_ylim(-0.5, weights.shape[0] - 0.5)
         ax_r.set_yticks([0, weights.shape[0] - 1], labels=["1", str(weights.shape[0])])
-        for start, stop, _ue, _ui in EXAMPLE["pulses"]:
+        for start, stop, _ue, _ui in pulses:
             ax_r.axvspan(start, stop, color=PULSE_SHADE, lw=0, zorder=0)
             ax_r.plot([start, stop], [1.025, 1.025], color=STROKE_COLOR, lw=2,
                       transform=ax_r.get_xaxis_transform(), clip_on=False)

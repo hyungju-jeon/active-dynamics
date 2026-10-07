@@ -26,6 +26,8 @@ from actdyn.utils.vectorfields_eqn import (
     ThreeGateDiagnostic,
     ThreeGateTradeoff,
     WilsonCowan1972,
+    WilsonCowan1972NativeInput,
+    WilsonCowan1972NativeInputThresholds,
     WongWang,
     WongWangInsideGain,
     WongWangTransfer,
@@ -57,6 +59,8 @@ vf_from_string = {
     "hopf": Hopf,
     "snowman": SnowMan,
     "wilson_cowan_1972": WilsonCowan1972,
+    "wilson_cowan_1972_native_input": WilsonCowan1972NativeInput,
+    "wilson_cowan_1972_native_input_thresholds": WilsonCowan1972NativeInputThresholds,
     "wong_wang": WongWang,
     "wong_wang_inside_gain": WongWangInsideGain,
     "wong_wang_transfer": WongWangTransfer,
@@ -397,10 +401,19 @@ def step_np(
     dynamics_alpha: float,
     clip_limit: float,
 ) -> np.ndarray:
-    next_state = np.asarray(state, dtype=np.float64) + float(dt) * (
-        residual_np(dynamics_type, state, dyn_params, dynamics_alpha=float(dynamics_alpha))
-        + np.asarray(action, dtype=np.float64)
-    )
+    """Clipped Euler step z + dt f(z, u); f(z) + u for additive-input fields."""
+    if getattr(vf_from_string[dynamics_type], "input_dependent", False):
+        params = dyn_params if isinstance(dyn_params, dict) else torch.as_tensor(np.asarray(dyn_params, dtype=np.float32))
+        with torch.no_grad():
+            drift = drift_torch(dynamics_type, torch.as_tensor(np.asarray(state, dtype=np.float32)), params,
+                                torch.as_tensor(np.asarray(action, dtype=np.float32)),
+                                dynamics_alpha=float(dynamics_alpha))
+        next_state = np.asarray(state, dtype=np.float64) + float(dt) * drift.numpy().astype(np.float64)
+    else:
+        next_state = np.asarray(state, dtype=np.float64) + float(dt) * (
+            residual_np(dynamics_type, state, dyn_params, dynamics_alpha=float(dynamics_alpha))
+            + np.asarray(action, dtype=np.float64)
+        )
     return np.clip(next_state, -float(clip_limit), float(clip_limit))
 
 
@@ -587,7 +600,11 @@ class VectorFieldEnv(gym.Env):
         """Step the environment."""
         # Compute dynamics
         if self.input_dependent:
-            self.state = self.state + self.compute_dynamics_with_input(self.state, action) * self.dt
+            # Promote the float16 reset state to the input's dtype, as state + action does
+            # in the additive branch; otherwise the drift and the state stay float16.
+            action = torch.as_tensor(action, device=self.device)
+            state = self.state.to(torch.promote_types(self.state.dtype, action.dtype))
+            self.state = state + self.compute_dynamics_with_input(state, action.to(state.dtype)) * self.dt
         else:
             dynamics = self.compute_dynamics(self.state)
             self.state = self.state + (dynamics + action) * self.dt

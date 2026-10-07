@@ -27,7 +27,12 @@ def _prbs_selection_order(num_items: int, budget: int) -> np.ndarray:
 
 
 class BaselinePRBSPolicy(BasePolicy):
-    """PRBS policy that holds binary-valued actions for fixed intervals."""
+    """PRBS policy that holds binary-valued actions for fixed intervals.
+
+    Each input coordinate takes one of two levels. With the action-space box the levels are the
+    box edges; with ``action_radius`` (ball constraint ||u|| <= action_radius) they are
+    +-action_radius / sqrt(dim), so every input lies on the ball's boundary.
+    """
 
     def __init__(
         self,
@@ -35,6 +40,7 @@ class BaselinePRBSPolicy(BasePolicy):
         hold_steps: int = 5,
         amplitude: float = 1.0,
         seed: int | None = None,
+        action_radius: float | None = None,
         **kwargs,
     ):
         super().__init__(action_space=action_space, **kwargs)
@@ -49,9 +55,14 @@ class BaselinePRBSPolicy(BasePolicy):
 
         action_dim = int(np.prod(self.action_space.shape))
         self._current = np.zeros(action_dim, dtype=np.float32)
+        self.action_radius = None if action_radius is None else float(action_radius)
 
     def _sample_action(self) -> np.ndarray:
         signs = self._rng.choice([-1.0, 1.0], size=self._current.shape[0]).astype(np.float32)
+
+        if self.action_radius is not None:
+            level = self.action_radius * self.amplitude / np.sqrt(signs.shape[0])
+            return (signs * level).astype(np.float32)
 
         if self._bounded:
             center = 0.5 * (self._high.reshape(-1) + self._low.reshape(-1))
