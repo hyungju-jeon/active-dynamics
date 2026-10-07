@@ -15,7 +15,7 @@ import colorednoise
 from .base import BaseMPC
 from actdyn.utils.torch_utils import safe_cholesky, symmetrize
 from actdyn.utils.rollout import RolloutBuffer
-from actdyn.environment.session import SessionRule, session_evidence
+from actdyn.environment.session import SessionRule, session_action_scale, session_evidence
 
 
 _PROCESS_PLANNER: Any | None = None
@@ -352,41 +352,58 @@ class MpcICem(BaseMPC):
     def end_of_rollout(self, *args, **kwargs):
         return None
 
-    def get_init_mean(self):
+    def _session_bounds(self):
+        """Action box (low, high) and ball radius of the current session.
+
+        The policy's constraint scaled by ``SessionRule.action_scale`` (1 outside the
+        scaled sessions); None for a constraint the policy does not have.
+        """
+        scale = session_action_scale(self.session_rule, self.session_context)
+        bounds = None
         if self.action_bounds is not None:
+            bounds = (scale * np.asarray(self.action_bounds[0]), scale * np.asarray(self.action_bounds[1]))
+        radius = None if self.action_radius is None else scale * self.action_radius
+        return bounds, radius
+
+    def get_init_mean(self):
+        bounds, _ = self._session_bounds()
+        if bounds is not None:
             mean = torch.zeros(self.horizon, self.action_dim, device=self.device)
             for dim in range(self.action_dim):
                 mean[:, dim] = torch.tensor(
-                    (self.action_bounds[1][dim] + self.action_bounds[0][dim]) / 2.0,
+                    (bounds[1][dim] + bounds[0][dim]) / 2.0,
                     device=self.device,
                 )
             return mean
         return torch.zeros(self.horizon, self.action_dim, device=self.device)
 
     def get_init_std(self):
-        if self.action_bounds is not None:
+        bounds, _ = self._session_bounds()
+        if bounds is not None:
             std = torch.ones(self.horizon, self.action_dim, device=self.device)
             for dim in range(self.action_dim):
                 std[:, dim] = torch.tensor(
-                    (self.action_bounds[1][dim] - self.action_bounds[0][dim]) / 2.0 * self.init_std,
+                    (bounds[1][dim] - bounds[0][dim]) / 2.0 * self.init_std,
                     device=self.device,
                 )
             return std
         return self.init_std * torch.ones(self.horizon, self.action_dim, device=self.device)
 
     def _project_actions(self, actions: torch.Tensor) -> torch.Tensor:
+        """Project onto the current session's box, then its ball (``action_constraint: radius``)."""
         projected = actions
-        if self.action_bounds is not None:
+        bounds, radius = self._session_bounds()
+        if bounds is not None:
             low = torch.as_tensor(
-                self.action_bounds[0], dtype=projected.dtype, device=projected.device
+                bounds[0], dtype=projected.dtype, device=projected.device
             ).view(*([1] * (projected.ndim - 1)), -1)
             high = torch.as_tensor(
-                self.action_bounds[1], dtype=projected.dtype, device=projected.device
+                bounds[1], dtype=projected.dtype, device=projected.device
             ).view(*([1] * (projected.ndim - 1)), -1)
             projected = torch.maximum(torch.minimum(projected, high), low)
-        if self.action_constraint == "radius" and self.action_radius is not None:
+        if self.action_constraint == "radius" and radius is not None:
             norms = torch.linalg.norm(projected, dim=-1, keepdim=True)
-            scale = torch.clamp(self.action_radius / norms.clamp_min(1e-8), max=1.0)
+            scale = torch.clamp(radius / norms.clamp_min(1e-8), max=1.0)
             projected = projected * scale
         return projected
 

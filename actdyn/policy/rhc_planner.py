@@ -53,14 +53,19 @@ class RhcMultipleShootingPlanner:
         return int(self.model.output_dim)
 
     def plan(
-        self, *, x0: np.ndarray, objective: str = 'rhc_us', input_offset: np.ndarray | None = None
+        self, *, x0: np.ndarray, objective: str = 'rhc_us', input_offset: np.ndarray | None = None,
+        action_scale: float = 1.0,
     ) -> RhcPlanResult:
         """Plan ``horizon`` actions from ``x0``.
 
         ``input_offset`` (horizon, action_dim) is a known input added to each planned
         action before the surrogate sees it (decision-session evidence); the returned
-        actions exclude it.
+        actions exclude it. ``action_scale`` multiplies the box and the ball radius of
+        this plan (the session's bound, ``SessionRule.action_scale``).
         """
+        action_low = float(action_scale) * self.action_low
+        action_high = float(action_scale) * self.action_high
+        action_radius = None if self.action_radius is None else float(action_scale) * self.action_radius
         m = self.model.predict_casf(ret_var=True)
         offset = cas.DM(np.zeros((self.horizon, self.action_dim)) if input_offset is None
                         else np.asarray(input_offset, dtype=np.float64).reshape(self.horizon, self.action_dim))
@@ -71,8 +76,8 @@ class RhcMultipleShootingPlanner:
 
         xu_l = np.ones((self.horizon, self.state_dim + self.action_dim), dtype=np.float64) * -np.inf
         xu_u = np.ones((self.horizon, self.state_dim + self.action_dim), dtype=np.float64) * np.inf
-        xu_l[:, -self.action_dim:] = self.action_low
-        xu_u[:, -self.action_dim:] = self.action_high
+        xu_l[:, -self.action_dim:] = action_low
+        xu_u[:, -self.action_dim:] = action_high
         if self.state_bounds is not None:
             bounds = np.asarray(self.state_bounds, dtype=np.float64)
             if bounds.ndim == 2:
@@ -103,12 +108,12 @@ class RhcMultipleShootingPlanner:
             raise ValueError(f'Unsupported RHC objective {objective!r}')
 
         lbg, ubg = 0, 0
-        if self.action_radius is not None:
+        if action_radius is not None:
             # Ball constraint: sum_j u_kj^2 <= r^2 for every planned step, after the dynamics.
             n_dynamics = int(g.numel())
             g = cas.horzcat(g, cas.horzcat(*[cas.sumsqr(u[i, :]) for i in range(self.horizon)]))
             lbg = np.concatenate((np.zeros(n_dynamics), np.full(self.horizon, -np.inf)))
-            ubg = np.concatenate((np.zeros(n_dynamics), np.full(self.horizon, self.action_radius ** 2)))
+            ubg = np.concatenate((np.zeros(n_dynamics), np.full(self.horizon, action_radius ** 2)))
 
         xu_flat = cas.reshape(xu, -1, 1)
         nlp = {'x': xu_flat, 'f': obj, 'g': g}
@@ -119,10 +124,10 @@ class RhcMultipleShootingPlanner:
         sol = solver(x0=xopt_0, lbx=xu_l.T.flatten(), ubx=xu_u.T.flatten(), lbg=lbg, ubg=ubg)
         opt_xu = np.array(cas.reshape(sol['x'], xu.shape[0], xu.shape[1]))
         opt_a = np.array(opt_xu[:, -self.action_dim:])
-        if self.action_radius is not None:
+        if action_radius is not None:
             # Remove the solver's constraint tolerance so executed inputs lie in the ball.
             norms = np.linalg.norm(opt_a, axis=1, keepdims=True)
-            opt_a = opt_a * np.minimum(1.0, self.action_radius / np.maximum(norms, 1e-12))
+            opt_a = opt_a * np.minimum(1.0, action_radius / np.maximum(norms, 1e-12))
         opt_x = np.array(cas.vcat((x0_arr, opt_xu[:, : self.state_dim])))
         cost = float(sol['f'])
         if self.warm_start:
