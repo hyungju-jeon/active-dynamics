@@ -1,0 +1,402 @@
+"""Assemble, verify, and compare the weak evidence-trial control experiment (no simulation).
+
+Input: the collected GCP run of ``experiments.tnsre.snn_weak_evidence`` and the frozen selected
+result (strong control throughout). The output folder follows the selected result's layout,
+so the manuscript figure generator runs on it unchanged:
+
+* ``tracks/``, ``eval/`` (prediction, task rows, summaries), ``data/``, ``reference/`` (frozen
+  held-out data and fit), ``control_phase/``.
+* ``comparison/``: paired weak-versus-strong and PALDI-versus-method contrasts, evidence-trial
+  diagnostics against the evidence-only replay, bound compliance, and trial durations.
+* ``provenance/``: VM ledgers, run checks, replay validation, cloud logs, verification records.
+
+Reference task rows (prior, fitted model, model-free inputs) are the frozen rows; ``verify``
+checks identical readouts and priors, and that the VM's example replay reproduces them.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import shutil
+
+import numpy as np
+import pandas as pd
+
+from experiments.tnsre import eval_spiking_sessions as ev
+from experiments.tnsre import snn_weak_evidence as w
+from experiments.tnsre.wong_wang_full import write_json
+
+FROZEN = Path('results/tnsre/20261007_snn_native_uniform')
+FROZEN_RUNS = FROZEN / 'tracks' / 'ww_observation_transfer_uniform'
+LEARNED = ('adaptive', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random')
+REFERENCES = ('prior', 'reduced_fit', 'none', 'spread', 'front')
+TASK_SEEDS = list(range(91000, 91007))  # 91007 has no initial decision and is excluded for all
+SCHEDULES = {'strong': FROZEN_RUNS, 'weak': None}  # weak runs: <out>/tracks/<slug>
+# Settings that must be identical between matched weak and strong runs.
+MATCHED_SETTINGS = ('policy_id', 'seed', 'action_max', 'action_cost_weight', 'planning_horizon', 'replan_interval',
+                    'update_interval', 'schedule_id', 'coarse_dt_factor', 'coarse_action_mapping', 'adaptive_cadence',
+                    'adaptive_replan_min_interval', 'adaptive_update_min_interval', 'adaptive_update_eig_threshold',
+                    'adaptive_replan_state_error_threshold', 'estimator_dynamics_type', 'initial_parameter',
+                    'initial_parameter_variance', 'parameter_prior_covariance', 'q_theta', 'dt', 'state_noise',
+                    'total_steps', 'observation_loading_matrix', 'observation_loading_bias', 'flex_regularization',
+                    'flex_parameter_step_clip', 'flex_parameter_min', 'flex_parameter_max', 'planning_rollout',
+                    'learning_sensitivity', 'estimator_true_params_full', 'min_embedding_dim')
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def weak_runs(out: Path) -> Path:
+    return w.runs_root(out)
+
+
+def configure(out: Path):
+    w.configure_eval(out / 'data')
+    ev.PROTOCOL['reduced_fit'] = str(out / 'reference' / 'native_fit.json')
+
+
+# ------------------------------------------------------------------ assemble
+def assemble(run: Path, out: Path):
+    """Copy the collected run (``gcp_runs/<id>``) and the frozen inputs into the result layout."""
+    source = run / 'results' / 'weak_evidence'
+    assert not out.exists(), f'{out} exists; finalize writes a new folder'
+    shutil.copytree(source / 'tracks', out / 'tracks')
+    (out / 'data').mkdir()
+    for name in ('test_trajectories.npz', 'reference_train.npz', 'input_diagnostics.json'):
+        shutil.copy2(FROZEN / 'data' / name, out / 'data' / name)
+    (out / 'reference').mkdir()
+    shutil.copy2(FROZEN / 'reference' / 'native_fit.json', out / 'reference' / 'native_fit.json')
+    groups = sorted(source.glob('eval/group_*'))
+    shutil.copytree(source / 'eval', out / 'eval' / 'groups')
+    for name in ('r2_per_session.csv', 'identification_sessions.csv'):
+        frame = pd.concat([pd.read_csv(g / name) for g in groups], ignore_index=True)
+        frame.sort_values(['policy', 'seed'] + (['sessions'] if 'sessions' in frame else ['session']),
+                          kind='stable').to_csv(out / 'eval' / name, index=False)
+    task = out / 'eval' / 'task_warm'; task.mkdir()
+    for path in sorted(source.glob('eval/group_*/task_warm/worker_*.csv')):
+        shutil.copy2(path, task / path.name)
+    for path in sorted(source.glob('eval/group_*/failures/*.json')):
+        (out / 'eval' / 'failures').mkdir(exist_ok=True)
+        shutil.copy2(path, out / 'eval' / 'failures' / path.name)
+    frozen = pd.concat([pd.read_csv(p) for p in sorted((FROZEN / 'eval' / 'task_warm').glob('worker_*.csv'))],
+                       ignore_index=True)
+    frozen[frozen.policy.isin(REFERENCES)].to_csv(task / 'worker_frozen_references.csv', index=False)
+    shutil.copytree(source / 'examples_replay' / 'examples', out / 'eval' / 'examples')
+    shutil.copytree(source / 'examples_replay' / 'control_phase', out / 'control_phase')
+    shutil.copytree(source / 'evidence_only', out / 'evidence_only')
+    vm = out / 'provenance' / 'vm'
+    shutil.copytree(source / 'run_checks', vm / 'run_checks')
+    shutil.copytree(source / 'logs', vm / 'logs')
+    for path in sorted(source.glob('*_group_*.json')):
+        shutil.copy2(path, vm / path.name)
+    shutil.copy2(run / 'commit.txt', out / 'provenance' / 'commit.txt')
+    shutil.copytree(run / 'logs', out / 'provenance' / 'cloud_logs')
+    write_json(out / 'provenance' / 'inputs.json', dict(
+        frozen_result=str(FROZEN), source_run=str(run),
+        files={str(p.relative_to(out)): sha256(p) for p in [*sorted((out / 'data').iterdir()),
+                                                              out / 'reference' / 'native_fit.json']},
+        frozen_files={str(p.relative_to(FROZEN)): sha256(p) for p in [*sorted((FROZEN / 'data').iterdir()),
+                                                                       FROZEN / 'reference' / 'native_fit.json']}))
+
+
+# ------------------------------------------------------------------ verify
+def readout_hash(run: dict) -> str:
+    """The frozen training verification's readout key: sha256 of (C.ravel(), b) bytes."""
+    return hashlib.sha256(np.concatenate([run['C'].ravel(), run['b']]).tobytes()).hexdigest()
+
+
+def verify(out: Path):
+    """Matched configuration, bound compliance, exact task grid, and reusable frozen references."""
+    configure(out)
+    weak, strong = ev.load_session_runs(weak_runs(out)), ev.load_session_runs(FROZEN_RUNS)
+    expected = {(p, s) for p in LEARNED for s in w.SEEDS}
+    assert {(r['policy'], r['seed']) for r in weak} == expected == {(r['policy'], r['seed']) for r in strong}
+    frozen_readouts = json.loads((FROZEN / 'provenance' / 'training_verification.json').read_text())['readouts_by_seed']
+    by_key = {(r['policy'], r['seed']): r for r in strong}
+    for r in weak:
+        assert set(r['est']) == set(range(21)), (r['policy'], r['seed'])
+        assert readout_hash(r) == frozen_readouts[str(r['seed'])]
+        np.testing.assert_array_equal(r['est'][0], by_key[(r['policy'], r['seed'])]['est'][0])
+    settings, rules = [], set()
+    for path in sorted(weak_runs(out).glob('*/seed_*/repeat_01/run_metadata.json')):
+        meta = json.loads(path.read_text())
+        old = json.loads((FROZEN_RUNS / path.relative_to(weak_runs(out))).read_text())
+        differ = [k for k in MATCHED_SETTINGS if k in old and meta.get(k) != old[k]]
+        assert not differ, (path, differ)
+        rule = dict(meta['session_rule'])
+        assert (rule.pop('action_scale'), rule.pop('action_scale_last_session')) == (w.WEAK_SCALE, w.WEAK_TRIALS)
+        assert rule == old['session_rule'], (rule, old['session_rule'])
+        assert meta['env_preset_id'] == w.PRESET and old['env_preset_id'] == w.TASK_PRESET
+        settings.append(len([k for k in MATCHED_SETTINGS if k in old]))
+    checks = [json.loads(p.read_text()) for p in sorted((out / 'provenance' / 'vm' / 'run_checks').glob('*.json'))]
+    assert len(checks) == 120 and all(c['compliant'] and c['evidence_max_error'] <= 1e-6 for c in checks)
+    replay = [json.loads(p.read_text()) for p in sorted((out / 'evidence_only').glob('validation_group_*.json'))]
+    # Task grid: new learned rows plus frozen reference rows give the frozen key set exactly.
+    rows = pd.concat([pd.read_csv(p) for p in sorted((out / 'eval' / 'task_warm').glob('worker_*.csv'))],
+                     ignore_index=True)
+    frozen = pd.concat([pd.read_csv(p) for p in sorted((FROZEN / 'eval' / 'task_warm').glob('worker_*.csv'))],
+                       ignore_index=True)
+    keys = lambda f: set(f[w.KEY].itertuples(index=False, name=None))
+    assert not rows.duplicated(w.KEY).any() and len(rows) == len(frozen) == 9032 and keys(rows) == keys(frozen)
+    new = rows[rows.policy.isin(LEARNED)]
+    assert len(new) == 7680 and np.isfinite(new.energy).all() and (new.energy <= new.budget + 1e-6).all()
+    assert set(rows.loc[rows.valid == 0, 'task_seed']) == {91007} and (rows.valid == (rows.task_seed != 91007)).all()
+    for _, row in new[new.numerical_failure == 1].iterrows():
+        assert (out / 'eval' / 'failures' / Path(row.failure_record).name).exists()
+    # The VM's example replay must reproduce the frozen fitted-model and model-free rows.
+    examples = pd.read_csv(out / 'eval' / 'examples' / 'example_sessions.csv')
+    reproduced = []
+    for _, row in examples[examples.controller != 'learned'].iterrows():
+        policy = {'fit': 'reduced_fit'}.get(row.controller, row.controller)
+        budget = 10. if policy == 'none' else row.budget
+        match = frozen[(frozen.policy == policy) & (frozen.seed == (0 if policy == 'reduced_fit' else -1))
+                       & (frozen.budget == budget) & (frozen.task_seed == row.task_seed)]
+        assert len(match) == 1
+        for key in ['valid', 'target', 'onset', 'success', 'outcome_bin', 'energy']:
+            np.testing.assert_allclose(row[key], match.iloc[0][key], rtol=1e-5, atol=1e-6)
+        reproduced.append(policy)
+    record = dict(passed=True, runs=len(weak), readouts_match_frozen=True, priors_match_frozen=True,
+                  matched_settings_per_run=sorted(set(settings)), run_checks=len(checks),
+                  replay_validation=[dict(group=i, passed=v['passed']) for i, v in enumerate(replay)],
+                  task_rows=len(rows), learned_rows=len(new), frozen_reference_rows=len(rows) - len(new),
+                  numerical_failures=int(new.numerical_failure.sum()),
+                  example_reproduces_frozen_references=reproduced,
+                  frozen_task_sha256={p.name: sha256(p) for p in sorted((FROZEN / 'eval' / 'task_warm').glob('worker_*.csv'))})
+    write_json(out / 'provenance' / 'verification.json', record)
+    print(json.dumps({k: v for k, v in record.items() if k != 'frozen_task_sha256'}, indent=1))
+
+
+# ------------------------------------------------------------------ score
+def score(out: Path):
+    """Summaries and the main table in the selected result's format."""
+    configure(out)
+    ev.stage_score(out / 'eval', 'warm')
+    summary = pd.read_csv(out / 'eval' / 'task_summary_warm.csv')
+    final = summary[(summary.checkpoint == 20) | summary.policy.isin(REFERENCES)]
+    final.to_csv(out / 'all_baselines.csv', index=False)
+    r2 = pd.read_csv(out / 'eval' / 'r2_per_session.csv')
+    records = []
+    for policy in (*LEARNED, *REFERENCES):
+        record = dict(policy=policy)
+        if policy in LEARNED or policy == 'prior':
+            subset = r2[(r2.policy == ('adaptive' if policy == 'prior' else policy))
+                        & (r2.sessions == (0 if policy == 'prior' else 20))]
+            record.update(zip(['r2_q25', 'r2_median', 'r2_q75'], np.percentile(subset.r2, [25, 50, 75])))
+        elif policy == 'reduced_fit':
+            record['r2_median'] = json.loads((out / 'reference' / 'native_fit.json').read_text())['r2_test_piecewise_current']
+        for budget in (5, 10, 12, 15):
+            cell = final[(final.policy == policy) & (final.budget == (10 if policy == 'none' else budget))]
+            assert len(cell) == 1
+            record.update({f'success_{40 * budget}_pa2s': float(cell.iloc[0].success),
+                           f'sem_{40 * budget}_pa2s': float(cell.iloc[0].sem_over_seeds)})
+        records.append(record)
+    pd.DataFrame(records).to_csv(out / 'main_table.csv', index=False)
+
+
+# ------------------------------------------------------------------ paired contrasts
+def success_matrix(rows: pd.DataFrame, policy: str, checkpoint: int, budget: float) -> np.ndarray:
+    """Training seed x valid task seed success, shape (20, 7); model-free rows broadcast over seeds."""
+    data = rows[(rows.policy == policy) & (rows.budget == (10. if policy == 'none' else budget))
+                & (rows.task_seed.isin(TASK_SEEDS))]
+    if policy in LEARNED:
+        data = data[data.checkpoint == checkpoint]
+    if set(data.seed) == {-1}:
+        values = data.set_index('task_seed').success.reindex(TASK_SEEDS).to_numpy(float)
+        return np.broadcast_to(values, (len(w.SEEDS), len(TASK_SEEDS))).copy()
+    out = data.pivot(index='seed', columns='task_seed', values='success').reindex(
+        index=w.SEEDS, columns=TASK_SEEDS).to_numpy(float)
+    assert np.isfinite(out).all(), policy
+    return out
+
+
+def r2_vector(r2: pd.DataFrame, policy: str, sessions: int) -> np.ndarray:
+    data = r2[(r2.policy == policy) & (r2.sessions == sessions)].set_index('seed').r2.reindex(w.SEEDS)
+    assert data.notna().all()
+    return data.to_numpy(float)
+
+
+def simultaneous(contrasts: list[dict], *, draws: int = 20000, seed: int = 20261007) -> pd.DataFrame:
+    """Paired training-seed bootstrap with one simultaneous 95% interval per endpoint class.
+
+    As in the selected result's audit (``results/archive/experiments/20261007_wong_wang_comparisons/
+    updated_observation_20261006/analyze.py``): the 20 identification seeds are resampled together
+    for every contrast; control intervals are conditional on the fixed task panel. R2 contrasts
+    pair vectors (20,) and use the difference of medians; success contrasts pair matrices (20, 7)
+    and use the mean paired difference. A max-standardized-deviation calibration over the
+    contrasts of one endpoint gives their family-wise interval.
+    """
+    rng = np.random.default_rng(seed)
+    train = rng.integers(0, len(w.SEEDS), size=(draws, len(w.SEEDS)))
+    samples, rows = [], []
+    for c in contrasts:
+        a, b = c.pop('a'), c.pop('b')
+        if a.ndim == 1:
+            estimate = float(np.median(a) - np.median(b))
+            sample = np.median(a[train], axis=1) - np.median(b[train], axis=1)
+            statistic = 'difference of medians'
+        else:
+            per_seed = (a - b).mean(axis=1)
+            estimate, sample = float(per_seed.mean()), per_seed[train].mean(axis=1)
+            statistic = 'mean paired difference'
+        rows.append(dict(**c, value_a=float(np.median(a) if a.ndim == 1 else a.mean()),
+                         value_b=float(np.median(b) if b.ndim == 1 else b.mean()), statistic=statistic,
+                         difference=estimate, bootstrap_se=float(sample.std(ddof=1))))
+        samples.append(sample)
+    frame, samples = pd.DataFrame(rows), np.column_stack(samples)
+    for endpoint, index in frame.groupby('endpoint').groups.items():
+        index = np.asarray(list(index))
+        means, se = frame.difference.to_numpy()[index], frame.bootstrap_se.to_numpy()[index]
+        active = se > 1e-12
+        critical = float(np.quantile(np.max(np.abs((samples[:, index[active]] - means[active]) / se[active]), axis=1), .95))
+        half = critical * se
+        frame.loc[index, 'lower'], frame.loc[index, 'upper'] = means - half, means + half
+        frame.loc[index, 'simultaneous_critical'], frame.loc[index, 'family_size'] = critical, len(index)
+    frame['draws'], frame['bootstrap_seed'] = draws, seed
+    frame['interval_excludes_zero'] = ((frame.bootstrap_se > 1e-12) & ((frame.lower > 0) | (frame.upper < 0))).astype(int)
+    return frame
+
+
+def task_rows(path: Path) -> pd.DataFrame:
+    return pd.concat([pd.read_csv(p) for p in sorted(path.glob('worker_*.csv'))], ignore_index=True)
+
+
+def compare(out: Path):
+    """Weak minus strong per method (paired by seed), and PALDI minus each method within each schedule."""
+    comparison = out / 'comparison'; comparison.mkdir(exist_ok=True)
+    r2 = {'strong': pd.read_csv(FROZEN / 'eval' / 'r2_per_session.csv'), 'weak': pd.read_csv(out / 'eval' / 'r2_per_session.csv')}
+    rows = {'strong': task_rows(FROZEN / 'eval' / 'task_warm'), 'weak': task_rows(out / 'eval' / 'task_warm')}
+    schedule = []
+    for policy in LEARNED:
+        for sessions in (10, 20):
+            schedule.append(dict(contrast='weak - strong', policy=policy, endpoint='prediction_R2', trials=sessions,
+                                 budget_pa2_s=np.nan, a=r2_vector(r2['weak'], policy, sessions),
+                                 b=r2_vector(r2['strong'], policy, sessions)))
+        for budget in (10., 12.):
+            schedule.append(dict(contrast='weak - strong', policy=policy, endpoint='overturn_success', trials=20,
+                                 budget_pa2_s=40 * budget, a=success_matrix(rows['weak'], policy, 20, budget),
+                                 b=success_matrix(rows['strong'], policy, 20, budget)))
+    simultaneous(schedule).to_csv(comparison / 'weak_minus_strong.csv', index=False)
+    within = []
+    for name in ('weak', 'strong'):
+        for policy in LEARNED[1:]:
+            within.append(dict(contrast=f'PALDI - method ({name})', policy=policy, endpoint='prediction_R2', trials=20,
+                               budget_pa2_s=np.nan, a=r2_vector(r2[name], 'adaptive', 20), b=r2_vector(r2[name], policy, 20)))
+        for budget in (10., 12.):
+            for policy in (*LEARNED[1:], *REFERENCES):
+                within.append(dict(contrast=f'PALDI - method ({name})', policy=policy, endpoint='overturn_success',
+                                   trials=20, budget_pa2_s=40 * budget, a=success_matrix(rows[name], 'adaptive', 20, budget),
+                                   b=success_matrix(rows[name], policy, 20, budget)))
+    simultaneous(within).to_csv(comparison / 'paldi_minus_method.csv', index=False)
+    # Descriptive table: prediction quartiles and mean success per schedule.
+    table = []
+    for policy in LEARNED:
+        record = dict(policy=policy)
+        for name in ('strong', 'weak'):
+            for sessions in (10, 20):
+                q = np.percentile(r2_vector(r2[name], policy, sessions), [25, 50, 75])
+                record.update({f'{name}_r2_t{sessions}_q25': q[0], f'{name}_r2_t{sessions}_median': q[1],
+                               f'{name}_r2_t{sessions}_q75': q[2]})
+            for budget in (5., 10., 12., 15.):
+                record[f'{name}_success_{40 * budget:g}_pa2s'] = float(success_matrix(rows[name], policy, 20, budget).mean())
+            record[f'{name}_success_480_trial10'] = float(success_matrix(rows[name], policy, 10, 12.).mean())
+        table.append(record)
+    pd.DataFrame(table).to_csv(comparison / 'summary.csv', index=False)
+
+
+# ------------------------------------------------------------------ evidence-trial diagnostics
+def evidence_trials(runs_root: Path, schedule: str, replay: pd.DataFrame) -> pd.DataFrame:
+    """One row per evidence-led trial (1-10) of every run, with its evidence-only replay.
+
+    Trace states precede each bin's input; the final pre-reset state is not in the trace, so
+    post-decision leads cover the recorded bins only (as in the handoff diagnostic).
+    """
+    replay = replay.set_index(['seed', 'trial'])
+    records = []
+    for path in sorted(runs_root.glob('*/seed_*/repeat_01')):
+        meta = json.loads((path / 'run_metadata.json').read_text())
+        policy, seed = ev.evaluated_policy(meta['policy_id']), int(meta['seed'])
+        trace = pd.read_csv(path / 'state_action_trace.csv', usecols=['session_index', 'true_z0', 'true_z1',
+                                                                      'policy_action_x', 'policy_action_v'])
+        for s in meta['session_log'][:w.WEAK_TRIALS]:
+            d = trace[trace.session_index == s['session']]
+            assert len(d) == s['bins']
+            pool, chosen, bin_ = s['evidence_pool'], s['decision'] - 1, s['decision_bin']
+            gap = (d.true_z0 - d.true_z1).to_numpy()
+            post = (gap if chosen == 0 else -gap)[bin_:] if chosen >= 0 else np.array([])
+            u = d[['policy_action_x', 'policy_action_v']].to_numpy(float)
+            base = replay.loc[(seed, s['session'] + 1)]
+            assert int(base.pool) == pool, (policy, seed, s)
+            base_chosen = int(base.decision) - 1
+            records.append(dict(
+                schedule=schedule, policy=policy, seed=seed, trial=s['session'] + 1, evidence_pool=pool,
+                bins=s['bins'], chosen=chosen, decision_ms=5 * bin_ if chosen >= 0 else np.nan,
+                against_evidence=chosen >= 0 and chosen != pool, decision_while_evidence=0 < bin_ <= 200,
+                recorded_postdecision_reversal=bool((post < -2).any()),
+                recorded_postdecision_lead_changed=bool((post < 0).any()),
+                smallest_recorded_postdecision_lead=float(post.min()) if len(post) else np.nan,
+                control_rms_pa=float(20 * np.sqrt((u ** 2).sum(1).mean())),
+                control_energy_pa2_s=float(400 * 0.005 * (u ** 2).sum()),
+                evidence_only_chosen=base_chosen,
+                evidence_only_decision_ms=5 * int(base.decision_bin) if base_chosen >= 0 else np.nan,
+                choice_differs_from_evidence_only=chosen != base_chosen,
+                choice_flipped_vs_evidence_only=chosen >= 0 and base_chosen >= 0 and chosen != base_chosen))
+    return pd.DataFrame(records)
+
+
+def diagnostics(out: Path):
+    comparison = out / 'comparison'; comparison.mkdir(exist_ok=True)
+    replay = pd.concat([pd.read_csv(p) for p in sorted((out / 'evidence_only').glob('group_*.csv'))], ignore_index=True)
+    assert len(replay) == 200 and not replay.duplicated(['seed', 'trial']).any()
+    trials = pd.concat([evidence_trials(FROZEN_RUNS, 'strong', replay), evidence_trials(weak_runs(out), 'weak', replay)],
+                       ignore_index=True)
+    assert len(trials) == 2 * 6 * 200
+    trials.to_csv(comparison / 'evidence_trials.csv', index=False)
+    summary = trials.groupby(['schedule', 'policy'], sort=False).agg(
+        trials=('trial', 'size'), decisions=('chosen', lambda c: int((c >= 0).sum())),
+        first_choice_against_evidence=('against_evidence', 'sum'),
+        decisions_while_evidence=('decision_while_evidence', 'sum'),
+        choice_differs_from_evidence_only=('choice_differs_from_evidence_only', 'sum'),
+        choice_flipped_vs_evidence_only=('choice_flipped_vs_evidence_only', 'sum'),
+        recorded_postdecision_reversals=('recorded_postdecision_reversal', 'sum'),
+        recorded_postdecision_lead_changes=('recorded_postdecision_lead_changed', 'sum'),
+        smallest_recorded_postdecision_lead=('smallest_recorded_postdecision_lead', 'min'),
+        median_decision_ms=('decision_ms', 'median'), mean_trial_bins=('bins', 'mean'),
+        control_rms_pa=('control_rms_pa', 'mean'), control_energy_pa2_s=('control_energy_pa2_s', 'mean')).reset_index()
+    decided = replay.decision > 0
+    base = dict(trials=200, decisions=int(decided.sum()),
+                first_choice_against_evidence=int((decided & (replay.decision - 1 != replay.pool)).sum()),
+                median_decision_ms=float(np.median(5 * replay.decision_bin[replay.decision > 0])))
+    summary.to_csv(comparison / 'evidence_summary.csv', index=False)
+    checks = [json.loads(p.read_text()) for p in sorted((out / 'provenance' / 'vm' / 'run_checks').glob('*.json'))]
+    bounds = pd.DataFrame([dict(policy=ev.evaluated_policy(c['policy']), seed=c['seed'], geometry=c['geometry'],
+                                trials='1-10' if k == 'weak' else '11-20',
+                                bound_pa=20 * v['bound'], max_size_pa=20 * v['max_size'], max_ratio=v['max_ratio'],
+                                mean_ratio=v['mean_ratio'], at_bound_fraction=v['at_bound_fraction'],
+                                identification_bins=sum(c['trial_bins'][:10] if k == 'weak' else c['trial_bins'][10:]))
+                           for c in checks for k, v in c['phases'].items()])
+    bounds.to_csv(comparison / 'bound_compliance.csv', index=False)
+    write_json(comparison / 'evidence_only_summary.json', dict(
+        **base, replay_validation=[json.loads(p.read_text())['passed'] for p in sorted((out / 'evidence_only').glob('validation_group_*.json'))],
+        note='Zero-control replay of trials 1-10 with the same network seeds; the evidence-only choice of each trial.'))
+    print(summary.to_string())
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
+    p.add_argument('--stage', required=True, choices=['assemble', 'verify', 'score', 'compare', 'diagnostics', 'all'])
+    p.add_argument('--run', type=Path, help='collected gcp_runs/<id> directory (assemble)')
+    p.add_argument('--out', type=Path, required=True)
+    a = p.parse_args()
+    stages = ['assemble', 'verify', 'score', 'compare', 'diagnostics'] if a.stage == 'all' else [a.stage]
+    for stage in stages:
+        if stage == 'assemble':
+            assemble(a.run, a.out)
+        else:
+            globals()[stage](a.out)
+
+
+if __name__ == '__main__':
+    main()
