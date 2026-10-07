@@ -82,3 +82,19 @@ def test_evaluation_selects_the_updated_recording_and_keeps_both_control_budgets
         assert ev.PROTOCOL['task_checkpoints']==[0,20]
         assert ev.PROTOCOL['budgets']['overturn']==[10.,12.]
         assert ev.TASKS==('overturn',)
+
+
+def test_network_default_uses_the_configured_arm(tmp_path, monkeypatch):
+    from copy import deepcopy
+    from actdyn.environment import spiking_decision
+    monkeypatch.setattr(ev, 'PROTOCOL', deepcopy(ev.PROTOCOL))
+    monkeypatch.setattr(ev, 'TASKS', ev.TASKS)
+    monkeypatch.setattr(ev, 'PRESET_ID', ev.PRESET_ID)
+    monkeypatch.setattr(spiking_decision, 'WangDecisionNetwork', lambda **kw: kw)
+    study.configure(tmp_path, 'transfer_partial')
+    settings = ev.build_network()
+    assert settings['observed_per_pool'] == (20, 20)
+    assert settings['stim_fraction'] == .5
+    explicit = ev.build_network(preset_id='tbme_ww_observation_transfer_uniform')
+    assert explicit['observed_per_pool'] == (20, 20)
+    assert explicit['stim_fraction'] == 1.

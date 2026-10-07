@@ -28,3 +28,16 @@ def test_extension_covers_all_methods_seeds_and_missing_cells(tmp_path, monkeypa
             assert actual == expected
     assert not any(k[5] in (10.,12.) and k[3] in (-1,0,20) for k in keys)
     assert set(k[1] for k in keys) == set(study.POLICIES) | {'prior','reduced_fit','spread','front'}
+
+
+def test_native_phase_drift_matches_the_learner():
+    import torch
+    from actdyn.utils.vectorfields_eqn import WongWangTransfer
+    from experiments.tnsre.figures.spiking_characterization import reduced_drift
+    theta = np.array([1.68, .276, .365, .2, -1.67])
+    params = dict(w_plus=theta[0], w_minus=theta[1], h=theta[2]/6,
+                  gamma=np.logaddexp(0,theta[3]), dynamics_type='wong_wang_transfer')
+    z = np.array([[-2.,-2.],[-1.,1.],[0.,0.],[1.5,-.7]])
+    vf = WongWangTransfer(torch.as_tensor(theta, dtype=torch.float64)[None])
+    expected = vf.compute_with_input(torch.as_tensor(z), torch.zeros_like(torch.as_tensor(z)))
+    np.testing.assert_allclose(reduced_drift(z, params), expected.numpy(), rtol=1e-6, atol=1e-7)  # Vector-field parameters are stored in float32.

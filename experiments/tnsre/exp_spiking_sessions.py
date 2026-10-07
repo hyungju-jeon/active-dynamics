@@ -2,8 +2,11 @@ from __future__ import annotations
 
 """Wong-Wang identification over decision sessions of the Wang (2002) spiking network.
 
-The learner's drift is Wong-Wang with the input inside the transfer function
-(``wong_wang_inside_gain``). Each run is ``spiking_sessions`` (20) decision sessions: the circuit starts in the
+The selected ``wong_wang_snn_native_uniform`` suite uses native transfer, uniform
+current, 20+20 recordings, ten evidence-led trials then ten fixed 2-s trials, and
+200-ms within-trial PALDI planning. Historical suites below remain selectable.
+
+In the historical decision-ended protocol, each run has 20 sessions: the circuit starts in the
 quiet state, the agent drives it until a decision (``|z1 - z2| > 2``), and 200 ms
 later, or after 2 s without a decision, the circuit resets. Agents are given the
 session rule: they learn of a reset when it happens and their filters then jump to
@@ -27,7 +30,7 @@ with the default, two low-SNR (4 or 2 neurons per pool), and a biased (40 + 2 ne
 """
 
 DEFAULT_SEED_COUNT = 20
-DEFAULT_EXP_IDS = (
+HISTORICAL_EXP_IDS = (
     "wong_wang_snn_sessions_m2",
     "wong_wang_snn_sessions_m2_evidence",
     "wong_wang_snn_sessions_m2_evidence_u2",
@@ -72,8 +75,17 @@ EXPERIMENT_SUITES = {
         **SHARED_EXP_ARGS,
         "env_preset_id": f"tbme_{exp_id}",
     }
-    for exp_id in DEFAULT_EXP_IDS
+    for exp_id in HISTORICAL_EXP_IDS
 }
+
+# Selected manuscript protocol; preserve historical suites for archived runs.
+EXPERIMENT_SUITES['wong_wang_snn_native_uniform'] = {
+    **SHARED_EXP_ARGS,
+    'env_preset_id': 'tbme_ww_observation_transfer_uniform',
+    'model_ids': ['adaptive_c2h20', *MODEL_IDS[1:]],
+    'trajectory_eval_interval': 0,
+}
+DEFAULT_EXP_IDS = ('wong_wang_snn_native_uniform',)
 
 OBS_MODEL_IDS = ["adaptive_reactive", "adaptive", "rhc"]
 for _suite, _preset, _models in (

@@ -1,10 +1,18 @@
 # Native transfer and partial stimulation under the updated manuscript protocol
 
+Selected for the manuscript on 2026-10-07: **native transfer + uniform current**,
+with the 200-ms PALDI horizon and within-trial planning below. The code is merged
+into `neuro`. Final data and figures are in
+`results/tnsre/20261007_snn_native_uniform/`; the other arms, earlier protocols,
+and original failed/recovered attempts are in `results/archive/experiments/`.
+The additional manuscript checkpoints and budgets use the same frozen models
+through `native_manuscript.py`. The design below records the original comparison.
+
 This matched test asks whether the native response and partial stimulation retain
 useful prediction and PALDI control performance after the manuscript update. No
 result is assumed. Run in the `wong-wang-realistic-input` worktree on GCP only.
 
-The manuscript source is `results/tnsre/20261006_snn_evidence_first_n20_20` in the
+The former manuscript source is now `results/archive/experiments/20261006_snn_evidence_first_n20_20` in the
 main checkout. Its executed protocol is from `snn-within-trial` (f0e2140;
 planner correction 3c77303; short-horizon PALDI a2bec6f). The relevant session and
 planner implementation is ported from a9aa9d8. This is a scoped port, not a merge.

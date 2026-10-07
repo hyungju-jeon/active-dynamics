@@ -11,16 +11,16 @@ import json
 import numpy as np
 import torch
 from experiments.tnsre.eval_spiking_sessions import (
-    EXAMPLES, PROTOCOL, IcemController, build_network, load_session_runs, run_task_session, runs_preset, runs_root_of,
+    EXAMPLES, PROTOCOL, IcemController, build_network, evaluated_policy, load_session_runs, run_task_session, runs_preset, runs_root_of,
 )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--experiment-dir', type=Path,
-                        default=Path('results/tnsre/20261006_snn_evidence_first_n20_20'))
+                        default=Path('results/tnsre/20261007_snn_native_uniform'))
     parser.add_argument('--output-dir', type=Path,
-                        default=Path('results/tnsre/20261006_snn_evidence_first_n20_20/control_phase'))
+                        default=Path('results/tnsre/20261007_snn_native_uniform/control_phase'))
     args = parser.parse_args()
     torch.set_num_threads(1)
     root = args.experiment_dir
@@ -71,8 +71,9 @@ def main():
     finally:
         net.close()
     inputs = [*sources, root/'eval/examples/example_sessions.npz']
-    inputs += [p for p in runs_root.glob('*/seed_0/repeat_01/*')
-               if p.name in ('run_metadata.json','embedding_estimate_trace.csv') and p.parts[-4] in policies]
+    for meta in runs_root.glob('*/seed_0/repeat_01/run_metadata.json'):
+        if evaluated_policy(json.loads(meta.read_text())['policy_id']) in policies:
+            inputs.extend([meta, meta.parent/'embedding_estimate_trace.csv'])
     inputs += [Path(__file__), Path('experiments/tnsre/eval_spiking_sessions.py'),
                Path('actdyn/environment/spiking_decision.py'),
                Path('experiments/tnsre/config/experiment_env.yaml')]

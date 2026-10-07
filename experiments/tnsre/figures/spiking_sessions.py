@@ -23,8 +23,8 @@ in the manuscript asset style:
   the fit and batch refits on PALDI's session data.
 
 Usage:
-    python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20261006_snn_evidence_first_n20_20 \\
-        --figure all
+    python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20261007_snn_native_uniform \\
+        --figure manuscript
 """
 
 from __future__ import annotations
@@ -54,6 +54,14 @@ from .assets import (
 from .theme import NEUTRAL_LIGHT, STROKE_COLOR, style_experiment_axis
 
 POLICIES = ("adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random")
+CURVE_STYLE = {
+    'adaptive': dict(linestyle='-', marker='o'),
+    'active_myopic': dict(linestyle='--', marker='s'),
+    'flex_rollback': dict(linestyle='-.', marker='D'),
+    'rhc': dict(linestyle='-', marker='^'),
+    'prbs': dict(linestyle='--', marker='v'),
+    'random': dict(linestyle=':', marker='x'),
+}
 ACTIVE = ("adaptive", "active_myopic", "rhc")
 FINAL_SESSIONS = 20
 POOL_COLORS = ("#3E6FB0", "#C9562C")
@@ -233,9 +241,13 @@ def _example_run(experiment_dir: Path, policy: str = "adaptive", seed: int = 0) 
     """Spike counts, network latent, filtered state, input, and session ends of one run."""
     import pickle
 
-    from experiments.tnsre.eval_spiking_sessions import runs_root_of
+    from experiments.tnsre.eval_spiking_sessions import runs_root_of, evaluated_policy
 
-    run = runs_root_of(experiment_dir) / policy / f"seed_{seed}" / "repeat_01"
+    candidates = [p.parent for p in runs_root_of(experiment_dir).glob(f'*/seed_{seed}/repeat_01/run_metadata.json')
+                  if evaluated_policy(json.loads(p.read_text())['policy_id']) == policy]
+    if len(candidates) != 1:
+        raise ValueError(f'Expected one {policy} run for seed {seed}: {candidates}')
+    run = candidates[0]
     with open(sorted(glob.glob(str(run / "*" / "rollouts" / "*.pkl")))[0], "rb") as fh:
         rollout = pickle.load(fh)
     rows = _read(run / "state_action_trace.csv")
@@ -263,10 +275,10 @@ def _example_run(experiment_dir: Path, policy: str = "adaptive", seed: int = 0) 
 
 
 def _evidence_trials(experiment_dir: Path) -> tuple[int, int] | None:
-    """First and last identification trial (1-based) with evidence in PALDI's seed-0 run; None without."""
+    """First and last evidence trial (1-based) in the shared seed-0 protocol."""
     from experiments.tnsre.eval_spiking_sessions import runs_root_of
 
-    meta_path = next((runs_root_of(experiment_dir) / "adaptive" / "seed_0").glob("repeat_*/run_metadata.json"))
+    meta_path = next(runs_root_of(experiment_dir).glob("*/seed_0/repeat_*/run_metadata.json"))
     trials = [int(s["session"]) + 1 for s in json.loads(meta_path.read_text()).get("session_log", [])
               if int(s["evidence_pool"]) >= 0]
     return (min(trials), max(trials)) if trials else None
@@ -308,7 +320,10 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     from experiments.tnsre.eval_spiking_sessions import PROTOCOL
 
     r2_rows = _read(experiment_dir / "eval" / "r2_per_session.csv")
-    fit_r2 = float(json.loads(Path(PROTOCOL["reduced_fit"]).read_text())["r2_test_piecewise"])
+    from .spiking_characterization import reference_record
+    reference = reference_record(experiment_dir)
+    fit_r2 = float(reference['r2_test_piecewise_current'] if 'r2_test_piecewise_current' in reference
+                   else reference['r2_test_piecewise'])
     ex = _example_run(experiment_dir)
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
@@ -412,7 +427,8 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         ks = np.array(sorted(k for p, k in by if p == policy))
         vals = [np.asarray(by[(policy, k)]) for k in ks]
         color = _asset_baseline_policy_color(policy)
-        ax.plot(ks, [np.median(v) for v in vals], color=color, lw=0.95)
+        ax.plot(ks, [np.median(v) for v in vals], color=color, lw=0.95,
+                **CURVE_STYLE[policy], markersize=2.2, markevery=5, markeredgewidth=.35)
         ax.fill_between(ks, [np.percentile(v, 25) for v in vals], [np.percentile(v, 75) for v in vals],
                         color=color, alpha=0.1, lw=0)
     ax.axhline(fit_r2, color=REFERENCE_STYLE["reduced_fit"]["color"], ls=":", lw=0.8)
@@ -428,7 +444,8 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     style_experiment_axis(ax)
     _panel_label(ax, "C", dx=-32)
 
-    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0, label=_asset_policy_label(p))
+    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0,
+                         **CURVE_STYLE[p], markersize=2.2, label=_asset_policy_label(p))
                for p in POLICIES]
     handles.append(plt.Line2D([], [], color=REFERENCE_STYLE["reduced_fit"]["color"], ls=":", lw=0.9,
                               label=REFERENCE_STYLE["reduced_fit"]["label"]))
@@ -474,10 +491,12 @@ def _draw_session_panel(ax: Any, look: dict, task: str, checkpoints: list[int], 
     b = CURVE_BUDGETS[task]
     prior = look.get(("prior", 0, task, b), (np.nan, 0.0))
     for policy in POLICIES:
-        pts = [prior if k == 0 else look.get((policy, k, task, b), (np.nan, 0.0)) for k in checkpoints]
+        pts = [prior if k == 0 else look[(policy, k, task, b)] for k in checkpoints]
         m, e = (np.array(v) for v in zip(*pts))
+        if not np.isfinite(m).all():
+            raise ValueError(f'Missing control checkpoints for {policy}')
         color = _asset_baseline_policy_color(policy)
-        ax.plot(pos, m, color=color, lw=0.9, marker="o", ms=2.2)
+        ax.plot(pos, m, color=color, lw=0.9, **CURVE_STYLE[policy], ms=2.2)
         ax.fill_between(pos, m - e, m + e, color=color, alpha=0.1, lw=0)
     for name, style in REFERENCE_STYLE.items():
         value = look.get((name, -1, task, b), (np.nan, 0.0))[0]
@@ -578,7 +597,7 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
 
 def _control_legend(fig: Any, plt: Any) -> None:
     model_handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0,
-                                label=_asset_policy_label(p)) for p in POLICIES]
+                                **CURVE_STYLE[p], ms=2.2, label=_asset_policy_label(p)) for p in POLICIES]
     style = REFERENCE_STYLE["reduced_fit"]
     model_handles.append(plt.Line2D([], [], color=style["color"], ls=style["linestyle"],
                                    marker=style["marker"], ms=2.8, lw=0.8, label="Fitted"))
@@ -627,10 +646,10 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
     _panel_label(_draw_example_session(fig, example[0], eval_dir, task), "A", dx=-30)
     from .spiking_characterization import draw_control_phase
     ax = fig.add_axes([0.565, 0.20, 0.175, 0.60])
-    # The experiment's own replay (replay_control_phase --output-dir <experiment>/control_phase) when present.
+    # The phase trajectories must belong to this experiment's selected model.
     phase_dir = experiment_dir / "control_phase"
     if not phase_dir.exists():
-        phase_dir = Path("results/tnsre/20260929_manuscript_update/control_phase_uniform")
+        raise FileNotFoundError(f'Missing verified control replay: {phase_dir}')
     draw_control_phase(ax, experiment_dir, phase_dir)
     _panel_label(ax, "B", dx=-18)
     ax = fig.add_subplot(comparison[0])
@@ -868,12 +887,13 @@ FIGURES = {
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Figures of the spiking-network decision experiment.")
     parser.add_argument("--experiment-dir", type=Path, required=True)
-    parser.add_argument("--figure", choices=[*FIGURES, "all"], default="all")
+    parser.add_argument("--figure", choices=[*FIGURES, "manuscript", "all"], default="manuscript")
     parser.add_argument("--out-dir", type=Path, default=None, help="default: <experiment-dir>/eval/figures")
     parser.add_argument("--format", default="pdf", choices=["pdf", "png", "svg"])
     args = parser.parse_args(argv)
     out_dir = args.out_dir or args.experiment_dir / "eval" / "figures"
-    names = list(FIGURES) if args.figure == "all" else [args.figure]
+    names = (list(FIGURES) if args.figure == "all" else
+             ['identification', 'circuit', 'control'] if args.figure == 'manuscript' else [args.figure])
     for name in names:
         stem, fn = FIGURES[name]
         print(fn(args.experiment_dir, out_dir / f"{stem}.{args.format}"))

@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -173,9 +174,55 @@ def verify(root, extension):
     print(f'Validated {len(rows)} extension rows; {int(rows.numerical_failure.sum())} numerical failures')
 
 
+def finalize(root, extension):
+    """Install verified new cells, score one canonical table, and export final comparisons."""
+    import pandas as pd
+    verify(root, extension)
+    assert json.loads((extension/'group_0/example_verification.json').read_text())['passed']
+    for source in sorted(extension.glob('group_*/task_warm/worker_*.csv')):
+        destination = root/'eval/task_warm'/source.name
+        if destination.exists():
+            assert source.read_bytes() == destination.read_bytes()
+        else:
+            shutil.copy2(source, destination)
+    for source, destination in [(extension/'group_0/examples', root/'eval/examples'),
+                                (extension/'group_0/control_phase', root/'control_phase')]:
+        shutil.copytree(source, destination, dirs_exist_ok=True)
+    rows = pd.concat([pd.read_csv(p) for p in (root/'eval/task_warm').glob('worker_*.csv')], ignore_index=True)
+    assert len(rows) == 9032 and not rows.duplicated(KEY).any()
+    ev.stage_score(root/'eval', 'warm')
+    write_json(root/'eval/protocol.json', dict(protocol=ev.PROTOCOL, preset=ev.PRESET_ID,
+        evaluated_grid={'checkpoints_at_budget_12': [0,1,5,10,15,20],
+                        'final_model_budgets': [5,10,12,15]},
+        no_control='one budget-independent evaluation at normalized budget 10'))
+    summary = pd.read_csv(root/'eval/task_summary_warm.csv')
+    final = summary[(summary.checkpoint == 20) | summary.policy.isin(['prior','reduced_fit','none','spread','front'])]
+    final.to_csv(root/'all_baselines.csv', index=False)
+    r2 = pd.read_csv(root/'eval/r2_per_session.csv')
+    records = []
+    for policy in [*POLICIES, 'prior', 'reduced_fit', 'none', 'spread', 'front']:
+        record = dict(policy=policy)
+        if policy in POLICIES or policy == 'prior':
+            subset = r2[(r2.policy == ('adaptive' if policy == 'prior' else policy))
+                        & (r2.sessions == (0 if policy == 'prior' else 20))]
+            record.update(zip(['r2_q25','r2_median','r2_q75'], np.percentile(subset.r2,[25,50,75])))
+        elif policy == 'reduced_fit':
+            record['r2_median'] = json.loads((root/'reference/native_fit.json').read_text())['r2_test_piecewise_current']
+        for budget in [5,10,12,15]:
+            cell = final[(final.policy == policy) & (final.budget == (10 if policy == 'none' else budget))]
+            assert len(cell) == 1
+            record.update({f'success_{40*budget}_pa2s': float(cell.iloc[0].success),
+                           f'sem_{40*budget}_pa2s': float(cell.iloc[0].sem_over_seeds)})
+        records.append(record)
+    pd.DataFrame(records).to_csv(root/'main_table.csv', index=False)
+    write_json(root/'provenance/final_evaluation_verification.json', dict(passed=True, rows=len(rows),
+        numerical_failures=int(rows.numerical_failure.sum()), prediction_rows=len(r2), training_runs=120,
+        excluded_task_seeds=[91007], extension_sha256=hashlib.sha256((extension/'verification.json').read_bytes()).hexdigest()))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('--stage', choices=['worker', 'campaign', 'verify', 'examples'], required=True)
+    p.add_argument('--stage', choices=['worker', 'campaign', 'verify', 'examples', 'finalize'], required=True)
     p.add_argument('--root', type=Path, default=DEFAULT_ROOT)
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--group', type=int, default=0); p.add_argument('--groups', type=int, default=4)
@@ -187,6 +234,7 @@ def main():
     if a.stage == 'worker': worker(a.root, a.out, a.shard, a.nshards)
     elif a.stage == 'examples': examples(a.root, a.out)
     elif a.stage == 'verify': verify(a.root, a.out)
+    elif a.stage == 'finalize': finalize(a.root, a.out)
     else: campaign(a)
 
 

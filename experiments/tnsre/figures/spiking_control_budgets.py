@@ -3,7 +3,7 @@
 Run from the repository root:
     .venv/bin/python -m experiments.tnsre.figures.spiking_control_budgets
 
-Uses the original manuscript experiment, not the later evidence-drive variants.
+Uses the selected native-transfer, uniform-current manuscript experiment.
 Recomputes means and SEM from session outcomes and checks the saved summary.
 """
 from __future__ import annotations
@@ -30,10 +30,10 @@ REFERENCES = ("reduced_fit", "spread", "front")
 METHODS = POLICIES + REFERENCES
 REF_LABELS = dict(reduced_fit="Fitted", spread="Constant-\namplitude", front="Maximum-\namplitude")
 REF_COLORS = dict(reduced_fit="#A0A0A0", spread="#C4C4C4", front="#D6C5AE")
-EXTENSION = Path("results/tnsre/20261006_snn_evidence_first_n20_20/budgets")  # budgets 5 and 15 of the main SNN result
+EXTENSION = None  # Selected result stores all budgets in one checked evaluation table.
 
 
-def load_scores(eval_dir: Path, extension_dir: Path = EXTENSION) -> tuple[pd.DataFrame, dict]:
+def load_scores(eval_dir: Path, extension_dir: Path | None = EXTENSION) -> tuple[pd.DataFrame, dict]:
     """Check all plotted cells against raw outcomes; record input hashes."""
     protocol_path = eval_dir / "protocol.json"
     protocol = json.loads(protocol_path.read_text())["protocol"]
@@ -42,17 +42,24 @@ def load_scores(eval_dir: Path, extension_dir: Path = EXTENSION) -> tuple[pd.Dat
     warm_paths = sorted((eval_dir / "task_warm").glob("worker_*.csv"))
     reference_paths = sorted((eval_dir / "task").glob("worker_*.csv"))
     warm = pd.concat([pd.read_csv(p) for p in warm_paths], ignore_index=True)
-    fresh = pd.concat([pd.read_csv(p) for p in reference_paths], ignore_index=True)
+    fresh = pd.concat([pd.read_csv(p) for p in reference_paths], ignore_index=True) if reference_paths else warm.iloc[:0]
     # Model-free inputs do not plan: the scorer shares these original outcomes.
     raw = pd.concat([warm, fresh[fresh.controller.isin(("spread", "front"))]])
-    extension_summary = extension_dir / "task_summary_warm.csv"
-    extension_paths = sorted((extension_dir / "task_warm").glob("worker_*.csv"))
-    summary = pd.concat([summary, pd.read_csv(extension_summary)], ignore_index=True)
-    raw = pd.concat([raw, *[pd.read_csv(p) for p in extension_paths]], ignore_index=True)
+    extension_paths = []
+    extension_inputs = []
+    if extension_dir is not None:
+        extension_summary = extension_dir / "task_summary_warm.csv"
+        extension_paths = sorted((extension_dir / "task_warm").glob("worker_*.csv"))
+        summary = pd.concat([summary, pd.read_csv(extension_summary)], ignore_index=True)
+        raw = pd.concat([raw, *[pd.read_csv(p) for p in extension_paths]], ignore_index=True)
+        extension_inputs = [extension_summary, *extension_paths,
+            *[extension_dir / name for name in ("protocol.json", "source_hashes.json",
+                                               "model_input_hashes.json", "pilot_validation.json")]]
+    assert not raw.duplicated(["controller", "policy", "seed", "checkpoint", "task", "budget", "task_seed"]).any()
     protocol["budgets"]["overturn"] = [5.0, 10.0, 12.0, 15.0]
     selected = []
     excluded = {}
-    for task in ("overturn", "force"):
+    for task in ("overturn",):
         expected_tasks = set(range(protocol["task_seeds"][task],
                                    protocol["task_seeds"][task] + protocol["task_sessions"]))
         shared_valid = None
@@ -84,9 +91,7 @@ def load_scores(eval_dir: Path, extension_dir: Path = EXTENSION) -> tuple[pd.Dat
                 selected.append(dict(task=task, budget=budget, policy=policy, success=mean,
                                      sem=sem, n_seeds=len(seed_means), n_sessions=len(valid)))
         excluded[task] = sorted(expected_tasks - shared_valid)
-    paths = [protocol_path, summary_path, extension_summary, *warm_paths, *reference_paths, *extension_paths,
-             *[extension_dir / name for name in ("protocol.json", "source_hashes.json",
-                                                 "model_input_hashes.json", "pilot_validation.json")]]
+    paths = [protocol_path, summary_path, *warm_paths, *reference_paths, *extension_inputs]
     provenance = dict(
         checkpoint=20, controller="warm-start iCEM", budgets=protocol["budgets"],
         excluded_task_seeds=excluded, validated_cells=len(selected),
@@ -146,9 +151,9 @@ def make_figure(scores: pd.DataFrame):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment-dir", type=Path,
-                        default=Path("results/tnsre/20261006_snn_evidence_first_n20_20"))
+                        default=Path("results/tnsre/20261007_snn_native_uniform"))
     parser.add_argument("--output-dir", type=Path,
-                        default=Path("results/tnsre/20261006_snn_evidence_first_n20_20/figures"))
+                        default=Path("results/tnsre/20261007_snn_native_uniform/figures"))
     parser.add_argument("--extension-dir", type=Path, default=EXTENSION)
     args = parser.parse_args()
     scores, provenance = load_scores(args.experiment_dir / "eval", args.extension_dir)

@@ -14,12 +14,34 @@ from .theme import STROKE_COLOR, style_experiment_axis
 from actdyn.utils.figure_io import load_plotting
 
 
+def reference_record(experiment_dir: Path) -> dict:
+    """Load the reference stored with this experiment; never borrow another fit."""
+    native = experiment_dir/'reference/native_fit.json'
+    if native.exists():
+        record = json.loads(native.read_text())
+        w_plus, w_minus, h_raw, gamma_raw, g_raw = record['learner_parameters']['values']
+        record['physical_parameters'] = dict(w_plus=w_plus, w_minus=w_minus, h=h_raw/6,
+            gamma=float(np.logaddexp(0, gamma_raw)), g=float(np.logaddexp(0, g_raw)),
+            dynamics_type='wong_wang_transfer')
+        return record
+    return json.loads((experiment_dir/'reference/m2_fit.json').read_text())
+
+
 def reduced_drift(z: np.ndarray, params: dict) -> np.ndarray:
     """Zero-input drift dz/d(t/100 ms), state shape (..., 2), float64."""
     z = np.asarray(z, dtype=float)
     s = z / 4 + 0.5
     a = (params['w_plus'] * z - params['w_minus'] * z[..., ::-1]) / 4 + params['h']
-    return 4 * (-s + params['gamma'] * (1 - s) * expit(6 * a))
+    family = params.get('dynamics_type', 'wong_wang_inside_gain')
+    if family == 'wong_wang_transfer':
+        import torch
+        from actdyn.utils.vectorfields_eqn import wong_wang_activation
+        activation = wong_wang_activation(torch.as_tensor(6*a, dtype=torch.float64)).numpy()
+    elif family == 'wong_wang_inside_gain':
+        activation = expit(6*a)
+    else:
+        raise ValueError(f'Unknown reduced response: {family}')
+    return 4 * (-s + params['gamma'] * (1 - s) * activation)
 
 
 def fixed_points(params: dict) -> list[dict]:
@@ -44,7 +66,7 @@ def fixed_points(params: dict) -> list[dict]:
 
 
 def draw_phase_portrait(ax, experiment_dir: Path) -> list[dict]:
-    params = json.loads((experiment_dir/'reference/m2_fit.json').read_text())['physical_parameters']
+    params = reference_record(experiment_dir)['physical_parameters']
     xx, yy = np.meshgrid(np.linspace(-2, 2, 61), np.linspace(-2, 2, 61))
     v = reduced_drift(np.stack([xx, yy], axis=-1), params)
     ax.streamplot(xx, yy, v[..., 0], v[..., 1], density=0.7, color='#A6A6A6',
@@ -213,7 +235,7 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
     manifest = json.loads((phase_dir/'manifest.json').read_text())
     assert manifest['verified'] and manifest['training_seed'] == EXAMPLES['training_seed']
     assert [manifest['task_seed'], manifest['budget_normalized']] == EXAMPLES['sessions']['overturn']
-    params = json.loads((experiment_dir/'reference/m2_fit.json').read_text())['physical_parameters']
+    params = reference_record(experiment_dir)['physical_parameters']
     grid = np.linspace(-2, 1.5, 61)
     xx, yy = np.meshgrid(grid, grid)
     v = reduced_drift(np.stack([xx, yy], axis=-1), params)

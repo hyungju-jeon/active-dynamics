@@ -1,11 +1,10 @@
 """Identification over decision sessions, then a decision task, on the Wang (2002) network.
 
-Identification (``experiments.tnsre.exp_spiking_sessions``): every agent runs 20
-decision sessions. A session starts in the quiet state; a decision is made when
-``|z_1 - z_2| > 2``; 200 ms later, or after 2 s without a decision, the circuit
-resets. The agents know this rule. Every identified model is the learner's
-reduced Wong-Wang drift with the input inside the gain (``wong_wang_inside_gain``)
-and the estimate a run held after ``k`` completed sessions.
+Identification (``experiments.tnsre.exp_spiking_sessions``): each agent runs 20
+trials using the saved run's dynamics family, readout, and trial protocol. The
+selected native/uniform experiment uses ten evidence-led decision-ended trials
+followed by ten fixed 2-s trials without evidence. Estimates are frozen after
+``k`` completed trials. The historical sigmoid family remains supported.
 
 This module scores those models against the spiking network:
 
@@ -54,7 +53,7 @@ Stages (``--stage``):
     examples   a few task sessions recorded bin by bin       (one network; for figures)
 
 Example:
-    E=results/tnsre/20260924_snn_sessions_m2/eval; RUNS=results/tnsre/20260924_snn_sessions_m2/tracks/wong_wang_snn_sessions_m2
+    E=results/tnsre/20261007_snn_native_uniform/eval; RUNS=results/tnsre/20261007_snn_native_uniform/tracks/ww_observation_transfer_uniform
     python -m experiments.tnsre.eval_spiking_sessions --stage r2 --out $E --runs-root $RUNS
     python -m experiments.tnsre.eval_spiking_sessions --stage task --out $E --runs-root $RUNS --worker-index 0 --n-workers 1
 """
@@ -70,23 +69,22 @@ from typing import Any, Sequence
 import numpy as np
 import torch
 
-PRESET_ID = "tbme_wong_wang_snn_sessions_m2"
+PRESET_ID = "tbme_ww_observation_transfer_uniform"
 TASKS = ("force", "overturn")
 
 PROTOCOL: dict[str, Any] = {
     # Held-out trajectories: 12 network runs under random piecewise-constant pool drives.
-    "test_trajectories": "results/tnsre/20260924_snn_sessions_m2/data/test_trajectories.npz",
+    "test_trajectories": "results/tnsre/20261007_snn_native_uniform/data/test_trajectories.npz",
     "test_seeds": list(range(70000, 70012)),
     "test_bins": 400,
     "test_hold": 40,
     "test_levels": [-1.0, -0.5, 0.0, 0.5, 1.0],
     # Reduced model fitted to network data (the reference of the evaluation).
-    "reduced_fit": "results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json",
+    "reduced_fit": "results/tnsre/20261007_snn_native_uniform/reference/native_fit.json",
     "r2_horizon": 100,
     "r2_stride": 20,
-    # Completed identification sessions. 10 fixed-length sessions (4000 bins) hold about as many
-    # bins as PALDI's 20 decision-ended sessions in the manuscript (median 3978 bins).
-    "task_checkpoints": [0, 1, 2, 5, 10, 15, 20],
+    # Completed identification trials in the selected manuscript control curve.
+    "task_checkpoints": [0, 1, 5, 10, 15, 20],
     "task_sessions": 8,                        # task sessions per task
     "task_seeds": {"force": 90000, "overturn": 91000},
     "evidence_amplitude": 0.3,                 # 6 pA in action units (x 20 pA)
@@ -137,7 +135,7 @@ EXAMPLES: dict[str, Any] = {
 
 
 # ------------------------------------------------------------------ network and held-out data
-def build_network(seed: int = 0, preset_id: str = PRESET_ID):
+def build_network(seed: int = 0, preset_id: str | None = None):
     """Wang (2002) network with the configuration of a preset (default: the experiment's).
 
     The task stage passes the identification runs' preset, so the network records the same
@@ -148,7 +146,7 @@ def build_network(seed: int = 0, preset_id: str = PRESET_ID):
     from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
     configure_tbme_catalogs(suite_entries={})
-    p = get_environment_preset(preset_id)
+    p = get_environment_preset(PRESET_ID if preset_id is None else preset_id)
     return WangDecisionNetwork(
         n_e=int(p.spiking_n_e), n_i=int(p.spiking_n_i), f_sel=float(p.spiking_f_sel),
         w_plus=float(p.spiking_w_plus), sim_dt_ms=float(p.spiking_sim_dt_ms),

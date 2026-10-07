@@ -35,13 +35,15 @@ def fisher_snr(states, c, bias, dt):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--experiment-dir',type=Path,default=Path('results/tnsre/20261006_snn_evidence_first_n20_20'))
+    parser.add_argument('--experiment-dir',type=Path,default=Path('results/tnsre/20261007_snn_native_uniform'))
     parser.add_argument('--output-dir',type=Path,default=None,help='default: <experiment-dir>/snr')
     args=parser.parse_args()
     from experiments.tnsre.eval_spiking_sessions import PROTOCOL,runs_root_of
     args.output_dir=args.output_dir or args.experiment_dir/'snr'
     # The held-out trajectories of the prediction metric, shared by all SNN experiments.
-    state_path=Path(PROTOCOL['test_trajectories'])
+    state_path=args.experiment_dir/'data/test_trajectories.npz'
+    if not state_path.exists():
+        state_path=Path(PROTOCOL['test_trajectories'])
     states=np.load(state_path)['states'][:,1:,:].reshape(-1,2)
     root=runs_root_of(args.experiment_dir)
     paths=sorted(root.glob('*/seed_*/repeat_01/run_metadata.json'))

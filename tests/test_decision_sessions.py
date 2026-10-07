@@ -273,12 +273,12 @@ def test_task_controllers_respect_the_budget_and_target_the_other_pool():
 def test_task_jobs_pair_every_controller_on_the_same_sessions():
     from experiments.tnsre import eval_spiking_sessions as ev
 
-    run = {"policy": "adaptive", "seed": 3, "est": {k: np.full(5, float(k)) for k in (0, 1, 2, 5, 20)},
+    run = {"policy": "adaptive", "seed": 3, "est": {k: np.full(5, float(k)) for k in (0, 1, 5, 10, 15, 20)},
            "C": np.zeros((4, 2)), "b": np.zeros(4), "dynamics_type": "wong_wang_inside_gain",
            "full_params": np.zeros(5), "min_embedding_dim": 5}
     units = ev.controller_units([run], np.arange(5.0))
     names = [(u["policy"], u["checkpoint"]) for u in units]
-    assert names == [("adaptive", 1), ("adaptive", 2), ("adaptive", 5), ("adaptive", 20), ("prior", 0),
+    assert names == [("adaptive", 1), ("adaptive", 5), ("adaptive", 10), ("adaptive", 15), ("adaptive", 20), ("prior", 0),
                      ("reduced_fit", -1), ("none", -1), ("spread", -1), ("front", -1)]
     jobs = ev.task_jobs(units)
     sessions = {(u, task, b): sorted(s for uu, tt, bb, s in jobs if (uu, tt, bb) == (u, task, b))
@@ -409,7 +409,10 @@ def test_paldi_c2_changes_only_the_planning_step_horizon_and_cadence():
     assert (sc.adaptive_update_min_interval, sc.adaptive_replan_min_interval) == (3, 3)
     assert (sc.replan_interval, sc.update_interval) == (sb.replan_interval, sb.update_interval)
     assert c2.objective_kind == base.objective_kind
-    assert all("adaptive_c2" in s["model_ids"] for k, s in EXPERIMENT_SUITES.items() if "_obs_" not in k)
+    assert all("adaptive_c2" in s["model_ids"] for k, s in EXPERIMENT_SUITES.items()
+               if "_obs_" not in k and k != 'wong_wang_snn_native_uniform')
+    assert EXPERIMENT_SUITES['wong_wang_snn_native_uniform']['model_ids'] == [
+        'adaptive_c2h20', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random']
     assert evaluated_policy("adaptive_c2") == "adaptive" and evaluated_policy("rhc") == "rhc"
     h20 = bundle.policy_specs["adaptive_c2h20"]
     sh = bundle.schedule_specs[h20.schedule_id]
