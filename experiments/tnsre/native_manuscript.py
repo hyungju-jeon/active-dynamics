@@ -178,6 +178,10 @@ def finalize(root, extension):
             assert source.read_bytes() == destination.read_bytes()
         else:
             shutil.copy2(source, destination)
+    for source in sorted(extension.glob('group_*/failures/*.json')):
+        destination = root/'eval/failures'/source.name
+        destination.parent.mkdir(exist_ok=True)
+        shutil.copy2(source, destination)
     for source, destination in [(extension/'group_0/examples', root/'eval/examples'),
                                 (extension/'group_0/control_phase', root/'control_phase')]:
         shutil.copytree(source, destination, dirs_exist_ok=True)
@@ -188,6 +192,10 @@ def finalize(root, extension):
     np.testing.assert_allclose(learned_z[:int(onset)], spread_z[:int(onset)], rtol=1e-8, atol=1e-8)
     rows = pd.concat([pd.read_csv(p) for p in (root/'eval/task_warm').glob('worker_*.csv')], ignore_index=True)
     assert len(rows) == 9032 and not rows.duplicated(KEY).any()
+    for _, row in rows[rows.numerical_failure == 1].iterrows():
+        failure = json.loads((root/'eval'/row.failure_record).read_text())
+        for key in ['valid','success','onset','outcome_bin','energy']:
+            np.testing.assert_allclose(row[key], failure['result'][key], rtol=1e-12, atol=1e-12)
     ev.stage_score(root/'eval', 'warm')
     write_json(root/'eval/protocol.json', dict(protocol=ev.PROTOCOL, preset=ev.PRESET_ID,
         evaluated_grid={'checkpoints_at_budget_12': [0,1,5,10,15,20],
