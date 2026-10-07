@@ -1,0 +1,26 @@
+# Reproduce the selected 2026-10-07 SNN cohort (training e56776e/ad8d7c4).
+# Load after the shared catalogs. Later shared defaults use radius constraints;
+# these three identification baselines originally used componentwise bounds.
+# Task control has a separate common radius constraint for every method.
+models:
+  rhc:
+    objective_kind: null
+    update_interval: 20
+    replan_interval: 20
+    planning_horizon: 20
+    policy_type: rhc
+    action_constraint: box
+
+  prbs:
+    update_interval: 1
+    replan_interval: 1
+    planning_horizon: 1
+    policy_type: baseline-prbs
+    passive: true
+    action_constraint: box
+
+  random:
+    schedule_id: u1_r1_h1
+    policy_type: random
+    passive: true
+    action_constraint: box

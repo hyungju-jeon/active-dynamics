@@ -455,16 +455,21 @@ control variants remain in `results/archive/experiments/`. See
 [WONG_WANG_OBSERVATION.md](WONG_WANG_OBSERVATION.md) for their original protocols.
 They are separate ablations and do not contribute rows to the final native/uniform table.
 
-To reproduce identification in a fresh output folder:
+To reproduce identification in a fresh output folder, use the selected cohort's
+catalog overlay. It preserves the original componentwise identification bounds
+for RHC-US, PRBS, and Random; newer shared defaults use a norm bound. This does
+not change task control, where all methods use the same norm bound.
 
 ```bash
 ./.venv/bin/python -m experiments.tnsre.exp_spiking_sessions --mode run \
   --exp-ids wong_wang_snn_native_uniform --seeds 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 \
+  --model-catalog experiments/tnsre/config/native_uniform_manuscript_models.yaml \
   --base-dir results/archive/experiments/<date>_native_uniform_reproduction
 ```
 
-`wong_wang_observation --arm transfer_uniform` reproduces the original selected
-campaign, including reference fitting and budgets 10/12. `native_manuscript`
+At source commit `ad8d7c4`, `wong_wang_observation --arm transfer_uniform`
+reproduces the original selected campaign, including reference fitting and
+budgets 10/12. `native_manuscript`
 adds the missing manuscript cells from frozen models; its `--stage finalize`
 checks exact row keys and shared exclusions before assembling one final table.
 The final result README records source commits, GCP commands, and figure commands.
