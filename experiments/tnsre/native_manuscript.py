@@ -100,7 +100,7 @@ def examples(root, out):
     """Replay the preselected example and check its original scalar outcomes."""
     runs_root = configure(root)
     # Record the phase-panel baseline on the same network as all other examples.
-    # A second Brian2 construction in one process can change object scheduling.
+    # A second construction in one process failed the saved-outcome replay check.
     ev.EXAMPLES['model_free']['overturn'] = 'spread'
     ev.stage_examples(out/'examples', runs_root)
     import pandas as pd
@@ -181,6 +181,11 @@ def finalize(root, extension):
     for source, destination in [(extension/'group_0/examples', root/'eval/examples'),
                                 (extension/'group_0/control_phase', root/'control_phase')]:
         shutil.copytree(source, destination, dirs_exist_ok=True)
+    phase = json.loads((root/'control_phase/manifest.json').read_text())
+    onset = next(r['onset'] for r in phase['records'] if r['policy'] == 'adaptive')
+    learned_z = np.load(root/'control_phase/adaptive.npz')['z']
+    spread_z = np.load(root/'control_phase/spread.npz')['z']
+    np.testing.assert_allclose(learned_z[:int(onset)], spread_z[:int(onset)], rtol=1e-8, atol=1e-8)
     rows = pd.concat([pd.read_csv(p) for p in (root/'eval/task_warm').glob('worker_*.csv')], ignore_index=True)
     assert len(rows) == 9032 and not rows.duplicated(KEY).any()
     ev.stage_score(root/'eval', 'warm')
