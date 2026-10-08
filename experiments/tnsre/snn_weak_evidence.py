@@ -9,11 +9,13 @@ change per scenario (``SCENARIOS``):
   evidence); trials 11-20 restore it (2026-10-07).
 * ``weak10_e10``: the same with x0.5 (10 pA, above the evidence).
 * ``weak2_e5``: five evidence trials at x0.1, then 15 fixed exploration trials at 20 pA.
+* ``weak2_e5_ball``: ``weak2_e5`` with the ball for RHC-US, PRBS and Random (shared catalog, no
+  box overlay), as every other manuscript experiment; the manuscript protocol since 2026-10-08.
 * ``passive_e20``: 20 evidence trials without control (``off_policy``); the learner's only
   input is the known evidence.
 
 Everything else is unchanged: native transfer, uniform current, 20+20 recordings, calibrated
-readouts, seeds 0-19, priors, the manuscript catalog overlay, and the task protocol (warm-start
+readouts, seeds 0-19, priors, the box catalog overlay (except ``weak2_e5_ball``), and the task protocol (warm-start
 iCEM, 20-pA norm, task seeds 91000-91007, checkpoints 1/5/10/15 at 480 pA^2 s, final models at
 200/400/480/600 pA^2 s).
 
@@ -63,6 +65,8 @@ class Scenario:
         weak_trials: Sessions with the scaled bound (0: none).
         evidence_trials: Sessions ``< evidence_trials`` are evidence-led; later sessions are
             fixed 2-s trials without evidence.
+        constraint: Identification constraint of RHC-US, PRBS and Random: ``box`` (componentwise,
+            the 2026-10-07 cohort's overlay) or ``ball`` (the shared catalog, as every TBME policy).
     """
 
     preset: str
@@ -70,6 +74,7 @@ class Scenario:
     scale: float
     weak_trials: int
     evidence_trials: int
+    constraint: str = 'box'
 
     @property
     def suite(self) -> str:
@@ -81,6 +86,8 @@ SCENARIOS = {
     'weak10_e10': Scenario('tbme_ww_weak10_evidence_transfer_uniform', POLICIES, 0.5, 10, 10),
     'weak2_e5': Scenario('tbme_ww_weak_evidence5_transfer_uniform', POLICIES, 0.1, 5, 5),
     'passive_e20': Scenario('tbme_ww_passive_evidence20_transfer_uniform', ('off_policy',), 1.0, 0, 20),
+    # Manuscript protocol with the ball for every baseline (2026-10-08).
+    'weak2_e5_ball': Scenario('tbme_ww_weak_evidence5_transfer_uniform', POLICIES, 0.1, 5, 5, 'ball'),
 }
 SUITES = {sc.suite: {**full.SUITES['transfer_uniform'], 'env_preset_id': sc.preset, 'model_ids': list(sc.policies)}
           for sc in SCENARIOS.values()}
@@ -89,9 +96,11 @@ SEEDS = list(range(20))
 ACTION_MAX = 1.0
 # Constraint geometry of each identification policy (manuscript overlay): PALDI and Myopic
 # project onto a ball, FLEX inputs lie on a sphere, RHC-US/PRBS/Random use a box, and the
-# passive policy's control is zero.
+# passive policy's control is zero. With the ball (``Scenario.constraint``), RHC-US and Random
+# stay in the ball and PRBS levels lie on its boundary (``BALL_GEOMETRY``).
 GEOMETRY = {'adaptive_c2h20': 'ball', 'active_myopic': 'ball', 'flex_rollback': 'sphere',
             'rhc': 'box', 'prbs': 'box', 'random': 'box', 'off_policy': 'zero'}
+BALL_GEOMETRY = {**GEOMETRY, 'rhc': 'ball', 'prbs': 'sphere', 'random': 'ball'}
 KEY = ['controller', 'policy', 'seed', 'checkpoint', 'task', 'budget', 'task_seed']
 THREAD_ENV = {k: '1' for k in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS')}
 
@@ -100,14 +109,21 @@ def now():
     return datetime.now(timezone.utc).isoformat()
 
 
-def configure_catalogs():
-    """TBME catalogs, then the manuscript overlay (componentwise RHC-US/PRBS/Random bounds)."""
+def configure_catalogs(constraint: str = 'box'):
+    """TBME catalogs (ball for every policy); ``box`` adds the 2026-10-07 overlay (componentwise
+    RHC-US/PRBS/Random bounds)."""
     from experiments.experiment_definitions import configure_catalogs as configure
     from experiments.tnsre.run_tbme_experiments import tbme_catalog_paths
+    assert constraint in ('box', 'ball'), constraint
     paths = tbme_catalog_paths()
+    overlay = [OVERLAY] if constraint == 'box' else []
     return configure(env_catalog_paths=paths['env_catalog_paths'],
-                     model_catalog_paths=[*paths['model_catalog_paths'], OVERLAY],
+                     model_catalog_paths=[*paths['model_catalog_paths'], *overlay],
                      suite_catalog_paths=(), suite_entries=SUITES)
+
+
+def geometry_of(policy: str, scenario: Scenario) -> str:
+    return (BALL_GEOMETRY if scenario.constraint == 'ball' else GEOMETRY)[policy]
 
 
 def configure_eval(inputs: Path):
@@ -139,7 +155,7 @@ def learned_cell(unit: dict, budget: float, scenario: Scenario) -> bool:
 # ------------------------------------------------------------------ identification
 def train(root: Path, scenario: Scenario, policy: str, seed: int):
     from experiments import run
-    configure_catalogs()
+    configure_catalogs(scenario.constraint)
     args = run.build_parser().parse_args(['--base-dir', str(root), '--path-layout', 'tbme_tracks',
                                           '--total-steps', '8000', '--skip-existing'])
     result = run._run_one(exp_id=scenario.suite, policy_id=policy, seed=seed, repeat=1, base_dir=root, args=args)
@@ -183,7 +199,10 @@ def check_run(path: Path, policy: str, scenario: Scenario) -> dict:
     weak, n_evidence = scenario.weak_trials, scenario.evidence_trials
     assert (rule['action_scale'], rule['action_scale_last_session']) == (scenario.scale, weak), rule
     assert rule['evidence_last_session'] == rule['fixed_first_session'] == n_evidence, rule
-    geometry = GEOMETRY[policy]
+    geometry = geometry_of(policy, scenario)
+    if policy in ('rhc', 'prbs', 'random'):  # the policies whose constraint the scenario sets
+        expected = 'radius' if scenario.constraint == 'ball' else 'box'
+        assert meta.get('action_constraint', 'box') == expected, (policy, meta.get('action_constraint'))
     bound = np.where(k < weak, scenario.scale, 1.0) * ACTION_MAX
     size = control_size(u, geometry)
     if geometry == 'zero':
@@ -206,7 +225,8 @@ def check_run(path: Path, policy: str, scenario: Scenario) -> dict:
             phases[name] = dict(trials=trials, steps=int(mask.sum()), max_size=float(size[mask].max()),
                                 bound=float(bound[mask][0]), max_ratio=float(ratio.max()),
                                 mean_ratio=float(ratio.mean()), at_bound_fraction=float((ratio >= 0.999).mean()))
-    record = dict(policy=policy, seed=int(meta['seed']), geometry=geometry, scale=scenario.scale,
+    record = dict(policy=policy, seed=int(meta['seed']), geometry=geometry,
+                  action_constraint=meta.get('action_constraint', 'box'), scale=scenario.scale,
                   weak_trials=weak, evidence_trials=n_evidence, compliant=bool(ok.all()),
                   violations=int((~ok).sum()), evidence_max_error=evidence_error, phases=phases,
                   trial_bins=[int(s['bins']) for s in log], decisions=[int(s['decision']) for s in log],
@@ -317,7 +337,7 @@ def replay(root: Path, scenario: Scenario, group: int, groups: int):
     from actdyn.environment.session import session_evidence, session_evidence_pool
     from actdyn.environment.spiking_decision import SpikingDecisionEnv, session_rule_from_preset
     from experiments.experiment_definitions import get_environment_preset
-    configure_catalogs()
+    configure_catalogs(scenario.constraint)
     net = ev.build_network(preset_id=scenario.preset)
     rule = session_rule_from_preset(get_environment_preset(scenario.preset), net.state_scale)
 

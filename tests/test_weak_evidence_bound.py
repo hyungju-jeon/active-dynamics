@@ -311,3 +311,24 @@ def test_manuscript_suite_uses_five_weak_evidence_trials():
     assert (rule.evidence_last_session, rule.fixed_first_session) == (5, 5)
     assert (rule.action_scale, rule.action_scale_last_session) == (0.1, 5)
     assert preset.spiking_stim_gain_pa * rule.action_scale * preset.action_max == pytest.approx(2.0)
+
+
+def test_ball_scenario_changes_only_the_baseline_constraint():
+    import dataclasses
+
+    from experiments.tnsre import snn_weak_evidence as w
+
+    box, ball = w.SCENARIOS["weak2_e5"], w.SCENARIOS["weak2_e5_ball"]
+    assert dataclasses.replace(ball, constraint="box") == box and ball.constraint == "ball"
+    specs = {c: w.configure_catalogs(c).policy_specs for c in ("box", "ball")}
+    for policy in w.POLICIES:
+        a, b = dataclasses.asdict(specs["box"][policy]), dataclasses.asdict(specs["ball"][policy])
+        changed = {k for k in a if a[k] != b[k]}
+        if policy in ("rhc", "prbs", "random"):
+            assert changed == {"action_constraint"}
+            assert (a["action_constraint"], b["action_constraint"]) == ("box", "radius")
+        else:
+            assert not changed, (policy, changed)
+    assert [w.geometry_of(p, ball) for p in ("rhc", "prbs", "random")] == ["ball", "sphere", "ball"]
+    assert [w.geometry_of(p, box) for p in ("rhc", "prbs", "random")] == ["box", "box", "box"]
+    w.configure_catalogs("box")

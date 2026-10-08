@@ -438,9 +438,9 @@ neurons per selective pool (40 channels, 5-ms bins). Its preset is
   covariance. The calibrated Poisson readout remains fixed.
 - **Identification:** 20 trials per policy and training seed. Trials 1–5 have
   known 6-pA evidence for 1 s and end 200 ms after a decision or at 2 s. In
-  these trials every policy's own identification bound is scaled by 0.1 (PALDI
-  and Myopic norm 2 pA, FLEX sphere 2 pA, RHC-US/PRBS/Random |u_j| ≤ 2 pA), so
-  the evidence, not the agent, sets the decision. Trials 6–20 have no evidence,
+  these trials every policy's own identification bound is scaled by 0.1 (norm
+  2 pA: the ball for PALDI, Myopic, RHC-US and Random, the sphere for FLEX, and
+  PRBS levels on the sphere), so the evidence, not the agent, sets the decision. Trials 6–20 have no evidence,
   last 2 s, and use the full 20-pA bound. Filters reset when notified;
   planning stays in the current trial and does not predict resets. PALDI is
   `adaptive_c2h20`: 20 planning steps of 10 ms, with 15-ms minimum update and
@@ -467,24 +467,28 @@ control variants remain in `results/archive/experiments/`. See
 [WONG_WANG_OBSERVATION.md](WONG_WANG_OBSERVATION.md) for their original protocols.
 They are separate ablations and do not contribute rows to the final native/uniform table.
 
-To reproduce identification in a fresh output folder, use the selected cohort's
-catalog overlay. It preserves the original componentwise identification bounds
-for RHC-US, PRBS, and Random; newer shared defaults use a norm bound. This does
-not change task control, where all methods use the same norm bound.
+Every identification policy uses the ball ‖u‖ ≤ bound of the shared TBME
+catalog, as in the other manuscript experiments (neuro `b1eff1e`). To reproduce
+identification in a fresh output folder:
 
 ```bash
 ./.venv/bin/python -m experiments.tnsre.exp_spiking_sessions --mode run \
   --exp-ids wong_wang_snn_native_uniform --seeds 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 \
-  --model-catalog experiments/tnsre/config/native_uniform_manuscript_models.yaml \
   --base-dir results/archive/experiments/<date>_native_uniform_reproduction
 ```
 
+The archived SNN cohorts of 2026-10-07 and of the first 2026-10-08 result used
+componentwise identification bounds for RHC-US, PRBS, and Random. To reproduce
+them, add `--model-catalog experiments/tnsre/config/native_uniform_manuscript_models.yaml`
+(the overlay restores the box; `snn_weak_evidence` scenarios with `constraint='box'`
+load it). Task control is unchanged: all methods use the same norm bound.
+
 The manuscript result was made on GCP with the campaign of
-`experiments.tnsre.snn_weak_evidence` (scenario `weak2_e5` of the 2026-10-08 campaign), which trains with the
-same suite specification and overlay and evaluates the frozen models with the
+`experiments.tnsre.snn_weak_evidence` (scenario `weak2_e5_ball`), which trains with the
+same suite specification and the shared ball catalog and evaluates the frozen models with the
 selected evaluation protocol; reference rows (initial estimate, fitted reference,
 model-free inputs) are the frozen rows of the 2026-10-07 result.
-`snn_weak_evidence_finalize --stage audit --scenario weak2_e5` writes its paired
+`snn_weak_evidence_finalize --stage audit --scenario weak2_e5_ball` writes its paired
 PALDI-versus-method audit. For the 2026-10-07 result: at source commit `ad8d7c4`,
 `wong_wang_observation --arm transfer_uniform` reproduces the original campaign,
 including reference fitting and budgets 10/12, and `native_manuscript` adds the
