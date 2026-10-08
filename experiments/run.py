@@ -2300,6 +2300,7 @@ def _run_single_parameter_identification(
                 schedule_spec, "adaptive_replan_state_error_threshold", None
             ),
             "q_theta": float(q_theta),
+            "q_theta_interval": int(model.q_theta_interval),
             "parameter_prior_covariance": float(parameter_prior_covariance),
             "parameter_scale": float(parameter_scale),
             "initial_parameter_nonnegative": bool(env_preset.initial_parameter_nonnegative),

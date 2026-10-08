@@ -164,6 +164,7 @@ def setup_model(config: ExperimentConfig) -> SeqVae | BaseModel:
             {
                 "q_theta": config.model.emb_q_theta,
                 "k_theta": config.model.emb_k_theta,
+                "q_theta_interval": config.model.emb_q_theta_interval,
                 "state_init_uncertainty": config.model.emb_state_init_uncertainty,
                 "q_theta_meas_coeff": config.model.emb_q_theta_meas_coeff,
                 "q_theta_max_scale": config.model.emb_q_theta_max_scale,

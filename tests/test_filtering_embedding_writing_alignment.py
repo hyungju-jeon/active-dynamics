@@ -155,20 +155,43 @@ def test_adaptive_block_update_can_apply_before_k_theta(learning_sensitivity) ->
     torch.testing.assert_close(model._theta_sensitivity, torch.zeros_like(model._theta_sensitivity))
 
 
-def test_q_theta_drift_increases_predictive_parameter_covariance() -> None:
-    model = _build_model(q_theta=0.05, k_theta=1)
+def _apply_empty_blocks(model: FilteringEmbedding, block_steps: int, n_blocks: int) -> None:
+    """Apply blocks with zero score and information, so only the random walk changes P."""
+    for _ in range(n_blocks):
+        model._theta_score_block.zero_()
+        model._theta_info_block.zero_()
+        model._theta_block_steps = block_steps
+        model._apply_embedding_block_update()
+
+
+@pytest.mark.parametrize("block_steps", [1, 3, 20])
+def test_q_theta_drift_scales_with_block_length(block_steps) -> None:
+    model = _build_model(q_theta=0.05, k_theta=block_steps)
     p_before = model.e["P"].clone()
     m_before = model.e["m"].clone()
-    model._theta_score_block.zero_()
-    model._theta_info_block.zero_()
 
-    model._apply_embedding_block_update()
+    _apply_empty_blocks(model, block_steps, n_blocks=1)
 
-    p_after = model.e["P"]
-    expected_diag = torch.full((2,), 0.05)
-    observed_diag = torch.diagonal((p_after - p_before)[0])
-    assert torch.allclose(observed_diag, expected_diag, atol=1e-6)
-    assert torch.allclose(model.e["m"], m_before)
+    expected_diag = torch.full((2,), 0.05 * block_steps / model.q_theta_interval)
+    observed_diag = torch.diagonal((model.e["P"] - p_before)[0])
+    torch.testing.assert_close(observed_diag, expected_diag, atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(model.e["m"], m_before)
+
+
+def test_q_theta_drift_per_observation_is_independent_of_update_cadence() -> None:
+    """Twenty 1-step blocks and one 20-step block add the same q_theta."""
+    every_step = _build_model(q_theta=0.05, k_theta=1)
+    blockwise = _build_model(q_theta=0.05, k_theta=20)
+    p_before = blockwise.e["P"].clone()
+
+    _apply_empty_blocks(every_step, block_steps=1, n_blocks=20)
+    _apply_empty_blocks(blockwise, block_steps=20, n_blocks=1)
+
+    torch.testing.assert_close(every_step.e["P"], blockwise.e["P"], atol=1e-6, rtol=1e-5)
+    torch.testing.assert_close(
+        torch.diagonal((blockwise.e["P"] - p_before)[0]), torch.full((2,), 0.05),
+        atol=1e-6, rtol=1e-5,
+    )
 
 
 def test_embedding_belief_remains_finite_and_spd_after_updates() -> None:
