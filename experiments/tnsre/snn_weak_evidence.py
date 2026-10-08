@@ -1,20 +1,28 @@
-"""Native+Uniform SNN: weak control during the evidence-led identification trials.
+"""Native+Uniform SNN: identification scenarios for the evidence-led trials.
 
-The selected manuscript protocol (``results/tnsre/20261007_snn_native_uniform``) with one
-change. In trials 1-10 every identification policy's own bound is scaled by 0.1: PALDI and
-Myopic norm <= 2 pA, the FLEX sphere 2 pA, and RHC-US, PRBS and Random |u_j| <= 2 pA, all
-below the 6-pA evidence. Trials 11-20 restore the original bounds (preset
-``tbme_ww_weak_evidence_transfer_uniform``). Everything else is unchanged: native transfer,
-uniform current, 20+20 recordings, calibrated readouts, seeds 0-19, priors, the manuscript
-catalog overlay, and the task protocol (warm-start iCEM, 20-pA norm, task seeds 91000-91007,
-checkpoints 1/5/10/15 at 480 pA^2 s, final models at 200/400/480/600 pA^2 s).
+The selected manuscript protocol (``results/tnsre/20261007_snn_native_uniform``: evidence trials
+1-10 and fixed 2-s exploration trials 11-20, every policy at its full 20-pA bound) with one
+change per scenario (``SCENARIOS``):
 
-One VM runs one ``campaign`` group: seeds ``s % groups == group`` for all six methods, their
-held-out R2, their task cells, and a zero-control replay of their evidence trials (same
-network seeds) that gives each trial's evidence-only choice. Group 0 also replays the
-manuscript example. Prior, fitted-reference and model-free task rows do not depend on
-identification; ``finalize`` (see ``snn_weak_evidence_finalize``) reuses the frozen rows after
-checking identical readouts and priors.
+* ``weak2_e10``: every identification policy's own bound x0.1 in trials 1-10 (PALDI and Myopic
+  norm <= 2 pA, the FLEX sphere 2 pA, RHC-US/PRBS/Random |u_j| <= 2 pA, all below the 6-pA
+  evidence); trials 11-20 restore it (2026-10-07).
+* ``weak10_e10``: the same with x0.5 (10 pA, above the evidence).
+* ``weak2_e5``: five evidence trials at x0.1, then 15 fixed exploration trials at 20 pA.
+* ``passive_e20``: 20 evidence trials without control (``off_policy``); the learner's only
+  input is the known evidence.
+
+Everything else is unchanged: native transfer, uniform current, 20+20 recordings, calibrated
+readouts, seeds 0-19, priors, the manuscript catalog overlay, and the task protocol (warm-start
+iCEM, 20-pA norm, task seeds 91000-91007, checkpoints 1/5/10/15 at 480 pA^2 s, final models at
+200/400/480/600 pA^2 s).
+
+One VM runs one ``campaign`` group: seeds ``s % groups == group`` for every method of the given
+scenarios, their held-out R2, their task cells, and a zero-control replay of their evidence
+trials (same network seeds) that gives each trial's evidence-only choice. Each scenario has its
+own root ``<root>/<scenario>``. Group 0 also replays the manuscript example for scenarios with
+PALDI. Prior, fitted-reference and model-free task rows do not depend on identification;
+``snn_weak_evidence_finalize`` reuses the frozen rows after checking identical readouts and priors.
 """
 from __future__ import annotations
 
@@ -25,6 +33,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import sys
@@ -39,18 +48,50 @@ from experiments.tnsre import eval_spiking_sessions as ev
 from experiments.tnsre import wong_wang_full as full
 from experiments.tnsre.wong_wang_full import RecordedTaskNetwork, failed_control_outcome, write_json
 
-PRESET = 'tbme_ww_weak_evidence_transfer_uniform'
 TASK_PRESET = 'tbme_ww_observation_transfer_uniform'  # the frozen evaluation network
-SUITE = 'ww_weak_evidence_transfer_uniform'
-POLICIES = ['adaptive_c2h20', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random']
-SUITES = {SUITE: {**full.SUITES['transfer_uniform'], 'env_preset_id': PRESET, 'model_ids': POLICIES}}
+POLICIES = ('adaptive_c2h20', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random')
+
+
+@dataclass(frozen=True)
+class Scenario:
+    """Identification protocol of one scenario; trials are 1-based in the text, sessions 0-based here.
+
+    Attributes:
+        preset: Environment preset of the identification runs.
+        policies: Identification policies.
+        scale: Factor on every policy's bound in sessions ``< weak_trials``.
+        weak_trials: Sessions with the scaled bound (0: none).
+        evidence_trials: Sessions ``< evidence_trials`` are evidence-led; later sessions are
+            fixed 2-s trials without evidence.
+    """
+
+    preset: str
+    policies: tuple[str, ...]
+    scale: float
+    weak_trials: int
+    evidence_trials: int
+
+    @property
+    def suite(self) -> str:
+        return self.preset.removeprefix('tbme_')
+
+
+SCENARIOS = {
+    'weak2_e10': Scenario('tbme_ww_weak_evidence_transfer_uniform', POLICIES, 0.1, 10, 10),
+    'weak10_e10': Scenario('tbme_ww_weak10_evidence_transfer_uniform', POLICIES, 0.5, 10, 10),
+    'weak2_e5': Scenario('tbme_ww_weak_evidence5_transfer_uniform', POLICIES, 0.1, 5, 5),
+    'passive_e20': Scenario('tbme_ww_passive_evidence20_transfer_uniform', ('off_policy',), 1.0, 0, 20),
+}
+SUITES = {sc.suite: {**full.SUITES['transfer_uniform'], 'env_preset_id': sc.preset, 'model_ids': list(sc.policies)}
+          for sc in SCENARIOS.values()}
 OVERLAY = Path(__file__).parent / 'config' / 'native_uniform_manuscript_models.yaml'
 SEEDS = list(range(20))
-WEAK_SCALE, WEAK_TRIALS, ACTION_MAX = 0.1, 10, 1.0
+ACTION_MAX = 1.0
 # Constraint geometry of each identification policy (manuscript overlay): PALDI and Myopic
-# project onto a ball, FLEX inputs lie on a sphere, and RHC-US/PRBS/Random use a box.
+# project onto a ball, FLEX inputs lie on a sphere, RHC-US/PRBS/Random use a box, and the
+# passive policy's control is zero.
 GEOMETRY = {'adaptive_c2h20': 'ball', 'active_myopic': 'ball', 'flex_rollback': 'sphere',
-            'rhc': 'box', 'prbs': 'box', 'random': 'box'}
+            'rhc': 'box', 'prbs': 'box', 'random': 'box', 'off_policy': 'zero'}
 KEY = ['controller', 'policy', 'seed', 'checkpoint', 'task', 'budget', 'task_seed']
 THREAD_ENV = {k: '1' for k in ('OMP_NUM_THREADS', 'OPENBLAS_NUM_THREADS', 'MKL_NUM_THREADS', 'NUMEXPR_NUM_THREADS')}
 
@@ -80,37 +121,38 @@ def configure_eval(inputs: Path):
     ev.EXAMPLES['model_free']['overturn'] = 'spread'
 
 
-def runs_root(root: Path) -> Path:
+def runs_root(root: Path, scenario: Scenario) -> Path:
     """Run folders are named by the environment preset without its ``tbme_`` prefix."""
-    return root / 'tracks' / PRESET.removeprefix('tbme_')
+    return root / 'tracks' / scenario.suite
 
 
 def group_seeds(group: int, groups: int) -> list[int]:
     return [s for s in SEEDS if s % groups == group]
 
 
-def learned_cell(unit: dict, budget: float) -> bool:
+def learned_cell(unit: dict, budget: float, scenario: Scenario) -> bool:
     """Learned-model cells of the frozen grid: trials 1-15 at 480 pA^2 s; final models at every budget."""
-    return unit['policy'] in map(ev.evaluated_policy, POLICIES) and (
+    return unit['policy'] in map(ev.evaluated_policy, scenario.policies) and (
         unit['checkpoint'] in (1, 5, 10, 15) and budget == 12. or unit['checkpoint'] == 20)
 
 
 # ------------------------------------------------------------------ identification
-def train(root: Path, policy: str, seed: int):
+def train(root: Path, scenario: Scenario, policy: str, seed: int):
     from experiments import run
     configure_catalogs()
     args = run.build_parser().parse_args(['--base-dir', str(root), '--path-layout', 'tbme_tracks',
                                           '--total-steps', '8000', '--skip-existing'])
-    result = run._run_one(exp_id=SUITE, policy_id=policy, seed=seed, repeat=1, base_dir=root, args=args)
+    result = run._run_one(exp_id=scenario.suite, policy_id=policy, seed=seed, repeat=1, base_dir=root, args=args)
     if result['status'] != 'completed' or result.get('nan_detected'):
         raise RuntimeError(f'Identification failed: {result.get("error", result)}')
     if len(result.get('session_log', [])) != 20:
         raise RuntimeError('Identification did not complete all 20 trials')
-    write_json(root / 'run_checks' / f'{policy}_{seed:02d}.json', check_run(run_dir(root, policy, seed), policy))
+    write_json(root / 'run_checks' / f'{policy}_{seed:02d}.json',
+               check_run(run_dir(root, scenario, policy, seed), policy, scenario))
 
 
-def run_dir(root: Path, policy: str, seed: int) -> Path:
-    return runs_root(root) / policy / f'seed_{seed}' / 'repeat_01'
+def run_dir(root: Path, scenario: Scenario, policy: str, seed: int) -> Path:
+    return runs_root(root, scenario) / policy / f'seed_{seed}' / 'repeat_01'
 
 
 def session_bins(session_index: np.ndarray) -> np.ndarray:
@@ -119,16 +161,17 @@ def session_bins(session_index: np.ndarray) -> np.ndarray:
 
 
 def control_size(u: np.ndarray, geometry: str) -> np.ndarray:
-    """Size of each control (T, 2) in the policy's own constraint: norm (ball, sphere) or max |u_j| (box)."""
+    """Size of each control (T, 2) in the policy's own constraint: norm (ball, sphere) or max |u_j| (box, zero)."""
     return np.linalg.norm(u, axis=1) if geometry in ('ball', 'sphere') else np.abs(u).max(axis=1)
 
 
-def check_run(path: Path, policy: str, scale: float = WEAK_SCALE, weak_trials: int = WEAK_TRIALS) -> dict:
+def check_run(path: Path, policy: str, scenario: Scenario) -> dict:
     """Bound compliance, unchanged evidence, and trial structure of one identification run.
 
     The control is ``policy_action``; ``action`` is the model input, control plus evidence.
-    Trials before ``weak_trials`` must satisfy the bound ``scale * ACTION_MAX``, later trials
-    ``ACTION_MAX``, in the policy's own geometry (FLEX inputs lie on the sphere).
+    Sessions before ``scenario.weak_trials`` must satisfy the bound ``scenario.scale * ACTION_MAX``,
+    later sessions ``ACTION_MAX``, in the policy's own geometry (FLEX inputs lie on the sphere;
+    the passive control is exactly zero).
     """
     meta = json.loads((path / 'run_metadata.json').read_text())
     trace = pd.read_csv(path / 'state_action_trace.csv', usecols=['step', 'session_index', 'action_x', 'action_v',
@@ -137,11 +180,18 @@ def check_run(path: Path, policy: str, scale: float = WEAK_SCALE, weak_trials: i
     k = trace.session_index.to_numpy()
     u = trace[['policy_action_x', 'policy_action_v']].to_numpy(np.float64)
     rule, log = meta['session_rule'], meta['session_log']
-    bound = np.where(k < weak_trials, scale, 1.0) * ACTION_MAX
-    size = control_size(u, GEOMETRY[policy])
-    ok = size <= bound * (1 + 1e-6) + 1e-7
-    if GEOMETRY[policy] == 'sphere':
-        ok &= size >= bound * (1 - 1e-5)
+    weak, n_evidence = scenario.weak_trials, scenario.evidence_trials
+    assert (rule['action_scale'], rule['action_scale_last_session']) == (scenario.scale, weak), rule
+    assert rule['evidence_last_session'] == rule['fixed_first_session'] == n_evidence, rule
+    geometry = GEOMETRY[policy]
+    bound = np.where(k < weak, scenario.scale, 1.0) * ACTION_MAX
+    size = control_size(u, geometry)
+    if geometry == 'zero':
+        ok = size == 0.0
+    else:
+        ok = size <= bound * (1 + 1e-6) + 1e-7
+        if geometry == 'sphere':
+            ok &= size >= bound * (1 - 1e-5)
     # Evidence: the model input minus the control is the session's known evidence.
     pools = np.array([s['evidence_pool'] for s in log])[k]
     t = session_bins(k)
@@ -150,18 +200,21 @@ def check_run(path: Path, policy: str, scale: float = WEAK_SCALE, weak_trials: i
     expected[on, pools[on]] = float(rule['evidence_amplitude'])
     evidence_error = float(np.abs(trace[['action_x', 'action_v']].to_numpy(np.float64) - u - expected).max())
     phases = {}
-    for name, mask in (('weak', k < weak_trials), ('strong', k >= weak_trials)):
-        ratio = size[mask] / bound[mask]
-        phases[name] = dict(steps=int(mask.sum()), max_size=float(size[mask].max()), bound=float(bound[mask][0]),
-                            max_ratio=float(ratio.max()), mean_ratio=float(ratio.mean()),
-                            at_bound_fraction=float((ratio >= 0.999).mean()))
-    record = dict(policy=policy, seed=int(meta['seed']), geometry=GEOMETRY[policy], scale=scale,
-                  weak_trials=weak_trials, compliant=bool(ok.all()), violations=int((~ok).sum()),
-                  evidence_max_error=evidence_error, phases=phases,
+    for name, mask, trials in (('weak', k < weak, f'1-{weak}'), ('strong', k >= weak, f'{weak + 1}-20')):
+        if mask.any():
+            ratio = size[mask] / bound[mask]
+            phases[name] = dict(trials=trials, steps=int(mask.sum()), max_size=float(size[mask].max()),
+                                bound=float(bound[mask][0]), max_ratio=float(ratio.max()),
+                                mean_ratio=float(ratio.mean()), at_bound_fraction=float((ratio >= 0.999).mean()))
+    record = dict(policy=policy, seed=int(meta['seed']), geometry=geometry, scale=scenario.scale,
+                  weak_trials=weak, evidence_trials=n_evidence, compliant=bool(ok.all()),
+                  violations=int((~ok).sum()), evidence_max_error=evidence_error, phases=phases,
                   trial_bins=[int(s['bins']) for s in log], decisions=[int(s['decision']) for s in log],
                   session_rule=rule, preset=meta['env_preset_id'])
-    assert len(log) == 20 and all(s['bins'] == 400 for s in log[10:]), 'trial structure changed'
-    assert all(s['evidence_pool'] in (0, 1) for s in log[:10]) and all(s['evidence_pool'] == -2 for s in log[10:])
+    assert meta['env_preset_id'] == scenario.preset
+    assert len(log) == 20 and all(s['bins'] == 400 for s in log[n_evidence:]), 'trial structure changed'
+    assert all(s['evidence_pool'] in (0, 1) for s in log[:n_evidence])
+    assert all(s['evidence_pool'] == -2 for s in log[n_evidence:])
     assert len(trace) == sum(s['bins'] for s in log)
     assert record['compliant'], f'{policy} seed {meta["seed"]}: {record["violations"]} bound violations'
     assert evidence_error <= 1e-6, f'evidence changed: {evidence_error}'
@@ -169,18 +222,18 @@ def check_run(path: Path, policy: str, scale: float = WEAK_SCALE, weak_trials: i
 
 
 # ------------------------------------------------------------------ evaluation
-def r2(root: Path, inputs: Path, group: int):
+def r2(root: Path, inputs: Path, scenario: Scenario, group: int):
     configure_eval(inputs)
-    ev.stage_r2(root / 'eval' / f'group_{group}', runs_root(root))
+    ev.stage_r2(root / 'eval' / f'group_{group}', runs_root(root, scenario))
 
 
-def task(root: Path, inputs: Path, group: int, shard: int, nshards: int):
+def task(root: Path, inputs: Path, scenario: Scenario, group: int, shard: int, nshards: int):
     """One shard of this group's learned-model task cells (warm-start iCEM, frozen protocol)."""
     configure_eval(inputs)
-    runs = ev.load_session_runs(runs_root(root))
+    runs = ev.load_session_runs(runs_root(root, scenario))
     assert {r['seed'] for r in runs} <= set(SEEDS)
     units = ev.controller_units(runs)
-    jobs = [job for job in ev.task_jobs(units) if learned_cell(units[job[0]], job[2])][shard::nshards]
+    jobs = [job for job in ev.task_jobs(units) if learned_cell(units[job[0]], job[2], scenario)][shard::nshards]
     out = root / 'eval' / f'group_{group}'
     path = out / 'task_warm' / f'worker_g{group}_{shard:03d}.csv'
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -223,7 +276,7 @@ def task(root: Path, inputs: Path, group: int, shard: int, nshards: int):
     print(f'Completed group {group} shard {shard}: {len(jobs)} rows', flush=True)
 
 
-def examples(root: Path, inputs: Path):
+def examples(root: Path, inputs: Path, scenario: Scenario):
     """Replay the manuscript example (PALDI seed 0, trial 20, task 91000, 480 pA^2 s) bin by bin.
 
     Its scalar outcome must equal this group's task row; the phase panel needs the learned
@@ -231,7 +284,7 @@ def examples(root: Path, inputs: Path):
     """
     configure_eval(inputs)
     out = root / 'examples_replay'
-    ev.stage_examples(out / 'examples', runs_root(root))
+    ev.stage_examples(out / 'examples', runs_root(root, scenario))
     new = pd.read_csv(out / 'examples' / 'example_sessions.csv')
     rows = pd.concat([pd.read_csv(p) for p in (root / 'eval' / 'group_0' / 'task_warm').glob('worker_*.csv')])
     learned = new[new.controller == 'learned'].iloc[0]
@@ -254,19 +307,19 @@ def examples(root: Path, inputs: Path):
                                                             dict(policy='spread', **spread)]))
 
 
-def replay(root: Path, group: int, groups: int):
+def replay(root: Path, scenario: Scenario, group: int, groups: int):
     """Evidence-only choice of every evidence trial of this group's seeds (zero control).
 
     A session's network noise depends only on its seed (``WangDecisionNetwork.reset``
-    reseeds Brian2 and reinitializes every state). Validation: replaying the recorded PALDI
-    controls of trial 1 must reproduce the recorded trajectory.
+    reseeds Brian2 and reinitializes every state). Validation: replaying the recorded controls
+    of trial 1 of the scenario's first policy must reproduce the recorded trajectory.
     """
     from actdyn.environment.session import session_evidence, session_evidence_pool
     from actdyn.environment.spiking_decision import SpikingDecisionEnv, session_rule_from_preset
     from experiments.experiment_definitions import get_environment_preset
     configure_catalogs()
-    net = ev.build_network(preset_id=PRESET)
-    rule = session_rule_from_preset(get_environment_preset(PRESET), net.state_scale)
+    net = ev.build_network(preset_id=scenario.preset)
+    rule = session_rule_from_preset(get_environment_preset(scenario.preset), net.state_scale)
 
     def session(seed, k, controls=None):
         """One identification trial; ``controls`` (T, 2) replays recorded inputs, None = zero control."""
@@ -287,14 +340,14 @@ def replay(root: Path, group: int, groups: int):
     validation, rows = [], []
     try:
         for seed in group_seeds(group, groups):
-            trace = pd.read_csv(run_dir(root, 'adaptive_c2h20', seed) / 'state_action_trace.csv')
+            trace = pd.read_csv(run_dir(root, scenario, scenario.policies[0], seed) / 'state_action_trace.csv')
             first = trace[trace.session_index == 0]
             info, states = session(seed, 0, first[['policy_action_x', 'policy_action_v']].to_numpy(np.float64))
             recorded = first[['true_z0', 'true_z1']].to_numpy(np.float64)[1:]  # states after steps 1..T-1
             error = float(np.abs(states[:len(recorded)] - recorded).max())
-            validation.append(dict(seed=seed, trial=1, bins=info['bins'], recorded_bins=len(first),
-                                   max_abs_error=error))
-            for k in range(WEAK_TRIALS):
+            validation.append(dict(seed=seed, trial=1, policy=scenario.policies[0], bins=info['bins'],
+                                   recorded_bins=len(first), max_abs_error=error))
+            for k in range(scenario.evidence_trials):
                 info, _ = session(seed, k)
                 rows.append(dict(seed=seed, trial=k + 1, **info))
     finally:
@@ -307,6 +360,29 @@ def replay(root: Path, group: int, groups: int):
 
 
 # ------------------------------------------------------------------ one VM
+TRAIN_ORDER = ('rhc', 'active_myopic', 'flex_rollback', 'adaptive_c2h20', 'random', 'prbs', 'off_policy')
+
+
+def campaign_jobs(scenarios: list[str], group: int, groups: int, workers: int) -> dict[str, list]:
+    """Jobs ``(key, argv)`` of one seed group per campaign phase.
+
+    Training runs longest first (RHC-US, then the planners) so the slowest runs do not start
+    last. Each scenario's task cells are split into ``workers`` shards.
+    """
+    seeds = group_seeds(group, groups)
+    sc = lambda name: ['--scenario', name]
+    return {
+        'identification': [(f'{name}_train_{p}_{s:02d}', [*sc(name), '--stage', 'train', '--policy', p, '--seed', str(s)])
+                           for p in TRAIN_ORDER for name in scenarios if p in SCENARIOS[name].policies for s in seeds],
+        'prediction': [(f'{name}_r2', [*sc(name), '--stage', 'r2']) for name in scenarios],
+        'control_and_replay': [(f'{name}_replay', [*sc(name), '--stage', 'replay']) for name in scenarios] + [
+            (f'{name}_task_{i:02d}', [*sc(name), '--stage', 'task', '--shard', str(i), '--nshards', str(workers)])
+            for name in scenarios for i in range(workers)],
+        'example': [(f'{name}_examples', [*sc(name), '--stage', 'examples']) for name in scenarios
+                    if group == 0 and 'adaptive_c2h20' in SCENARIOS[name].policies],
+    }
+
+
 def campaign(a):
     """Train, score, and replay one seed group with ``workers`` isolated processes; ledger of every job."""
     from actdyn.policy.baseline_flex import _flex_policy_class
@@ -322,13 +398,14 @@ def campaign(a):
 
     def job(spec):
         key, argv = spec
+        name = argv[argv.index('--scenario') + 1]
         with lock:
             old = records.get(key, {})
             if old.get('status') == 'completed':
                 return True
             attempt = old.get('attempt', 0) + 1
             log = root / 'logs' / f'group_{a.group}' / f'{key}.attempt{attempt}.log'; log.parent.mkdir(parents=True, exist_ok=True)
-            command = [sys.executable, '-m', __spec__.name, '--root', str(root), '--inputs', str(a.inputs),
+            command = [sys.executable, '-m', __spec__.name, '--root', str(root / name), '--inputs', str(a.inputs),
                        '--group', str(a.group), '--groups', str(a.groups), *argv]
             records[key] = {'command': command, 'status': 'running', 'started': now(), 'attempt': attempt,
                             'log': str(log.relative_to(root)),
@@ -356,43 +433,40 @@ def campaign(a):
             raise RuntimeError(f'{name}: {failures}')
         print(f'{now()} group {a.group} {name}: {len(jobs)} completed', flush=True)
 
-    seeds = group_seeds(a.group, a.groups)
-    # Longest first (RHC-US, then the planners) so the slowest runs do not start last.
-    order = ['rhc', 'active_myopic', 'flex_rollback', 'adaptive_c2h20', 'random', 'prbs']
-    phase('identification', [(f'train_{p}_{s:02d}', ['--stage', 'train', '--policy', p, '--seed', str(s)])
-                             for p in order for s in seeds], a.workers)
-    phase('prediction', [('r2', ['--stage', 'r2'])], 1)
-    phase('control_and_replay', [('replay', ['--stage', 'replay'])] + [
-        (f'task_{i:02d}', ['--stage', 'task', '--shard', str(i), '--nshards', str(a.workers)]) for i in range(a.workers)],
-        a.workers + 1)
-    if a.group == 0:
-        phase('example', [('examples', ['--stage', 'examples'])], 1)
-    write_json(root / f'status_group_{a.group}.json', dict(status='completed', finished=now(), seeds=seeds))
+    for name, jobs in campaign_jobs(a.scenarios, a.group, a.groups, a.workers).items():
+        if jobs:
+            phase(name, jobs, a.workers)
+    write_json(root / f'status_group_{a.group}.json', dict(status='completed', finished=now(), scenarios=a.scenarios,
+                                                           seeds=group_seeds(a.group, a.groups)))
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--stage', default='campaign', choices=['campaign', 'train', 'r2', 'task', 'examples', 'replay'])
-    p.add_argument('--root', required=True, type=Path)
+    p.add_argument('--root', required=True, type=Path, help='campaign root; a stage gets <root>/<scenario>')
     p.add_argument('--inputs', required=True, type=Path, help='frozen test_trajectories.npz and native_fit.json')
+    p.add_argument('--scenarios', nargs='+', choices=list(SCENARIOS), default=['weak10_e10', 'weak2_e5', 'passive_e20'],
+                   help='campaign scenarios')
+    p.add_argument('--scenario', choices=list(SCENARIOS), default='weak2_e10', help='scenario of one stage')
     p.add_argument('--group', type=int, default=0); p.add_argument('--groups', type=int, default=4)
-    p.add_argument('--policy', choices=POLICIES, default='adaptive_c2h20'); p.add_argument('--seed', type=int, default=0)
+    p.add_argument('--policy', choices=sorted(GEOMETRY), default='adaptive_c2h20'); p.add_argument('--seed', type=int, default=0)
     p.add_argument('--workers', type=int, default=8)
     p.add_argument('--shard', type=int, default=0); p.add_argument('--nshards', type=int, default=8)
     a = p.parse_args()
     torch.set_num_threads(1)
+    root, scenario = a.root.resolve(), SCENARIOS[a.scenario]
     if a.stage == 'campaign':
         campaign(a)
     elif a.stage == 'train':
-        train(a.root.resolve(), a.policy, a.seed)
+        train(root, scenario, a.policy, a.seed)
     elif a.stage == 'r2':
-        r2(a.root.resolve(), a.inputs.resolve(), a.group)
+        r2(root, a.inputs.resolve(), scenario, a.group)
     elif a.stage == 'task':
-        task(a.root.resolve(), a.inputs.resolve(), a.group, a.shard, a.nshards)
+        task(root, a.inputs.resolve(), scenario, a.group, a.shard, a.nshards)
     elif a.stage == 'examples':
-        examples(a.root.resolve(), a.inputs.resolve())
+        examples(root, a.inputs.resolve(), scenario)
     else:
-        replay(a.root.resolve(), a.group, a.groups)
+        replay(root, scenario, a.group, a.groups)
 
 
 if __name__ == '__main__':

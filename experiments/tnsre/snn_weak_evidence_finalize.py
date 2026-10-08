@@ -34,6 +34,7 @@ LEARNED = ('adaptive', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random'
 REFERENCES = ('prior', 'reduced_fit', 'none', 'spread', 'front')
 TASK_SEEDS = list(range(91000, 91007))  # 91007 has no initial decision and is excluded for all
 SCHEDULES = {'strong': FROZEN_RUNS, 'weak': None}  # weak runs: <out>/tracks/<slug>
+WEAK = w.SCENARIOS['weak2_e10']
 # Settings that must be identical between matched weak and strong runs.
 MATCHED_SETTINGS = ('policy_id', 'seed', 'action_max', 'action_cost_weight', 'planning_horizon', 'replan_interval',
                     'update_interval', 'schedule_id', 'coarse_dt_factor', 'coarse_action_mapping', 'adaptive_cadence',
@@ -50,7 +51,7 @@ def sha256(path: Path) -> str:
 
 
 def weak_runs(out: Path) -> Path:
-    return w.runs_root(out)
+    return w.runs_root(out, WEAK)
 
 
 def configure(out: Path):
@@ -127,9 +128,9 @@ def verify(out: Path):
         differ = [k for k in MATCHED_SETTINGS if k in old and meta.get(k) != old[k]]
         assert not differ, (path, differ)
         rule = dict(meta['session_rule'])
-        assert (rule.pop('action_scale'), rule.pop('action_scale_last_session')) == (w.WEAK_SCALE, w.WEAK_TRIALS)
+        assert (rule.pop('action_scale'), rule.pop('action_scale_last_session')) == (WEAK.scale, WEAK.weak_trials)
         assert rule == old['session_rule'], (rule, old['session_rule'])
-        assert meta['env_preset_id'] == w.PRESET and old['env_preset_id'] == w.TASK_PRESET
+        assert meta['env_preset_id'] == WEAK.preset and old['env_preset_id'] == w.TASK_PRESET
         settings.append(len([k for k in MATCHED_SETTINGS if k in old]))
     checks = [json.loads(p.read_text()) for p in sorted((out / 'provenance' / 'vm' / 'run_checks').glob('*.json'))]
     assert len(checks) == 120 and all(c['compliant'] and c['evidence_max_error'] <= 1e-6 for c in checks)
@@ -320,7 +321,7 @@ def evidence_trials(runs_root: Path, schedule: str, replay: pd.DataFrame) -> pd.
         policy, seed = ev.evaluated_policy(meta['policy_id']), int(meta['seed'])
         trace = pd.read_csv(path / 'state_action_trace.csv', usecols=['session_index', 'true_z0', 'true_z1',
                                                                       'policy_action_x', 'policy_action_v'])
-        for s in meta['session_log'][:w.WEAK_TRIALS]:
+        for s in meta['session_log'][:WEAK.evidence_trials]:
             d = trace[trace.session_index == s['session']]
             assert len(d) == s['bins']
             pool, chosen, bin_ = s['evidence_pool'], s['decision'] - 1, s['decision_bin']

@@ -187,11 +187,99 @@ def test_weak_evidence_campaign_grid_and_groups():
 
     assert sorted(s for g in range(4) for s in w.group_seeds(g, 4)) == list(range(20))
     unit = lambda policy, k: {"policy": policy, "checkpoint": k}
-    cells = [(k, b) for k in (0, 1, 5, 10, 15, 20, -1) for b in (5., 10., 12., 15.) if w.learned_cell(unit("adaptive", k), b)]
+    weak, passive = w.SCENARIOS["weak2_e10"], w.SCENARIOS["passive_e20"]
+    cells = [(k, b) for k in (0, 1, 5, 10, 15, 20, -1) for b in (5., 10., 12., 15.)
+             if w.learned_cell(unit("adaptive", k), b, weak)]
     # 4 earlier checkpoints at 480 pA^2 s and the final model at four budgets: 8 cells x 8 task seeds per run.
     assert cells == [(1, 12.), (5, 12.), (10, 12.), (15, 12.), (20, 5.), (20, 10.), (20, 12.), (20, 15.)]
-    assert not any(w.learned_cell(unit(p, 20), 12.) for p in ("prior", "reduced_fit", "none", "spread", "front"))
-    assert w.runs_root(w.Path("r")).name == "ww_weak_evidence_transfer_uniform"
+    assert not any(w.learned_cell(unit(p, 20), 12., weak) for p in ("prior", "reduced_fit", "none", "spread", "front"))
+    assert w.learned_cell(unit("off_policy", 20), 12., passive) and not w.learned_cell(unit("adaptive", 20), 12., passive)
+    # The 2026-10-07 run folder keeps its name.
+    assert w.runs_root(w.Path("r"), weak).name == "ww_weak_evidence_transfer_uniform"
+
+
+@pytest.mark.parametrize("name, changed", [
+    ("weak10_e10", {"spiking_session_action_scale", "spiking_session_action_scale_last_session"}),
+    ("weak2_e5", {"spiking_session_action_scale", "spiking_session_action_scale_last_session",
+                  "spiking_session_evidence_last_session", "spiking_fixed_first_session"}),
+    ("passive_e20", {"spiking_session_evidence_last_session", "spiking_fixed_first_session"}),
+])
+def test_scenario_presets_change_only_their_protocol(name, changed):
+    import dataclasses
+
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre import snn_weak_evidence as w
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    configure_tbme_catalogs(suite_entries={})
+    scenario = w.SCENARIOS[name]
+    base, preset = get_environment_preset(w.TASK_PRESET), get_environment_preset(scenario.preset)
+    a, b = dataclasses.asdict(base), dataclasses.asdict(preset)
+    assert {k for k in a if a[k] != b[k]} == {"preset_id", "system_label", *changed}
+    rule = session_rule_from_preset(preset, 4.0)
+    assert (rule.action_scale, rule.action_scale_last_session) == (scenario.scale, scenario.weak_trials)
+    assert rule.evidence_last_session == rule.fixed_first_session == scenario.evidence_trials
+    assert rule.max_sessions == 20 and preset.action_max == 1.0
+    gain = preset.spiking_stim_gain_pa
+    assert gain * rule.evidence_amplitude == pytest.approx(6.0)
+    weak_pa = {"weak10_e10": 10.0, "weak2_e5": 2.0, "passive_e20": 20.0}[name]  # passive: no scaled trials
+    assert gain * rule.action_scale * preset.action_max == pytest.approx(weak_pa)
+
+
+def test_scenario_campaign_jobs():
+    from experiments.tnsre import snn_weak_evidence as w
+
+    names = ["weak10_e10", "weak2_e5", "passive_e20"]
+    jobs = w.campaign_jobs(names, 0, 4, 16)
+    train = jobs["identification"]
+    # 5 seeds x (6 + 6 + 1) policies; RHC-US first, the passive runs last; one job per key.
+    assert len(train) == 65 and len({k for k, _ in train}) == 65
+    assert all("rhc" in k for k, _ in train[:10]) and all("off_policy" in k for k, _ in train[-5:])
+    assert [k for k, _ in jobs["prediction"]] == [f"{n}_r2" for n in names]
+    assert len(jobs["control_and_replay"]) == 3 + 3 * 16
+    assert [k for k, _ in jobs["example"]] == ["weak10_e10_examples", "weak2_e5_examples"]
+    assert w.campaign_jobs(names, 1, 4, 16)["example"] == []
+    for _key, argv in train:
+        scenario = w.SCENARIOS[argv[argv.index("--scenario") + 1]]
+        assert argv[argv.index("--policy") + 1] in scenario.policies
+
+
+def _fake_run(path, control: float):
+    """A passive run folder: 20 evidence trials of 3 bins each; model input = control + evidence."""
+    import json
+
+    import pandas as pd
+
+    log = [{"session": k, "bins": 3, "decision": 1, "decision_bin": 1, "evidence_pool": k % 2} for k in range(20)]
+    rows = []
+    for k in range(20):
+        for t in range(3):
+            u = np.array([control, 0.0])
+            e = np.zeros(2)
+            e[k % 2] = 0.3
+            rows.append(dict(step=len(rows), session_index=k, action_x=(u + e)[0], action_v=(u + e)[1],
+                             policy_action_x=u[0], policy_action_v=u[1]))
+    rule = dict(action_scale=1.0, action_scale_last_session=0, evidence_last_session=20, fixed_first_session=20,
+                evidence_bins=200, evidence_amplitude=0.3)
+    path.mkdir(parents=True)
+    (path / "run_metadata.json").write_text(json.dumps(dict(seed=3, session_rule=rule, session_log=log,
+                                                            env_preset_id="tbme_ww_passive_evidence20_transfer_uniform")))
+    pd.DataFrame(rows).to_csv(path / "state_action_trace.csv", index=False)
+    return path
+
+
+def test_check_run_requires_zero_control_in_the_passive_scenario(tmp_path):
+    from experiments.tnsre import snn_weak_evidence as w
+
+    passive = w.SCENARIOS["passive_e20"]
+    record = w.check_run(_fake_run(tmp_path / "zero", 0.0), "off_policy", passive)
+    assert record["compliant"] and record["evidence_max_error"] == 0.0 and set(record["phases"]) == {"strong"}
+    assert record["phases"]["strong"]["trials"] == "1-20"
+    with pytest.raises(AssertionError, match="bound violations"):
+        w.check_run(_fake_run(tmp_path / "pushed", 1e-3), "off_policy", passive)
+    with pytest.raises(AssertionError):  # the run's protocol must be the scenario's
+        w.check_run(_fake_run(tmp_path / "other", 0.0), "off_policy", w.SCENARIOS["weak2_e10"])
 
 
 def test_control_size_and_session_bins():
