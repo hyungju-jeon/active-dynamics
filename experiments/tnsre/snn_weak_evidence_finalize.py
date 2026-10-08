@@ -54,15 +54,29 @@ def weak_runs(out: Path) -> Path:
     return w.runs_root(out, WEAK)
 
 
+def learned_policies(scenario: w.Scenario) -> tuple[str, ...]:
+    """Evaluation names of a scenario's identification policies (PALDI variants count as PALDI)."""
+    return tuple(ev.evaluated_policy(p) for p in scenario.policies)
+
+
+def frozen_twin(policy_dir: str) -> str:
+    """Frozen run with the same learner settings; the passive learner shares Random's update schedule."""
+    return policy_dir if policy_dir in w.POLICIES else 'random'
+
+
 def configure(out: Path):
     w.configure_eval(out / 'data')
     ev.PROTOCOL['reduced_fit'] = str(out / 'reference' / 'native_fit.json')
 
 
 # ------------------------------------------------------------------ assemble
-def assemble(run: Path, out: Path):
-    """Copy the collected run (``gcp_runs/<id>``) and the frozen inputs into the result layout."""
-    source = run / 'results' / 'weak_evidence'
+def assemble(run: Path, out: Path, source: Path | None = None):
+    """Copy one scenario of the collected run (``gcp_runs/<id>``) and the frozen inputs into the result layout.
+
+    ``source`` is the scenario root inside the run (default: the 2026-10-07 layout). VM ledgers
+    and logs are copied when they are inside it; a multi-scenario campaign keeps them one level up.
+    """
+    source = run / 'results' / 'weak_evidence' if source is None else source
     assert not out.exists(), f'{out} exists; finalize writes a new folder'
     shutil.copytree(source / 'tracks', out / 'tracks')
     (out / 'data').mkdir()
@@ -85,12 +99,14 @@ def assemble(run: Path, out: Path):
     frozen = pd.concat([pd.read_csv(p) for p in sorted((FROZEN / 'eval' / 'task_warm').glob('worker_*.csv'))],
                        ignore_index=True)
     frozen[frozen.policy.isin(REFERENCES)].to_csv(task / 'worker_frozen_references.csv', index=False)
-    shutil.copytree(source / 'examples_replay' / 'examples', out / 'eval' / 'examples')
-    shutil.copytree(source / 'examples_replay' / 'control_phase', out / 'control_phase')
+    if (source / 'examples_replay').exists():
+        shutil.copytree(source / 'examples_replay' / 'examples', out / 'eval' / 'examples')
+        shutil.copytree(source / 'examples_replay' / 'control_phase', out / 'control_phase')
     shutil.copytree(source / 'evidence_only', out / 'evidence_only')
     vm = out / 'provenance' / 'vm'
     shutil.copytree(source / 'run_checks', vm / 'run_checks')
-    shutil.copytree(source / 'logs', vm / 'logs')
+    if (source / 'logs').exists():
+        shutil.copytree(source / 'logs', vm / 'logs')
     for path in sorted(source.glob('*_group_*.json')):
         shutil.copy2(path, vm / path.name)
     shutil.copy2(run / 'commit.txt', out / 'provenance' / 'commit.txt')
@@ -109,46 +125,63 @@ def readout_hash(run: dict) -> str:
     return hashlib.sha256(np.concatenate([run['C'].ravel(), run['b']]).tobytes()).hexdigest()
 
 
-def verify(out: Path):
+# Session-rule fields a scenario may change; every other field equals the frozen rule.
+SCENARIO_RULE_FIELDS = {'action_scale', 'action_scale_last_session', 'evidence_last_session', 'fixed_first_session'}
+
+
+def verify(out: Path, scenario: w.Scenario = WEAK):
     """Matched configuration, bound compliance, exact task grid, and reusable frozen references."""
     configure(out)
-    weak, strong = ev.load_session_runs(weak_runs(out)), ev.load_session_runs(FROZEN_RUNS)
-    expected = {(p, s) for p in LEARNED for s in w.SEEDS}
-    assert {(r['policy'], r['seed']) for r in weak} == expected == {(r['policy'], r['seed']) for r in strong}
+    runs_root, learned = w.runs_root(out, scenario), learned_policies(scenario)
+    new_runs, strong = ev.load_session_runs(runs_root), ev.load_session_runs(FROZEN_RUNS)
+    assert {(r['policy'], r['seed']) for r in new_runs} == {(p, s) for p in learned for s in w.SEEDS}
+    assert {(r['policy'], r['seed']) for r in strong} == {(p, s) for p in LEARNED for s in w.SEEDS}
     frozen_readouts = json.loads((FROZEN / 'provenance' / 'training_verification.json').read_text())['readouts_by_seed']
     by_key = {(r['policy'], r['seed']): r for r in strong}
-    for r in weak:
+    for r in new_runs:
         assert set(r['est']) == set(range(21)), (r['policy'], r['seed'])
         assert readout_hash(r) == frozen_readouts[str(r['seed'])]
-        np.testing.assert_array_equal(r['est'][0], by_key[(r['policy'], r['seed'])]['est'][0])
-    settings, rules = [], set()
-    for path in sorted(weak_runs(out).glob('*/seed_*/repeat_01/run_metadata.json')):
+        twin = r['policy'] if r['policy'] in LEARNED else 'random'  # see frozen_twin
+        np.testing.assert_array_equal(r['est'][0], by_key[(twin, r['seed'])]['est'][0])
+    settings, rule_changes = [], set()
+    for path in sorted(runs_root.glob('*/seed_*/repeat_01/run_metadata.json')):
         meta = json.loads(path.read_text())
-        old = json.loads((FROZEN_RUNS / path.relative_to(weak_runs(out))).read_text())
-        differ = [k for k in MATCHED_SETTINGS if k in old and meta.get(k) != old[k]]
+        rel = path.relative_to(runs_root)
+        twin = frozen_twin(rel.parts[0])
+        old = json.loads((FROZEN_RUNS / twin / Path(*rel.parts[1:])).read_text())
+        matched = [k for k in MATCHED_SETTINGS if k in old and not (k == 'policy_id' and twin != rel.parts[0])]
+        differ = [k for k in matched if meta.get(k) != old[k]]
         assert not differ, (path, differ)
-        rule = dict(meta['session_rule'])
-        assert (rule.pop('action_scale'), rule.pop('action_scale_last_session')) == (WEAK.scale, WEAK.weak_trials)
-        assert rule == old['session_rule'], (rule, old['session_rule'])
-        assert meta['env_preset_id'] == WEAK.preset and old['env_preset_id'] == w.TASK_PRESET
-        settings.append(len([k for k in MATCHED_SETTINGS if k in old]))
+        rule, old_rule = meta['session_rule'], old['session_rule']
+        changed = {k for k in rule if rule[k] != old_rule.get(k)}
+        assert set(old_rule) <= set(rule) and changed <= SCENARIO_RULE_FIELDS, (rule, old_rule)
+        assert (rule['action_scale'], rule['action_scale_last_session']) == (scenario.scale, scenario.weak_trials)
+        assert rule['evidence_last_session'] == rule['fixed_first_session'] == scenario.evidence_trials
+        assert meta['env_preset_id'] == scenario.preset and old['env_preset_id'] == w.TASK_PRESET
+        settings.append(len(matched))
+        rule_changes |= changed
     checks = [json.loads(p.read_text()) for p in sorted((out / 'provenance' / 'vm' / 'run_checks').glob('*.json'))]
-    assert len(checks) == 120 and all(c['compliant'] and c['evidence_max_error'] <= 1e-6 for c in checks)
+    assert len(checks) == 20 * len(learned) and all(c['compliant'] and c['evidence_max_error'] <= 1e-6 for c in checks)
     replay = [json.loads(p.read_text()) for p in sorted((out / 'evidence_only').glob('validation_group_*.json'))]
-    # Task grid: new learned rows plus frozen reference rows give the frozen key set exactly.
+    # Task grid: new learned rows plus frozen reference rows. Every learned policy has the
+    # frozen PALDI grid (same cells and task seeds); the references are the frozen rows.
     rows = pd.concat([pd.read_csv(p) for p in sorted((out / 'eval' / 'task_warm').glob('worker_*.csv'))],
                      ignore_index=True)
     frozen = pd.concat([pd.read_csv(p) for p in sorted((FROZEN / 'eval' / 'task_warm').glob('worker_*.csv'))],
                        ignore_index=True)
     keys = lambda f: set(f[w.KEY].itertuples(index=False, name=None))
-    assert not rows.duplicated(w.KEY).any() and len(rows) == len(frozen) == 9032 and keys(rows) == keys(frozen)
-    new = rows[rows.policy.isin(LEARNED)]
-    assert len(new) == 7680 and np.isfinite(new.energy).all() and (new.energy <= new.budget + 1e-6).all()
+    grid = keys(frozen[frozen.policy == 'adaptive'])
+    expected = keys(frozen[frozen.policy.isin(REFERENCES)]) | {(c, p, *rest) for p in learned for c, _, *rest in grid}
+    assert not rows.duplicated(w.KEY).any() and keys(rows) == expected
+    new = rows[rows.policy.isin(learned)]
+    assert len(new) == len(grid) * len(learned) and len(grid) == 1280
+    assert np.isfinite(new.energy).all() and (new.energy <= new.budget + 1e-6).all()
     assert set(rows.loc[rows.valid == 0, 'task_seed']) == {91007} and (rows.valid == (rows.task_seed != 91007)).all()
     for _, row in new[new.numerical_failure == 1].iterrows():
         assert (out / 'eval' / 'failures' / Path(row.failure_record).name).exists()
-    # The VM's example replay must reproduce the frozen fitted-model and model-free rows.
-    examples = pd.read_csv(out / 'eval' / 'examples' / 'example_sessions.csv')
+    # The VM's example replay (scenarios with PALDI) must reproduce the frozen fitted-model and model-free rows.
+    examples = (pd.read_csv(out / 'eval' / 'examples' / 'example_sessions.csv')
+                if (out / 'eval' / 'examples').exists() else pd.DataFrame(columns=['controller']))
     reproduced = []
     for _, row in examples[examples.controller != 'learned'].iterrows():
         policy = {'fit': 'reduced_fit'}.get(row.controller, row.controller)
@@ -159,8 +192,12 @@ def verify(out: Path):
         for key in ['valid', 'target', 'onset', 'success', 'outcome_bin', 'energy']:
             np.testing.assert_allclose(row[key], match.iloc[0][key], rtol=1e-5, atol=1e-6)
         reproduced.append(policy)
-    record = dict(passed=True, runs=len(weak), readouts_match_frozen=True, priors_match_frozen=True,
-                  matched_settings_per_run=sorted(set(settings)), run_checks=len(checks),
+    record = dict(passed=True, scenario=dict(preset=scenario.preset, policies=list(scenario.policies),
+                                             scale=scenario.scale, weak_trials=scenario.weak_trials,
+                                             evidence_trials=scenario.evidence_trials),
+                  runs=len(new_runs), readouts_match_frozen=True, priors_match_frozen=True,
+                  matched_settings_per_run=sorted(set(settings)), session_rule_fields_changed=sorted(rule_changes),
+                  run_checks=len(checks),
                   replay_validation=[dict(group=i, passed=v['passed']) for i, v in enumerate(replay)],
                   task_rows=len(rows), learned_rows=len(new), frozen_reference_rows=len(rows) - len(new),
                   numerical_failures=int(new.numerical_failure.sum()),
@@ -171,19 +208,20 @@ def verify(out: Path):
 
 
 # ------------------------------------------------------------------ score
-def score(out: Path):
+def score(out: Path, scenario: w.Scenario = WEAK):
     """Summaries and the main table in the selected result's format."""
     configure(out)
+    learned = learned_policies(scenario)
     ev.stage_score(out / 'eval', 'warm')
     summary = pd.read_csv(out / 'eval' / 'task_summary_warm.csv')
     final = summary[(summary.checkpoint == 20) | summary.policy.isin(REFERENCES)]
     final.to_csv(out / 'all_baselines.csv', index=False)
     r2 = pd.read_csv(out / 'eval' / 'r2_per_session.csv')
     records = []
-    for policy in (*LEARNED, *REFERENCES):
+    for policy in (*learned, *REFERENCES):
         record = dict(policy=policy)
-        if policy in LEARNED or policy == 'prior':
-            subset = r2[(r2.policy == ('adaptive' if policy == 'prior' else policy))
+        if policy in learned or policy == 'prior':
+            subset = r2[(r2.policy == (learned[0] if policy == 'prior' else policy))
                         & (r2.sessions == (0 if policy == 'prior' else 20))]
             record.update(zip(['r2_q25', 'r2_median', 'r2_q75'], np.percentile(subset.r2, [25, 50, 75])))
         elif policy == 'reduced_fit':
@@ -202,7 +240,7 @@ def success_matrix(rows: pd.DataFrame, policy: str, checkpoint: int, budget: flo
     """Training seed x valid task seed success, shape (20, 7); model-free rows broadcast over seeds."""
     data = rows[(rows.policy == policy) & (rows.budget == (10. if policy == 'none' else budget))
                 & (rows.task_seed.isin(TASK_SEEDS))]
-    if policy in LEARNED:
+    if policy not in REFERENCES:
         data = data[data.checkpoint == checkpoint]
     if set(data.seed) == {-1}:
         values = data.set_index('task_seed').success.reindex(TASK_SEEDS).to_numpy(float)
@@ -308,8 +346,8 @@ def compare(out: Path):
 
 
 # ------------------------------------------------------------------ evidence-trial diagnostics
-def evidence_trials(runs_root: Path, schedule: str, replay: pd.DataFrame) -> pd.DataFrame:
-    """One row per evidence-led trial (1-10) of every run, with its evidence-only replay.
+def evidence_trials(runs_root: Path, schedule: str, replay: pd.DataFrame, n_trials: int = 10) -> pd.DataFrame:
+    """One row per evidence-led trial (1 to ``n_trials``) of every run, with its evidence-only replay.
 
     Trace states precede each bin's input; the final pre-reset state is not in the trace, so
     post-decision leads cover the recorded bins only (as in the handoff diagnostic).
@@ -321,7 +359,7 @@ def evidence_trials(runs_root: Path, schedule: str, replay: pd.DataFrame) -> pd.
         policy, seed = ev.evaluated_policy(meta['policy_id']), int(meta['seed'])
         trace = pd.read_csv(path / 'state_action_trace.csv', usecols=['session_index', 'true_z0', 'true_z1',
                                                                       'policy_action_x', 'policy_action_v'])
-        for s in meta['session_log'][:WEAK.evidence_trials]:
+        for s in meta['session_log'][:n_trials]:
             d = trace[trace.session_index == s['session']]
             assert len(d) == s['bins']
             pool, chosen, bin_ = s['evidence_pool'], s['decision'] - 1, s['decision_bin']
