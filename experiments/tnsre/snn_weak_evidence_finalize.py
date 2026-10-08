@@ -429,15 +429,24 @@ def evidence(out: Path, scenario: w.Scenario):
                   for c in checks for v in c['phases'].values()]).to_csv(comparison / 'bound_compliance.csv', index=False)
 
 
-def versus(out: Path, scenario: w.Scenario, other: Path, other_scenario: w.Scenario, seed: int = 20261008):
-    """The same protocol with another identification constraint (``Scenario.constraint``).
+def versus(out: Path, scenario: w.Scenario, other: Path, other_scenario: w.Scenario,
+           identical: list[str] | None = None, seed: int = 20261008):
+    """This result against another result of the same evaluation: another identification
+    constraint (``Scenario.constraint``), bound schedule, or code version.
 
-    Policies whose resolved catalog entry is the same under both constraints must give identical
-    models, R2 and task rows. The others get paired training-seed contrasts (this minus other):
-    R2 after trial 20, and success at 400 and 480 pA^2 s after trial 20.
+    Policies in ``identical`` must give identical models, R2 and task rows. By default these are
+    the policies whose resolved catalog entry and identification protocol agree under both
+    scenarios; a code change between the runs is not visible there and needs ``identical``. The
+    others get paired training-seed contrasts (this minus other): R2 after trial 20, and success
+    at 400 and 480 pA^2 s after trial 20. Outputs are named after the other result's folder.
     """
-    specs = {c: w.configure_catalogs(c).policy_specs for c in (scenario.constraint, other_scenario.constraint)}
-    same = [p for p in scenario.policies if specs[scenario.constraint][p] == specs[other_scenario.constraint][p]]
+    if identical is None:
+        specs = {c: w.configure_catalogs(c).policy_specs for c in (scenario.constraint, other_scenario.constraint)}
+        protocol = lambda sc: (sc.preset, sc.scale, sc.weak_trials, sc.evidence_trials, sc.later_scale)
+        identical = [p for p in scenario.policies if specs[scenario.constraint][p] == specs[other_scenario.constraint][p]
+                     and protocol(scenario) == protocol(other_scenario)]
+    assert set(identical) <= set(scenario.policies), identical
+    same = [p for p in scenario.policies if p in identical]
     changed = [p for p in scenario.policies if p not in same]
     w.configure_catalogs(scenario.constraint)
     name = {p: ev.evaluated_policy(p) for p in scenario.policies}
@@ -445,7 +454,7 @@ def versus(out: Path, scenario: w.Scenario, other: Path, other_scenario: w.Scena
             for k, d, sc in (('this', out, scenario), ('other', other, other_scenario))}
     r2 = {'this': pd.read_csv(out / 'eval' / 'r2_per_session.csv'), 'other': pd.read_csv(other / 'eval' / 'r2_per_session.csv')}
     rows = {'this': task_rows(out / 'eval' / 'task_warm'), 'other': task_rows(other / 'eval' / 'task_warm')}
-    identical = {}
+    checked = {}
     for p in (name[p] for p in same):
         for s in w.SEEDS:
             a, b = runs['this'][(p, s)]['est'], runs['other'][(p, s)]['est']
@@ -455,31 +464,33 @@ def versus(out: Path, scenario: w.Scenario, other: Path, other_scenario: w.Scena
         a, b = (rows[k][rows[k].policy == p].sort_values(w.KEY).reset_index(drop=True) for k in rows)
         cols = ['valid', 'success', 'energy', 'outcome_bin', 'numerical_failure']
         pd.testing.assert_frame_equal(a[w.KEY + cols], b[w.KEY + cols])
-        identical[p] = dict(estimates=20 * 21, r2_rows=int((r2['this'].policy == p).sum()), task_rows=len(b))
+        checked[p] = dict(estimates=20 * 21, r2_rows=int((r2['this'].policy == p).sum()), task_rows=len(b))
+    contrast = f'this - {other.name}'
     contrasts = []
     for p in (name[p] for p in changed):
-        contrasts.append(dict(contrast=f'{scenario.constraint} - {other_scenario.constraint}', policy=p,
-                              endpoint='prediction_R2', trials=20, budget_pa2_s=np.nan,
+        contrasts.append(dict(contrast=contrast, policy=p, endpoint='prediction_R2', trials=20, budget_pa2_s=np.nan,
                               a=r2_vector(r2['this'], p, 20), b=r2_vector(r2['other'], p, 20)))
         for budget in (10., 12.):
-            contrasts.append(dict(contrast=f'{scenario.constraint} - {other_scenario.constraint}', policy=p,
-                                  endpoint='overturn_success', trials=20, budget_pa2_s=40 * budget,
+            contrasts.append(dict(contrast=contrast, policy=p, endpoint='overturn_success', trials=20,
+                                  budget_pa2_s=40 * budget,
                                   a=success_matrix(rows['this'], p, 20, budget), b=success_matrix(rows['other'], p, 20, budget)))
     frame = simultaneous(contrasts, seed=seed) if contrasts else pd.DataFrame(
         columns=['policy', 'endpoint', 'budget_pa2_s', 'value_a', 'value_b', 'difference', 'lower', 'upper',
                  'interval_excludes_zero'])
     comparison = out / 'comparison'; comparison.mkdir(exist_ok=True)
-    frame.to_csv(comparison / f'{scenario.constraint}_minus_{other_scenario.constraint}.csv', index=False)
-    record = dict(other=str(other), other_constraint=other_scenario.constraint, identical_policies=identical,
+    frame.to_csv(comparison / f'versus_{other.name}.csv', index=False)
+    record = dict(other=str(other), other_constraint=other_scenario.constraint,
+                  other_later_scale=other_scenario.later_scale, identical_policies=checked,
                   changed_policies=[name[p] for p in changed],
                   contrasts=[{k: (None if pd.isna(v) else v) for k, v in row.items()} for row in
                              frame[['policy', 'endpoint', 'budget_pa2_s', 'value_a', 'value_b', 'difference', 'lower',
                                     'upper', 'interval_excludes_zero']].astype(object).to_dict('records')])
-    write_json(out / 'provenance' / f'versus_{other_scenario.constraint}.json', record)
+    write_json(out / 'provenance' / f'versus_{other.name}.json', record)
     print(json.dumps(record, indent=1, default=float))
 
 
-def result(run: Path, out: Path, scenario_name: str, other: Path | None, other_name: str | None):
+def result(run: Path, out: Path, scenario_name: str, other: Path | None, other_name: str | None,
+           identical: list[str] | None = None):
     """One final result folder from one campaign scenario (no simulation)."""
     scenario = w.SCENARIOS[scenario_name]
     assemble_result(run, out, scenario_name)
@@ -489,7 +500,7 @@ def result(run: Path, out: Path, scenario_name: str, other: Path | None, other_n
     audit(out, scenario)
     evidence(out, scenario)
     if other is not None:
-        versus(out, scenario, other, w.SCENARIOS[other_name])
+        versus(out, scenario, other, w.SCENARIOS[other_name], identical)
 
 
 # ------------------------------------------------------------------ evidence-trial diagnostics
@@ -577,8 +588,11 @@ def main():
     p.add_argument('--run', type=Path, help='collected gcp_runs/<id> directory (assemble)')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--scenario', choices=sorted(w.SCENARIOS), default='weak2_e10', help='audit and result')
-    p.add_argument('--compare-to', type=Path, help='result: the same protocol under the other constraint')
+    p.add_argument('--compare-to', type=Path, help='result: another result of the same evaluation')
     p.add_argument('--compare-scenario', choices=sorted(w.SCENARIOS), help='result: scenario of --compare-to')
+    p.add_argument('--compare-identical', nargs='*', choices=sorted(w.GEOMETRY),
+                   help='result: policies that must match --compare-to exactly (default: same catalog entry '
+                        'and identification protocol)')
     a = p.parse_args()
     stages = ['assemble', 'verify', 'score', 'compare', 'diagnostics'] if a.stage == 'all' else [a.stage]
     for stage in stages:
@@ -587,7 +601,7 @@ def main():
         elif stage == 'audit':
             audit(a.out, w.SCENARIOS[a.scenario])
         elif stage == 'result':
-            result(a.run, a.out, a.scenario, a.compare_to, a.compare_scenario)
+            result(a.run, a.out, a.scenario, a.compare_to, a.compare_scenario, a.compare_identical)
         else:
             globals()[stage](a.out)
 
