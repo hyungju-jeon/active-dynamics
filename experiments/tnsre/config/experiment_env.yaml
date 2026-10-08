@@ -1010,7 +1010,8 @@ environments:
     system_label: 10-pA evidence-trial control / transfer_uniform / 20+20 recordings
     spiking_session_action_scale: 0.5
     spiking_session_action_scale_last_session: 10
-  # Five evidence trials with the 2-pA bound, then 15 fixed 2-s exploration trials at 20 pA.
+  # Manuscript protocol since 2026-10-08 (suite ``wong_wang_snn_native_uniform``): five evidence
+  # trials with the 2-pA bound, then 15 fixed 2-s exploration trials at 20 pA.
   tbme_ww_weak_evidence5_transfer_uniform:
     extends: tbme_ww_observation_transfer_uniform
     system_label: 5 weak evidence trials + 15 exploration trials / transfer_uniform / 20+20 recordings

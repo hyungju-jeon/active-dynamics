@@ -2,9 +2,12 @@ from __future__ import annotations
 
 """Wong-Wang identification over decision sessions of the Wang (2002) spiking network.
 
-The selected ``wong_wang_snn_native_uniform`` suite uses native transfer, uniform
-current, 20+20 recordings, ten evidence-led trials then ten fixed 2-s trials, and
-200-ms within-trial PALDI planning. Historical suites below remain selectable.
+The manuscript ``wong_wang_snn_native_uniform`` suite (2026-10-08) uses native transfer,
+uniform current, 20+20 recordings, five evidence-led trials with every identification bound
+scaled by 0.1 (PALDI 2 pA, below the 6-pA evidence), then fifteen fixed 2-s trials at the full
+bound (20 pA), and 200-ms within-trial PALDI planning. ``wong_wang_snn_native_uniform_strong``
+is the 2026-10-07 protocol (ten evidence-led trials at 20 pA, then ten fixed trials). Historical
+suites below remain selectable.
 
 In the historical decision-ended protocol, each run has 20 sessions: the circuit starts in the
 quiet state, the agent drives it until a decision (``|z1 - z2| > 2``), and 200 ms
@@ -78,12 +81,17 @@ EXPERIMENT_SUITES = {
     for exp_id in HISTORICAL_EXP_IDS
 }
 
-# Selected manuscript protocol; preserve historical suites for archived runs.
+# Manuscript protocol (2026-10-08): 5 weak evidence-led trials (2 pA), then 15 exploration trials
+# (20 pA). The 2026-10-07 protocol (10 evidence-led trials at 20 pA) stays selectable for its archived runs.
 EXPERIMENT_SUITES['wong_wang_snn_native_uniform'] = {
     **SHARED_EXP_ARGS,
-    'env_preset_id': 'tbme_ww_observation_transfer_uniform',
+    'env_preset_id': 'tbme_ww_weak_evidence5_transfer_uniform',
     'model_ids': ['adaptive_c2h20', *MODEL_IDS[1:]],
     'trajectory_eval_interval': 0,
+}
+EXPERIMENT_SUITES['wong_wang_snn_native_uniform_strong'] = {
+    **EXPERIMENT_SUITES['wong_wang_snn_native_uniform'],
+    'env_preset_id': 'tbme_ww_observation_transfer_uniform',
 }
 DEFAULT_EXP_IDS = ('wong_wang_snn_native_uniform',)
 

@@ -1,6 +1,6 @@
 """Native+Uniform SNN: identification scenarios for the evidence-led trials.
 
-The selected manuscript protocol (``results/tnsre/20261007_snn_native_uniform``: evidence trials
+The 2026-10-07 manuscript protocol (``results/archive/experiments/20261007_snn_native_uniform``: evidence trials
 1-10 and fixed 2-s exploration trials 11-20, every policy at its full 20-pA bound) with one
 change per scenario (``SCENARIOS``):
 

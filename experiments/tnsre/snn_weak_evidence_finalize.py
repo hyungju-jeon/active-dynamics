@@ -28,7 +28,7 @@ from experiments.tnsre import eval_spiking_sessions as ev
 from experiments.tnsre import snn_weak_evidence as w
 from experiments.tnsre.wong_wang_full import write_json
 
-FROZEN = Path('results/tnsre/20261007_snn_native_uniform')
+FROZEN = Path('results/archive/experiments/20261007_snn_native_uniform')
 FROZEN_RUNS = FROZEN / 'tracks' / 'ww_observation_transfer_uniform'
 LEARNED = ('adaptive', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random')
 REFERENCES = ('prior', 'reduced_fit', 'none', 'spread', 'front')
@@ -345,6 +345,28 @@ def compare(out: Path):
     pd.DataFrame(table).to_csv(comparison / 'summary.csv', index=False)
 
 
+def audit(out: Path, scenario: w.Scenario, seed: int = 20261008):
+    """PALDI minus every other method within one schedule: the paired audit of a single result.
+
+    The family of ``compare``'s ``paldi_minus_method`` for one schedule: R2 after trial 20 against
+    the five learned baselines, and success at 400 and 480 pA^2 s after trial 20 against them and
+    every reference (5 and 20 contrasts, one simultaneous interval per endpoint).
+    """
+    comparison = out / 'comparison'; comparison.mkdir(exist_ok=True)
+    r2, rows = pd.read_csv(out / 'eval' / 'r2_per_session.csv'), task_rows(out / 'eval' / 'task_warm')
+    paldi, *others = learned_policies(scenario)
+    assert paldi == 'adaptive'
+    contrasts = [dict(contrast='PALDI - method', policy=p, endpoint='prediction_R2', trials=20, budget_pa2_s=np.nan,
+                      a=r2_vector(r2, paldi, 20), b=r2_vector(r2, p, 20)) for p in others]
+    for budget in (10., 12.):
+        contrasts += [dict(contrast='PALDI - method', policy=p, endpoint='overturn_success', trials=20,
+                           budget_pa2_s=40 * budget, a=success_matrix(rows, paldi, 20, budget),
+                           b=success_matrix(rows, p, 20, budget)) for p in (*others, *REFERENCES)]
+    frame = simultaneous(contrasts, seed=seed)
+    frame.to_csv(comparison / 'paldi_minus_method.csv', index=False)
+    return frame
+
+
 # ------------------------------------------------------------------ evidence-trial diagnostics
 def evidence_trials(runs_root: Path, schedule: str, replay: pd.DataFrame, n_trials: int = 10) -> pd.DataFrame:
     """One row per evidence-led trial (1 to ``n_trials``) of every run, with its evidence-only replay.
@@ -425,14 +447,18 @@ def diagnostics(out: Path):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    p.add_argument('--stage', required=True, choices=['assemble', 'verify', 'score', 'compare', 'diagnostics', 'all'])
+    p.add_argument('--stage', required=True,
+                   choices=['assemble', 'verify', 'score', 'compare', 'diagnostics', 'audit', 'all'])
     p.add_argument('--run', type=Path, help='collected gcp_runs/<id> directory (assemble)')
     p.add_argument('--out', type=Path, required=True)
+    p.add_argument('--scenario', choices=sorted(w.SCENARIOS), default='weak2_e10', help='audit only')
     a = p.parse_args()
     stages = ['assemble', 'verify', 'score', 'compare', 'diagnostics'] if a.stage == 'all' else [a.stage]
     for stage in stages:
         if stage == 'assemble':
             assemble(a.run, a.out)
+        elif stage == 'audit':
+            audit(a.out, w.SCENARIOS[a.scenario])
         else:
             globals()[stage](a.out)
 

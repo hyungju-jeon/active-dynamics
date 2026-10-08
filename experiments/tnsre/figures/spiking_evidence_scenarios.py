@@ -2,7 +2,7 @@
 
 Inputs: the scenario folder written by ``experiments.tnsre.snn_evidence_scenarios``, the 2-pA run
 (``results/archive/experiments/20261007_snn_weak_evidence``), and the selected result
-(``results/tnsre/20261007_snn_native_uniform``). All conditions share the 20 training seeds,
+(``results/archive/experiments/20261007_snn_native_uniform``). All conditions share the 20 training seeds,
 readouts, priors, network seeds, and task panel.
 
 * ``spiking_evidence_scenarios``: (A) PALDI held-out R2 along identification (median over seeds),
@@ -30,7 +30,7 @@ from .assets import _ASSET_LABEL_SIZE, _ASSET_TICK_SIZE, _apply_asset_style, _as
 from .spiking_sessions import BUDGET_PA2_S, CONTROL_CHECKPOINTS, FIGURE_WIDTH, POLICIES, _panel_label
 from .theme import style_experiment_axis
 
-FROZEN = Path('results/tnsre/20261007_snn_native_uniform')
+FROZEN = Path('results/archive/experiments/20261007_snn_native_uniform')
 WEAK2 = Path('results/archive/experiments/20261007_snn_weak_evidence')
 ACTIVE = ('strong', 'weak2_e10', 'weak10_e10', 'weak2_e5')
 PASSIVE, PASSIVE_POLICY = 'passive_e20', 'off_policy'

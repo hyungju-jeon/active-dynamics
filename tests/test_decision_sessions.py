@@ -410,9 +410,10 @@ def test_paldi_c2_changes_only_the_planning_step_horizon_and_cadence():
     assert (sc.replan_interval, sc.update_interval) == (sb.replan_interval, sb.update_interval)
     assert c2.objective_kind == base.objective_kind
     assert all("adaptive_c2" in s["model_ids"] for k, s in EXPERIMENT_SUITES.items()
-               if "_obs_" not in k and k != 'wong_wang_snn_native_uniform')
-    assert EXPERIMENT_SUITES['wong_wang_snn_native_uniform']['model_ids'] == [
-        'adaptive_c2h20', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random']
+               if "_obs_" not in k and not k.startswith('wong_wang_snn_native_uniform'))
+    for suite in ('wong_wang_snn_native_uniform', 'wong_wang_snn_native_uniform_strong'):
+        assert EXPERIMENT_SUITES[suite]['model_ids'] == [
+            'adaptive_c2h20', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random']
     assert evaluated_policy("adaptive_c2") == "adaptive" and evaluated_policy("rhc") == "rhc"
     h20 = bundle.policy_specs["adaptive_c2h20"]
     sh = bundle.schedule_specs[h20.schedule_id]

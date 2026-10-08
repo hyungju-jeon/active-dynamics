@@ -289,3 +289,25 @@ def test_control_size_and_session_bins():
     np.testing.assert_allclose(control_size(u, "ball"), [0.1, 0.1])
     np.testing.assert_allclose(control_size(u, "box"), [0.08, 0.1])
     np.testing.assert_array_equal(session_bins(np.array([0, 0, 0, 1, 1, 2])), [0, 1, 2, 0, 1, 0])
+
+
+def test_manuscript_suite_uses_five_weak_evidence_trials():
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre import snn_weak_evidence as w
+    from experiments.tnsre.exp_spiking_sessions import DEFAULT_EXP_IDS, EXPERIMENT_SUITES
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    main, strong = EXPERIMENT_SUITES["wong_wang_snn_native_uniform"], EXPERIMENT_SUITES["wong_wang_snn_native_uniform_strong"]
+    assert DEFAULT_EXP_IDS == ("wong_wang_snn_native_uniform",)
+    # The manuscript suite is the weak2_e5 scenario; the 2026-10-07 suite differs only in its preset.
+    assert main["env_preset_id"] == w.SCENARIOS["weak2_e5"].preset
+    assert strong["env_preset_id"] == "tbme_ww_observation_transfer_uniform"
+    assert {**main, "env_preset_id": None} == {**strong, "env_preset_id": None}
+    assert main["model_ids"] == list(w.SCENARIOS["weak2_e5"].policies)
+    configure_tbme_catalogs(suite_entries={})
+    preset = get_environment_preset(main["env_preset_id"])
+    rule = session_rule_from_preset(preset, 4.0)
+    assert (rule.evidence_last_session, rule.fixed_first_session) == (5, 5)
+    assert (rule.action_scale, rule.action_scale_last_session) == (0.1, 5)
+    assert preset.spiking_stim_gain_pa * rule.action_scale * preset.action_max == pytest.approx(2.0)

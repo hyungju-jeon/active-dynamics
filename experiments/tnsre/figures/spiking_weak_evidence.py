@@ -2,7 +2,7 @@
 
 Inputs (no simulation): the weak experiment folder written by
 ``experiments.tnsre.snn_weak_evidence_finalize`` and the frozen selected result (strong control
-throughout, ``results/tnsre/20261007_snn_native_uniform``). Both use the same 20 training
+throughout, ``results/archive/experiments/20261007_snn_native_uniform``). Both use the same 20 training
 seeds, readouts, priors, network seeds, and task panel.
 
 * ``spiking_weak_evidence_comparison``: (A) held-out R2 along identification for PALDI and
@@ -32,7 +32,7 @@ from .spiking_sessions import BUDGET_PA2_S, CONTROL_CHECKPOINTS, CURVE_STYLE, FI
     _panel_label, _shade_evidence_trials
 from .theme import style_experiment_axis
 
-FROZEN = Path('results/tnsre/20261007_snn_native_uniform')
+FROZEN = Path('results/archive/experiments/20261007_snn_native_uniform')
 SCHEDULES = ('strong', 'weak')
 # Schedule encoding, shared by every panel: strong = solid line / open marker, weak = dashed / filled.
 LINE = {'strong': '-', 'weak': '--'}

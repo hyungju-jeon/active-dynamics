@@ -3,8 +3,8 @@
 Five conditions of the Native+Uniform protocol share the 20 training seeds, calibrated readouts,
 priors, network seeds of each trial, and the task panel:
 
-* ``strong``: the selected manuscript result: 10 evidence trials and 10 exploration trials, 20 pA
-  throughout (``results/tnsre/20261007_snn_native_uniform``).
+* ``strong``: the 2026-10-07 manuscript result: 10 evidence trials and 10 exploration trials, 20 pA
+  throughout (``results/archive/experiments/20261007_snn_native_uniform``).
 * ``weak2_e10``: 2 pA in evidence trials 1-10, then 20 pA (``results/archive/experiments/
   20261007_snn_weak_evidence``).
 * ``weak10_e10``: 10 pA in evidence trials 1-10, then 20 pA.
