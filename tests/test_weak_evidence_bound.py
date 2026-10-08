@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 
 import gymnasium as gym
@@ -332,3 +333,37 @@ def test_ball_scenario_changes_only_the_baseline_constraint():
     assert [w.geometry_of(p, ball) for p in ("rhc", "prbs", "random")] == ["ball", "sphere", "ball"]
     assert [w.geometry_of(p, box) for p in ("rhc", "prbs", "random")] == ["box", "box", "box"]
     w.configure_catalogs("box")
+
+
+def test_later_scale_bounds_the_sessions_from_the_switch_on():
+    rule = SessionRule(action_scale=0.1, action_scale_last_session=5, action_scale_later=0.5)
+    assert [session_action_scale(rule, _context(k)) for k in (0, 4, 5, 19)] == [0.1, 0.1, 0.5, 0.5]
+    network = RecordingNetwork(rate=0.3)
+    env = SpikingDecisionEnv(network, session_rule=dataclasses.replace(WEAK, action_scale_later=0.5))
+    env.reset(seed=4)
+    while env.session_index < 2:
+        env.step(np.array([0.1, 0.0]))
+    env.step(np.array([0.3, -0.4]))  # norm 0.5: on the later bound
+    np.testing.assert_allclose(network.drives[-1], [0.3, -0.4])
+    with pytest.raises(ValueError):
+        env.step(np.array([0.51, 0.0]))
+
+
+def test_explore10_scenario_changes_only_the_later_bound():
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre import snn_weak_evidence as w
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    base, new = w.SCENARIOS["weak2_e5_ball"], w.SCENARIOS["weak2_e5_x10_ball"]
+    assert dataclasses.replace(new, preset=base.preset, later_scale=1.0) == base
+    configure_tbme_catalogs(suite_entries={})
+    a, b = (dataclasses.asdict(get_environment_preset(s.preset)) for s in (base, new))
+    assert {k for k in a if a[k] != b[k]} == {"preset_id", "system_label", "spiking_session_action_scale_later"}
+    preset = get_environment_preset(new.preset)
+    rule = session_rule_from_preset(preset, 4.0)
+    gain = preset.spiking_stim_gain_pa * preset.action_max
+    assert (rule.action_scale, rule.action_scale_last_session, rule.action_scale_later) == (0.1, 5, 0.5)
+    assert (gain * rule.action_scale, gain * rule.action_scale_later) == pytest.approx((2.0, 10.0))
+    assert rule.evidence_last_session == rule.fixed_first_session == 5
+

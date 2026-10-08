@@ -11,6 +11,7 @@ change per scenario (``SCENARIOS``):
 * ``weak2_e5``: five evidence trials at x0.1, then 15 fixed exploration trials at 20 pA.
 * ``weak2_e5_ball``: ``weak2_e5`` with the ball for RHC-US, PRBS and Random (shared catalog, no
   box overlay), as every other manuscript experiment; the manuscript protocol since 2026-10-08.
+* ``weak2_e5_x10_ball``: ``weak2_e5_ball`` with the 15 exploration trials at x0.5 (10 pA).
 * ``passive_e20``: 20 evidence trials without control (``off_policy``); the learner's only
   input is the known evidence.
 
@@ -67,6 +68,7 @@ class Scenario:
             fixed 2-s trials without evidence.
         constraint: Identification constraint of RHC-US, PRBS and Random: ``box`` (componentwise,
             the 2026-10-07 cohort's overlay) or ``ball`` (the shared catalog, as every TBME policy).
+        later_scale: Factor on every policy's bound in sessions ``>= weak_trials``.
     """
 
     preset: str
@@ -75,6 +77,7 @@ class Scenario:
     weak_trials: int
     evidence_trials: int
     constraint: str = 'box'
+    later_scale: float = 1.0
 
     @property
     def suite(self) -> str:
@@ -88,6 +91,9 @@ SCENARIOS = {
     'passive_e20': Scenario('tbme_ww_passive_evidence20_transfer_uniform', ('off_policy',), 1.0, 0, 20),
     # Manuscript protocol with the ball for every baseline (2026-10-08).
     'weak2_e5_ball': Scenario('tbme_ww_weak_evidence5_transfer_uniform', POLICIES, 0.1, 5, 5, 'ball'),
+    # The same with the exploration trials at 10 pA (2026-10-08).
+    'weak2_e5_x10_ball': Scenario('tbme_ww_weak_evidence5_explore10_transfer_uniform', POLICIES, 0.1, 5, 5,
+                                  'ball', 0.5),
 }
 SUITES = {sc.suite: {**full.SUITES['transfer_uniform'], 'env_preset_id': sc.preset, 'model_ids': list(sc.policies)}
           for sc in SCENARIOS.values()}
@@ -186,8 +192,8 @@ def check_run(path: Path, policy: str, scenario: Scenario) -> dict:
 
     The control is ``policy_action``; ``action`` is the model input, control plus evidence.
     Sessions before ``scenario.weak_trials`` must satisfy the bound ``scenario.scale * ACTION_MAX``,
-    later sessions ``ACTION_MAX``, in the policy's own geometry (FLEX inputs lie on the sphere;
-    the passive control is exactly zero).
+    later sessions ``scenario.later_scale * ACTION_MAX``, in the policy's own geometry (FLEX
+    inputs lie on the sphere; the passive control is exactly zero).
     """
     meta = json.loads((path / 'run_metadata.json').read_text())
     trace = pd.read_csv(path / 'state_action_trace.csv', usecols=['step', 'session_index', 'action_x', 'action_v',
@@ -198,12 +204,13 @@ def check_run(path: Path, policy: str, scenario: Scenario) -> dict:
     rule, log = meta['session_rule'], meta['session_log']
     weak, n_evidence = scenario.weak_trials, scenario.evidence_trials
     assert (rule['action_scale'], rule['action_scale_last_session']) == (scenario.scale, weak), rule
+    assert rule.get('action_scale_later', 1.0) == scenario.later_scale, rule
     assert rule['evidence_last_session'] == rule['fixed_first_session'] == n_evidence, rule
     geometry = geometry_of(policy, scenario)
     if policy in ('rhc', 'prbs', 'random'):  # the policies whose constraint the scenario sets
         expected = 'radius' if scenario.constraint == 'ball' else 'box'
         assert meta.get('action_constraint', 'box') == expected, (policy, meta.get('action_constraint'))
-    bound = np.where(k < weak, scenario.scale, 1.0) * ACTION_MAX
+    bound = np.where(k < weak, scenario.scale, scenario.later_scale) * ACTION_MAX
     size = control_size(u, geometry)
     if geometry == 'zero':
         ok = size == 0.0
@@ -227,8 +234,8 @@ def check_run(path: Path, policy: str, scenario: Scenario) -> dict:
                                 mean_ratio=float(ratio.mean()), at_bound_fraction=float((ratio >= 0.999).mean()))
     record = dict(policy=policy, seed=int(meta['seed']), geometry=geometry,
                   action_constraint=meta.get('action_constraint', 'box'), scale=scenario.scale,
-                  weak_trials=weak, evidence_trials=n_evidence, compliant=bool(ok.all()),
-                  violations=int((~ok).sum()), evidence_max_error=evidence_error, phases=phases,
+                  later_scale=scenario.later_scale, weak_trials=weak, evidence_trials=n_evidence,
+                  compliant=bool(ok.all()), violations=int((~ok).sum()), evidence_max_error=evidence_error, phases=phases,
                   trial_bins=[int(s['bins']) for s in log], decisions=[int(s['decision']) for s in log],
                   session_rule=rule, preset=meta['env_preset_id'])
     assert meta['env_preset_id'] == scenario.preset

@@ -112,9 +112,11 @@ class EnvironmentPreset:
     spiking_session_evidence_first_session: int = 0  # sessions before this index have no evidence
     spiking_session_evidence_last_session: int | None = None  # sessions from this index have no evidence
     spiking_fixed_first_session: int | None = None  # sessions from this index run the full length
-    # Agents' action bound scaled by this factor before session index ..._last_session (SessionRule.action_scale).
+    # Agents' action bound scaled by this factor before session index ..._last_session (SessionRule.action_scale),
+    # and by ..._later from that session on (SessionRule.action_scale_later).
     spiking_session_action_scale: float = 1.0
     spiking_session_action_scale_last_session: int = 0
+    spiking_session_action_scale_later: float = 1.0
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
@@ -824,6 +826,7 @@ def load_catalog_bundle(
                                          else int(spec["spiking_fixed_first_session"])),
             spiking_session_action_scale=float(spec.get("spiking_session_action_scale", 1.0)),
             spiking_session_action_scale_last_session=int(spec.get("spiking_session_action_scale_last_session", 0)),
+            spiking_session_action_scale_later=float(spec.get("spiking_session_action_scale_later", 1.0)),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
             action_dim=int(spec.get("action_dim", 2)),

@@ -1019,6 +1019,12 @@ environments:
     spiking_fixed_first_session: 5
     spiking_session_action_scale: 0.1
     spiking_session_action_scale_last_session: 5
+  # Weaker exploration (2026-10-08): the manuscript protocol with the 15 exploration trials at
+  # 10 pA (bound x0.5 from trial 6) instead of 20 pA.
+  tbme_ww_weak_evidence5_explore10_transfer_uniform:
+    extends: tbme_ww_weak_evidence5_transfer_uniform
+    system_label: 5 weak evidence trials + 15 exploration trials at 10 pA / transfer_uniform / 20+20 recordings
+    spiking_session_action_scale_later: 0.5
   # Passive identification: 20 evidence-led trials (no fixed trials), run with the zero-control
   # policy ``off_policy``; the learners' only input is the known evidence.
   tbme_ww_passive_evidence20_transfer_uniform:

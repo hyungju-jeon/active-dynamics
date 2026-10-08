@@ -875,4 +875,5 @@ def session_rule_from_preset(env_preset: Any, state_scale: float) -> Optional[Se
         fixed_first_session=getattr(env_preset, "spiking_fixed_first_session", None),
         action_scale=float(getattr(env_preset, "spiking_session_action_scale", 1.0)),
         action_scale_last_session=int(getattr(env_preset, "spiking_session_action_scale_last_session", 0)),
+        action_scale_later=float(getattr(env_preset, "spiking_session_action_scale_later", 1.0)),
     )

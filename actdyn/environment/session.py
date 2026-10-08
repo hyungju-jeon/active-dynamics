@@ -19,7 +19,8 @@ From ``fixed_first_session`` on, a decision no longer ends a session: it runs th
 The agent's action bound may depend on the session: sessions before
 ``action_scale_last_session`` use the policy's own constraint scaled by ``action_scale``
 (the same box, ball, or sphere, with every radius multiplied); later sessions use it
-unscaled. The evidence is not scaled and is not part of the bounded action.
+scaled by ``action_scale_later`` (1: unscaled). The evidence is not scaled and is not
+part of the bounded action.
 """
 
 from __future__ import annotations
@@ -49,8 +50,10 @@ class SessionRule:
             (None: never).
         action_scale: Factor on the agent's action bound in sessions before
             ``action_scale_last_session``.
-        action_scale_last_session: Sessions with this or a higher index use the unscaled bound
-            (0: every session does).
+        action_scale_last_session: Sessions with this or a higher index use the bound scaled
+            by ``action_scale_later`` (0: every session does).
+        action_scale_later: Factor on the agent's action bound from session
+            ``action_scale_last_session`` on (1: unscaled).
     """
 
     decision_gap: float = 2.0
@@ -66,6 +69,7 @@ class SessionRule:
     fixed_first_session: int | None = None
     action_scale: float = 1.0
     action_scale_last_session: int = 0
+    action_scale_later: float = 1.0
 
 
 NO_EVIDENCE = -2  # evidence pool of a session without evidence (-1: pool not known yet)
@@ -95,7 +99,7 @@ def session_action_scale(rule: SessionRule | None, context: dict | None) -> floa
     if rule is None:
         return 1.0
     k = int((context or {}).get("session_index", 0))
-    return float(rule.action_scale) if k < int(rule.action_scale_last_session) else 1.0
+    return float(rule.action_scale) if k < int(rule.action_scale_last_session) else float(rule.action_scale_later)
 
 
 def session_evidence_pool(session_seed: int) -> int:

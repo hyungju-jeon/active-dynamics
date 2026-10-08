@@ -136,7 +136,10 @@ def readout_hash(run: dict) -> str:
 
 
 # Session-rule fields a scenario may change; every other field equals the frozen rule.
-SCENARIO_RULE_FIELDS = {'action_scale', 'action_scale_last_session', 'evidence_last_session', 'fixed_first_session'}
+SCENARIO_RULE_FIELDS = {'action_scale', 'action_scale_last_session', 'action_scale_later', 'evidence_last_session',
+                        'fixed_first_session'}
+# Rule fields the frozen runs predate, with the value that reproduces their protocol.
+RULE_DEFAULTS = {'action_scale_later': 1.0}
 
 
 def verify(out: Path, scenario: w.Scenario = WEAK):
@@ -163,9 +166,10 @@ def verify(out: Path, scenario: w.Scenario = WEAK):
         differ = [k for k in matched if meta.get(k) != old[k]]
         assert not differ, (path, differ)
         rule, old_rule = meta['session_rule'], old['session_rule']
-        changed = {k for k in rule if rule[k] != old_rule.get(k)}
+        changed = {k for k in rule if rule[k] != old_rule.get(k, RULE_DEFAULTS.get(k))}
         assert set(old_rule) <= set(rule) and changed <= SCENARIO_RULE_FIELDS, (rule, old_rule)
         assert (rule['action_scale'], rule['action_scale_last_session']) == (scenario.scale, scenario.weak_trials)
+        assert rule.get('action_scale_later', 1.0) == scenario.later_scale
         assert rule['evidence_last_session'] == rule['fixed_first_session'] == scenario.evidence_trials
         assert meta['env_preset_id'] == scenario.preset and old['env_preset_id'] == w.TASK_PRESET
         settings.append(len(matched))
@@ -209,7 +213,7 @@ def verify(out: Path, scenario: w.Scenario = WEAK):
     record = dict(passed=True, scenario=dict(preset=scenario.preset, policies=list(scenario.policies),
                                              scale=scenario.scale, weak_trials=scenario.weak_trials,
                                              evidence_trials=scenario.evidence_trials,
-                                             constraint=scenario.constraint),
+                                             constraint=scenario.constraint, later_scale=scenario.later_scale),
                   action_constraint_by_policy={k: v.pop() for k, v in constraints.items()},
                   runs=len(new_runs), readouts_match_frozen=True, priors_match_frozen=True,
                   matched_settings_per_run=sorted(set(settings)), session_rule_fields_changed=sorted(rule_changes),
