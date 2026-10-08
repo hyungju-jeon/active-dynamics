@@ -434,7 +434,8 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     ax.axhline(fit_r2, color=REFERENCE_STYLE["reduced_fit"]["color"], ls=":", lw=0.8)
     evidence_trials = _evidence_trials(experiment_dir)
     if evidence_trials is not None:  # R2 after trial k sits at x = k; trial k spans (k - 1, k]
-        _shade_evidence_trials(ax, evidence_trials[0] - 1, evidence_trials[1])
+        # Label below the fitted-model line (R2 0.97 is at axes fraction 0.97).
+        _shade_evidence_trials(ax, evidence_trials[0] - 1, evidence_trials[1], label_y=0.94)
     ax.set_xlim(0, FINAL_SESSIONS)
     ax.set_ylim(-0.2, 1.0)
     ax.set_xticks([0, 5, 10, 15, 20])

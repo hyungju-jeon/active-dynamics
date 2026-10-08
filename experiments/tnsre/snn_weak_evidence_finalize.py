@@ -119,6 +119,16 @@ def assemble(run: Path, out: Path, source: Path | None = None):
                                                                        FROZEN / 'reference' / 'native_fit.json']}))
 
 
+def protocol(out: Path):
+    """``eval/protocol.json``: the evaluation protocol shared by every VM group (paths to this folder)."""
+    groups = [json.loads(p.read_text()) for p in sorted((out / 'eval' / 'groups').glob('group_*/protocol.json'))]
+    local = dict(test_trajectories=str(out / 'data' / 'test_trajectories.npz'),
+                 reduced_fit=str(out / 'reference' / 'native_fit.json'))
+    merged = [{**g, 'protocol': {**g['protocol'], **local}} for g in groups]
+    assert len(merged) == 4 and all(m == merged[0] for m in merged), 'VM groups used different protocols'
+    write_json(out / 'eval' / 'protocol.json', {**merged[0], 'source': 'eval/groups/group_*/protocol.json'})
+
+
 # ------------------------------------------------------------------ verify
 def readout_hash(run: dict) -> str:
     """The frozen training verification's readout key: sha256 of (C.ravel(), b) bytes."""
@@ -448,7 +458,7 @@ def diagnostics(out: Path):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--stage', required=True,
-                   choices=['assemble', 'verify', 'score', 'compare', 'diagnostics', 'audit', 'all'])
+                   choices=['assemble', 'protocol', 'verify', 'score', 'compare', 'diagnostics', 'audit', 'all'])
     p.add_argument('--run', type=Path, help='collected gcp_runs/<id> directory (assemble)')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--scenario', choices=sorted(w.SCENARIOS), default='weak2_e10', help='audit only')
