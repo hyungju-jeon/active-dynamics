@@ -202,9 +202,15 @@ def verify(out: Path, scenario: w.Scenario = WEAK):
         for key in ['valid', 'target', 'onset', 'success', 'outcome_bin', 'energy']:
             np.testing.assert_allclose(row[key], match.iloc[0][key], rtol=1e-5, atol=1e-6)
         reproduced.append(policy)
+    constraints = {}
+    for path in sorted(runs_root.glob('*/seed_*/repeat_01/run_metadata.json')):
+        constraints.setdefault(path.parts[-4], set()).add(json.loads(path.read_text()).get('action_constraint', 'box'))
+    assert all(len(v) == 1 for v in constraints.values()), constraints
     record = dict(passed=True, scenario=dict(preset=scenario.preset, policies=list(scenario.policies),
                                              scale=scenario.scale, weak_trials=scenario.weak_trials,
-                                             evidence_trials=scenario.evidence_trials),
+                                             evidence_trials=scenario.evidence_trials,
+                                             constraint=scenario.constraint),
+                  action_constraint_by_policy={k: v.pop() for k, v in constraints.items()},
                   runs=len(new_runs), readouts_match_frozen=True, priors_match_frozen=True,
                   matched_settings_per_run=sorted(set(settings)), session_rule_fields_changed=sorted(rule_changes),
                   run_checks=len(checks),
@@ -377,6 +383,110 @@ def audit(out: Path, scenario: w.Scenario, seed: int = 20261008):
     return frame
 
 
+# ------------------------------------------------------------------ one result from a campaign scenario
+def assemble_result(run: Path, out: Path, name: str):
+    """``assemble`` of one scenario of a collected campaign, plus the campaign's VM ledgers and logs."""
+    campaign = run / 'results' / 'evidence_scenarios'
+    assemble(run, out, source=campaign / name)
+    vm = out / 'provenance' / 'vm'
+    shutil.copytree(campaign / 'logs', vm / 'logs')
+    for path in sorted(campaign.glob('*_group_*.json')):
+        shutil.copy2(path, vm / path.name)
+
+
+def evidence(out: Path, scenario: w.Scenario):
+    """Evidence-led trials against this result's evidence-only replay, trial time, and bound compliance."""
+    comparison = out / 'comparison'; comparison.mkdir(exist_ok=True)
+    replay = pd.concat([pd.read_csv(p) for p in sorted((out / 'evidence_only').glob('group_*.csv'))], ignore_index=True)
+    runs_root = w.runs_root(out, scenario)
+    trials = evidence_trials(runs_root, 'result', replay, scenario.evidence_trials).drop(columns='schedule')
+    assert trials.groupby('policy').size().eq(20 * scenario.evidence_trials).all()
+    trials.to_csv(comparison / 'evidence_trials.csv', index=False)
+    summary = trials.groupby('policy', sort=False).agg(
+        trials=('trial', 'size'), decisions=('chosen', lambda c: int((c >= 0).sum())),
+        first_choice_against_evidence=('against_evidence', 'sum'),
+        choice_flipped_vs_evidence_only=('choice_flipped_vs_evidence_only', 'sum'),
+        recorded_postdecision_reversals=('recorded_postdecision_reversal', 'sum'),
+        median_decision_ms=('decision_ms', 'median'), evidence_only_median_decision_ms=('evidence_only_decision_ms', 'median'),
+        control_rms_pa=('control_rms_pa', 'mean')).reset_index()
+    time = []
+    for path in sorted(runs_root.glob('*/seed_*/repeat_01/run_metadata.json')):
+        meta = json.loads(path.read_text())
+        bins = np.array([t['bins'] for t in meta['session_log']])
+        time.append(dict(policy=ev.evaluated_policy(meta['policy_id']), identification_s=0.005 * bins.sum(),
+                         evidence_trials_s=0.005 * bins[:scenario.evidence_trials].sum()))
+    time = pd.DataFrame(time).groupby('policy')[['identification_s', 'evidence_trials_s']].mean().reset_index()
+    summary.merge(time, on='policy', validate='one_to_one').to_csv(comparison / 'evidence_summary.csv', index=False)
+    checks = [json.loads(p.read_text()) for p in sorted((out / 'provenance' / 'vm' / 'run_checks').glob('*.json'))]
+    pd.DataFrame([dict(policy=ev.evaluated_policy(c['policy']), seed=c['seed'], geometry=c['geometry'],
+                       action_constraint=c.get('action_constraint'), trials=v['trials'], bound_pa=20 * v['bound'],
+                       max_size_pa=20 * v['max_size'], max_ratio=v['max_ratio'], mean_ratio=v['mean_ratio'],
+                       at_bound_fraction=v['at_bound_fraction'])
+                  for c in checks for v in c['phases'].values()]).to_csv(comparison / 'bound_compliance.csv', index=False)
+
+
+def versus(out: Path, scenario: w.Scenario, other: Path, other_scenario: w.Scenario, seed: int = 20261008):
+    """The same protocol with another identification constraint (``Scenario.constraint``).
+
+    Policies whose resolved catalog entry is the same under both constraints must give identical
+    models, R2 and task rows. The others get paired training-seed contrasts (this minus other):
+    R2 after trial 20, and success at 400 and 480 pA^2 s after trial 20.
+    """
+    specs = {c: w.configure_catalogs(c).policy_specs for c in (scenario.constraint, other_scenario.constraint)}
+    same = [p for p in scenario.policies if specs[scenario.constraint][p] == specs[other_scenario.constraint][p]]
+    changed = [p for p in scenario.policies if p not in same]
+    w.configure_catalogs(scenario.constraint)
+    name = {p: ev.evaluated_policy(p) for p in scenario.policies}
+    runs = {k: {(r['policy'], r['seed']): r for r in ev.load_session_runs(w.runs_root(d, sc))}
+            for k, d, sc in (('this', out, scenario), ('other', other, other_scenario))}
+    r2 = {'this': pd.read_csv(out / 'eval' / 'r2_per_session.csv'), 'other': pd.read_csv(other / 'eval' / 'r2_per_session.csv')}
+    rows = {'this': task_rows(out / 'eval' / 'task_warm'), 'other': task_rows(other / 'eval' / 'task_warm')}
+    identical = {}
+    for p in (name[p] for p in same):
+        for s in w.SEEDS:
+            a, b = runs['this'][(p, s)]['est'], runs['other'][(p, s)]['est']
+            assert all(np.array_equal(a[k], b[k]) for k in range(21)), (p, s)
+        a, b = (r2[k][r2[k].policy == p].sort_values(['seed', 'sessions']).reset_index(drop=True) for k in r2)
+        pd.testing.assert_frame_equal(a, b)
+        a, b = (rows[k][rows[k].policy == p].sort_values(w.KEY).reset_index(drop=True) for k in rows)
+        cols = ['valid', 'success', 'energy', 'outcome_bin', 'numerical_failure']
+        pd.testing.assert_frame_equal(a[w.KEY + cols], b[w.KEY + cols])
+        identical[p] = dict(estimates=20 * 21, r2_rows=int((r2['this'].policy == p).sum()), task_rows=len(b))
+    contrasts = []
+    for p in (name[p] for p in changed):
+        contrasts.append(dict(contrast=f'{scenario.constraint} - {other_scenario.constraint}', policy=p,
+                              endpoint='prediction_R2', trials=20, budget_pa2_s=np.nan,
+                              a=r2_vector(r2['this'], p, 20), b=r2_vector(r2['other'], p, 20)))
+        for budget in (10., 12.):
+            contrasts.append(dict(contrast=f'{scenario.constraint} - {other_scenario.constraint}', policy=p,
+                                  endpoint='overturn_success', trials=20, budget_pa2_s=40 * budget,
+                                  a=success_matrix(rows['this'], p, 20, budget), b=success_matrix(rows['other'], p, 20, budget)))
+    frame = simultaneous(contrasts, seed=seed) if contrasts else pd.DataFrame(
+        columns=['policy', 'endpoint', 'budget_pa2_s', 'value_a', 'value_b', 'difference', 'lower', 'upper',
+                 'interval_excludes_zero'])
+    comparison = out / 'comparison'; comparison.mkdir(exist_ok=True)
+    frame.to_csv(comparison / f'{scenario.constraint}_minus_{other_scenario.constraint}.csv', index=False)
+    record = dict(other=str(other), other_constraint=other_scenario.constraint, identical_policies=identical,
+                  changed_policies=[name[p] for p in changed],
+                  contrasts=frame[['policy', 'endpoint', 'budget_pa2_s', 'value_a', 'value_b', 'difference', 'lower',
+                                   'upper', 'interval_excludes_zero']].to_dict('records'))
+    write_json(out / 'provenance' / f'versus_{other_scenario.constraint}.json', record)
+    print(json.dumps(record, indent=1, default=float))
+
+
+def result(run: Path, out: Path, scenario_name: str, other: Path | None, other_name: str | None):
+    """One final result folder from one campaign scenario (no simulation)."""
+    scenario = w.SCENARIOS[scenario_name]
+    assemble_result(run, out, scenario_name)
+    protocol(out)
+    verify(out, scenario)
+    score(out, scenario)
+    audit(out, scenario)
+    evidence(out, scenario)
+    if other is not None:
+        versus(out, scenario, other, w.SCENARIOS[other_name])
+
+
 # ------------------------------------------------------------------ evidence-trial diagnostics
 def evidence_trials(runs_root: Path, schedule: str, replay: pd.DataFrame, n_trials: int = 10) -> pd.DataFrame:
     """One row per evidence-led trial (1 to ``n_trials``) of every run, with its evidence-only replay.
@@ -458,10 +568,12 @@ def diagnostics(out: Path):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--stage', required=True,
-                   choices=['assemble', 'protocol', 'verify', 'score', 'compare', 'diagnostics', 'audit', 'all'])
+                   choices=['assemble', 'protocol', 'verify', 'score', 'compare', 'diagnostics', 'audit', 'result', 'all'])
     p.add_argument('--run', type=Path, help='collected gcp_runs/<id> directory (assemble)')
     p.add_argument('--out', type=Path, required=True)
-    p.add_argument('--scenario', choices=sorted(w.SCENARIOS), default='weak2_e10', help='audit only')
+    p.add_argument('--scenario', choices=sorted(w.SCENARIOS), default='weak2_e10', help='audit and result')
+    p.add_argument('--compare-to', type=Path, help='result: the same protocol under the other constraint')
+    p.add_argument('--compare-scenario', choices=sorted(w.SCENARIOS), help='result: scenario of --compare-to')
     a = p.parse_args()
     stages = ['assemble', 'verify', 'score', 'compare', 'diagnostics'] if a.stage == 'all' else [a.stage]
     for stage in stages:
@@ -469,6 +581,8 @@ def main():
             assemble(a.run, a.out)
         elif stage == 'audit':
             audit(a.out, w.SCENARIOS[a.scenario])
+        elif stage == 'result':
+            result(a.run, a.out, a.scenario, a.compare_to, a.compare_scenario)
         else:
             globals()[stage](a.out)
 
