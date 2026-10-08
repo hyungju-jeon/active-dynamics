@@ -35,7 +35,7 @@ def fisher_snr(states, c, bias, dt):
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--experiment-dir',type=Path,default=Path('results/tnsre/20261008_snn_native_uniform_weak5'))
+    parser.add_argument('--experiment-dir',type=Path,default=Path('results/tnsre/20261008_snn_native_uniform_weak5_ball'))
     parser.add_argument('--output-dir',type=Path,default=None,help='default: <experiment-dir>/snr')
     args=parser.parse_args()
     from experiments.tnsre.eval_spiking_sessions import PROTOCOL,runs_root_of

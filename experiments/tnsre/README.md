@@ -426,8 +426,11 @@ added to the experiment catalog as evidence for the full objective.
 
 ## Spiking-network decision experiment
 
-The manuscript result is `results/tnsre/20261008_snn_native_uniform_weak5/`
-(selected 2026-10-08). The `wong_wang_snn_native_uniform` suite uses the Wang (2002)
+The manuscript result is `results/tnsre/20261008_snn_native_uniform_weak5_ball/`
+(selected 2026-10-08; every baseline uses the ball, as in the other manuscript
+experiments). The same protocol with the box for RHC-US, PRBS and Random is
+archived at `results/archive/experiments/20261008_snn_native_uniform_weak5/`;
+PALDI, Myopic and FLEX are bit-identical in both. The `wong_wang_snn_native_uniform` suite uses the Wang (2002)
 network with native Wong–Wang transfer, uniform current injection, and 20 recorded
 neurons per selective pool (40 channels, 5-ms bins). Its preset is
 `tbme_ww_weak_evidence5_transfer_uniform`.

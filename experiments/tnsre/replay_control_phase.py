@@ -18,9 +18,9 @@ from experiments.tnsre.eval_spiking_sessions import (
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--experiment-dir', type=Path,
-                        default=Path('results/tnsre/20261008_snn_native_uniform_weak5'))
+                        default=Path('results/tnsre/20261008_snn_native_uniform_weak5_ball'))
     parser.add_argument('--output-dir', type=Path,
-                        default=Path('results/tnsre/20261008_snn_native_uniform_weak5/control_phase'))
+                        default=Path('results/tnsre/20261008_snn_native_uniform_weak5_ball/control_phase'))
     args = parser.parse_args()
     torch.set_num_threads(1)
     root = args.experiment_dir

@@ -77,7 +77,7 @@ def assemble(run: Path, out: Path, source: Path | None = None):
     and logs are copied when they are inside it; a multi-scenario campaign keeps them one level up.
     """
     source = run / 'results' / 'weak_evidence' if source is None else source
-    assert not out.exists(), f'{out} exists; finalize writes a new folder'
+    assert not out.exists() or not any(out.iterdir()), f'{out} is not empty; finalize writes a new folder'
     shutil.copytree(source / 'tracks', out / 'tracks')
     (out / 'data').mkdir()
     for name in ('test_trajectories.npz', 'reference_train.npz', 'input_diagnostics.json'):
@@ -468,8 +468,9 @@ def versus(out: Path, scenario: w.Scenario, other: Path, other_scenario: w.Scena
     frame.to_csv(comparison / f'{scenario.constraint}_minus_{other_scenario.constraint}.csv', index=False)
     record = dict(other=str(other), other_constraint=other_scenario.constraint, identical_policies=identical,
                   changed_policies=[name[p] for p in changed],
-                  contrasts=frame[['policy', 'endpoint', 'budget_pa2_s', 'value_a', 'value_b', 'difference', 'lower',
-                                   'upper', 'interval_excludes_zero']].to_dict('records'))
+                  contrasts=[{k: (None if pd.isna(v) else v) for k, v in row.items()} for row in
+                             frame[['policy', 'endpoint', 'budget_pa2_s', 'value_a', 'value_b', 'difference', 'lower',
+                                    'upper', 'interval_excludes_zero']].astype(object).to_dict('records')])
     write_json(out / 'provenance' / f'versus_{other_scenario.constraint}.json', record)
     print(json.dumps(record, indent=1, default=float))
 
