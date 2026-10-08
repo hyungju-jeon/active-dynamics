@@ -53,7 +53,7 @@ def test_updated_paldi_preserves_the_old_policy_and_sets_the_manuscript_horizon(
 
 
 def test_twenty_trials_change_evidence_and_duration_at_the_same_boundary():
-    from tests.test_decision_sessions import ScriptedNetwork
+    from test_decision_sessions import ScriptedNetwork  # tests/ is on sys.path; a vendored package is also named "tests"
     configure_tbme_catalogs(suite_entries=study.SUITES)
     p=get_environment_preset('tbme_ww_observation_transfer_partial')
     net=ScriptedNetwork(rate=3.)
