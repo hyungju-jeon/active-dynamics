@@ -426,18 +426,22 @@ added to the experiment catalog as evidence for the full objective.
 
 ## Spiking-network decision experiment
 
-The selected result is `results/tnsre/20261007_snn_native_uniform/`. The
-`wong_wang_snn_native_uniform` suite uses the Wang (2002) network with native
-Wong–Wang transfer, uniform current injection, and 20 recorded neurons per
-selective pool (40 channels, 5-ms bins).
+The manuscript result is `results/tnsre/20261008_snn_native_uniform_weak5/`
+(selected 2026-10-08). The `wong_wang_snn_native_uniform` suite uses the Wang (2002)
+network with native Wong–Wang transfer, uniform current injection, and 20 recorded
+neurons per selective pool (40 channels, 5-ms bins). Its preset is
+`tbme_ww_weak_evidence5_transfer_uniform`.
 
 - **Learner:** `WongWangTransfer`, with activation `phi(q)=q/(1-exp(-q))`,
   continuous value `phi(0)=1`, and input inside the effective drive. Five
   coordinates are learned; the prior mean is `(0,0,0,-0.661183,0)` with unit
   covariance. The calibrated Poisson readout remains fixed.
-- **Identification:** 20 trials per policy and training seed. Trials 1–10 have
-  known 6-pA evidence for 1 s and end 200 ms after a decision or at 2 s.
-  Trials 11–20 have no evidence and last 2 s. Filters reset when notified;
+- **Identification:** 20 trials per policy and training seed. Trials 1–5 have
+  known 6-pA evidence for 1 s and end 200 ms after a decision or at 2 s. In
+  these trials every policy's own identification bound is scaled by 0.1 (PALDI
+  and Myopic norm 2 pA, FLEX sphere 2 pA, RHC-US/PRBS/Random |u_j| ≤ 2 pA), so
+  the evidence, not the agent, sets the decision. Trials 6–20 have no evidence,
+  last 2 s, and use the full 20-pA bound. Filters reset when notified;
   planning stays in the current trial and does not predict resets. PALDI is
   `adaptive_c2h20`: 20 planning steps of 10 ms, with 15-ms minimum update and
   replanning intervals. All six methods use matched seeds 0–19.
@@ -448,6 +452,14 @@ selective pool (40 channels, 5-ms bins).
   The per-step control norm is at most 20 pA. The fitted reference is refit in
   the native response family using separate latent trajectories.
 
+The 2026-10-07 protocol (trials 1–10 with evidence at the full 20-pA bound,
+then 10 fixed trials) is the suite `wong_wang_snn_native_uniform_strong`; its
+result is archived at `results/archive/experiments/20261007_snn_native_uniform/`.
+The evidence-trial scenarios that led to the change (2 pA or 10 pA in trials
+1–10, 2 pA in trials 1–5, and a passive learner) are compared in
+`results/archive/experiments/20261008_snn_evidence_scenarios/`; the manuscript
+result is that comparison's `weak2_e5` scenario, made with
+`experiments.tnsre.snn_weak_evidence` and `snn_weak_evidence_finalize`.
 The original sigmoid, partial-targeting, Poisson-evidence, bound, SNR, and
 control variants remain in `results/archive/experiments/`. See
 [WONG_WANG_INPUTS.md](WONG_WANG_INPUTS.md),
@@ -467,12 +479,18 @@ not change task control, where all methods use the same norm bound.
   --base-dir results/archive/experiments/<date>_native_uniform_reproduction
 ```
 
-At source commit `ad8d7c4`, `wong_wang_observation --arm transfer_uniform`
-reproduces the original selected campaign, including reference fitting and
-budgets 10/12. `native_manuscript`
-adds the missing manuscript cells from frozen models; its `--stage finalize`
+The manuscript result was made on GCP with the campaign of
+`experiments.tnsre.snn_weak_evidence` (scenario `weak2_e5` of the 2026-10-08 campaign), which trains with the
+same suite specification and overlay and evaluates the frozen models with the
+selected evaluation protocol; reference rows (initial estimate, fitted reference,
+model-free inputs) are the frozen rows of the 2026-10-07 result.
+`snn_weak_evidence_finalize --stage audit --scenario weak2_e5` writes its paired
+PALDI-versus-method audit. For the 2026-10-07 result: at source commit `ad8d7c4`,
+`wong_wang_observation --arm transfer_uniform` reproduces the original campaign,
+including reference fitting and budgets 10/12, and `native_manuscript` adds the
+missing manuscript cells from frozen models; its `--stage finalize`
 checks exact row keys and shared exclusions before assembling one final table.
-The final result README records source commits, GCP commands, and figure commands.
+Each result README records source commits, GCP commands, and figure commands.
 Figures use the fit and trajectories stored with the selected result, with no
 fallback to another experiment.
 

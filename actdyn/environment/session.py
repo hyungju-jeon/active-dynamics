@@ -15,6 +15,11 @@ A rule with ``evidence_amplitude > 0`` adds sensory evidence to every session fr
 (pool ``NO_EVIDENCE``). Agents know the schedule and the pool of the current session.
 From ``fixed_first_session`` on, a decision no longer ends a session: it runs the full
 ``max_session_bins`` (fixed-length sessions).
+
+The agent's action bound may depend on the session: sessions before
+``action_scale_last_session`` use the policy's own constraint scaled by ``action_scale``
+(the same box, ball, or sphere, with every radius multiplied); later sessions use it
+unscaled. The evidence is not scaled and is not part of the bounded action.
 """
 
 from __future__ import annotations
@@ -42,6 +47,10 @@ class SessionRule:
         evidence_last_session: Sessions with this or a higher index have no evidence (None: no limit).
         fixed_first_session: Sessions with this or a higher index end only at ``max_session_bins``
             (None: never).
+        action_scale: Factor on the agent's action bound in sessions before
+            ``action_scale_last_session``.
+        action_scale_last_session: Sessions with this or a higher index use the unscaled bound
+            (0: every session does).
     """
 
     decision_gap: float = 2.0
@@ -55,6 +64,8 @@ class SessionRule:
     evidence_first_session: int = 0
     evidence_last_session: int | None = None
     fixed_first_session: int | None = None
+    action_scale: float = 1.0
+    action_scale_last_session: int = 0
 
 
 NO_EVIDENCE = -2  # evidence pool of a session without evidence (-1: pool not known yet)
@@ -73,6 +84,18 @@ def session_post_decision_bins(rule: SessionRule, session_index: int) -> int:
     if first is not None and int(session_index) >= int(first):
         return int(rule.max_session_bins)
     return int(rule.post_decision_bins)
+
+
+def session_action_scale(rule: SessionRule | None, context: dict | None) -> float:
+    """Factor on the agent's action bound in the session of ``context``.
+
+    ``context`` is the session clock the agents see (``session_index`` key); a missing
+    context is session 0, where every run starts. Without a rule the bound is unscaled.
+    """
+    if rule is None:
+        return 1.0
+    k = int((context or {}).get("session_index", 0))
+    return float(rule.action_scale) if k < int(rule.action_scale_last_session) else 1.0
 
 
 def session_evidence_pool(session_seed: int) -> int:

@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from actdyn.environment.session import SessionRule, session_evidence
+from actdyn.environment.session import SessionRule, session_action_scale, session_evidence
 
 from .base import BasePolicy
 
@@ -581,6 +581,9 @@ class FLEXPolicy(BasePolicy):
         evidence = self._known_evidence()
         if evidence is not None:
             self._flex_model.input_offset = evidence
+        # FLEX inputs lie on the sphere ||u|| = gamma; the session scales its radius.
+        self._flex_agent.gamma = session_action_scale(self.session_rule, self.session_context) * float(
+            self.env_preset.action_max)
         try:
             u = np.asarray(self._flex_agent.policy(x, t), dtype=np.float32).reshape(1, 1, -1)
         finally:

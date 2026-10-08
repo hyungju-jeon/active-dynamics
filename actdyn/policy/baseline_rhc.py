@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from actdyn.environment.session import SessionRule, session_evidence
+from actdyn.environment.session import SessionRule, session_action_scale, session_evidence
 from actdyn.models.planning_surrogates import LocalRBFBayesianLinearDynamics, RFFBayesianLinearDynamics
 from actdyn.utils.rollout import RecentRollout
 
@@ -167,8 +167,9 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         self._ensure_model(x0)
         assert self._planner is not None
         evidence = self._known_evidence()
-        plan = (self._planner.plan(x0=x0, objective=self.objective) if evidence is None
-                else self._planner.plan(x0=x0, objective=self.objective, input_offset=evidence))
+        scale = session_action_scale(self.session_rule, self.session_context)
+        plan = (self._planner.plan(x0=x0, objective=self.objective, action_scale=scale) if evidence is None
+                else self._planner.plan(x0=x0, objective=self.objective, input_offset=evidence, action_scale=scale))
         action_tensor = torch.as_tensor(plan.actions[None, :, :], dtype=torch.float32, device=self.device)
         cost_tensor = torch.as_tensor([[plan.cost]], dtype=torch.float32, device=self.device)
         assert self._internal_model is not None

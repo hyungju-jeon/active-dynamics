@@ -995,3 +995,34 @@ environments:
     spiking_session_evidence_bins: 200
     spiking_session_evidence_last_session: 10
     spiking_fixed_first_session: 10
+  # Weak control during evidence-led identification (2026-10-07): the selected Native+Uniform
+  # protocol with every policy's identification bound scaled by 0.1 in trials 1-10 (PALDI norm
+  # 2 pA < 6-pA evidence) and restored in trials 11-20. Calibration amplitude stays action_max.
+  tbme_ww_weak_evidence_transfer_uniform:
+    extends: tbme_ww_observation_transfer_uniform
+    system_label: Weak evidence-trial control / transfer_uniform / 20+20 recordings
+    spiking_session_action_scale: 0.1
+    spiking_session_action_scale_last_session: 10
+  # Identification scenarios (2026-10-08), each a one-change variant of the selected protocol.
+  # Weak 10 pA: bound x0.5 in trials 1-10 (PALDI norm 10 pA > 6-pA evidence).
+  tbme_ww_weak10_evidence_transfer_uniform:
+    extends: tbme_ww_observation_transfer_uniform
+    system_label: 10-pA evidence-trial control / transfer_uniform / 20+20 recordings
+    spiking_session_action_scale: 0.5
+    spiking_session_action_scale_last_session: 10
+  # Manuscript protocol since 2026-10-08 (suite ``wong_wang_snn_native_uniform``): five evidence
+  # trials with the 2-pA bound, then 15 fixed 2-s exploration trials at 20 pA.
+  tbme_ww_weak_evidence5_transfer_uniform:
+    extends: tbme_ww_observation_transfer_uniform
+    system_label: 5 weak evidence trials + 15 exploration trials / transfer_uniform / 20+20 recordings
+    spiking_session_evidence_last_session: 5
+    spiking_fixed_first_session: 5
+    spiking_session_action_scale: 0.1
+    spiking_session_action_scale_last_session: 5
+  # Passive identification: 20 evidence-led trials (no fixed trials), run with the zero-control
+  # policy ``off_policy``; the learners' only input is the known evidence.
+  tbme_ww_passive_evidence20_transfer_uniform:
+    extends: tbme_ww_observation_transfer_uniform
+    system_label: 20 evidence trials without control / transfer_uniform / 20+20 recordings
+    spiking_session_evidence_last_session: 20
+    spiking_fixed_first_session: 20

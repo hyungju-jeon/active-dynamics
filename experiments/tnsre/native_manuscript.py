@@ -1,4 +1,4 @@
-"""Complete the selected native/uniform manuscript result without retraining.
+"""Complete the 2026-10-07 native/uniform result (now archived) without retraining.
 
 Frozen 120 models, 20 training seeds, and eight original task starts. Add
 checkpoints 1/5/10/15 at budget 12 and final-model budgets 5/15. Retain all
@@ -24,7 +24,7 @@ import torch
 from experiments.tnsre import eval_spiking_sessions as ev
 from experiments.tnsre.wong_wang_full import RecordedTaskNetwork, failed_control_outcome, write_json
 
-DEFAULT_ROOT = Path('results/tnsre/20261007_snn_native_uniform')
+DEFAULT_ROOT = Path('results/archive/experiments/20261007_snn_native_uniform')
 POLICIES = ('adaptive', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random')
 KEY = ['controller', 'policy', 'seed', 'checkpoint', 'task', 'budget', 'task_seed']
 

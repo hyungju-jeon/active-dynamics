@@ -2,8 +2,10 @@
 
 Selected for the manuscript on 2026-10-07: **native transfer + uniform current**,
 with the 200-ms PALDI horizon and within-trial planning below. The code is merged
-into `neuro`. Final data and figures are in
-`results/tnsre/20261007_snn_native_uniform/`; the other arms, earlier protocols,
+into `neuro`. Its data and figures are archived in
+`results/archive/experiments/20261007_snn_native_uniform/`; since 2026-10-08 the
+manuscript uses five weak evidence trials (`results/tnsre/20261008_snn_native_uniform_weak5/`,
+see `README.md`). The other arms, earlier protocols,
 and original failed/recovered attempts are in `results/archive/experiments/`.
 The additional manuscript checkpoints and budgets use the same frozen models
 through `native_manuscript.py`. The design below records the original comparison.

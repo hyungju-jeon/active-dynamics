@@ -199,10 +199,16 @@ def _model_input(action: torch.Tensor | None, env_info: Dict[str, Any]) -> torch
 
 
 def _apply_session_reset(model: Any, policy: Any, env_info: Dict[str, Any]) -> None:
-    """Move the state belief to the announced reset state and let the policy restart its plan."""
+    """Move the state belief to the announced reset state and let the policy restart its plan.
+
+    The policy gets the new session's clock first, so the restarted plan uses that
+    session's action bound (``SessionRule.action_scale``).
+    """
     reset_state_belief = getattr(model, 'reset_session_state', None)
     if callable(reset_state_belief):
         reset_state_belief(env_info['session_reset_state'], float(env_info['session_reset_variance']))
+    if 'session_context' in env_info:
+        setattr(policy, 'session_context', env_info['session_context'])
     on_session_reset = getattr(policy, 'on_session_reset', None)
     if callable(on_session_reset):
         on_session_reset(model.get_state())

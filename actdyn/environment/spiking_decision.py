@@ -42,7 +42,7 @@ import torch
 from gymnasium import spaces
 
 from actdyn.environment.session import (
-    NO_EVIDENCE, SessionRule, session_evidence, session_evidence_pool, session_has_evidence,
+    NO_EVIDENCE, SessionRule, session_action_scale, session_evidence, session_evidence_pool, session_has_evidence,
     session_post_decision_bins,
 )
 
@@ -617,6 +617,10 @@ class SpikingDecisionEnv(gym.Env):
 
     def step(self, action: Any):
         a = action.detach().cpu().numpy() if isinstance(action, torch.Tensor) else np.asarray(action)
+        # The control alone must lie in the session's action box; evidence adds after this check.
+        bound = session_action_scale(self.session_rule, self.session_context()) * self.action_space.high
+        if np.any(np.abs(a.reshape(-1)) > bound + 1e-6):
+            raise ValueError(f"Action {a.reshape(-1)} exceeds the session-{self.session_index} bound {bound}.")
         evidence = self._evidence() if self._has_evidence() else None
         counts, z = self.network.step(a.reshape(-1), evidence=evidence)
         self.last_counts = counts
@@ -869,4 +873,6 @@ def session_rule_from_preset(env_preset: Any, state_scale: float) -> Optional[Se
         evidence_first_session=int(getattr(env_preset, "spiking_session_evidence_first_session", 0)),
         evidence_last_session=getattr(env_preset, "spiking_session_evidence_last_session", None),
         fixed_first_session=getattr(env_preset, "spiking_fixed_first_session", None),
+        action_scale=float(getattr(env_preset, "spiking_session_action_scale", 1.0)),
+        action_scale_last_session=int(getattr(env_preset, "spiking_session_action_scale_last_session", 0)),
     )
