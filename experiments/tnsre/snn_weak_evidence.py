@@ -159,9 +159,33 @@ def learned_cell(unit: dict, budget: float, scenario: Scenario) -> bool:
 
 
 # ------------------------------------------------------------------ identification
-def train(root: Path, scenario: Scenario, policy: str, seed: int):
-    from experiments import run
+def configure_identification_budget(root: Path, scenario: Scenario, policy: str, seed: int,
+                                    budget: list[int] | None):
+    """Override only PALDI/Myopic search counts; preserve resolved policy and schedule fields."""
+    from dataclasses import asdict
+    import yaml
+    from experiments.experiment_definitions import configure_catalogs as configure, get_policy_spec, get_schedule_spec
+    from experiments.tnsre.run_tbme_experiments import tbme_catalog_paths
     configure_catalogs(scenario.constraint)
+    if budget is None or policy not in ('adaptive_c2h20', 'active_myopic'):
+        return
+    if min(budget) < 1 or budget[2] > budget[0]:
+        raise ValueError('iCEM counts must be positive, with elites <= samples')
+    spec = asdict(get_policy_spec(policy))
+    model = spec | asdict(get_schedule_spec(spec['schedule_id']))
+    model.update(zip(('mpc_num_samples', 'mpc_num_iterations', 'mpc_num_elite'), budget))
+    overlay = root / 'budget_config' / f'{policy}_{seed:02d}.yaml'
+    overlay.parent.mkdir(parents=True, exist_ok=True)
+    overlay.write_text(yaml.safe_dump({'models': {policy: model}}))
+    paths = tbme_catalog_paths()
+    configure(env_catalog_paths=paths['env_catalog_paths'],
+              model_catalog_paths=[*paths['model_catalog_paths'], *([OVERLAY] if scenario.constraint == 'box' else []), overlay],
+              suite_catalog_paths=(), suite_entries=SUITES)
+
+
+def train(root: Path, scenario: Scenario, policy: str, seed: int, budget: list[int] | None = None):
+    from experiments import run
+    configure_identification_budget(root, scenario, policy, seed, budget)
     args = run.build_parser().parse_args(['--base-dir', str(root), '--path-layout', 'tbme_tracks',
                                           '--total-steps', '8000', '--skip-existing'])
     result = run._run_one(exp_id=scenario.suite, policy_id=policy, seed=seed, repeat=1, base_dir=root, args=args)
@@ -169,6 +193,8 @@ def train(root: Path, scenario: Scenario, policy: str, seed: int):
         raise RuntimeError(f'Identification failed: {result.get("error", result)}')
     if len(result.get('session_log', [])) != 20:
         raise RuntimeError('Identification did not complete all 20 trials')
+    if budget is not None and policy in ('adaptive_c2h20', 'active_myopic'):
+        assert [result[k] for k in ('mpc_num_samples', 'mpc_num_iterations', 'mpc_num_elite')] == budget
     write_json(root / 'run_checks' / f'{policy}_{seed:02d}.json',
                check_run(run_dir(root, scenario, policy, seed), policy, scenario))
 
@@ -434,6 +460,8 @@ def campaign(a):
             log = root / 'logs' / f'group_{a.group}' / f'{key}.attempt{attempt}.log'; log.parent.mkdir(parents=True, exist_ok=True)
             command = [sys.executable, '-m', __spec__.name, '--root', str(root / name), '--inputs', str(a.inputs),
                        '--group', str(a.group), '--groups', str(a.groups), *argv]
+            if a.icem_budget is not None:
+                command += ['--icem-budget', *map(str, a.icem_budget)]
             records[key] = {'command': command, 'status': 'running', 'started': now(), 'attempt': attempt,
                             'log': str(log.relative_to(root)),
                             'previous_attempts': old.get('previous_attempts', []) + ([old] if old else [])}
@@ -478,6 +506,8 @@ def main():
     p.add_argument('--group', type=int, default=0); p.add_argument('--groups', type=int, default=4)
     p.add_argument('--policy', choices=sorted(GEOMETRY), default='adaptive_c2h20'); p.add_argument('--seed', type=int, default=0)
     p.add_argument('--workers', type=int, default=8)
+    p.add_argument('--icem-budget', nargs=3, type=int, metavar=('SAMPLES', 'ITERATIONS', 'ELITES'),
+                   help='PALDI/Myopic identification only; task controller and other methods stay fixed')
     p.add_argument('--shard', type=int, default=0); p.add_argument('--nshards', type=int, default=8)
     a = p.parse_args()
     torch.set_num_threads(1)
@@ -485,7 +515,7 @@ def main():
     if a.stage == 'campaign':
         campaign(a)
     elif a.stage == 'train':
-        train(root, scenario, a.policy, a.seed)
+        train(root, scenario, a.policy, a.seed, a.icem_budget)
     elif a.stage == 'r2':
         r2(root, a.inputs.resolve(), scenario, a.group)
     elif a.stage == 'task':
