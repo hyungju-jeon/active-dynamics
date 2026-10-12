@@ -231,6 +231,7 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
     from .assets import _asset_baseline_policy_color
     from matplotlib import patheffects
     from matplotlib.lines import Line2D
+    from .spiking_sessions import POLICIES, CURVE_STYLE, REFERENCE_STYLE
     from experiments.tnsre.eval_spiking_sessions import EXAMPLES
     manifest = json.loads((phase_dir/'manifest.json').read_text())
     assert manifest['verified'] and manifest['training_seed'] == EXAMPLES['training_seed']
@@ -247,16 +248,22 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
         color = '#3E6FB0' if difference > 1e-5 else '#C84747' if difference < -1e-5 else STROKE_COLOR
         ax.plot(*point['state'], 'o' if point['stable'] else 'D', ms=3.2,
                 mfc=color if point['stable'] else 'white', mec=color, mew=.7, zorder=5)
-    styles = {'adaptive':'-', 'spread':'--'}
     records = {r['policy']:r for r in manifest['records']}
-    # Draw Constant-amplitude last to separate the two paths where they initially overlap.
-    for policy in ['adaptive','spread']:
+    # Draw the fitted trajectory last, with a thicker line and white outline,
+    # so it remains visible where it overlaps PALDI or the background field.
+    order = ['front', 'adaptive', 'reduced_fit']
+    handles = {}
+    for policy in order:
         r = records[policy]
         z = np.load(phase_dir/f'{policy}.npz')['z'][r['onset']-1:]
         assert np.all(z >= -2.1) and np.all(z <= 1.6), (policy, 'trajectory outside axes')
-        color = _asset_baseline_policy_color(policy) if policy=='adaptive' else '#4F4F4F'
-        ax.plot(z[:,0], z[:,1], color=color, ls=styles[policy], lw=1.65, zorder=4,
-                path_effects=[patheffects.Stroke(linewidth=2.5, foreground='white'), patheffects.Normal()])
+        style = CURVE_STYLE[policy] if policy in POLICIES else REFERENCE_STYLE[policy]
+        color = _asset_baseline_policy_color(policy) if policy in POLICIES else style['color']
+        width = 1.6 if policy == 'reduced_fit' else 1.3
+        ax.plot(z[:,0], z[:,1], color=color, ls=style['linestyle'], lw=width, zorder=4,
+                path_effects=[patheffects.Stroke(linewidth=width+1.0, foreground='white'), patheffects.Normal()])
+        handles[policy] = Line2D([], [], color=color, ls=style['linestyle'], lw=width,
+                                label={'adaptive': 'PALDI', 'front': 'Max.', 'reduced_fit': 'Fitted'}[policy])
         ax.plot(*z[-1], marker='o' if r['success'] else 'x', ms=3.3,
                 color=color, mew=.8, zorder=6)
         if policy == 'adaptive':
@@ -264,8 +271,7 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
     ax.set(xlim=(-2.1,1.6), ylim=(-2.1,1.6), xlabel=r'$z_1$', ylabel=r'$z_2$')
     ax.set_xticks([-2,0,1]); ax.set_yticks([-2,0,1]); ax.set_aspect('equal')
     ax.set_title('Fitted model', fontsize=_ASSET_LABEL_SIZE, pad=2)
-    ax.legend(handles=[Line2D([],[],color=_asset_baseline_policy_color('adaptive'),lw=1.65,label='PALDI'),
-                       Line2D([],[],color='#4F4F4F',lw=1.65,ls='--',label='Const.')],
-              loc='upper right',fontsize=_ASSET_TICK_SIZE,frameon=True,facecolor='white',
-              edgecolor='none',framealpha=.9,handlelength=1.4,handletextpad=.4,borderpad=.25)
+    ax.legend(handles=[handles[p] for p in ('adaptive', 'front', 'reduced_fit')],
+              loc='upper right', fontsize=_ASSET_TICK_SIZE, frameon=True, facecolor='white',
+              edgecolor='none', framealpha=.9, handlelength=1.4, handletextpad=.4, borderpad=.25)
     style_experiment_axis(ax)

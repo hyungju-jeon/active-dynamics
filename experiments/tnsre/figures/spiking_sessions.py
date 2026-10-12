@@ -82,7 +82,7 @@ REFERENCE_STYLE = {
     "front": dict(color="#8B6B4A", linestyle="-.", marker="v", label="Maximum-amplitude"),
 }
 DECISION_MARKER = dict(marker="o", ms=3.0, markeredgecolor="white", markeredgewidth=0.4)
-T_SHOWN_MS = 2500.0  # example session axis; both unsuccessful traces stay below the threshold after it
+T_SHOWN_MS = 2000.0  # display limit only; control and success windows retain their full durations
 TASK_TITLES = {"force": "Force", "overturn": "Overturn"}
 CURRENT_PA = 20.0
 BUDGET_PA2_S = CURRENT_PA ** 2 * 0.1  # normalized time unit = 100 ms
@@ -553,7 +553,8 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     ax_t.text(20.0, 1.75, "evidence 6 pA", ha="left", va="center", fontsize=_ASSET_TICK_SIZE)
     ax_t.add_patch(Rectangle((onset_ms, 0.075), window_ms, 0.95, facecolor=CONTROL_SHADE,
                              edgecolor="none"))
-    ax_t.text(onset_ms + 0.5 * window_ms, 0.55, "control input (at most 2 s)", ha="center", va="center",
+    visible_control_end = min(onset_ms + window_ms, T_SHOWN_MS)
+    ax_t.text(0.5 * (onset_ms + visible_control_end), 0.55, "control input (at most 2 s)", ha="center", va="center",
               fontsize=_ASSET_TICK_SIZE)
     ax_t.set_ylim(0.0, 2.4)
     ax_t.axis("off")
@@ -572,6 +573,11 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
               **DECISION_MARKER, markerfacecolor=STROKE_COLOR)
     u = ex[f"{task}_learned_u"]
     t_ms = np.arange(u.shape[0]) * 5.0
+    evidence = ex[f"{task}_learned_evidence"]
+    for i in range(2):
+        if np.any(evidence[:, i]):
+            ax_u.fill_between(t_ms, 0.0, CURRENT_PA * evidence[:, i], color=POOL_COLORS[i],
+                              alpha=0.25, lw=0, step="post", zorder=1)
     ax_u.plot(t_ms, CURRENT_PA * u[:, target], color=POOL_COLORS[target], lw=0.8, label="to target pool")
     ax_u.plot(t_ms, CURRENT_PA * u[:, 1 - target], color=POOL_COLORS[1-target], lw=0.8, label="to initial-choice pool")
     ax_t.axvline(onset_ms, ymax=0.94, color=STROKE_COLOR, lw=0.6, ls="--")
@@ -595,6 +601,7 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     ax_u.set_ylim(-22, 22)
     ax_u.set_xlabel("Time (ms)")
     ax_u.set_xlim(0.0, T_SHOWN_MS)
+    ax_u.set_xticks(np.arange(0.0, T_SHOWN_MS + 1, 500.0))
     # Before control onset both inputs are zero, leaving room above the traces.
     ax_u.legend(handles=[
         Line2D([], [], color=POOL_COLORS[i], lw=0.8, label=str(i + 1))
@@ -650,13 +657,13 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     fig = plt.figure(figsize=(FIGURE_WIDTH, 2.05))
-    example = fig.add_gridspec(1, 1, left=0.065, right=0.49, top=0.84, bottom=0.20)
-    comparison = fig.add_gridspec(1, 1, left=0.825, right=0.995, top=0.8, bottom=0.20)
+    example = fig.add_gridspec(1, 1, left=0.065, right=0.405, top=0.84, bottom=0.20)
+    comparison = fig.add_gridspec(1, 1, left=0.74, right=0.995, top=0.8, bottom=0.20)
     _panel_label(_draw_example_session(fig, example[0], eval_dir, task), "A", dx=-30)
     from .spiking_characterization import draw_control_phase
-    ax = fig.add_axes([0.565, 0.20, 0.175, 0.60])
+    ax = fig.add_axes([0.48, 0.20, 0.175, 0.60])
     # The phase trajectories must belong to this experiment's selected model.
-    phase_dir = experiment_dir / "control_phase"
+    phase_dir = experiment_dir / "control_phase_all"
     if not phase_dir.exists():
         raise FileNotFoundError(f'Missing verified control replay: {phase_dir}')
     draw_control_phase(ax, experiment_dir, phase_dir)
