@@ -53,13 +53,13 @@ MAP_CMAP = "magma"
 PULSE_SHADE = "#C6C0B8"
 MAP_LIM = 3.0  # shared B/C/E domain includes the full path; z = -2 and 2 are rates 0 and 1/2
 FIGURE_WIDTH = 516.0 / 72.27
-FIGURE_HEIGHT = 3.1
+FIGURE_HEIGHT = 2.65
 # Layout in inches. Left block: A and B on top, the C strip below. Right block: a 3 x 3 matrix
 # with one column per observation condition and rows D (loadings), E (Fisher), F (spikes).
-LEFT = {"top": 2.89, "a_left": 0.15, "a_width": 1.5, "b_left": 2.12, "b_size": 1.4,
-        "c_bottom": 0.42, "c_size": 0.7}
-RIGHT = {"x0": 4.10, "col": 0.88, "gap": 0.06, "d": (2.42, 0.50), "e": (1.36, 0.88),
-         "f_raster": (0.28, 0.60)}
+LEFT = {"top": 2.44, "a_left": 0.15, "a_width": 1.5, "b_left": 2.12, "b_size": 1.15,
+        "a_height": 1.20, "c_bottom": 0.28, "c_size": 0.7}
+RIGHT = {"x0": 4.10, "col": 0.88, "gap": 0.06, "d": (2.08, 0.38), "e": (1.15, 0.80),
+         "f_raster": (0.28, 0.42)}
 # Example trajectory of (B) and (F): start in the down state; (start, stop, u_E, u_I) pulses.
 # From the down state this pulse reaches the up state in 39 of 40 noise seeds (Wilson-Cowan 1972
 # parameters, checked 2026-09-29; seed 0 is one of the 39).
@@ -371,7 +371,7 @@ def generate_wilson_cowan_figure(output: Path, *, conditions: tuple = CONDITIONS
     top, b_size = LEFT["top"], LEFT["b_size"]
 
     # (A) circuit.
-    ax = _inch_axes(fig, LEFT["a_left"], top - 1.45, LEFT["a_width"], 1.5)
+    ax = _inch_axes(fig, LEFT["a_left"], top - LEFT["a_height"] + 0.05, LEFT["a_width"], LEFT["a_height"])
     _draw_circuit(ax)
     _letter(fig, "A", 0.02, top + 0.05)
     _title(fig, "Circuit", LEFT["a_left"], LEFT["a_left"] + LEFT["a_width"], top + 0.05)

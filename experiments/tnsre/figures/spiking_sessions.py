@@ -314,12 +314,11 @@ def _filter_rmse(z: np.ndarray, m: np.ndarray) -> float:
 
 
 def generate_identification(experiment_dir: Path, output: Path, *,
-                            sessions_shown: tuple[int, ...] = (1, 20)) -> Path:
-    """Identification figure: (A) circuit above (B) session structure in the first column,
-    then (C) sessions ``sessions_shown`` (1-based) of PALDI seed 0 and (D) held-out R2
-    along identification.
+                            sessions_shown: tuple[int, ...] = (1, 20), example_seed: int = 6) -> Path:
+    """Identification: (A) phase portrait, (B) PALDI trials, (C) held-out R2.
 
-    The shown sessions follow a fixed rule (first and last), not a selection by eye.
+    Show the first and last trials of seed 6, selected for its longer first trial
+    (1.09 s) in the native/uniform weak5 campaign, not for prediction performance.
     """
     from experiments.tnsre.eval_spiking_sessions import PROTOCOL
 
@@ -328,24 +327,25 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     reference = reference_record(experiment_dir)
     fit_r2 = float(reference['r2_test_piecewise_current'] if 'r2_test_piecewise_current' in reference
                    else reference['r2_test_piecewise'])
-    ex = _example_run(experiment_dir)
+    ex = _example_run(experiment_dir, seed=example_seed)
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     fig = plt.figure(figsize=(FIGURE_WIDTH, 2.7))
     from .spiking_characterization import draw_phase_portrait
     # A: phase portrait; B: actual trial structure and recordings; C: prediction.
     top, bottom = 0.8, 0.15
-    ax = fig.add_axes([0.065, bottom, 0.22, 0.22 * FIGURE_WIDTH / 2.7])
+    ax = fig.add_axes([0.065, bottom, 0.19, 0.19 * FIGURE_WIDTH / 2.7])
     equilibria = draw_phase_portrait(ax, experiment_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.with_suffix('.fixed_points.json').write_text(json.dumps(equilibria, indent=2))
     fig.text(.035, top+.02, 'A', fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight='bold')
-    row = fig.add_gridspec(1, 2, width_ratios=[2.5, 1.05], left=0.365, right=0.99,
-                          top=top, bottom=bottom, wspace=0.33)
+    row = fig.add_gridspec(1, 2, width_ratios=[2.6, 1.5], left=0.325, right=0.99,
+                          top=top, bottom=bottom, wspace=0.21)
     bounds = [_session_bounds(ex["session_end"])[k - 1] for k in sessions_shown]
     longest = max(b - a for a, b in bounds)
+    # Give short trials enough width for the hold label; each column has its own time axis.
     sub = row[0].subgridspec(4, len(bounds), height_ratios=[0.5, 0.7, 1.15, 0.9],
-                           hspace=0.1, wspace=0.1, width_ratios=[max(b - a, 0.35 * longest) for a, b in bounds])
+                           hspace=0.1, wspace=0.1, width_ratios=[max(b - a, 0.75 * longest) for a, b in bounds])
     n_obs = ex["counts"].shape[1]
     shared_y = []
     for col, (k, (a, b)) in enumerate(zip(sessions_shown, bounds)):
@@ -368,9 +368,12 @@ def generate_identification(experiment_dir: Path, output: Path, *,
         pool = ex["evidence_pool"][k - 1] if k - 1 < len(ex["evidence_pool"]) else -1
         fixed = ex["fixed_first_trial"] is not None and k >= ex["fixed_first_trial"]
         ax_t.set_title(f"Trial {k}", fontsize=_ASSET_LABEL_SIZE, pad=2.0, loc="left")
-        ax_r.set_ylim(-1, n_obs)
-        ax_r.set_yticks([20, 60])
+        # Center labels on the recorded neurons in each pool. Fixed 80-neuron
+        # ticks expand the shared axis when this run records only 40 neurons.
+        split = n_obs // 2
+        ax_r.set_yticks([(split - 1) / 2, (split + n_obs - 1) / 2])
         ax_r.set_yticklabels(["1", "2"])
+        ax_r.set_ylim(-0.5, n_obs - 0.5)
         if pool >= 0:  # evidence of this trial: light area under its current, in the pool's color
             ax_u.fill_between(t_ms, 0.0, CURRENT_PA * ex["evidence"][a:b, pool], color=POOL_COLORS[pool],
                               alpha=0.25, lw=0, step="post", zorder=1)
@@ -379,29 +382,32 @@ def generate_identification(experiment_dir: Path, output: Path, *,
             ax_z.plot(t_ms, ex["m"][a:b, i], color=POOL_COLORS[i], lw=0.55, ls="--", alpha=0.8)
             ax_u.plot(t_ms, CURRENT_PA * ex["u"][a:b, i], color=POOL_COLORS[i], lw=0.6)
         ax_z.set_ylim(-2.4, 2.4)
-        ax_u.set_ylim(-22, 22)
-        # Decision (first bin with |z_1 - z_2| > gap, dashed) and the hold until the reset (shaded).
+        ax_u.set_ylim(-10, 10)
+        # Evidence can continue after a decision. Shade its saved nonzero bins,
+        # independently of the decision and reset markers.
+        evidence_present = np.any(ex["evidence"][a:b] != 0.0, axis=1)
+        edges = np.diff(np.r_[False, evidence_present, False].astype(int))
+        evidence_spans = list(zip(np.flatnonzero(edges == 1) * 5.0,
+                                  np.flatnonzero(edges == -1) * 5.0))
         lead = ex["z"][a:b, 0] - ex["z"][a:b, 1]
         decided = np.flatnonzero(np.abs(lead) > float(PROTOCOL["decision_gap"]))
         from matplotlib.patches import Rectangle
         decision_ms = decided[0] * 5.0 if decided.size else (b-a)*5.0
         end_ms = (b-a)*5.0
-        ax_t.add_patch(Rectangle((0, .25), decision_ms, .6, color=PROBE_SHADE, lw=0))
-        ax_t.add_patch(Rectangle((decision_ms,.25), end_ms-decision_ms,.6,
-                                color=DECISION_SHADE, alpha=DECISION_ALPHA, lw=0))
-        ax_t.text(decision_ms/2,.55,'input',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
+        for start_ms, stop_ms in evidence_spans:
+            ax_t.add_patch(Rectangle((start_ms, .25), stop_ms-start_ms, .6, color=PROBE_SHADE, lw=0))
+            ax_t.text((start_ms+stop_ms)/2,.55,'evidence',
+                      ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
         if decided.size:
             ax_t.axvline(decision_ms,color=STROKE_COLOR,ls='--',lw=.6)
-            ax_t.text((decision_ms+end_ms)/2,.55,'after decision' if fixed else 'hold',ha='center',va='center',
-                      fontsize=_ASSET_TICK_SIZE)
+            if not fixed:
+                ax_t.text((decision_ms+end_ms)/2,.55,'hold',ha='center',va='center',
+                          fontsize=_ASSET_TICK_SIZE)
         ax_t.plot([end_ms,end_ms],[.1,1.1],color=STROKE_COLOR,lw=.7,clip_on=False)
         ax_t.text(end_ms,1.12,'reset',ha='right',va='bottom',fontsize=_ASSET_TICK_SIZE)
         ax_t.set_ylim(0,1.8); ax_t.axis('off')
-        if decided.size:
-            for ax in (ax_r, ax_z, ax_u):
-                ax.axvspan(0.0, decided[0] * 5.0, color=PROBE_SHADE, lw=0, zorder=0)
-                ax.axvspan(decided[0] * 5.0, (b - a) * 5.0, color=DECISION_SHADE,
-                           alpha=DECISION_ALPHA, lw=0, zorder=0)
+        for ax in (ax_r, ax_z, ax_u):
+            if decided.size:
                 ax.axvline(decided[0] * 5.0, color=STROKE_COLOR, lw=0.6, ls="--")
         # Ticks every 500 ms, none at the right edge where the next column starts.
         ax_u.set_xlim(0.0, (b - a) * 5.0)
@@ -424,7 +430,7 @@ def generate_identification(experiment_dir: Path, output: Path, *,
             ax_z.legend(loc="upper right", fontsize=_ASSET_TICK_SIZE, frameon=False, ncol=2,
                         handlelength=1.4, borderaxespad=0.1)
     fig.align_ylabels(shared_y)
-    # (D) held-out R2 after each identification session.
+    # (C) held-out R2 after each identification session.
     ax = fig.add_subplot(row[1])
     curves = [(policy, _r2_by_session(r2_rows)) for policy in POLICIES]
     passive_r2 = experiment_dir / PASSIVE_DIR / "eval" / "r2_per_session.csv"
@@ -447,9 +453,10 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     ax.set_ylim(-0.2, 1.0)
     ax.set_xticks([0, 5, 10, 15, 20])
     ax.set_xlabel("Identification trials")
-    ax.set_ylabel(r"Held-out $R^2_{\mathrm{roll}}$")
+    ax.set_ylabel(r"Held-out $R^2_{\mathrm{roll}}$", labelpad=1.0)
     ax.set_title("Prediction", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
     style_experiment_axis(ax)
+    ax.tick_params(axis="y", pad=1.0)
     _panel_label(ax, "C", dx=-32)
 
     shown = [*POLICIES, *([PASSIVE_POLICY] if passive_r2.exists() else [])]
