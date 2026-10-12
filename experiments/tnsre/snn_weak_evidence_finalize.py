@@ -489,6 +489,33 @@ def versus(out: Path, scenario: w.Scenario, other: Path, other_scenario: w.Scena
     print(json.dumps(record, indent=1, default=float))
 
 
+def versus_passive(out: Path, scenario: w.Scenario, passive: Path, seed: int = 20261008):
+    """Every learned method of this result minus the passive learner of ``passive`` (``passive_e20``).
+
+    The passive learner receives the evidence in all 20 trials and no control input. Contrasts
+    pair the training seeds: R2 after trial 20, and success at 400 and 480 pA^2 s after trial 20,
+    with one simultaneous interval per endpoint (as ``audit``). Output:
+    ``comparison/versus_passive.csv``.
+    """
+    reference = learned_policies(w.SCENARIOS['passive_e20'])[0]
+    r2 = {k: pd.read_csv(d / 'eval' / 'r2_per_session.csv') for k, d in (('this', out), ('passive', passive))}
+    rows = {k: task_rows(d / 'eval' / 'task_warm') for k, d in (('this', out), ('passive', passive))}
+    contrasts = []
+    for p in learned_policies(scenario):
+        contrasts.append(dict(contrast='method - passive', policy=p, endpoint='prediction_R2', trials=20,
+                              budget_pa2_s=np.nan, a=r2_vector(r2['this'], p, 20),
+                              b=r2_vector(r2['passive'], reference, 20)))
+        for budget in (10., 12.):
+            contrasts.append(dict(contrast='method - passive', policy=p, endpoint='overturn_success', trials=20,
+                                  budget_pa2_s=40 * budget, a=success_matrix(rows['this'], p, 20, budget),
+                                  b=success_matrix(rows['passive'], reference, 20, budget)))
+    frame = simultaneous(contrasts, seed=seed)
+    comparison = out / 'comparison'; comparison.mkdir(exist_ok=True)
+    frame.to_csv(comparison / 'versus_passive.csv', index=False)
+    print(frame[['policy', 'endpoint', 'budget_pa2_s', 'value_a', 'value_b', 'difference', 'lower', 'upper',
+                 'interval_excludes_zero']].to_string(index=False))
+
+
 def result(run: Path, out: Path, scenario_name: str, other: Path | None, other_name: str | None,
            identical: list[str] | None = None):
     """One final result folder from one campaign scenario (no simulation)."""
@@ -497,7 +524,8 @@ def result(run: Path, out: Path, scenario_name: str, other: Path | None, other_n
     protocol(out)
     verify(out, scenario)
     score(out, scenario)
-    audit(out, scenario)
+    if 'adaptive' in learned_policies(scenario):  # the passive scenario has no PALDI to audit
+        audit(out, scenario)
     evidence(out, scenario)
     if other is not None:
         versus(out, scenario, other, w.SCENARIOS[other_name], identical)
@@ -584,7 +612,8 @@ def diagnostics(out: Path):
 def main():
     p = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     p.add_argument('--stage', required=True,
-                   choices=['assemble', 'protocol', 'verify', 'score', 'compare', 'diagnostics', 'audit', 'result', 'all'])
+                   choices=['assemble', 'protocol', 'verify', 'score', 'compare', 'diagnostics', 'audit', 'result',
+                            'versus_passive', 'all'])
     p.add_argument('--run', type=Path, help='collected gcp_runs/<id> directory (assemble)')
     p.add_argument('--out', type=Path, required=True)
     p.add_argument('--scenario', choices=sorted(w.SCENARIOS), default='weak2_e10', help='audit and result')
@@ -593,6 +622,7 @@ def main():
     p.add_argument('--compare-identical', nargs='*', choices=sorted(w.GEOMETRY),
                    help='result: policies that must match --compare-to exactly (default: same catalog entry '
                         'and identification protocol)')
+    p.add_argument('--passive', type=Path, help='versus_passive: the passive_e20 result folder')
     a = p.parse_args()
     stages = ['assemble', 'verify', 'score', 'compare', 'diagnostics'] if a.stage == 'all' else [a.stage]
     for stage in stages:
@@ -602,6 +632,8 @@ def main():
             audit(a.out, w.SCENARIOS[a.scenario])
         elif stage == 'result':
             result(a.run, a.out, a.scenario, a.compare_to, a.compare_scenario, a.compare_identical)
+        elif stage == 'versus_passive':
+            versus_passive(a.out, w.SCENARIOS[a.scenario], a.passive)
         else:
             globals()[stage](a.out)
 

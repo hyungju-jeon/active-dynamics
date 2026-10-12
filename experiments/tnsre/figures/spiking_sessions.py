@@ -61,7 +61,11 @@ CURVE_STYLE = {
     'rhc': dict(linestyle='-', marker='^'),
     'prbs': dict(linestyle='--', marker='v'),
     'random': dict(linestyle=':', marker='x'),
+    'off_policy': dict(linestyle='-', marker='P'),
 }
+# Passive reference of the prediction panel: evidence in all 20 trials and no control input
+# (scenario ``passive_e20``), drawn when ``<experiment_dir>/passive_e20`` exists.
+PASSIVE_DIR, PASSIVE_POLICY, PASSIVE_LABEL = "passive_e20", "off_policy", "Passive"
 ACTIVE = ("adaptive", "active_myopic", "rhc")
 FINAL_SESSIONS = 20
 POOL_COLORS = ("#3E6FB0", "#C9562C")
@@ -422,8 +426,11 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     fig.align_ylabels(shared_y)
     # (D) held-out R2 after each identification session.
     ax = fig.add_subplot(row[1])
-    by = _r2_by_session(r2_rows)
-    for policy in POLICIES:
+    curves = [(policy, _r2_by_session(r2_rows)) for policy in POLICIES]
+    passive_r2 = experiment_dir / PASSIVE_DIR / "eval" / "r2_per_session.csv"
+    if passive_r2.exists():  # drawn first, beneath the methods
+        curves.insert(0, (PASSIVE_POLICY, _r2_by_session(_read(passive_r2))))
+    for policy, by in curves:
         ks = np.array(sorted(k for p, k in by if p == policy))
         vals = [np.asarray(by[(policy, k)]) for k in ks]
         color = _asset_baseline_policy_color(policy)
@@ -445,9 +452,10 @@ def generate_identification(experiment_dir: Path, output: Path, *,
     style_experiment_axis(ax)
     _panel_label(ax, "C", dx=-32)
 
-    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0,
-                         **CURVE_STYLE[p], markersize=2.2, label=_asset_policy_label(p))
-               for p in POLICIES]
+    shown = [*POLICIES, *([PASSIVE_POLICY] if passive_r2.exists() else [])]
+    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0, **CURVE_STYLE[p], markersize=2.2,
+                          label=PASSIVE_LABEL if p == PASSIVE_POLICY else _asset_policy_label(p))
+               for p in shown]
     handles.append(plt.Line2D([], [], color=REFERENCE_STYLE["reduced_fit"]["color"], ls=":", lw=0.9,
                               label=REFERENCE_STYLE["reduced_fit"]["label"]))
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=len(handles),
