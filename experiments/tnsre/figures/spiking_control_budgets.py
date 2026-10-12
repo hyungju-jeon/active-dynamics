@@ -151,9 +151,9 @@ def make_figure(scores: pd.DataFrame):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--experiment-dir", type=Path,
-                        default=Path("results/tnsre/20261008_snn_native_uniform_weak5_ball"))
+                        default=Path("results/tnsre/20261008_snn_native_uniform_weak5_x10_ball"))
     parser.add_argument("--output-dir", type=Path,
-                        default=Path("results/tnsre/20261008_snn_native_uniform_weak5_ball/figures"))
+                        default=Path("results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/figures"))
     parser.add_argument("--extension-dir", type=Path, default=EXTENSION)
     args = parser.parse_args()
     scores, provenance = load_scores(args.experiment_dir / "eval", args.extension_dir)

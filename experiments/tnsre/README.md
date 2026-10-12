@@ -426,14 +426,18 @@ added to the experiment catalog as evidence for the full objective.
 
 ## Spiking-network decision experiment
 
-The manuscript result is `results/tnsre/20261008_snn_native_uniform_weak5_ball/`
-(selected 2026-10-08; every baseline uses the ball, as in the other manuscript
-experiments). The same protocol with the box for RHC-US, PRBS and Random is
-archived at `results/archive/experiments/20261008_snn_native_uniform_weak5/`;
-PALDI, Myopic and FLEX are bit-identical in both. The `wong_wang_snn_native_uniform` suite uses the Wang (2002)
+The manuscript result is `results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/`
+(selected 2026-10-08): exploration trials at 10 pA, every baseline on the ball,
+and the parameter random walk `q_theta` per 20 observations (neuro `567c9d3`).
+The same code with 20-pA exploration trials is archived at
+`results/archive/experiments/20261008_snn_native_uniform_weak5_ball_qfix/`; the
+earlier 20-pA results (before `567c9d3`) are
+`results/archive/experiments/20261008_snn_native_uniform_weak5_ball/` (ball) and
+`results/archive/experiments/20261008_snn_native_uniform_weak5/` (box).
+The `wong_wang_snn_native_uniform` suite uses the Wang (2002)
 network with native Wong–Wang transfer, uniform current injection, and 20 recorded
 neurons per selective pool (40 channels, 5-ms bins). Its preset is
-`tbme_ww_weak_evidence5_transfer_uniform`.
+`tbme_ww_weak_evidence5_explore10_transfer_uniform`.
 
 - **Learner:** `WongWangTransfer`, with activation `phi(q)=q/(1-exp(-q))`,
   continuous value `phi(0)=1`, and input inside the effective drive. Five
@@ -444,7 +448,7 @@ neurons per selective pool (40 channels, 5-ms bins). Its preset is
   these trials every policy's own identification bound is scaled by 0.1 (norm
   2 pA: the ball for PALDI, Myopic, RHC-US and Random, the sphere for FLEX, and
   PRBS levels on the sphere), so the evidence, not the agent, sets the decision. Trials 6–20 have no evidence,
-  last 2 s, and use the full 20-pA bound. Filters reset when notified;
+  last 2 s, and use half the bound (10 pA, `SessionRule.action_scale_later`). Filters reset when notified;
   planning stays in the current trial and does not predict resets. PALDI is
   `adaptive_c2h20`: 20 planning steps of 10 ms, with 15-ms minimum update and
   replanning intervals. All six methods use matched seeds 0–19.
@@ -460,8 +464,8 @@ then 10 fixed trials) is the suite `wong_wang_snn_native_uniform_strong`; its
 result is archived at `results/archive/experiments/20261007_snn_native_uniform/`.
 The evidence-trial scenarios that led to the change (2 pA or 10 pA in trials
 1–10, 2 pA in trials 1–5, and a passive learner) are compared in
-`results/archive/experiments/20261008_snn_evidence_scenarios/`; the manuscript
-result is that comparison's `weak2_e5` scenario, made with
+`results/archive/experiments/20261008_snn_evidence_scenarios/`. The manuscript
+result is the `snn_weak_evidence` scenario `weak2_e5_x10_ball`, made with
 `experiments.tnsre.snn_weak_evidence` and `snn_weak_evidence_finalize`.
 The original sigmoid, partial-targeting, Poisson-evidence, bound, SNR, and
 control variants remain in `results/archive/experiments/`. See
@@ -487,12 +491,14 @@ them, add `--model-catalog experiments/tnsre/config/native_uniform_manuscript_mo
 load it). Task control is unchanged: all methods use the same norm bound.
 
 The manuscript result was made on GCP with the campaign of
-`experiments.tnsre.snn_weak_evidence` (scenario `weak2_e5_ball`), which trains with the
+`experiments.tnsre.snn_weak_evidence` (scenario `weak2_e5_x10_ball`), which trains with the
 same suite specification and the shared ball catalog and evaluates the frozen models with the
 selected evaluation protocol; reference rows (initial estimate, fitted reference,
 model-free inputs) are the frozen rows of the 2026-10-07 result.
-`snn_weak_evidence_finalize --stage audit --scenario weak2_e5_ball` writes its paired
-PALDI-versus-method audit. For the 2026-10-07 result: at source commit `ad8d7c4`,
+`snn_weak_evidence_finalize --stage audit --scenario weak2_e5_x10_ball` writes its paired
+PALDI-versus-method audit. The passive learner of Fig. 5C (scenario `passive_e20`: 20 evidence
+trials, no control) is the result's `passive_e20/` folder, and `--stage versus_passive` writes the
+contrasts of every method against it. For the 2026-10-07 result: at source commit `ad8d7c4`,
 `wong_wang_observation --arm transfer_uniform` reproduces the original campaign,
 including reference fitting and budgets 10/12, and `native_manuscript` adds the
 missing manuscript cells from frozen models; its `--stage finalize`

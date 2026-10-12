@@ -53,7 +53,7 @@ Stages (``--stage``):
     examples   a few task sessions recorded bin by bin       (one network; for figures)
 
 Example:
-    E=results/tnsre/20261008_snn_native_uniform_weak5_ball/eval; RUNS=results/tnsre/20261008_snn_native_uniform_weak5_ball/tracks/ww_weak_evidence5_transfer_uniform
+    E=results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/eval; RUNS=results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/tracks/ww_weak_evidence5_explore10_transfer_uniform
     python -m experiments.tnsre.eval_spiking_sessions --stage r2 --out $E --runs-root $RUNS
     python -m experiments.tnsre.eval_spiking_sessions --stage task --out $E --runs-root $RUNS --worker-index 0 --n-workers 1
 """
@@ -74,13 +74,13 @@ TASKS = ("force", "overturn")
 
 PROTOCOL: dict[str, Any] = {
     # Held-out trajectories: 12 network runs under random piecewise-constant pool drives.
-    "test_trajectories": "results/tnsre/20261008_snn_native_uniform_weak5_ball/data/test_trajectories.npz",
+    "test_trajectories": "results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/data/test_trajectories.npz",
     "test_seeds": list(range(70000, 70012)),
     "test_bins": 400,
     "test_hold": 40,
     "test_levels": [-1.0, -0.5, 0.0, 0.5, 1.0],
     # Reduced model fitted to network data (the reference of the evaluation).
-    "reduced_fit": "results/tnsre/20261008_snn_native_uniform_weak5_ball/reference/native_fit.json",
+    "reduced_fit": "results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/reference/native_fit.json",
     "r2_horizon": 100,
     "r2_stride": 20,
     # Completed identification trials in the selected manuscript control curve.

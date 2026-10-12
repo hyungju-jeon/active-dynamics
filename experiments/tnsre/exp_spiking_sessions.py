@@ -82,10 +82,10 @@ EXPERIMENT_SUITES = {
 }
 
 # Manuscript protocol (2026-10-08): 5 weak evidence-led trials (2 pA), then 15 exploration trials
-# (20 pA). The 2026-10-07 protocol (10 evidence-led trials at 20 pA) stays selectable for its archived runs.
+# (10 pA). The 2026-10-07 protocol (10 evidence-led trials at 20 pA) stays selectable for its archived runs.
 EXPERIMENT_SUITES['wong_wang_snn_native_uniform'] = {
     **SHARED_EXP_ARGS,
-    'env_preset_id': 'tbme_ww_weak_evidence5_transfer_uniform',
+    'env_preset_id': 'tbme_ww_weak_evidence5_explore10_transfer_uniform',
     'model_ids': ['adaptive_c2h20', *MODEL_IDS[1:]],
     'trajectory_eval_interval': 0,
 }
