@@ -14,12 +14,34 @@ from .theme import STROKE_COLOR, style_experiment_axis
 from actdyn.utils.figure_io import load_plotting
 
 
+def reference_record(experiment_dir: Path) -> dict:
+    """Load the reference stored with this experiment; never borrow another fit."""
+    native = experiment_dir/'reference/native_fit.json'
+    if native.exists():
+        record = json.loads(native.read_text())
+        w_plus, w_minus, h_raw, gamma_raw, g_raw = record['learner_parameters']['values']
+        record['physical_parameters'] = dict(w_plus=w_plus, w_minus=w_minus, h=h_raw/6,
+            gamma=float(np.logaddexp(0, gamma_raw)), g=float(np.logaddexp(0, g_raw)),
+            dynamics_type='wong_wang_transfer')
+        return record
+    return json.loads((experiment_dir/'reference/m2_fit.json').read_text())
+
+
 def reduced_drift(z: np.ndarray, params: dict) -> np.ndarray:
     """Zero-input drift dz/d(t/100 ms), state shape (..., 2), float64."""
     z = np.asarray(z, dtype=float)
     s = z / 4 + 0.5
     a = (params['w_plus'] * z - params['w_minus'] * z[..., ::-1]) / 4 + params['h']
-    return 4 * (-s + params['gamma'] * (1 - s) * expit(6 * a))
+    family = params.get('dynamics_type', 'wong_wang_inside_gain')
+    if family == 'wong_wang_transfer':
+        import torch
+        from actdyn.utils.vectorfields_eqn import wong_wang_activation
+        activation = wong_wang_activation(torch.as_tensor(6*a, dtype=torch.float64)).numpy()
+    elif family == 'wong_wang_inside_gain':
+        activation = expit(6*a)
+    else:
+        raise ValueError(f'Unknown reduced response: {family}')
+    return 4 * (-s + params['gamma'] * (1 - s) * activation)
 
 
 def fixed_points(params: dict) -> list[dict]:
@@ -44,7 +66,7 @@ def fixed_points(params: dict) -> list[dict]:
 
 
 def draw_phase_portrait(ax, experiment_dir: Path) -> list[dict]:
-    params = json.loads((experiment_dir/'reference/m2_fit.json').read_text())['physical_parameters']
+    params = reference_record(experiment_dir)['physical_parameters']
     xx, yy = np.meshgrid(np.linspace(-2, 2, 61), np.linspace(-2, 2, 61))
     v = reduced_drift(np.stack([xx, yy], axis=-1), params)
     ax.streamplot(xx, yy, v[..., 0], v[..., 1], density=0.7, color='#A6A6A6',
@@ -72,6 +94,18 @@ def draw_phase_portrait(ax, experiment_dir: Path) -> list[dict]:
     return records
 
 
+def _recorded_per_pool(experiment_dir: Path) -> tuple[int, int]:
+    """Recorded neurons in pools 1 and 2 under the environment preset of the experiment's runs."""
+    from actdyn.environment.spiking_decision import observed_counts
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.eval_spiking_sessions import runs_root_of
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    meta = next(runs_root_of(experiment_dir).glob("*/seed_*/repeat_*/run_metadata.json"))
+    configure_tbme_catalogs(suite_entries={})
+    return observed_counts(get_environment_preset(json.loads(meta.read_text())["env_preset_id"]))
+
+
 def generate_circuit(experiment_dir: Path, output: Path) -> Path:
     """Population schematic in the style of Wilson-Cowan Fig. 2A.
 
@@ -83,6 +117,7 @@ def generate_circuit(experiment_dir: Path, output: Path) -> Path:
     from matplotlib.colors import to_rgba
     from matplotlib.patches import ArrowStyle, Circle, FancyArrowPatch, FancyBboxPatch
     from matplotlib.path import Path as MPath
+    n1, n2 = _recorded_per_pool(experiment_dir)
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     width, height = 516/72.27, 4.0  # inches; data units are 16 across and 4 high
     fig = plt.figure(figsize=(width, height/16*width))
@@ -167,12 +202,13 @@ def generate_circuit(experiment_dir: Path, output: Path) -> Path:
             y = top+.42-pool*.5-row*.17
             for x in np.linspace(9.62, 11.28, 6) + rng.uniform(-.1, .1, 6):
                 ax.plot([x, x], [y-.055, y+.055], color=color, lw=.7, solid_capstyle='butt')
-    ax.text(10.45, top+.6, '40 neurons per pool', ha='center', va='bottom', fontsize=_ASSET_TICK_SIZE)
+    ax.text(10.45, top+.6, f'{n1} neurons per pool' if n1 == n2 else f'{n1} + {n2} neurons',
+            ha='center', va='bottom', fontsize=_ASSET_TICK_SIZE)
     arrow((11.65, top), (12.7, top))
     ax.text(12.18, top+.1, '5-ms bins', ha='center', va='bottom', fontsize=_ASSET_TICK_SIZE)
     box = dict(boxstyle='round,pad=.06,rounding_size=.14', lw=.6, edgecolor=STROKE_COLOR)
     ax.add_patch(FancyBboxPatch((12.85, top-.33), 2.95, .66, facecolor='#F2F0EC', **box))
-    ax.text(14.32, top, r'Counts $\mathbf{y}_t\in\mathbb{N}^{80}$', ha='center', va='center',
+    ax.text(14.32, top, rf'Counts $\mathbf{{y}}_t\in\mathbb{{N}}^{{{n1 + n2}}}$', ha='center', va='center',
             fontsize=_ASSET_LABEL_SIZE)
     # Dashed shaft with a solid head, so the head keeps a clean outline.
     ax.plot([x0, 12.45], [bottom, bottom], color=STROKE_COLOR, lw=.8, linestyle=(0, (3, 2)))
@@ -195,11 +231,12 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
     from .assets import _asset_baseline_policy_color
     from matplotlib import patheffects
     from matplotlib.lines import Line2D
+    from .spiking_sessions import POLICIES, CURVE_STYLE, REFERENCE_STYLE
     from experiments.tnsre.eval_spiking_sessions import EXAMPLES
     manifest = json.loads((phase_dir/'manifest.json').read_text())
     assert manifest['verified'] and manifest['training_seed'] == EXAMPLES['training_seed']
     assert [manifest['task_seed'], manifest['budget_normalized']] == EXAMPLES['sessions']['overturn']
-    params = json.loads((experiment_dir/'reference/m2_fit.json').read_text())['physical_parameters']
+    params = reference_record(experiment_dir)['physical_parameters']
     grid = np.linspace(-2, 1.5, 61)
     xx, yy = np.meshgrid(grid, grid)
     v = reduced_drift(np.stack([xx, yy], axis=-1), params)
@@ -211,16 +248,22 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
         color = '#3E6FB0' if difference > 1e-5 else '#C84747' if difference < -1e-5 else STROKE_COLOR
         ax.plot(*point['state'], 'o' if point['stable'] else 'D', ms=3.2,
                 mfc=color if point['stable'] else 'white', mec=color, mew=.7, zorder=5)
-    styles = {'adaptive':'-', 'spread':'--'}
     records = {r['policy']:r for r in manifest['records']}
-    # Draw Constant-amplitude last to separate the two paths where they initially overlap.
-    for policy in ['adaptive','spread']:
+    # Draw the fitted trajectory last, with a thicker line and white outline,
+    # so it remains visible where it overlaps PALDI or the background field.
+    order = ['front', 'adaptive', 'reduced_fit']
+    handles = {}
+    for policy in order:
         r = records[policy]
         z = np.load(phase_dir/f'{policy}.npz')['z'][r['onset']-1:]
         assert np.all(z >= -2.1) and np.all(z <= 1.6), (policy, 'trajectory outside axes')
-        color = _asset_baseline_policy_color(policy) if policy=='adaptive' else '#4F4F4F'
-        ax.plot(z[:,0], z[:,1], color=color, ls=styles[policy], lw=1.65, zorder=4,
-                path_effects=[patheffects.Stroke(linewidth=2.5, foreground='white'), patheffects.Normal()])
+        style = CURVE_STYLE[policy] if policy in POLICIES else REFERENCE_STYLE[policy]
+        color = _asset_baseline_policy_color(policy) if policy in POLICIES else style['color']
+        width = 1.6 if policy == 'reduced_fit' else 1.3
+        ax.plot(z[:,0], z[:,1], color=color, ls=style['linestyle'], lw=width, zorder=4,
+                path_effects=[patheffects.Stroke(linewidth=width+1.0, foreground='white'), patheffects.Normal()])
+        handles[policy] = Line2D([], [], color=color, ls=style['linestyle'], lw=width,
+                                label={'adaptive': 'PALDI', 'front': 'Max.', 'reduced_fit': 'Fitted'}[policy])
         ax.plot(*z[-1], marker='o' if r['success'] else 'x', ms=3.3,
                 color=color, mew=.8, zorder=6)
         if policy == 'adaptive':
@@ -228,8 +271,7 @@ def draw_control_phase(ax, experiment_dir: Path, phase_dir: Path) -> None:
     ax.set(xlim=(-2.1,1.6), ylim=(-2.1,1.6), xlabel=r'$z_1$', ylabel=r'$z_2$')
     ax.set_xticks([-2,0,1]); ax.set_yticks([-2,0,1]); ax.set_aspect('equal')
     ax.set_title('Fitted model', fontsize=_ASSET_LABEL_SIZE, pad=2)
-    ax.legend(handles=[Line2D([],[],color=_asset_baseline_policy_color('adaptive'),lw=1.65,label='PALDI'),
-                       Line2D([],[],color='#4F4F4F',lw=1.65,ls='--',label='Const.')],
-              loc='upper right',fontsize=_ASSET_TICK_SIZE,frameon=True,facecolor='white',
-              edgecolor='none',framealpha=.9,handlelength=1.4,handletextpad=.4,borderpad=.25)
+    ax.legend(handles=[handles[p] for p in ('adaptive', 'front', 'reduced_fit')],
+              loc='upper right', fontsize=_ASSET_TICK_SIZE, frameon=True, facecolor='white',
+              edgecolor='none', framealpha=.9, handlelength=1.4, handletextpad=.4, borderpad=.25)
     style_experiment_axis(ax)

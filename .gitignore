@@ -48,11 +48,11 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Virtual Environment
+.venv
 .venv/
 venv/
 env/
 ENV/
-uv.lock
 
 # IDE
 .idea/
@@ -94,6 +94,7 @@ tests/*
 !tests/test_flex_safe_policy.py
 !tests/test_planning_rollout_modes.py
 !tests/test_wilson_exploration.py
+!tests/test_wong_wang_control.py
 
 # Documentation
 docs/_build/

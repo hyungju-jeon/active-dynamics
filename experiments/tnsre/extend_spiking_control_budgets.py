@@ -24,6 +24,8 @@ def main() -> None:
     parser.add_argument("--worker-index", type=int, default=0)
     parser.add_argument("--n-workers", type=int, default=1)
     parser.add_argument("--pilot", action="store_true")
+    parser.add_argument("--no-model-free", action="store_true",
+                        help="skip the model-free pushes (they do not depend on the identified models)")
     args = parser.parse_args()
     torch.set_num_threads(1)
     experiment = args.experiment_dir.resolve()
@@ -33,8 +35,10 @@ def main() -> None:
     evaluation.PROTOCOL["task_checkpoints"] = [20]
     evaluation.PROTOCOL["budgets"] = {"overturn": [5.0, 15.0]}
     evaluation.TASKS = ("overturn",)
-    runs = evaluation.load_session_runs(experiment / "tracks/wong_wang_snn_sessions_m2")
+    runs = evaluation.load_session_runs(evaluation.runs_root_of(experiment))
     units = [u for u in evaluation.controller_units(runs) if u["policy"] not in ("prior", "none")]
+    if args.no_model_free:
+        units = [u for u in units if u["theta"] is not None]
     if args.pilot:
         units = [u for u in units if (u["seed"] == 0 and u["policy"] in ("adaptive", "reduced_fit"))
                  or u["policy"] == "front"]
@@ -51,7 +55,7 @@ def main() -> None:
             for row in csv.DictReader(f):
                 done.add((row["policy"], int(row["seed"]), float(row["budget"]), int(row["task_seed"])))
     new = not path.exists()
-    net = evaluation.build_network()
+    net = evaluation.build_network(preset_id=evaluation.runs_preset(runs))
     try:
         with path.open("a", newline="") as f:
             writer = csv.DictWriter(f, fieldnames=evaluation.TASK_FIELDS)

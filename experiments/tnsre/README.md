@@ -426,56 +426,86 @@ added to the experiment catalog as evidence for the full objective.
 
 ## Spiking-network decision experiment
 
-The `spiking_sessions` suite identifies the Wang (2002) spiking decision network
-(`actdyn/environment/spiking_decision.py`; 1,600 excitatory and 400 inhibitory
-LIF neurons, 40 neurons per selective pool observed in 5 ms bins) with a reduced
-model, preset `tbme_wong_wang_snn_sessions_m2`.
+The manuscript result is `results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/`
+(selected 2026-10-08): exploration trials at 10 pA, every baseline on the ball,
+and the parameter random walk `q_theta` per 20 observations (neuro `567c9d3`).
+The same code with 20-pA exploration trials is archived at
+`results/archive/experiments/20261008_snn_native_uniform_weak5_ball_qfix/`; the
+earlier 20-pA results (before `567c9d3`) are
+`results/archive/experiments/20261008_snn_native_uniform_weak5_ball/` (ball) and
+`results/archive/experiments/20261008_snn_native_uniform_weak5/` (box).
+The `wong_wang_snn_native_uniform` suite uses the Wang (2002)
+network with native Wong–Wang transfer, uniform current injection, and 20 recorded
+neurons per selective pool (40 channels, 5-ms bins). Its preset is
+`tbme_ww_weak_evidence5_explore10_transfer_uniform`.
 
-- **Learner.** `wong_wang_inside_gain`
-  (`actdyn.utils.vectorfields_eqn.WongWangInsideGain`): Wong-Wang gating
-  dynamics with the input inside the sigmoid gain, dz/dt = f(z, u; theta).
-  Parameters (w_+, w_-, h_raw, gamma_raw, g_raw), h = h_raw / beta, gamma and g
-  softplus of the raw values; prior a unit Gaussian around (0, 0, 0, 1.5, 0).
-  Vector fields declare `input_dependent`; the forward step, the filter and
-  sensitivity Jacobians, the EIG metric (the rollout's `env_action`), and FLEX
-  (`FlexWongWangInsideGainModel`) pass the input to such drifts. The observation
-  model is a Poisson log-linear readout calibrated once per seed.
-- **Identification.** 20 decision sessions (`actdyn/environment/session.py`): a
-  decision when `|z1 - z2| > 2`, a reset 200 ms later or after 2 s. The agents
-  know the rule: the filter jumps to the reset state, and the planners and the
-  EIG simulate resets inside their rollouts.
-- **Evaluation** (`eval_spiking_sessions.py`): held-out rollout R2 after every
-  session, and closed-loop task sessions after k in {0, 1, 2, 5, 20} sessions:
-  *force* (make the other pool win the first decision under 6 pA of evidence;
-  1 s of input, budgets 0.5 and 1) and *overturn* (flip the uncontrolled
-  decision; 2 s of input, budgets 10 and 12). The agent filters the spikes with
-  its frozen estimate and replans with iCEM every 100 ms (force) or 200 ms
-  (overturn), maximizing the model-predicted probability of the task's success
-  rule. Controllers: `fresh` (replans seeded with simple pushes) and `warm`
-  (also seeded with the rest of the previous plan; `--checkpoints 20,0,-1`).
-  References on the same sessions: no input, an even push, a full push from
-  onset, and the model fitted to network data
-  (`results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json`).
-- **Diagnosis** (`diag_control_gap.py`): overturn sessions with parameters
-  exchanged between a learned model and the fit, with the planner and the filter
-  on different models, and R2 on network trajectories of the control regime.
+- **Learner:** `WongWangTransfer`, with activation `phi(q)=q/(1-exp(-q))`,
+  continuous value `phi(0)=1`, and input inside the effective drive. Five
+  coordinates are learned; the prior mean is `(0,0,0,-0.661183,0)` with unit
+  covariance. The calibrated Poisson readout remains fixed.
+- **Identification:** 20 trials per policy and training seed. Trials 1–5 have
+  known 6-pA evidence for 1 s and end 200 ms after a decision or at 2 s. In
+  these trials every policy's own identification bound is scaled by 0.1 (norm
+  2 pA: the ball for PALDI, Myopic, RHC-US and Random, the sphere for FLEX, and
+  PRBS levels on the sphere), so the evidence, not the agent, sets the decision. Trials 6–20 have no evidence,
+  last 2 s, and use half the bound (10 pA, `SessionRule.action_scale_later`). Filters reset when notified;
+  planning stays in the current trial and does not predict resets. PALDI is
+  `adaptive_c2h20`: 20 planning steps of 10 ms, with 15-ms minimum update and
+  replanning intervals. All six methods use matched seeds 0–19.
+- **Evaluation:** 12 held-out prediction trajectories; warm-start change-of-mind
+  control on task seeds 91000–91007. Seed 91007 has no initial decision and is
+  excluded for all controllers. Models are frozen at checkpoints 0,1,5,10,15,20
+  for budget 480 pA² s. Final models also use budgets 200,400,600 pA² s.
+  The per-step control norm is at most 20 pA. The fitted reference is refit in
+  the native response family using separate latent trajectories.
+
+The 2026-10-07 protocol (trials 1–10 with evidence at the full 20-pA bound,
+then 10 fixed trials) is the suite `wong_wang_snn_native_uniform_strong`; its
+result is archived at `results/archive/experiments/20261007_snn_native_uniform/`.
+The evidence-trial scenarios that led to the change (2 pA or 10 pA in trials
+1–10, 2 pA in trials 1–5, and a passive learner) are compared in
+`results/archive/experiments/20261008_snn_evidence_scenarios/`. The manuscript
+result is the `snn_weak_evidence` scenario `weak2_e5_x10_ball`, made with
+`experiments.tnsre.snn_weak_evidence` and `snn_weak_evidence_finalize`.
+The original sigmoid, partial-targeting, Poisson-evidence, bound, SNR, and
+control variants remain in `results/archive/experiments/`. See
+[WONG_WANG_INPUTS.md](WONG_WANG_INPUTS.md),
+[WONG_WANG_CONTROL.md](WONG_WANG_CONTROL.md), and
+[WONG_WANG_OBSERVATION.md](WONG_WANG_OBSERVATION.md) for their original protocols.
+They are separate ablations and do not contribute rows to the final native/uniform table.
+
+Every identification policy uses the ball ‖u‖ ≤ bound of the shared TBME
+catalog, as in the other manuscript experiments (neuro `b1eff1e`). To reproduce
+identification in a fresh output folder:
 
 ```bash
-RUNS=results/tnsre/20260924_snn_sessions_m2/tracks/wong_wang_snn_sessions_m2; E=results/tnsre/20260924_snn_sessions_m2/eval
-./.venv/bin/python -m experiments.tnsre.exp_spiking_sessions --mode run --seeds 0 --base-dir results/tnsre/20260924_snn_sessions_m2
-./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage test_data --out results/tnsre/20260924_snn_sessions_m2/data
-./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage r2 --out $E --runs-root $RUNS
-./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage task --out $E --runs-root $RUNS --worker-index 0 --n-workers 1
-./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage score --out $E
-./.venv/bin/python -m experiments.tnsre.eval_spiking_sessions --stage examples --out $E/examples --runs-root $RUNS
-./.venv/bin/python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20260924_snn_sessions_m2 --figure all
-./.venv/bin/python -m experiments.tnsre.diag_control_gap --stage task --out results/tnsre/20260924_snn_sessions_m2/diagnostics/control_gap
+./.venv/bin/python -m experiments.tnsre.exp_spiking_sessions --mode run \
+  --exp-ids wong_wang_snn_native_uniform --seeds 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19 \
+  --base-dir results/archive/experiments/<date>_native_uniform_reproduction
 ```
 
-The task stages shard by `--worker-index` / `--n-workers` and resume from any
-worker's CSV. The R2 stage sums in float32 with torch's default threads; a
-single-threaded run differs by at most 1e-7. Launch scripts and the record of
-earlier attempts are in `results/tnsre/20260924_snn_sessions_m2/provenance/`.
+The archived SNN cohorts of 2026-10-07 and of the first 2026-10-08 result used
+componentwise identification bounds for RHC-US, PRBS, and Random. To reproduce
+them, add `--model-catalog experiments/tnsre/config/native_uniform_manuscript_models.yaml`
+(the overlay restores the box; `snn_weak_evidence` scenarios with `constraint='box'`
+load it). Task control is unchanged: all methods use the same norm bound.
+
+The manuscript result was made on GCP with the campaign of
+`experiments.tnsre.snn_weak_evidence` (scenario `weak2_e5_x10_ball`), which trains with the
+same suite specification and the shared ball catalog and evaluates the frozen models with the
+selected evaluation protocol; reference rows (initial estimate, fitted reference,
+model-free inputs) are the frozen rows of the 2026-10-07 result.
+`snn_weak_evidence_finalize --stage audit --scenario weak2_e5_x10_ball` writes its paired
+PALDI-versus-method audit. The passive learner of Fig. 5C (scenario `passive_e20`: 20 evidence
+trials, no control) is the result's `passive_e20/` folder, and `--stage versus_passive` writes the
+contrasts of every method against it. For the 2026-10-07 result: at source commit `ad8d7c4`,
+`wong_wang_observation --arm transfer_uniform` reproduces the original campaign,
+including reference fitting and budgets 10/12, and `native_manuscript` adds the
+missing manuscript cells from frozen models; its `--stage finalize`
+checks exact row keys and shared exclusions before assembling one final table.
+Each result README records source commits, GCP commands, and figure commands.
+Figures use the fit and trajectories stored with the selected result, with no
+fallback to another experiment.
 
 ## Running Experiments
 

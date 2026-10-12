@@ -485,6 +485,14 @@ environments:
     system_id: wilson_cowan
     system_label: Wilson-Cowan E-I population
     dynamics_type: wilson_cowan_1972
+    # No boundary correction (inward drift, projection onto ||z|| <= 8, information visibility) for
+    # Wilson-Cowan: its states stay well inside the boundary (largest norm 6.6 with the additive input,
+    # 4.6 with the input inside the sigmoids). The synthetic systems keep it.
+    boundary_enabled: false
+    boundary_type: none
+    boundary_barrier_enabled: false
+    boundary_projection_enabled: false
+    information_boundary_visibility_enabled: false
     embedding_dim: 4
     min_embedding_dim: 4
     initial_parameter_variance: 1.0
@@ -626,6 +634,42 @@ environments:
     observation_loading_direction_mismatch_max_deg: 30.0
     observation_loading_gain_mismatch_max_factor: 1.5
 
+  # Wilson & Cowan (1972) with the input inside the sigmoids, as the external drives
+  # (P, Q) = g u, g = 1 (wilson_cowan_1972_native_input): the input is in units of the
+  # sigmoid argument (thresholds 2.8 and 4), and noise-free rates stay in
+  # [-0.034, 0.486]. All other settings as in tbme_wilson_cowan (additive input). The
+  # input bound 1.75 is the smallest bound (0.25 grid) that switches down->up and
+  # up->down within 100 steps (60 and 97 steps); in the pilot
+  # (results/archive/experiments/20260930_wilson_cowan_1972_native_input_pilot) PALDI's
+  # median final R2 at 1.75 (0.891) is within 0.01 of the best tested bound (2.5: 0.893).
+  tbme_wilson_cowan_native_input:
+    extends: tbme_wilson_cowan
+    system_label: Wilson-Cowan E-I population / input inside the sigmoids
+    dynamics_type: wilson_cowan_1972_native_input
+    action_max: 1.75
+
+  tbme_wilson_cowan_native_input_asymmetric:
+    extends: tbme_wilson_cowan_native_input
+    system_label: Wilson-Cowan / input inside the sigmoids / asymmetric loading
+    asymmetric_loading: true
+    observation_primary_scale: 5.0
+
+  tbme_wilson_cowan_native_input_challenging:
+    extends: tbme_wilson_cowan_native_input_asymmetric
+    system_label: Wilson-Cowan / input inside the sigmoids / challenging
+    state_noise: 0.25
+    loading_target_snr_db: -10.0
+
+  tbme_wilson_cowan_native_input_observation_bottleneck_mild:
+    extends: tbme_wilson_cowan_native_input
+    system_label: Wilson-Cowan / input inside the sigmoids / mild observation SNR bottleneck
+    loading_target_snr_db: -10.0
+
+  tbme_wilson_cowan_native_input_observation_bottleneck_strong:
+    extends: tbme_wilson_cowan_native_input
+    system_label: Wilson-Cowan / input inside the sigmoids / strong observation SNR bottleneck
+    loading_target_snr_db: -15.0
+
 
   # Wang (2002) spiking decision circuit as the environment, run as decision sessions.
   # A session starts in the quiet state; a decision is made when |z1 - z2| > 2, and
@@ -684,6 +728,53 @@ environments:
     - 1.5
     - 0.0
 
+  # The manuscript protocol (decision ends the session 200 ms later) with the degraded recordings of
+  # the fixed-trial presets below (2026-10-05): 4 neurons per pool (-9.9 dB), or 40 + 2 (biased, -5.6 dB).
+  tbme_wong_wang_snn_sessions_m2_lowsnr4:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions, 4 neurons per pool
+    observation_dim: 8
+    spiking_observed_per_pool: 4
+
+  tbme_wong_wang_snn_sessions_m2_biased:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions, 40 + 2 neurons
+    observation_dim: 42
+    spiking_observed_per_pool: 40
+    spiking_observed_pool2: 2
+
+  # Fixed-length identification trials (2026-10-04): every session runs the full 400 bins
+  # (2 s). A decision no longer ends the session (the post-decision period is at least the
+  # session length), so the circuit stays near its attractor for the rest of the trial. Agents
+  # learn of the session end when it happens. 20 sessions are 8000 bins.
+  tbme_wong_wang_snn_sessions_m2_fixed:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed 2-s sessions
+    spiking_post_decision_bins: 400
+
+  # Degraded observation of the fixed-trial identification (2026-10-04). Readout Fisher SNR
+  # (median over the 20 seeds' calibrated readouts, rows of the recorded neurons): 0.7 dB with
+  # 40 neurons per pool. Low SNR: 4 neurons per pool, -9.9 dB, or 2 per pool, -13.5 dB. Biased:
+  # 40 neurons from pool 1 and 2 from pool 2, -5.6 dB, loading concentrated on pool 1.
+  tbme_wong_wang_snn_sessions_m2_fixed_lowsnr4:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 4 neurons per pool
+    observation_dim: 8
+    spiking_observed_per_pool: 4
+
+  tbme_wong_wang_snn_sessions_m2_fixed_lowsnr2:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 2 neurons per pool
+    observation_dim: 4
+    spiking_observed_per_pool: 2
+
+  tbme_wong_wang_snn_sessions_m2_fixed_biased:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 40 + 2 neurons
+    observation_dim: 42
+    spiking_observed_per_pool: 40
+    spiking_observed_pool2: 2
+
   # The M2 identification with sensory evidence in every session (2026-09-28): 6 pA
   # (0.3 units) to a random pool (drawn per session from its network seed) for the
   # first 1 s, as in the task sessions. Agents know the schedule and the pool.
@@ -701,3 +792,243 @@ environments:
     system_label: Wong-Wang (input inside the gain) / spiking network, sessions with evidence, input bound 2
     action_max: 2.0
     spiking_calibration_amplitude: 1.0
+
+  # Mixed identification (2026-10-05): decision-ended sessions; sessions 1-10 without evidence, sessions
+  # 11-20 with the task's evidence (6 pA to a random pool for the first 1 s), known to the agents.
+  tbme_wong_wang_snn_sessions_m2_evmix:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    system_label: Wong-Wang (input inside the gain) / spiking network, 10 sessions without and 10 with evidence
+    spiking_session_evidence_first_session: 10
+
+  # Recordings of the control-strategy matrix (2026-10-05), for decision-ended (base), fixed, and mixed-
+  # evidence trials. Readout Fisher SNR (median of the 20 seeds' calibrated readouts): 10 + 10 neurons
+  # -5.5 dB, 20 + 20 neurons -2.2 dB, 20 + 5 neurons (biased) -5.6 dB; 40 + 40 neurons: 0.7 dB.
+  tbme_wong_wang_snn_sessions_m2_n10_10:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions, 10 + 10 neurons
+    observation_dim: 20
+    spiking_observed_per_pool: 10
+  tbme_wong_wang_snn_sessions_m2_n20_20:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions, 20 + 20 neurons
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+  tbme_wong_wang_snn_sessions_m2_n20_5:
+    extends: tbme_wong_wang_snn_sessions_m2
+    system_label: Wong-Wang (input inside the gain) / spiking network, decision sessions, 20 + 5 neurons
+    observation_dim: 25
+    spiking_observed_per_pool: 20
+    spiking_observed_pool2: 5
+  tbme_wong_wang_snn_sessions_m2_fixed_n10_10:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 10 + 10 neurons
+    observation_dim: 20
+    spiking_observed_per_pool: 10
+  tbme_wong_wang_snn_sessions_m2_fixed_n20_20:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 20 + 20 neurons
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+  tbme_wong_wang_snn_sessions_m2_fixed_n20_5:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 20 + 5 neurons
+    observation_dim: 25
+    spiking_observed_per_pool: 20
+    spiking_observed_pool2: 5
+  tbme_wong_wang_snn_sessions_m2_evmix_n10_10:
+    extends: tbme_wong_wang_snn_sessions_m2_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, mixed-evidence sessions, 10 + 10 neurons
+    observation_dim: 20
+    spiking_observed_per_pool: 10
+  tbme_wong_wang_snn_sessions_m2_evmix_n20_20:
+    extends: tbme_wong_wang_snn_sessions_m2_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, mixed-evidence sessions, 20 + 20 neurons
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+  tbme_wong_wang_snn_sessions_m2_evmix_n20_5:
+    extends: tbme_wong_wang_snn_sessions_m2_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, mixed-evidence sessions, 20 + 5 neurons
+    observation_dim: 25
+    spiking_observed_per_pool: 20
+    spiking_observed_pool2: 5
+
+  # Mixed evidence with fixed 2-s trials (2026-10-05): sessions 1-10 without evidence, sessions 11-20
+  # with the task's evidence, known to the agents; every session runs the full 400 bins.
+  tbme_wong_wang_snn_sessions_m2_fixed_evmix:
+    extends: tbme_wong_wang_snn_sessions_m2_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed sessions, 10 without and 10 with evidence
+    spiking_post_decision_bins: 400
+  tbme_wong_wang_snn_sessions_m2_fixed_evmix_n10_10:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed mixed-evidence sessions, 10 + 10 neurons
+    observation_dim: 20
+    spiking_observed_per_pool: 10
+  tbme_wong_wang_snn_sessions_m2_fixed_evmix_n20_20:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed mixed-evidence sessions, 20 + 20 neurons
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+  tbme_wong_wang_snn_sessions_m2_fixed_evmix_n20_5:
+    extends: tbme_wong_wang_snn_sessions_m2_fixed_evmix
+    system_label: Wong-Wang (input inside the gain) / spiking network, fixed mixed-evidence sessions, 20 + 5 neurons
+    observation_dim: 25
+    spiking_observed_per_pool: 20
+    spiking_observed_pool2: 5
+
+  # Reversed mixed protocol (2026-10-06): sessions 1-10 decision-ended with the task's evidence (known to
+  # the agents), then sessions 11-20 fixed 2-s sessions without evidence (self exploration).
+  tbme_wong_wang_snn_sessions_m2_evfirst:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    system_label: Wong-Wang (input inside the gain) / spiking network, 10 evidence sessions, then 10 fixed sessions
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_wong_wang_snn_sessions_m2_evfirst_n10_10:
+    extends: tbme_wong_wang_snn_sessions_m2_evfirst
+    system_label: Wong-Wang (input inside the gain) / spiking network, evidence then fixed sessions, 10 + 10 neurons
+    observation_dim: 20
+    spiking_observed_per_pool: 10
+  tbme_wong_wang_snn_sessions_m2_evfirst_n20_20:
+    extends: tbme_wong_wang_snn_sessions_m2_evfirst
+    system_label: Wong-Wang (input inside the gain) / spiking network, evidence then fixed sessions, 20 + 20 neurons
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+  tbme_wong_wang_snn_sessions_m2_evfirst_n20_5:
+    extends: tbme_wong_wang_snn_sessions_m2_evfirst
+    system_label: Wong-Wang (input inside the gain) / spiking network, evidence then fixed sessions, 20 + 5 neurons
+    observation_dim: 25
+    spiking_observed_per_pool: 20
+    spiking_observed_pool2: 5
+  # Separate input ablations. Partial targeting preserves total pool current;
+  # individual peaks and squared-current dose increase and must be reported.
+  tbme_wong_wang_logistic_partial:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    spiking_stim_fraction: 0.5
+    spiking_stim_weight_cv: 0.25
+    spiking_stim_mask_seed: 87000
+
+  tbme_wong_wang_logistic_synaptic:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    spiking_evidence_mode: poisson
+
+  tbme_wong_wang_logistic_both:
+    extends: tbme_wong_wang_logistic_partial
+    spiking_evidence_mode: poisson
+
+  tbme_wong_wang_transfer:
+    extends: tbme_wong_wang_snn_sessions_m2_evidence
+    system_label: Wong-Wang transfer / spiking network
+    dynamics_type: wong_wang_transfer
+    estimator_dynamics_type: wong_wang_transfer
+    # Published Appendix mapping, NOT a fit to this SNN or biological truth.
+    true_params: [1.808037, 0.344421, 1.293138, -0.661183, -1.906063]
+    estimator_true_params: [1.808037, 0.344421, 1.293138, -0.661183, -1.906063]
+    # A generic prior, not the fitted or published parameters.
+    initial_parameter_mean: [0.0, 0.0, 0.0, -0.661183, 0.0]
+
+  tbme_wong_wang_transfer_partial:
+    extends: tbme_wong_wang_transfer
+    spiking_stim_fraction: 0.5
+    spiking_stim_weight_cv: 0.25
+    spiking_stim_mask_seed: 87000
+
+  tbme_wong_wang_transfer_synaptic:
+    extends: tbme_wong_wang_transfer
+    spiking_evidence_mode: poisson
+
+  tbme_wong_wang_transfer_both:
+    extends: tbme_wong_wang_transfer_partial
+    spiking_evidence_mode: poisson
+
+  # Full manuscript identification: no sensory evidence during training.
+  tbme_ww_full_logistic_uniform:
+    extends: tbme_wong_wang_snn_sessions_m2
+
+  tbme_ww_full_logistic_partial:
+    extends: tbme_wong_wang_logistic_partial
+    spiking_session_evidence_amplitude: 0.0
+    spiking_session_evidence_bins: 0
+
+  tbme_ww_full_transfer_uniform:
+    extends: tbme_wong_wang_transfer
+    spiking_session_evidence_amplitude: 0.0
+    spiking_session_evidence_bins: 0
+
+  tbme_ww_full_transfer_partial:
+    extends: tbme_wong_wang_transfer_partial
+    spiking_session_evidence_amplitude: 0.0
+    spiking_session_evidence_bins: 0
+
+  # Updated manuscript: 20+20 observations, evidence trials 1-10, fixed trials 11-20.
+  tbme_ww_observation_logistic_uniform:
+    extends: tbme_ww_full_logistic_uniform
+    system_label: Updated manuscript / logistic_uniform / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_logistic_partial:
+    extends: tbme_ww_full_logistic_partial
+    system_label: Updated manuscript / logistic_partial / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_transfer_uniform:
+    extends: tbme_ww_full_transfer_uniform
+    system_label: Updated manuscript / transfer_uniform / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  tbme_ww_observation_transfer_partial:
+    extends: tbme_ww_full_transfer_partial
+    system_label: Updated manuscript / transfer_partial / 20+20 recordings
+    observation_dim: 40
+    spiking_observed_per_pool: 20
+    spiking_session_evidence_amplitude: 0.3
+    spiking_session_evidence_bins: 200
+    spiking_session_evidence_last_session: 10
+    spiking_fixed_first_session: 10
+  # Weak control during evidence-led identification (2026-10-07): the selected Native+Uniform
+  # protocol with every policy's identification bound scaled by 0.1 in trials 1-10 (PALDI norm
+  # 2 pA < 6-pA evidence) and restored in trials 11-20. Calibration amplitude stays action_max.
+  tbme_ww_weak_evidence_transfer_uniform:
+    extends: tbme_ww_observation_transfer_uniform
+    system_label: Weak evidence-trial control / transfer_uniform / 20+20 recordings
+    spiking_session_action_scale: 0.1
+    spiking_session_action_scale_last_session: 10
+  # Identification scenarios (2026-10-08), each a one-change variant of the selected protocol.
+  # Weak 10 pA: bound x0.5 in trials 1-10 (PALDI norm 10 pA > 6-pA evidence).
+  tbme_ww_weak10_evidence_transfer_uniform:
+    extends: tbme_ww_observation_transfer_uniform
+    system_label: 10-pA evidence-trial control / transfer_uniform / 20+20 recordings
+    spiking_session_action_scale: 0.5
+    spiking_session_action_scale_last_session: 10
+  # Manuscript protocol since 2026-10-08 (suite ``wong_wang_snn_native_uniform``): five evidence
+  # trials with the 2-pA bound, then 15 fixed 2-s exploration trials at 20 pA.
+  tbme_ww_weak_evidence5_transfer_uniform:
+    extends: tbme_ww_observation_transfer_uniform
+    system_label: 5 weak evidence trials + 15 exploration trials / transfer_uniform / 20+20 recordings
+    spiking_session_evidence_last_session: 5
+    spiking_fixed_first_session: 5
+    spiking_session_action_scale: 0.1
+    spiking_session_action_scale_last_session: 5
+  # Weaker exploration (2026-10-08): the manuscript protocol with the 15 exploration trials at
+  # 10 pA (bound x0.5 from trial 6) instead of 20 pA.
+  tbme_ww_weak_evidence5_explore10_transfer_uniform:
+    extends: tbme_ww_weak_evidence5_transfer_uniform
+    system_label: 5 weak evidence trials + 15 exploration trials at 10 pA / transfer_uniform / 20+20 recordings
+    spiking_session_action_scale_later: 0.5
+  # Passive identification: 20 evidence-led trials (no fixed trials), run with the zero-control
+  # policy ``off_policy``; the learners' only input is the known evidence.
+  tbme_ww_passive_evidence20_transfer_uniform:
+    extends: tbme_ww_observation_transfer_uniform
+    system_label: 20 evidence trials without control / transfer_uniform / 20+20 recordings
+    spiking_session_evidence_last_session: 20
+    spiking_fixed_first_session: 20

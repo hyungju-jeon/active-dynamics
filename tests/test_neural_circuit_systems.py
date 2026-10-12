@@ -64,6 +64,8 @@ def tbme_catalog():
     ("dynamics_type", "equilibria", "param_dim"),
     [
         ("wilson_cowan_1972", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 4),
+        ("wilson_cowan_1972_native_input", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 4),
+        ("wilson_cowan_1972_native_input_thresholds", 8.0 * (WILSON_COWAN_1972_RATES - 0.25), 6),
         ("wong_wang", np.concatenate([WONG_WANG_ATTRACTORS, WONG_WANG_SADDLE]), 2),
     ],
 )
@@ -105,6 +107,19 @@ def test_neural_presets_resolve_from_tbme_catalog(tbme_catalog):
     assert wc.embedding_dim == 4
     assert wc.state_noise == pytest.approx(0.1)
     assert not basin_switch_enabled(wc)
+    # The input-inside-the-sigmoid presets differ from the additive ones only in the
+    # dynamics type and the input bound.
+    for suffix in ("", "_asymmetric", "_challenging", "_observation_bottleneck_mild",
+                   "_observation_bottleneck_strong"):
+        additive = get_environment_preset(f"tbme_wilson_cowan{suffix}")
+        native = get_environment_preset(f"tbme_wilson_cowan_native_input{suffix}")
+        assert native.resolved_dynamics_type() == "wilson_cowan_1972_native_input"
+        assert native.resolved_dynamics_type(estimator=True) == "wilson_cowan_1972_native_input"
+        for field in ("true_params", "parameter_scale", "initial_parameter_nonnegative", "state_noise",
+                      "loading_target_snr_db", "asymmetric_loading", "observation_primary_scale",
+                      "state_low", "state_high", "trajectory_eval_state_low", "trajectory_eval_state_high"):
+            assert getattr(native, field) == getattr(additive, field), (suffix, field)
+        assert native.action_max == pytest.approx(1.75)
 
     ww = get_environment_preset("tbme_wong_wang")
     assert ww.resolved_dynamics_type() == "wong_wang"
@@ -119,6 +134,33 @@ def test_neural_presets_resolve_from_tbme_catalog(tbme_catalog):
     np.testing.assert_allclose(ww.basin_switch_target, WONG_WANG_ATTRACTORS[0], atol=1e-4)
     assert ww.basin_switch_horizon == 300
     assert ww.basin_switch_eval_interval == 100
+
+
+def test_start_box_sets_the_start_state_but_not_the_observation_loading(tbme_catalog):
+    import dataclasses
+
+    from actdyn.utils.experiment_runtime import shared_loglinear_loading
+
+    wc = get_environment_preset("tbme_wilson_cowan_native_input")
+    for seed in range(5):  # without a start box the start state is the state-box draw
+        np.testing.assert_array_equal(wc.sample_start_state(seed), wc.sample_initial_state(seed))
+    rest = dataclasses.replace(wc, start_state_low=(-2.0, -2.0), start_state_high=(-1.8, -1.8))
+    starts = np.stack([rest.sample_start_state(seed) for seed in range(50)])
+    assert np.all(starts >= -2.0) and np.all(starts <= -1.8)
+    for a, b in zip(shared_loglinear_loading(wc), shared_loglinear_loading(rest)):
+        torch.testing.assert_close(a, b, rtol=0, atol=0)
+
+
+def test_mpc_budget_defaults_and_policy_fields(tbme_catalog):
+    import dataclasses
+
+    from experiments.experiment_definitions import get_policy_spec
+    from experiments.run import _mpc_budget
+
+    spec = get_policy_spec("active_myopic")
+    assert _mpc_budget(spec) == (24, 4, 6)  # unchanged default budget
+    larger = dataclasses.replace(spec, mpc_num_samples=64, mpc_num_iterations=6, mpc_num_elite=12)
+    assert _mpc_budget(larger) == (64, 6, 12)
 
 
 def _switch_kwargs(**overrides):
@@ -242,6 +284,95 @@ def test_flex_wilson_cowan_1972_model_matches_vector_field():
     out = model(torch.cat([z, u], dim=1))
     expected = residual_torch("wilson_cowan_1972", z, torch.as_tensor(params), dynamics_alpha=1.0) + u
     np.testing.assert_allclose(out.detach().numpy(), expected.detach().numpy(), atol=1e-5)
+
+
+def _wc_native_states(n=7, seed=0):
+    g = torch.Generator().manual_seed(seed)
+    return 2.0 * torch.randn(n, 2, generator=g), 3.0 * torch.randn(n, 2, generator=g)
+
+
+def test_wilson_cowan_1972_native_input_is_the_documented_equation():
+    z, u = _wc_native_states()
+    vf = build_vectorfield("wilson_cowan_1972_native_input", torch.as_tensor(WILSON_COWAN_1972_TRUE))
+    assert vf.input_dependent and vf.input_gain == 1.0
+    c1, c2, c3, c4 = WILSON_COWAN_1972_TRUE.astype(np.float64)
+    r = z.double().numpy() / 8.0 + 0.25
+    p, q = u.double().numpy().T  # (P, Q) = g u with g = 1
+
+    def s(x, a, theta):
+        return 1.0 / (1.0 + np.exp(-a * (x - theta))) - 1.0 / (1.0 + np.exp(a * theta))
+
+    d_e = -r[:, 0] + (0.97 - r[:, 0]) * s(c1 * r[:, 0] - c2 * r[:, 1] + p, 1.2, 2.8)
+    d_i = -r[:, 1] + (0.98 - r[:, 1]) * s(c3 * r[:, 0] - c4 * r[:, 1] + q, 1.0, 4.0)
+    expected = 8.0 * np.stack([d_e, d_i], axis=1)
+    np.testing.assert_allclose(vf.compute_with_input(z, u).numpy(), expected, rtol=1e-5, atol=1e-5)
+    # At u = 0 the drift is the additive-input model's drift.
+    additive = build_vectorfield("wilson_cowan_1972", torch.as_tensor(WILSON_COWAN_1972_TRUE))
+    torch.testing.assert_close(vf.compute(z), additive.compute(z), rtol=0, atol=0)
+    torch.testing.assert_close(vf.compute_with_input(z, torch.zeros_like(z)), additive.compute(z), rtol=0, atol=0)
+
+
+def test_wilson_cowan_1972_native_input_keeps_rates_in_range():
+    # Noise-free Euler rollouts with inputs of norm 20 from the whole start box stay in
+    # the invariant rate range [k S(-inf) / (1 + S(-inf)), k S(inf) / (1 + S(inf))].
+    vf = build_vectorfield("wilson_cowan_1972_native_input", torch.as_tensor(WILSON_COWAN_1972_TRUE))
+    g = torch.Generator().manual_seed(1)
+    z = 4.0 * torch.rand(512, 2, generator=g) - 2.0
+    for _ in range(300):
+        u = torch.nn.functional.normalize(torch.randn(512, 2, generator=g), dim=-1) * 20.0
+        z = z + 0.01 * vf.compute_with_input(z, u)
+    rates = z.numpy() / 8.0 + 0.25
+    assert rates[:, 0].min() > -0.034 - 1e-3 and rates[:, 0].max() < 0.477 + 1e-3
+    assert rates[:, 1].min() > -0.018 - 1e-3 and rates[:, 1].max() < 0.486 + 1e-3
+
+
+def test_wilson_cowan_1972_learned_thresholds_reduce_to_the_fixed_model():
+    from actdyn.environment.vectorfield import jacobian_embedding_torch
+
+    z, u = _wc_native_states(seed=3)
+    true6 = torch.tensor([12.0, 4.0, 13.0, 11.0, 7.0, 10.0])  # theta = 0.4 x (7, 10) = (2.8, 4)
+    vf6 = build_vectorfield("wilson_cowan_1972_native_input_thresholds", true6)
+    vf4 = build_vectorfield("wilson_cowan_1972_native_input", torch.as_tensor(WILSON_COWAN_1972_TRUE))
+    np.testing.assert_allclose(vf6.compute_with_input(z, u).numpy(), vf4.compute_with_input(z, u).numpy(),
+                               rtol=1e-6, atol=1e-6)
+    # E = I = 0 stays an equilibrium for any thresholds (S(0) = 0).
+    other = build_vectorfield("wilson_cowan_1972_native_input_thresholds", torch.tensor([9.0, 6.0, 11.0, 8.0, 3.0, 15.0]))
+    np.testing.assert_allclose(other.compute(torch.tensor([[-2.0, -2.0]])).numpy(), 0.0, atol=1e-6)
+    # The threshold columns of d f / d theta match central differences of the drift.
+    e = true6.expand(len(z), 6)
+    jac = jacobian_embedding_torch("wilson_cowan_1972_native_input_thresholds", z, e, full_params=tuple(true6.tolist()),
+                                   min_embedding_dim=6, dynamics_alpha=1.0, u=u).detach()
+    assert jac.shape == (len(z), 2, 6)
+    h = 1e-2
+    for k in (4, 5):
+        step = torch.zeros(6)
+        step[k] = h
+        plus = build_vectorfield("wilson_cowan_1972_native_input_thresholds", true6 + step).compute_with_input(z, u)
+        minus = build_vectorfield("wilson_cowan_1972_native_input_thresholds", true6 - step).compute_with_input(z, u)
+        np.testing.assert_allclose(jac[..., k].numpy(), ((plus - minus) / (2 * h)).numpy(), rtol=1e-2, atol=1e-3)
+    assert float(jac[..., 0, 4].abs().max()) > 1e-3 and float(jac[..., 1, 5].abs().max()) > 1e-3
+    assert torch.all(jac[..., 0, 5] == 0) and torch.all(jac[..., 1, 4] == 0)  # theta_E drives E only
+
+
+def test_flex_wilson_cowan_1972_native_input_matches_field_and_input_jacobian():
+    from actdyn.policy.baseline_flex import FlexWilsonCowan1972NativeInputModel
+
+    params = np.array([10.0, 6.0, 15.0, 9.0], dtype=np.float32)
+    model = FlexWilsonCowan1972NativeInputModel(
+        dt=0.01, dynamics_alpha=1.0, latent_dim=2, action_dim=2,
+        initial_embedding=params, fixed_tail=np.zeros(0, dtype=np.float32),
+    )
+    z, u = _wc_native_states(seed=2)
+    vf = build_vectorfield("wilson_cowan_1972_native_input", torch.as_tensor(params))
+    out = model(torch.cat([z, u], dim=1))
+    np.testing.assert_allclose(out.detach().numpy(), vf.compute_with_input(z, u).numpy(), rtol=1e-5, atol=1e-5)
+    for x in z:
+        # get_B is df/du at u = 0; compare with autograd of the vector field.
+        jac = torch.autograd.functional.jacobian(lambda v: vf.compute_with_input(x[None], v[None])[0], torch.zeros(2))
+        B = model.get_B(x)
+        assert B.shape == (2, 2) and B.dtype == np.float64
+        np.testing.assert_allclose(B, jac.numpy(), rtol=1e-5, atol=1e-6)
+        assert B[0, 1] == 0.0 and B[1, 0] == 0.0  # P drives E, Q drives I
 
 
 def test_flex_wong_wang_model_matches_vector_field():

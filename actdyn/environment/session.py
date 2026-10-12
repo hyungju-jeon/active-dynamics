@@ -4,14 +4,23 @@ A session starts from the quiet initial point of the decision circuit. The
 choice is made when one pool leads the other by more than ``decision_gap`` in
 the latent ``z = 4 (s - 1/2)``; ``post_decision_bins`` later the circuit is reset
 to the initial point, and a session without a decision ends after
-``max_session_bins``. The environment applies the rule to the true latent; agents
-are given the same rule, so their filters know the reset state and their
-planners can simulate resets inside model rollouts.
+``max_session_bins``. The environment applies the rule to the true latent. Agents
+learn of a reset only when it happens; their filters then jump to the known reset
+state. Planners do not simulate resets: a model rollout stays in the current session.
 
-A rule with ``evidence_amplitude > 0`` adds sensory evidence to every session:
-the input ``evidence_amplitude`` drives one pool, drawn per session, during the
-first ``evidence_bins`` bins, on top of the agent's input. Agents know the
-schedule and the pool of the current session.
+A rule with ``evidence_amplitude > 0`` adds sensory evidence to every session from
+``evidence_first_session`` up to (not including) ``evidence_last_session``: the input
+``evidence_amplitude`` drives one pool, drawn per session, during the first
+``evidence_bins`` bins, on top of the agent's input. Other sessions have no evidence
+(pool ``NO_EVIDENCE``). Agents know the schedule and the pool of the current session.
+From ``fixed_first_session`` on, a decision no longer ends a session: it runs the full
+``max_session_bins`` (fixed-length sessions).
+
+The agent's action bound may depend on the session: sessions before
+``action_scale_last_session`` use the policy's own constraint scaled by ``action_scale``
+(the same box, ball, or sphere, with every radius multiplied); later sessions use it
+scaled by ``action_scale_later`` (1: unscaled). The evidence is not scaled and is not
+part of the bounded action.
 """
 
 from __future__ import annotations
@@ -35,6 +44,16 @@ class SessionRule:
         max_sessions: The environment terminates after this many sessions (None: never).
         evidence_amplitude: Evidence input to the evidence pool, in action units (0: none).
         evidence_bins: Bins from the session start during which the evidence is on.
+        evidence_first_session: Sessions with a lower index have no evidence.
+        evidence_last_session: Sessions with this or a higher index have no evidence (None: no limit).
+        fixed_first_session: Sessions with this or a higher index end only at ``max_session_bins``
+            (None: never).
+        action_scale: Factor on the agent's action bound in sessions before
+            ``action_scale_last_session``.
+        action_scale_last_session: Sessions with this or a higher index use the bound scaled
+            by ``action_scale_later`` (0: every session does).
+        action_scale_later: Factor on the agent's action bound from session
+            ``action_scale_last_session`` on (1: unscaled).
     """
 
     decision_gap: float = 2.0
@@ -45,6 +64,42 @@ class SessionRule:
     max_sessions: int | None = None
     evidence_amplitude: float = 0.0
     evidence_bins: int = 0
+    evidence_first_session: int = 0
+    evidence_last_session: int | None = None
+    fixed_first_session: int | None = None
+    action_scale: float = 1.0
+    action_scale_last_session: int = 0
+    action_scale_later: float = 1.0
+
+
+NO_EVIDENCE = -2  # evidence pool of a session without evidence (-1: pool not known yet)
+
+
+def session_has_evidence(rule: SessionRule, session_index: int) -> bool:
+    """Whether session ``session_index`` (0-based) receives evidence under ``rule``."""
+    k = int(session_index)
+    last = rule.evidence_last_session
+    return float(rule.evidence_amplitude) > 0.0 and k >= int(rule.evidence_first_session) and (last is None or k < int(last))
+
+
+def session_post_decision_bins(rule: SessionRule, session_index: int) -> int:
+    """Bins from the decision to the end of session ``session_index``; a fixed-length session never ends early."""
+    first = rule.fixed_first_session
+    if first is not None and int(session_index) >= int(first):
+        return int(rule.max_session_bins)
+    return int(rule.post_decision_bins)
+
+
+def session_action_scale(rule: SessionRule | None, context: dict | None) -> float:
+    """Factor on the agent's action bound in the session of ``context``.
+
+    ``context`` is the session clock the agents see (``session_index`` key); a missing
+    context is session 0, where every run starts. Without a rule the bound is unscaled.
+    """
+    if rule is None:
+        return 1.0
+    k = int((context or {}).get("session_index", 0))
+    return float(rule.action_scale) if k < int(rule.action_scale_last_session) else float(rule.action_scale_later)
 
 
 def session_evidence_pool(session_seed: int) -> int:
@@ -59,9 +114,9 @@ def session_evidence(
 
     Args:
         bins: Bins elapsed in the session at the start of the step, shape (B,).
-        pool: Evidence pool per rollout, shape (B,): 0 or 1, or -1 for a session whose
-            pool is not known yet (a later session inside a planner rollout), which gets
-            the expected evidence, half the amplitude to each pool.
+        pool: Evidence pool per step, shape (B,): 0 or 1; -1 for a pool that is not
+            known, which gets the expected evidence, half the amplitude to each pool; or
+            ``NO_EVIDENCE`` for a session without evidence (zero).
         step_bins: Bins per step; a step that straddles the end of the evidence period
             gets the evidence averaged over its bins.
     """
@@ -70,58 +125,5 @@ def session_evidence(
     onehot = torch.nn.functional.one_hot(pool.clamp(min=0).long(), 2).to(torch.float32)
     split = torch.full_like(onehot, 0.5)
     share = torch.where((pool >= 0).unsqueeze(-1), onehot, split)
+    share = torch.where((pool == NO_EVIDENCE).unsqueeze(-1), torch.zeros_like(share), share)
     return float(rule.evidence_amplitude) * on.unsqueeze(-1) * share
-
-
-def new_session_clock(batch: int, *, device: torch.device | str = "cpu") -> dict[str, torch.Tensor]:
-    """Clock of ``batch`` sessions that have just started."""
-    return {
-        "bins": torch.zeros(batch, dtype=torch.long, device=device),
-        "decided": torch.zeros(batch, dtype=torch.bool, device=device),
-        "since": torch.zeros(batch, dtype=torch.long, device=device),
-    }
-
-
-def session_clock_from_context(
-    context: dict[str, int | bool] | None, batch: int, *, device: torch.device | str = "cpu"
-) -> dict[str, torch.Tensor]:
-    """Clock for ``batch`` rollouts starting from the environment's current session state.
-
-    ``context`` holds ``bins`` (bins elapsed in the session), ``decided``, and
-    ``since`` (bins since the decision), as reported by the environment.
-    """
-    clock = new_session_clock(batch, device=device)
-    if context:
-        clock["bins"].fill_(int(context.get("bins", 0)))
-        clock["decided"].fill_(bool(context.get("decided", False)))
-        clock["since"].fill_(int(context.get("since", 0)))
-    return clock
-
-
-def advance_session_clock(
-    clock: dict[str, torch.Tensor], gap: torch.Tensor, rule: SessionRule, step_bins: int = 1
-) -> tuple[dict[str, torch.Tensor], torch.Tensor, torch.Tensor]:
-    """Advance session clocks by one step of ``step_bins`` bins.
-
-    Args:
-        clock: Per-rollout ``bins``, ``decided``, ``since``, each shape (B,).
-        gap: ``z_1 - z_2`` after the step, shape (B,).
-
-    Returns:
-        ``(clock, decision_now, reset_now)``: the updated clock (zeroed where a
-        reset happened), whether the decision was made in this step, and whether
-        the state resets after this step, each shape (B,).
-    """
-    step = int(step_bins)
-    bins = clock["bins"] + step
-    decision_now = (~clock["decided"]) & (gap.abs() > float(rule.decision_gap))
-    decided = clock["decided"] | decision_now
-    since = torch.where(clock["decided"], clock["since"] + step, torch.zeros_like(clock["since"]))
-    reset_now = (decided & (since >= int(rule.post_decision_bins))) | (bins >= int(rule.max_session_bins))
-    zero = torch.zeros_like(bins)
-    new_clock = {
-        "bins": torch.where(reset_now, zero, bins),
-        "decided": decided & ~reset_now,
-        "since": torch.where(reset_now, zero, since),
-    }
-    return new_clock, decision_now, reset_now

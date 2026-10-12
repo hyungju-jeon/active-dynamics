@@ -640,6 +640,7 @@ class FilteringEmbedding(BaseModel):
         Fz: Callable = None,
         q_theta: float = 1e-4,
         k_theta: int = 10,
+        q_theta_interval: int = 20,
         e_clip: float = 5.0,
         state_init_uncertainty: float = 1.0,
         state_initial_mean: torch.Tensor | list[float] | None = None,
@@ -688,6 +689,9 @@ class FilteringEmbedding(BaseModel):
         self.Fz = Fz
         self._state = torch.zeros(1, 1, self.latent_dim, device=self.device)
         self.q_theta = float(q_theta)
+        # Observations over which the random walk adds q_theta. The default 20 is PALDI's block
+        # length K_theta: a 20-step block adds q_theta and a 1-step update adds q_theta / 20.
+        self.q_theta_interval = max(1, int(q_theta_interval))
         self.q_theta_meas_coeff = max(float(q_theta_meas_coeff), 0.0)
         self.q_theta_max_scale = max(float(q_theta_max_scale), 1.0)
         self.k_theta = max(1, int(k_theta))
@@ -847,8 +851,13 @@ class FilteringEmbedding(BaseModel):
         d_embed = self.e["m"].shape[-1]
         eye = torch.eye(d_embed, device=self.device).unsqueeze(0)
 
-        # No measurement-error-dependent scaling: process drift uses fixed q_theta.
-        q_theta_eff = torch.full((self.e["m"].shape[0],), float(self.q_theta), device=self.device)
+        # Random-walk inflation, Eq. (parameter_prediction), scaled by the block length n: a block
+        # adds (n / q_theta_interval) q_theta, so learners that update at every step accrue the
+        # same drift per observation as PALDI and RHC-US with their 20-step blocks.
+        q_theta_block = (
+            float(self.q_theta) * self._last_theta_block_steps_applied / self.q_theta_interval
+        )
+        q_theta_eff = torch.full((self.e["m"].shape[0],), q_theta_block, device=self.device)
 
         P_prior = symmetrize(self.e["P"] + q_theta_eff.view(-1, 1, 1) * eye)
         try:

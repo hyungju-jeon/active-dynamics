@@ -27,8 +27,8 @@ from .assets import (
 from .theme import style_axis
 
 ROOT = Path(__file__).resolve().parents[3]
-SOURCE = ROOT / "results/tnsre/20260930_wilson_cowan_1972_u3_signed/tracks/wilson_cowan"
-OUTPUT = ROOT / "results/tnsre/20260930_wilson_cowan_1972_u3_signed/exploration"
+SOURCE = ROOT / "results/tnsre/20261007_tnsre_ball_rerun/tracks/wilson_cowan"
+OUTPUT = ROOT / "results/tnsre/20261007_tnsre_ball_rerun/exploration"
 WIDTH = 516 / 72.27
 # Visit-map domain [-7.5, 7.5]^2: the additive input moves states beyond the rate range
 # (z < -2 is a negative rate), and the grid must enclose every saved state (--half-width).
@@ -37,12 +37,14 @@ CELL = 0.15  # latent-coordinate cell size
 POLICIES = tuple(_ASSET_MATCHED_POLICIES)
 
 
-def jacobians(z: np.ndarray, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def jacobians(z: np.ndarray, theta: np.ndarray, u: np.ndarray | None = None) -> tuple[np.ndarray, np.ndarray]:
     """Drift Jacobians (...,2,2) and (...,2,4) of ``WilsonCowan1972`` in float64 latent units.
 
-    With r = z / s + r_0, x = C r and v = s (-r + (k - r_r r) S(x)) per population,
+    With r = z / s + r_0, x = C r + u and v = s (-r + (k - r_r r) S(x)) per population,
     dv/dz = -I - diag(r_r S) + diag((k - r_r r) S') C and
     dv/dw = s diag((k - r_r r) S') dx/dw, where C = [[w_1, -w_2], [w_3, -w_4]].
+    ``u`` (...,2) is the input inside the sigmoids (``WilsonCowan1972NativeInput``, gain 1);
+    None for the additive input, which does not change these Jacobians.
     """
     from actdyn.utils.vectorfields_eqn import WilsonCowan1972
 
@@ -53,7 +55,8 @@ def jacobians(z: np.ndarray, theta: np.ndarray) -> tuple[np.ndarray, np.ndarray]
     refractory = np.array([vf.r_e, vf.r_i])
     weights = vf.weight_scale * np.array([[theta[0], -theta[1]], [theta[2], -theta[3]]])
     rate = z / vf.state_scale + vf.rate_offset
-    logistic = expit(a * (rate @ weights.T - thresh))
+    drive = rate @ weights.T if u is None else rate @ weights.T + u
+    logistic = expit(a * (drive - thresh))
     gain = logistic - expit(-a * thresh)
     slope = (k - refractory * rate) * a * logistic * (1 - logistic)
     jz = slope[..., :, None] * weights - np.eye(2) - (refractory * gain)[..., :, None] * np.eye(2)
@@ -84,7 +87,7 @@ def coverage(z: np.ndarray, bins: int, domain: tuple[float, float] = DOMAIN) -> 
     return curve, seen.mean(axis=0).reshape(bins, bins) * 100, float(1 - inside.mean())
 
 
-def parameter_information(z: np.ndarray, meta: dict) -> np.ndarray:
+def parameter_information(z: np.ndarray, meta: dict, u: np.ndarray | None = None) -> np.ndarray:
     """Common local Gaussian information proxy (nats), shape (seed,time).
 
     S^- = Fz S^+ + Ftheta; P^- = Fz P^+ Fz.T + Q.
@@ -96,13 +99,15 @@ def parameter_information(z: np.ndarray, meta: dict) -> np.ndarray:
     diffusion, online parameter estimates, shrinkage, or policy-specific schedule
     is used. The last saved state has no successor; use the 1,999 saved pairs.
     Boundary derivatives are omitted, as in the manuscript's local Jacobians.
+    ``u`` (seed,time,2): the applied inputs for input-dependent dynamics (u[:, k] drives the step
+    from z[:, k]); None for the additive input.
     """
     n, t, _ = z.shape
     dt, q = float(meta["dt"]), float(meta["state_noise"])
     prior_covariance = float(meta.get("parameter_prior_covariance", 1.0))
     c = np.asarray(meta["observation_loading_matrix"], dtype=np.float64)
     b = np.asarray(meta["observation_loading_bias"], dtype=np.float64)
-    jz, jt = jacobians(z[:, :-1], np.asarray(meta["embedding_true"]))
+    jz, jt = jacobians(z[:, :-1], np.asarray(meta["embedding_true"]), None if u is None else u[:, :-1])
     counts = dt * np.exp(z[:, 1:] @ c.T + b)
     iz = np.einsum("ntk,ki,kj->ntij", counts, c, c)
     sensitivity = np.zeros((n, 2, 4))
@@ -128,9 +133,13 @@ def parameter_information(z: np.ndarray, meta: dict) -> np.ndarray:
     return out
 
 
-def load_runs(source: Path, policy: str) -> tuple[np.ndarray, dict, list[dict]]:
-    """Require exactly the 100 complete main-comparison runs and consecutive samples."""
-    trajectories, provenance, metadata = [], [], []
+def load_runs(source: Path, policy: str) -> tuple[np.ndarray, np.ndarray, dict, list[dict]]:
+    """Require exactly the 100 complete main-comparison runs and consecutive samples.
+
+    Returns states and applied inputs, both (seed,time,2); the input in row k drives the step
+    from the state in row k.
+    """
+    trajectories, inputs, provenance, metadata = [], [], [], []
     for seed in range(100):
         paths = list((source / policy / f"seed_{seed}").glob("repeat_*/run_metadata.json"))
         if len(paths) != 1:
@@ -140,12 +149,13 @@ def load_runs(source: Path, policy: str) -> tuple[np.ndarray, dict, list[dict]]:
         if meta["status"] != "completed" or meta["total_steps"] != 2000 or meta["nan_detected"]:
             raise ValueError(f"Incomplete or failed run: {path}")
         trace = path.parent / "state_action_trace.csv"
-        table = pd.read_csv(trace, usecols=["step", "true_z0", "true_z1"])
+        table = pd.read_csv(trace, usecols=["step", "true_z0", "true_z1", "env_action_x", "env_action_v"])
         np.testing.assert_array_equal(table["step"], np.arange(1, 2001))
         z = table[["true_z0", "true_z1"]].to_numpy(dtype=np.float64)
         if not np.isfinite(z).all():
             raise ValueError(f"Nonfinite trajectory: {trace}")
         trajectories.append(z)
+        inputs.append(table[["env_action_x", "env_action_v"]].to_numpy(dtype=np.float64))
         metadata.append(meta)
         provenance.append({"policy": policy, "seed": seed,
                            "trace": str(trace.relative_to(ROOT)),
@@ -156,7 +166,9 @@ def load_runs(source: Path, policy: str) -> tuple[np.ndarray, dict, list[dict]]:
     for meta in metadata:
         for key in common_keys:
             np.testing.assert_allclose(meta[key], metadata[0][key])
-    return np.stack(trajectories), metadata[0], provenance
+        if meta["dynamics_type"] != metadata[0]["dynamics_type"]:
+            raise ValueError(f"Mixed dynamics types for {policy}")
+    return np.stack(trajectories), np.stack(inputs), metadata[0], provenance
 
 
 def plot(data: dict, output: Path, domain: tuple[float, float] = DOMAIN) -> None:
@@ -177,7 +189,8 @@ def plot(data: dict, output: Path, domain: tuple[float, float] = DOMAIN) -> None
         im = ax.imshow(data[policy]["map"], origin="lower", extent=(*domain, *domain),
                        vmin=0, vmax=100, cmap="cividis", interpolation="nearest")
         ax.set_title(_asset_policy_label(policy), pad=4)
-        ax.set_xticks([-4, 0, 4]); ax.set_yticks([-4, 0, 4])
+        ticks = [-4, 0, 4] if domain[1] >= 5 else [-2, 0, 2]
+        ax.set_xticks(ticks); ax.set_yticks(ticks)
         ax.set_xlabel(r"$z_1$ (E)", labelpad=1)
         if j == 0:
             ax.set_ylabel(r"$z_2$ (I)", labelpad=1)
@@ -235,16 +248,21 @@ def main() -> None:
     data, ledger, rows, summary = {}, [], [], {}
     common = None
     for policy in POLICIES:
-        z, meta, provenance = load_runs(args.source, policy)
+        z, actions, meta, provenance = load_runs(args.source, policy)
         if common is not None:
             for key in ("dt", "state_noise", "embedding_true", "observation_loading_matrix",
                         "observation_loading_bias", "parameter_prior_covariance", "state_init_uncertainty"):
                 np.testing.assert_allclose(meta[key], common[key])
+            if meta["dynamics_type"] != common["dynamics_type"]:
+                raise ValueError("Policies use different dynamics types")
         common = meta
         if meta["state_init_uncertainty"] != 1:
             raise ValueError("Diagnostic initialization assumes an identity state covariance")
         cov, visit, outside = coverage(z, grid, domain)
-        info = parameter_information(z, meta)
+        if meta["dynamics_type"] not in ("wilson_cowan_1972", "wilson_cowan_1972_native_input"):
+            raise ValueError(f"Jacobians are written for WC 1972 only: {meta['dynamics_type']}")
+        native = meta["dynamics_type"] == "wilson_cowan_1972_native_input"
+        info = parameter_information(z, meta, actions if native else None)
         data[policy] = {"coverage": cov, "map": visit, "information": info}
         ledger.extend(provenance)
         summary[policy] = {"seeds": 100, "outside_domain_fraction": outside,

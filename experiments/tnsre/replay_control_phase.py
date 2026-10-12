@@ -11,51 +11,58 @@ import json
 import numpy as np
 import torch
 from experiments.tnsre.eval_spiking_sessions import (
-    EXAMPLES, PROTOCOL, IcemController, build_network, load_session_runs, run_task_session,
+    EXAMPLES, PROTOCOL, IcemController, build_network, evaluated_policy, load_session_runs, run_task_session, runs_preset, runs_root_of,
 )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--experiment-dir', type=Path,
-                        default=Path('results/tnsre/20260924_snn_sessions_m2'))
+                        default=Path('results/tnsre/20261008_snn_native_uniform_weak5_x10_ball'))
     parser.add_argument('--output-dir', type=Path,
-                        default=Path('results/tnsre/20260929_manuscript_update/control_phase_uniform'))
+                        default=Path('results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/control_phase'))
+    parser.add_argument('--policies', nargs='+', default=['adaptive', 'spread'])
     args = parser.parse_args()
     torch.set_num_threads(1)
     root = args.experiment_dir
+    from experiments.tnsre.native_manuscript import configure
+    from experiments.tnsre.eval_spiking_sessions import controller_units
+    configure(root)
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
     seed = int(EXAMPLES['training_seed'])
     checkpoint = int(EXAMPLES['checkpoint'])
     task_seed, budget = EXAMPLES['sessions']['overturn']
-    policies = ['adaptive', 'spread']
-    runs = {(r['policy'], r['seed']): r for r in load_session_runs(root/'tracks/wong_wang_snn_sessions_m2')}
+    policies = args.policies
+    runs_root = runs_root_of(root)
+    runs = {(r['policy'], r['seed']): r for r in load_session_runs(runs_root)}
+    units = {u['policy']: u for u in controller_units(list(runs.values()))
+             if (u['seed'] == seed and u['checkpoint'] in (checkpoint, -1)) or u['seed'] == -1}
     sources = sorted((root/'eval/task_warm').glob('worker_*.csv')) + sorted((root/'eval/task').glob('worker_*.csv'))
     rows = []
     for path in sources:
         with path.open() as f:
             rows.extend(r for r in csv.DictReader(f)
-                        if path.parent.name=='task_warm' or r['policy']=='spread')
+                        if path.parent.name=='task_warm' or r['policy'] in ('spread', 'front'))
     expected = {r['policy']: r for r in rows if r['task']=='overturn'
-                and ((r['policy']=='spread' and int(r['seed'])==-1) or
-                     (r['controller']=='icem' and int(r['seed'])==seed and int(r['checkpoint'])==checkpoint))
+                and ((r['policy'] in ('spread', 'front') and int(r['seed'])==-1) or
+                     (r['controller']=='icem' and int(r['seed'])==seed and int(r['checkpoint']) in (checkpoint, -1)))
                 and int(r['task_seed'])==task_seed and float(r['budget'])==budget}
     saved = np.load(root/'eval/examples/example_sessions.npz')
     records = []
-    net = build_network()
+    net = build_network(preset_id=runs_preset(list(runs.values())))
     try:
         for policy in policies:
             model = None
-            if policy != 'spread':
-                run = runs[(policy, seed)]
-                model = IcemController(run['est'][checkpoint], run['C'], run['b'], net.dt_latent,
+            unit = units[policy]
+            if unit['theta'] is not None:
+                model = IcemController(unit['theta'], unit['C'], unit['b'], net.dt_latent,
                                        seed=task_seed, warm_start=True,
-                                       dynamics_type=run['dynamics_type'], full_params=run['full_params'],
-                                       min_embedding_dim=run['min_embedding_dim'])
+                                       dynamics_type=unit['dynamics_type'], full_params=unit['full_params'],
+                                       min_embedding_dim=unit['min_embedding_dim'])
             trace = []
             print(f'Replaying {policy}, training seed {seed}, task seed {task_seed}', flush=True)
-            result = run_task_session(net, 'overturn', task_seed, budget, 'icem' if model else 'spread', model, trace)
+            result = run_task_session(net, 'overturn', task_seed, budget, unit['controller'], model, trace)
             arrays = {key: np.stack([r[key] for r in trace]) for key in ('z','u','evidence')}
             np.savez(out/f'{policy}.npz', **arrays)
             (out/f'{policy}.json').write_text(json.dumps(result, indent=2))
@@ -70,8 +77,9 @@ def main():
     finally:
         net.close()
     inputs = [*sources, root/'eval/examples/example_sessions.npz']
-    inputs += [p for p in (root/'tracks/wong_wang_snn_sessions_m2').glob('*/seed_0/repeat_01/*')
-               if p.name in ('run_metadata.json','embedding_estimate_trace.csv') and p.parts[-4] in policies]
+    for meta in runs_root.glob('*/seed_0/repeat_01/run_metadata.json'):
+        if evaluated_policy(json.loads(meta.read_text())['policy_id']) in policies:
+            inputs.extend([meta, meta.parent/'embedding_estimate_trace.csv'])
     inputs += [Path(__file__), Path('experiments/tnsre/eval_spiking_sessions.py'),
                Path('actdyn/environment/spiking_decision.py'),
                Path('experiments/tnsre/config/experiment_env.yaml')]

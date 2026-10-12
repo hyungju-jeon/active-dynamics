@@ -14,7 +14,55 @@ from actdyn.environment.spiking_decision import (  # noqa: E402
     WangDecisionNetwork,
     calibration_input_program,
     fit_loglinear_readout,
+    stimulation_weights,
+    sensory_rate_gain_hz,
 )
+
+
+def test_partial_stimulation_is_seeded_and_preserves_total_current():
+    weights = stimulation_weights(240, fraction=.5, cv=.25, seed=13)
+    assert np.count_nonzero(weights) == 120
+    np.testing.assert_allclose(weights.sum(), 240.)
+    np.testing.assert_array_equal(weights, stimulation_weights(240, fraction=.5, cv=.25, seed=13))
+    assert np.mean(weights ** 2) > 2  # increased squared-current dose is explicit
+    np.testing.assert_array_equal(stimulation_weights(240, fraction=1., cv=0., seed=13), np.ones(240))
+    with pytest.raises(ValueError):
+        stimulation_weights(240, fraction=0., cv=.25, seed=13)
+
+
+def test_sensory_rate_matches_only_the_nominal_mean_current():
+    gain = sensory_rate_gain_hz(20., -55.)
+    assert gain * 2.1 * .002 * 55 == pytest.approx(20.)
+
+
+@pytest.mark.parametrize("evidence_mode", ["current", "poisson"])
+def test_realistic_inputs_reach_neurons_and_repeat_after_reset(evidence_mode):
+    net = WangDecisionNetwork(n_e=200, n_i=50, observed_per_pool=10,
+                              stim_fraction=.5, stim_weight_cv=.25, stim_mask_seed=37,
+                              evidence_mode=evidence_mode)
+    try:
+        def trial():
+            net.reset(52)
+            return np.stack([net.step(np.array([.5, -.5]), evidence=np.array([.3, 0.]))[0]
+                             for _ in range(40)])
+        first = trial()
+        np.testing.assert_array_equal(first, trial())
+        actual = np.asarray(net.net["E"].I_stim[:] / brian2.pA)
+        for i, pool in enumerate(net.pool_slices[1:]):
+            expected = 20 * [.5, -.5][i] * net.stim_weights[i]
+            if evidence_mode == "current":
+                expected = expected + 20 * [.3, 0.][i]
+            np.testing.assert_allclose(actual[pool], expected)
+        assert np.all(actual[net.pool_slices[0]] == 0)
+        if evidence_mode == "poisson":
+            sensory_counts = np.asarray(net.net["sensory_spikes"].count[:])
+            assert sensory_counts[:30].sum() > 0 and sensory_counts[30:].sum() == 0
+            np.testing.assert_allclose(net.net["sensory"].rates[:30] / brian2.Hz,
+                                       .3 * sensory_rate_gain_hz(20.))
+        with pytest.raises(ValueError, match="nonnegative"):
+            net.step(np.zeros(2), evidence=np.array([-.1, 0.]))
+    finally:
+        net.close()
 
 
 @pytest.fixture(scope="module")
@@ -103,3 +151,17 @@ def test_reset_with_same_seed_repeats_the_trial_exactly(small_network):
     trial(12, (-0.5, 0.8), 17)  # different history, ending mid-trial
     second = trial(11, (1.0, 0.0), 40)
     np.testing.assert_array_equal(first, second)
+
+
+def test_unequal_recording_takes_the_first_neurons_of_each_pool():
+    net = WangDecisionNetwork(n_e=200, n_i=50, observed_per_pool=(10, 3), control_bin_ms=5.0, sim_dt_ms=0.1, seed=0)
+    try:
+        pool1, pool2 = net.pool_slices[1], net.pool_slices[2]
+        np.testing.assert_array_equal(net.observed_indices, np.r_[pool1.start:pool1.start + 10, pool2.start:pool2.start + 3])
+        assert net.n_observed == 13
+        counts, _ = net.step(np.zeros(2))
+        assert counts.shape == (13,)
+    finally:
+        net.close()
+    with pytest.raises(ValueError):
+        WangDecisionNetwork(n_e=200, n_i=50, observed_per_pool=(10, 31), seed=0)  # pools of 30

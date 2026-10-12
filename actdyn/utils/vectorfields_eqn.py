@@ -1162,22 +1162,102 @@ class WilsonCowan1972(VectorField):
         """Shifted logistic S(x) with S(0) = 0."""
         return torch.sigmoid(a * (x - theta)) - float(1.0 / (1.0 + np.exp(a * theta)))
 
-    def compute(self, x: torch.Tensor) -> torch.Tensor:
-        """Compute the latent drift for state shape (..., 2)."""
+    def _thresholds(self, x: torch.Tensor):
+        """Sigmoid thresholds (theta_E, theta_I); fixed constants in this class."""
+        return self.theta_e, self.theta_i
 
+    def _drift(self, x: torch.Tensor, p, q) -> torch.Tensor:
+        """Latent drift for state shape (..., 2) at external drives P, Q (scalars or shape (...))."""
         c1 = self.weight_scale * self._broadcast_param(self.w_ee, x)
         c2 = self.weight_scale * self._broadcast_param(self.w_ei, x)
         c3 = self.weight_scale * self._broadcast_param(self.w_ie, x)
         c4 = self.weight_scale * self._broadcast_param(self.w_ii, x)
+        theta_e, theta_i = self._thresholds(x)
         rate_e = x[..., 0] / self.state_scale + self.rate_offset
         rate_i = x[..., 1] / self.state_scale + self.rate_offset
-        gain_e = self._sigmoid(c1 * rate_e - c2 * rate_i + self.p, self.a_e, self.theta_e)
-        gain_i = self._sigmoid(c3 * rate_e - c4 * rate_i + self.q, self.a_i, self.theta_i)
+        gain_e = self._sigmoid(c1 * rate_e - c2 * rate_i + p, self.a_e, theta_e)
+        gain_i = self._sigmoid(c3 * rate_e - c4 * rate_i + q, self.a_i, theta_i)
         d_rate_e = (-rate_e + (self.k_e - self.r_e * rate_e) * gain_e) / self.tau_e
         d_rate_i = (-rate_i + (self.k_i - self.r_i * rate_i) * gain_i) / self.tau_i
         U = self.alpha * self.state_scale * d_rate_e
         V = self.alpha * self.state_scale * d_rate_i
         return torch.stack([U, V], dim=-1)
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        """Compute the latent drift for state shape (..., 2)."""
+        return self._drift(x, self.p, self.q)
+
+
+class WilsonCowan1972NativeInput(WilsonCowan1972):
+    """Wilson-Cowan (1972) population with the input as the external drives P and Q.
+
+    Equation (Wilson & Cowan 1972; notation and constants of :class:`WilsonCowan1972`):
+        tau_E dE/dt = -E + (k_E - r_E E) S_E(c_1 E - c_2 I + P)
+        tau_I dI/dt = -I + (k_I - r_I I) S_I(c_3 E - c_4 I + Q)
+        (P, Q) = g u
+        z = s (r - r_0),  dz/dt = s (dE/dt, dI/dt)
+    The input u (shape (..., 2)) acts inside the sigmoids, as the external inputs of the
+    original model, so its effect saturates with the gain and depends on the state.
+    For any input the noise-free rates stay in [k S(-inf) / (1 + S(-inf)),
+    k S(inf) / (1 + S(inf))], i.e. E in [-0.034, 0.477] and I in [-0.018, 0.486]
+    (S(-inf) < 0 because S(0) = 0), or z_E in [-2.27, 1.81] and z_I in [-2.14, 1.88].
+
+    The input gain g (``input_gain``, default 1) is fixed; with g = 1 the input is in
+    the units of the sigmoid argument (thresholds theta_E = 2.8, theta_I = 4).
+    Learned parameters are the weights (c_1, ..., c_4), as in :class:`WilsonCowan1972`.
+    At u = 0 both classes give the same drift.
+    """
+
+    input_dependent = True
+
+    def __init__(self, dyn_param=None, device: str = "cpu", **kwargs):
+        super().__init__(dyn_param=dyn_param, device=device, **kwargs)
+        self.input_gain = float(kwargs.get("input_gain", 1.0))
+
+    def compute_with_input(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Latent drift for state and input of shape (..., 2)."""
+        u = torch.as_tensor(u, dtype=x.dtype, device=x.device).expand_as(x)
+        return self._drift(x, self.p + self.input_gain * u[..., 0], self.q + self.input_gain * u[..., 1])
+
+    def compute(self, x: torch.Tensor) -> torch.Tensor:
+        """Latent drift without input, shape (..., 2)."""
+        return self.compute_with_input(x, torch.zeros_like(x))
+
+
+class WilsonCowan1972NativeInputThresholds(WilsonCowan1972NativeInput):
+    """:class:`WilsonCowan1972NativeInput` with the two sigmoid thresholds also learned.
+
+    Equation as in :class:`WilsonCowan1972NativeInput`, with S_j(x) = 1 / (1 + exp(-a_j (x -
+    theta_j))) - 1 / (1 + exp(a_j theta_j)). S_j(0) = 0 for any theta_j, so E = I = 0 stays
+    an equilibrium for every parameter value.
+
+    Learned parameters (c_1, c_2, c_3, c_4, vartheta_E, vartheta_I) with theta_j =
+    ``threshold_scale`` x vartheta_j, threshold_scale = 0.4: the true thresholds (2.8, 4) are
+    vartheta = (7, 10), on the scale of the weights, so the shared parameter prior (std
+    ``parameter_scale``) and the initial guesses fit both. The gains a_j and the other
+    constants stay fixed.
+    """
+
+    def __init__(self, dyn_param=None, device: str = "cpu", **kwargs):
+        self.threshold_scale = float(kwargs.get("threshold_scale", 0.4))
+        if dyn_param is None:
+            dyn_param = [12.0, 4.0, 13.0, 11.0, 7.0, 10.0]
+        super().__init__(dyn_param=dyn_param, device=device, **kwargs)
+
+    def _set_params(self, w_ee=12.0, w_ei=4.0, w_ie=13.0, w_ii=11.0, th_e_raw=7.0, th_i_raw=10.0):
+        super()._set_params(w_ee, w_ei, w_ie, w_ii)
+        self.th_e_raw = th_e_raw
+        self.th_i_raw = th_i_raw
+
+    def _thresholds(self, x: torch.Tensor):
+        """Learned thresholds broadcast to the state batch, shapes (...)."""
+        return (self.threshold_scale * self._broadcast_param(self.th_e_raw, x),
+                self.threshold_scale * self._broadcast_param(self.th_i_raw, x))
+
+    @staticmethod
+    def _sigmoid(x: torch.Tensor, a: float, theta: torch.Tensor) -> torch.Tensor:
+        """Shifted logistic S(x) with S(0) = 0 for a tensor threshold."""
+        return torch.sigmoid(a * (x - theta)) - torch.sigmoid(-a * theta)
 
 
 class WongWang(VectorField):
@@ -1290,3 +1370,64 @@ class WongWangInsideGain(WongWang):
     def compute(self, x: torch.Tensor) -> torch.Tensor:
         """Latent drift without input, shape (..., 2)."""
         return self.compute_with_input(x, torch.zeros_like(x))
+
+
+def wong_wang_activation(q: torch.Tensor) -> torch.Tensor:
+    """Return q / (1 - exp(-q)), preserving floating dtype and shape.
+
+    Wong & Wang (2006), Appendix: H(I) = activation(d * (a * I - b)) / d.
+    The series gives the removable value 1 and derivative 1/2 at q = 0.
+    Both exponential branches stay finite, including inactive autograd branches.
+    """
+    cutoff = 1e-3
+    positive = q.clamp_min(cutoff)
+    negative = q.clamp_max(-cutoff)
+    small = q.clamp(-cutoff, cutoff)
+    series = 1 + small / 2 + small.square() / 12 - small.pow(4) / 720
+    return torch.where(
+        q > cutoff, positive / -torch.expm1(-positive),
+        torch.where(q < -cutoff, negative * torch.exp(negative) / torch.expm1(negative), series),
+    )
+
+
+class WongWangTransfer(WongWangInsideGain):
+    """Two NMDA gates with the published Wong-Wang transfer, without logistic saturation.
+
+    For float state/input (..., 2), return dz/d(t/tau_N), with z = 4(s - 1/2):
+        q_i = 6 * (w_plus*c_i - w_minus*c_j + h_raw/6 + softplus(g_raw)*u_i)
+        dz_i/d(t/tau_N) = 4 * [-s_i + (1-s_i)*softplus(gamma_raw)*q_i/(1-exp(-q_i))]
+
+    The same five effective coordinates as the logistic learner permit a matched
+    response-family ablation. Here gamma scales an unbounded response, not a
+    maximum rate. Published Appendix values map to beta*w = d*a*J,
+    h_raw = d*(a*(I0 + (J_self-J_cross)/2)-b), gamma = tau_N*gamma_N/d,
+    and beta*g = d*a*0.020 (input unit: 20 pA). Recurrent AMPA remains in the
+    generating SNN, so this Appendix reduction is still an approximate learner.
+    """
+
+    def __init__(self, dyn_param=None, device: str = "cpu", **kwargs):
+        if dyn_param is None:
+            a, b, d = 270.0, 108.0, 0.154
+            j_self, j_cross, i0 = 0.2609, 0.0497, 0.3255  # nA
+            dyn_param = [
+                d * a * j_self / 6, d * a * j_cross / 6,
+                d * (a * (i0 + (j_self - j_cross) / 2) - b),
+                float(np.log(np.expm1(0.1 * 0.641 / d))),
+                float(np.log(np.expm1(d * a * 0.020 / 6))),
+            ]
+        super().__init__(dyn_param=dyn_param, device=device, **kwargs)
+
+    def compute_with_input(self, x: torch.Tensor, u: torch.Tensor) -> torch.Tensor:
+        """Compute the transfer-based latent drift for floating state/input (..., 2)."""
+        w_plus = self._broadcast_param(self.w_plus, x)
+        w_minus = self._broadcast_param(self.w_minus, x)
+        h = self._broadcast_param(self.h_raw, x) / self.beta
+        gamma = torch.nn.functional.softplus(self._broadcast_param(self.gamma_raw, x))
+        g = torch.nn.functional.softplus(self._broadcast_param(self.g_raw, x))
+        u = torch.as_tensor(u, dtype=x.dtype, device=x.device).expand_as(x)
+        c = x / self.state_scale
+        q = self.beta * (w_plus.unsqueeze(-1) * c - w_minus.unsqueeze(-1) * c.flip(-1)
+                         + h.unsqueeze(-1) + g.unsqueeze(-1) * u)
+        s = c + 0.5
+        return self.alpha * self.state_scale * (-s + (1 - s) * gamma.unsqueeze(-1)
+                                                * wong_wang_activation(q)) / self.tau

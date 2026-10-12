@@ -60,6 +60,10 @@ class EnvironmentPreset:
     initial_parameter_nonnegative: bool = False
     state_low: tuple[float, ...] | None = None
     state_high: tuple[float, ...] | None = None
+    # Box of the run's start state; None uses the state box. The observation calibration
+    # always samples the state box, so the start box does not change the loading.
+    start_state_low: tuple[float, ...] | None = None
+    start_state_high: tuple[float, ...] | None = None
     min_embedding_dim: int | None = None
     dynamics_alpha: float = 1.0
     state_noise: float = 0.2
@@ -82,7 +86,13 @@ class EnvironmentPreset:
     spiking_w_plus: float = 1.7
     spiking_sim_dt_ms: float = 0.1
     spiking_stim_gain_pa: float = 20.0
+    spiking_stim_fraction: float = 1.0
+    spiking_stim_weight_cv: float = 0.0
+    spiking_stim_mask_seed: int = 0
+    spiking_evidence_mode: str = "current"
+    spiking_evidence_reference_mv: float = -55.0
     spiking_observed_per_pool: int = 40
+    spiking_observed_pool2: int | None = None  # neurons recorded from pool 2 (None: as pool 1)
     spiking_background_rate_hz: float = 2400.0
     spiking_calibration_steps: int = 800
     spiking_calibration_hold_steps: int = 50
@@ -99,6 +109,14 @@ class EnvironmentPreset:
     # Evidence in every decision session (SessionRule.evidence_*); amplitude 0 = none.
     spiking_session_evidence_amplitude: float = 0.0
     spiking_session_evidence_bins: int = 0
+    spiking_session_evidence_first_session: int = 0  # sessions before this index have no evidence
+    spiking_session_evidence_last_session: int | None = None  # sessions from this index have no evidence
+    spiking_fixed_first_session: int | None = None  # sessions from this index run the full length
+    # Agents' action bound scaled by this factor before session index ..._last_session (SessionRule.action_scale),
+    # and by ..._later from that session on (SessionRule.action_scale_later).
+    spiking_session_action_scale: float = 1.0
+    spiking_session_action_scale_last_session: int = 0
+    spiking_session_action_scale_later: float = 1.0
     x_range: float = 5.0
     dt: float = 0.01
     action_dim: int = 2
@@ -258,6 +276,15 @@ class EnvironmentPreset:
         rng = np.random.default_rng(int(seed))
         return (low + (high - low) * rng.random(low.shape[0])).astype(np.float32)
 
+    def sample_start_state(self, seed: int) -> np.ndarray:
+        """Start state of a run, shape (latent_dim,): uniform in the start box, else the state box."""
+        if self.start_state_low is None or self.start_state_high is None:
+            return self.sample_initial_state(seed)
+        low = np.asarray(self.start_state_low, dtype=np.float32)
+        high = np.asarray(self.start_state_high, dtype=np.float32)
+        rng = np.random.default_rng(int(seed))
+        return (low + (high - low) * rng.random(low.shape[0])).astype(np.float32)
+
 
 @dataclass(frozen=True, init=False)
 class ScheduleSpec:
@@ -388,6 +415,11 @@ class PolicySpec:
     async_anytime_prefix_steps: int | None = 0
     async_anytime_min_iteration: int = 1
     async_anytime_std_tolerance: float = 0.5
+    # iCEM budget of the parameter-identification planners; None keeps the runner's
+    # defaults (24 samples, 4 iterations, 6 elites).
+    mpc_num_samples: int | None = None
+    mpc_num_iterations: int | None = None
+    mpc_num_elite: int | None = None
 
 
 @dataclass(frozen=True)
@@ -679,6 +711,12 @@ def load_catalog_bundle(
             state_high=_as_state_vector(
                 spec.get("state_high"), label=f"environments.{preset_id}.state_high"
             ),
+            start_state_low=_as_state_vector(
+                spec.get("start_state_low"), label=f"environments.{preset_id}.start_state_low"
+            ),
+            start_state_high=_as_state_vector(
+                spec.get("start_state_high"), label=f"environments.{preset_id}.start_state_high"
+            ),
             min_embedding_dim=(
                 None
                 if spec.get("min_embedding_dim") is None
@@ -760,7 +798,14 @@ def load_catalog_bundle(
             spiking_w_plus=float(spec.get("spiking_w_plus", 1.7)),
             spiking_sim_dt_ms=float(spec.get("spiking_sim_dt_ms", 0.1)),
             spiking_stim_gain_pa=float(spec.get("spiking_stim_gain_pa", 20.0)),
+            spiking_stim_fraction=float(spec.get("spiking_stim_fraction", 1.0)),
+            spiking_stim_weight_cv=float(spec.get("spiking_stim_weight_cv", 0.0)),
+            spiking_stim_mask_seed=int(spec.get("spiking_stim_mask_seed", 0)),
+            spiking_evidence_mode=str(spec.get("spiking_evidence_mode", "current")),
+            spiking_evidence_reference_mv=float(spec.get("spiking_evidence_reference_mv", -55.0)),
             spiking_observed_per_pool=int(spec.get("spiking_observed_per_pool", 40)),
+            spiking_observed_pool2=(None if spec.get("spiking_observed_pool2") is None
+                                    else int(spec["spiking_observed_pool2"])),
             spiking_background_rate_hz=float(spec.get("spiking_background_rate_hz", 2400.0)),
             spiking_calibration_steps=int(spec.get("spiking_calibration_steps", 800)),
             spiking_calibration_hold_steps=int(spec.get("spiking_calibration_hold_steps", 50)),
@@ -774,6 +819,14 @@ def load_catalog_bundle(
             spiking_reset_variance=float(spec.get("spiking_reset_variance", 0.01)),
             spiking_session_evidence_amplitude=float(spec.get("spiking_session_evidence_amplitude", 0.0)),
             spiking_session_evidence_bins=int(spec.get("spiking_session_evidence_bins", 0)),
+            spiking_session_evidence_first_session=int(spec.get("spiking_session_evidence_first_session", 0)),
+            spiking_session_evidence_last_session=(None if spec.get("spiking_session_evidence_last_session") is None
+                                                   else int(spec["spiking_session_evidence_last_session"])),
+            spiking_fixed_first_session=(None if spec.get("spiking_fixed_first_session") is None
+                                         else int(spec["spiking_fixed_first_session"])),
+            spiking_session_action_scale=float(spec.get("spiking_session_action_scale", 1.0)),
+            spiking_session_action_scale_last_session=int(spec.get("spiking_session_action_scale_last_session", 0)),
+            spiking_session_action_scale_later=float(spec.get("spiking_session_action_scale_later", 1.0)),
             x_range=float(spec.get("x_range", 5.0)),
             dt=float(spec.get("dt", 0.01)),
             action_dim=int(spec.get("action_dim", 2)),
@@ -1030,6 +1083,9 @@ def load_catalog_bundle(
             async_anytime_std_tolerance=float(
                 spec.get("async_anytime_std_tolerance", 0.5)
             ),
+            mpc_num_samples=None if spec.get("mpc_num_samples") is None else int(spec["mpc_num_samples"]),
+            mpc_num_iterations=None if spec.get("mpc_num_iterations") is None else int(spec["mpc_num_iterations"]),
+            mpc_num_elite=None if spec.get("mpc_num_elite") is None else int(spec["mpc_num_elite"]),
         )
         for policy_id, spec in model_raw.items()
     }

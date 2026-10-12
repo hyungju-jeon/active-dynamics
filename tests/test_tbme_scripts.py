@@ -1171,7 +1171,8 @@ def test_rhc_agent_uses_filtered_states_and_fits_each_transition_once(monkeypatc
 
     planned_states = []
 
-    def plan(planner, *, x0, objective):
+    def plan(planner, *, x0, objective, action_scale):
+        assert action_scale == 1.0  # no session rule: the full bound
         planned_states.append(x0.copy())
         return SimpleNamespace(actions=np.tile([0.2, -0.3], (2, 1)), cost=0.0)
 

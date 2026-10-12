@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from actdyn.environment.session import SessionRule, session_evidence
+from actdyn.environment.session import SessionRule, session_action_scale, session_evidence
 
 from .base import BasePolicy
 
@@ -82,6 +82,19 @@ class _FlexModelBase(nn.Module):
         self.d = int(latent_dim)
         self.m = int(action_dim)
         self.evaluation = None
+
+
+def _input_matrix(model: nn.Module, x) -> np.ndarray:
+    """Input matrix d f / d u of ``model`` (input (1, d + m) -> drift (1, d)) at state ``x`` and u = 0.
+
+    Used as ``get_B`` by models whose input acts inside the drift; shape (d, m), float64.
+    """
+    with torch.enable_grad():
+        x_t = torch.as_tensor(x, dtype=torch.float32).detach().reshape(1, model.d)
+        u = torch.zeros(1, model.m, requires_grad=True)
+        y = model.forward(torch.cat([x_t, u], dim=1))
+        rows = [torch.autograd.grad(y[0, i], u, retain_graph=True)[0][0] for i in range(model.d)]
+    return torch.stack(rows).detach().numpy().astype(np.float64)
 
 
 class _FlexVectorFieldModel(_FlexModelBase):
@@ -249,18 +262,40 @@ class FlexWilsonCowan1972Model(_FlexVectorFieldModel):
     def _sigmoid(x, a: float, theta: float):
         return torch.sigmoid(a * (x - theta)) - float(1.0 / (1.0 + np.exp(a * theta)))
 
-    def forward(self, z):
+    def _drift(self, z, p, q):
+        """Latent drift (n, 2) at the states z[:, :2] and external drives P, Q (scalars or (n,))."""
         params = self._full_params(dtype=z.dtype, device=z.device)
         c1, c2, c3, c4 = (self.weight_scale * params[k] for k in range(4))
         rate_e = z[:, 0] / self.state_scale + self.rate_offset
         rate_i = z[:, 1] / self.state_scale + self.rate_offset
-        u = z[:, 2:4]
-        gain_e = self._sigmoid(c1 * rate_e - c2 * rate_i, self.a_e, self.theta_e)
-        gain_i = self._sigmoid(c3 * rate_e - c4 * rate_i, self.a_i, self.theta_i)
+        gain_e = self._sigmoid(c1 * rate_e - c2 * rate_i + p, self.a_e, self.theta_e)
+        gain_i = self._sigmoid(c3 * rate_e - c4 * rate_i + q, self.a_i, self.theta_i)
         d_rate_e = (-rate_e + (self.k_e - self.r_e * rate_e) * gain_e) / self.tau_e
         d_rate_i = (-rate_i + (self.k_i - self.r_i * rate_i) * gain_i) / self.tau_i
-        drift = torch.stack((self.state_scale * d_rate_e, self.state_scale * d_rate_i), dim=1)
-        return self.alpha * drift + u
+        return torch.stack((self.state_scale * d_rate_e, self.state_scale * d_rate_i), dim=1)
+
+    def forward(self, z):
+        return self.alpha * self._drift(z, 0.0, 0.0) + z[:, 2:4]
+
+
+class FlexWilsonCowan1972NativeInputModel(FlexWilsonCowan1972Model):
+    """Wilson-Cowan (1972) drift with the input as the drives (P, Q) = g u.
+
+    Mirrors ``actdyn.utils.vectorfields_eqn.WilsonCowan1972NativeInput``. The input
+    matrix df/du depends on the state, so ``get_B`` differentiates the drift.
+    """
+
+    def __init__(self, *args, input_gain: float = 1.0, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.input_gain = float(input_gain)
+
+    def forward(self, z):
+        u = z[:, 2:4]
+        return self.alpha * self._drift(z, self.input_gain * u[:, 0], self.input_gain * u[:, 1])
+
+    def get_B(self, x):
+        """d f / d u at state ``x`` and u = 0, shape (d, m)."""
+        return _input_matrix(self, x)
 
 
 class FlexWongWangModel(_FlexVectorFieldModel):
@@ -335,12 +370,23 @@ class FlexWongWangInsideGainModel(FlexWongWangModel):
 
     def get_B(self, x):
         """d f / d u at state ``x`` and u = 0, shape (d, m)."""
-        with torch.enable_grad():
-            x_t = torch.as_tensor(x, dtype=torch.float32).detach().reshape(1, self.d)
-            u = torch.zeros(1, self.m, requires_grad=True)
-            y = self.forward(torch.cat([x_t, u], dim=1))
-            rows = [torch.autograd.grad(y[0, i], u, retain_graph=True)[0][0] for i in range(self.d)]
-        return torch.stack(rows).detach().numpy().astype(np.float64)
+        return _input_matrix(self, x)
+
+
+class FlexWongWangTransferModel(FlexWongWangInsideGainModel):
+    """FLEX adapter for the published Wong-Wang response, with five coefficients."""
+
+    def forward(self, z):
+        from actdyn.utils.vectorfields_eqn import wong_wang_activation
+
+        params = self._full_params(dtype=z.dtype, device=z.device)
+        c = z[:, :2] / self.state_scale
+        u = z[:, 2:4] + self.input_offset.to(dtype=z.dtype, device=z.device)
+        gamma = torch.nn.functional.softplus(params[3])
+        g = torch.nn.functional.softplus(params[4])
+        q = self.beta * (params[0] * c - params[1] * c.flip(-1) + params[2] / self.beta + g * u)
+        ds = (-(c + 0.5) + (0.5 - c) * gamma * wong_wang_activation(q)) / self.tau
+        return self.alpha * self.state_scale * ds
 
 
 def build_flex_model(
@@ -372,10 +418,14 @@ def build_flex_model(
         return FlexMultiStableModel(**kwargs)
     if dynamics_type == "wilson_cowan_1972":
         return FlexWilsonCowan1972Model(**kwargs)
+    if dynamics_type == "wilson_cowan_1972_native_input":
+        return FlexWilsonCowan1972NativeInputModel(**kwargs)
     if dynamics_type == "wong_wang":
         return FlexWongWangModel(**kwargs)
     if dynamics_type == "wong_wang_inside_gain":
         return FlexWongWangInsideGainModel(**kwargs)
+    if dynamics_type == "wong_wang_transfer":
+        return FlexWongWangTransferModel(**kwargs)
     raise ValueError(f"Official FLEX wrapper does not support dynamics_type={dynamics_type!r}")
 
 
@@ -531,6 +581,9 @@ class FLEXPolicy(BasePolicy):
         evidence = self._known_evidence()
         if evidence is not None:
             self._flex_model.input_offset = evidence
+        # FLEX inputs lie on the sphere ||u|| = gamma; the session scales its radius.
+        self._flex_agent.gamma = session_action_scale(self.session_rule, self.session_context) * float(
+            self.env_preset.action_max)
         try:
             u = np.asarray(self._flex_agent.policy(x, t), dtype=np.float32).reshape(1, 1, -1)
         finally:

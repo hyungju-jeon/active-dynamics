@@ -37,3 +37,24 @@ def test_down_state_has_no_local_weight_information():
     gained = parameter_information(informative, meta)
     assert np.all(np.diff(gained, axis=1) > 0)
     np.testing.assert_array_equal(gained[0], gained[1])
+
+
+def test_diagnostic_jacobians_match_simulator_with_input_inside_sigmoids():
+    from actdyn.environment.vectorfield import drift_torch
+
+    rng = np.random.default_rng(17)
+    z = rng.uniform(-3, 3, (40, 2))
+    u = rng.uniform(-1.75, 1.75, (40, 2))
+    theta = np.array([12.0, 4.0, 13.0, 11.0])
+    jz, jt = jacobians(z, theta, u)
+    actual_z = jacobian_state_torch("wilson_cowan_1972_native_input", torch.tensor(z), theta,
+                                    dynamics_alpha=1.0, u=torch.tensor(u))
+    params = torch.tensor(np.tile(theta, (len(z), 1)), dtype=torch.float32, requires_grad=True)
+    drift = drift_torch("wilson_cowan_1972_native_input", torch.tensor(z), params, torch.tensor(u),
+                        dynamics_alpha=1.0)
+    actual_t = torch.stack([torch.autograd.grad(drift[:, i].sum(), params, retain_graph=True)[0]
+                            for i in range(2)], dim=1)
+    np.testing.assert_allclose(jz, actual_z.detach().numpy(), atol=3e-5, rtol=3e-5)
+    np.testing.assert_allclose(jt, actual_t.detach().numpy(), atol=3e-5, rtol=3e-5)
+    # The input changes the Jacobians, so the additive-input form must not be used here.
+    assert np.max(np.abs(jacobians(z, theta)[1] - jt)) > 1e-2

@@ -1,4 +1,4 @@
-"""Contracts for decision sessions: environment rule, planner rollouts, EIG, and filter reset."""
+"""Contracts for decision sessions: environment rule, planner rollouts, and filter reset."""
 
 from __future__ import annotations
 
@@ -10,16 +10,8 @@ import torch
 
 from actdyn.core.agent import _apply_session_reset, _model_input, _session_fields
 from actdyn.environment.action import IdentityActionEncoder
-from actdyn.environment.session import (
-    SessionRule,
-    advance_session_clock,
-    new_session_clock,
-    session_clock_from_context,
-    session_evidence,
-    session_evidence_pool,
-)
+from actdyn.environment.session import NO_EVIDENCE, SessionRule, session_evidence, session_evidence_pool
 from actdyn.environment.spiking_decision import SpikingDecisionEnv
-from actdyn.metrics.information import EmbeddingFisherMetric
 from actdyn.models.model import FilteringEmbedding
 from actdyn.policy.mpc import MpcICem
 
@@ -45,45 +37,14 @@ class ScriptedNetwork:
         self.t = 0
         return self.latent_proxy()
 
-    def step(self, action: np.ndarray):
+    def step(self, action: np.ndarray, *, evidence=None):
         self.t += 1
         gap = self.rate * self.t
         z = np.array([-2.0 + gap, -2.0], dtype=np.float32)
         return np.full(2, float(self.t), dtype=np.float32), z
 
 
-def _run_clock(gaps, rule, step_bins=1):
-    clock = new_session_clock(1)
-    resets, decisions = [], []
-    for g in gaps:
-        clock, decided, reset = advance_session_clock(clock, torch.tensor([float(g)]), rule, step_bins)
-        resets.append(bool(reset[0]))
-        decisions.append(bool(decided[0]))
-    return decisions, resets
-
-
-def test_clock_resets_after_the_post_decision_delay_and_at_the_time_limit():
-    rule = SessionRule(decision_gap=1.0, post_decision_bins=3, max_session_bins=10)
-    decisions, resets = _run_clock([0.0, 2.0, 2.0, 0.0, -2.0, 0.0], rule)
-    assert decisions == [False, True, False, False, False, False]  # later crossings do not count
-    assert resets == [False, False, False, False, True, False]
-    _, resets = _run_clock([0.0] * 12, rule)
-    assert resets.index(True) == 9  # 10 bins without a decision
-    _, resets = _run_clock([0.0] * 3, rule, step_bins=5)
-    assert resets == [False, True, False]  # coarse steps of 5 bins
-
-
-def test_clock_from_context_continues_the_environment_session():
-    rule = SessionRule(decision_gap=1.0, post_decision_bins=3, max_session_bins=10)
-    clock = session_clock_from_context({"bins": 4, "decided": True, "since": 2}, 3)
-    assert clock["bins"].tolist() == [4, 4, 4] and clock["decided"].all()
-    _, _, reset = advance_session_clock(clock, torch.zeros(3), rule)
-    assert reset.all()
-    fresh = session_clock_from_context(None, 2)
-    assert fresh["bins"].tolist() == [0, 0] and not fresh["decided"].any()
-
-
-def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
+def test_environment_ends_sessions_after_the_post_decision_delay():
     rule = SessionRule(decision_gap=2.0, post_decision_bins=4, max_session_bins=30, max_sessions=3)
     network = ScriptedNetwork(rate=0.3)
     env = SpikingDecisionEnv(network, session_rule=rule)
@@ -97,11 +58,10 @@ def test_environment_and_planner_clock_end_sessions_at_the_same_bins():
         if info["session_end"]:
             np.testing.assert_allclose(info["latent_state"], rule.reset_state)
             np.testing.assert_allclose(info["session_pre_reset_state"], [-2.0 + 0.3 * 11, -2.0], rtol=1e-6)
-            assert info["session_context"] == {"bins": 0, "decided": False, "since": 0, "evidence_pool": -1}
+            assert info["session_context"] == {"bins": 0, "decided": False, "since": 0, "evidence_pool": -1,
+                                               "session_index": len(env.session_log)}
     # The gap first exceeds 2 at bin 7; the reset follows 4 bins later.
     assert [i + 1 for i, e in enumerate(ends) if e] == [11, 22, 33]
-    _, clock_resets = _run_clock([0.3 * (t + 1) for t in range(11)], rule)
-    assert clock_resets.index(True) == 10
     assert [s["decision"] for s in env.session_log] == [1, 1, 1]
     assert [s["decision_bin"] for s in env.session_log] == [7, 7, 7]
     assert network.reset_seeds == [SpikingDecisionEnv.session_seed(7, k) for k in range(4)]
@@ -129,9 +89,9 @@ class RecordingNetwork(ScriptedNetwork):
         super().__init__(rate)
         self.drives: list[np.ndarray] = []
 
-    def step(self, action: np.ndarray):
-        self.drives.append(np.asarray(action, dtype=np.float64).copy())
-        return super().step(action)
+    def step(self, action: np.ndarray, *, evidence=None):
+        self.drives.append(np.asarray(action, dtype=np.float64).copy() + (0 if evidence is None else evidence))
+        return super().step(action, evidence=evidence)
 
 
 def test_environment_adds_the_known_evidence_to_the_drive():
@@ -204,48 +164,35 @@ def _session_planner(rule):
     return planner, metric
 
 
-def test_planner_rollout_resets_the_state_and_marks_the_step():
-    rule = SessionRule(decision_gap=2.0, post_decision_bins=2, max_session_bins=100, reset_variance=0.02)
-    planner, metric = _session_planner(rule)
-    assert metric.session_reset_variance == pytest.approx(0.02)
+def test_planner_rollout_stays_in_the_current_session():
+    """Agents learn of a reset only when it happens: a rollout never simulates the decision rule."""
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=2, max_session_bins=4)
+    planner, _ = _session_planner(rule)
+    planner.session_context = {"bins": 3, "decided": True, "since": 1, "evidence_pool": -1, "session_index": 0}
     actions = torch.tensor([[1.0, 0.0]]).repeat(1, 6, 1)
     rollout = planner.simulate(None, actions)
-    start, pred = rollout["model_state"][0], rollout["next_model_state"][0]
-    mask = rollout["session_reset_after"][0, :, 0]
-    # Gap 3 > 2 after step 2; reset 2 bins later, after step 4.
-    assert mask.tolist() == [0, 0, 0, 0, 1, 0]
-    torch.testing.assert_close(pred[4], torch.tensor([3.0, -2.0]))  # the step's observation sees z before the reset
-    torch.testing.assert_close(start[5], torch.tensor([-2.0, -2.0]))
-    torch.testing.assert_close(pred[5], torch.tensor([-1.0, -2.0]))
+    # The gap passes 2 after step 2 and the session time limit is near, but the state keeps going.
+    expected = torch.tensor([[-2.0 + t, -2.0] for t in range(1, 7)])
+    torch.testing.assert_close(rollout["next_model_state"][0], expected)
+    torch.testing.assert_close(rollout["model_state"][0, 1:], expected[:-1])
+    torch.testing.assert_close(rollout["env_action"], actions)
+    assert rollout.flat.get("session_reset_after") is None
 
 
-def test_planner_rollout_uses_the_session_context_and_coarse_bins():
-    rule = SessionRule(decision_gap=2.0, post_decision_bins=40, max_session_bins=400)
-    planner, _ = _session_planner(rule)
-    planner.session_context = {"bins": 100, "decided": True, "since": 25}
-    planner._planning_step_bins = 10
-    rollout = planner.simulate(None, torch.zeros(1, 6, 2))
-    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 1, 0, 0, 0, 0]  # 25 + 10 + 10 >= 40
-    planner.session_rule = None
-    planner.model.predict = lambda a: planner.model._state + torch.cumsum(a, dim=-2)
-    plain = planner.simulate(None, torch.zeros(1, 6, 2))
-    assert plain.flat.get("session_reset_after") is None
-
-
-def test_planner_rollout_adds_the_known_evidence_until_a_reset():
+def test_planner_rollout_adds_the_current_session_evidence_at_coarse_steps():
     rule = SessionRule(decision_gap=2.0, post_decision_bins=1, max_session_bins=100,
-                       evidence_amplitude=2.0, evidence_bins=2)
+                       evidence_amplitude=2.0, evidence_bins=125)
     planner, _ = _session_planner(rule)
-    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": 0}
+    planner.session_context = {"bins": 100, "decided": False, "since": 0, "evidence_pool": 0}
+    planner._planning_step_bins = 10
     rollout = planner.simulate(None, torch.zeros(1, 5, 2))
-    # z1 rises by 2 per evidence bin: the gap reaches 4 > 2 in step 1 (the decision), the
-    # evidence ends after bin 2, and the session resets after step 2. The next session's
-    # pool is unknown, so its evidence is split between the pools.
-    expected_inputs = [[2.0, 0.0], [2.0, 0.0], [0.0, 0.0], [1.0, 1.0], [1.0, 1.0]]
+    # Steps start at bins 100, 110, 120, 130, 140; the step over bins 120-129 has evidence for half its bins.
+    # The gap passes 2 in step 1 and the session would end, but the rollout stays in the session.
+    expected_inputs = [[2.0, 0.0], [2.0, 0.0], [1.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
     torch.testing.assert_close(rollout["env_action"][0], torch.tensor(expected_inputs))
-    assert rollout["session_reset_after"][0, :, 0].tolist() == [0, 0, 1, 0, 0]
-    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([0.0, 0.0]))
-    torch.testing.assert_close(planner._known_evidence(3)[0], torch.tensor([[2.0, 0.0]] * 2 + [[0.0, 0.0]]))
+    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([3.0, -2.0]))
+    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": 0}
+    torch.testing.assert_close(planner._known_evidence(3)[0], torch.zeros(3, 2) + torch.tensor([2.0, 0.0]))
 
 
 def test_planner_session_reset_forces_a_new_plan():
@@ -256,66 +203,6 @@ def test_planner_session_reset_forces_a_new_plan():
     planner.on_session_reset(torch.tensor([[[-2.0, -2.0]]]))
     assert planner.action_list == [] and planner._chunk_step == 0
     assert planner._force_replan_next and planner._force_replan_reason == "session_reset"
-
-
-class LinearGaussianDecoder:
-    def __init__(self, h, r):
-        self.h, self.r, self.noise = h, r, object()
-
-    def __call__(self, z):
-        return z @ self.h.to(z).T
-
-    def jacobian(self, z):
-        return self.h.to(z).expand(*z.shape[:-1], *self.h.shape)
-
-    def var(self, z):
-        return self.r.diagonal().to(z).expand(*z.shape[:-1], self.r.shape[-1])
-
-
-def _information_problem(p0):
-    a = torch.tensor([[0.1, 0.3], [-0.2, -0.1]])
-    b = torch.tensor([[1.0, 0.2], [0.1, 0.5]])
-    model = SimpleNamespace(
-        e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
-        z={"m": torch.zeros(1, 1, 2), "P": p0.unsqueeze(0)},
-        dynamics=SimpleNamespace(logvar=torch.log(torch.expm1(torch.tensor([[0.05, 0.02]])))),
-        decoder=LinearGaussianDecoder(torch.tensor([[1.0, 0.2], [0.0, 1.0]]), torch.diag(torch.tensor([0.5, 0.8]))),
-        dt=1.0,
-    )
-
-    def fe(z, e):
-        return z[..., :1, None] * b.to(z)
-
-    def fz(z, e):
-        return a.to(z).expand(*z.shape[:-1], 2, 2)
-
-    return model, fe, fz
-
-
-@pytest.mark.parametrize("planning_rollout", ["prediction_only", "measurement_conditioned"])
-def test_information_after_a_reset_adds_as_a_fresh_start(planning_rollout):
-    torch.manual_seed(0)
-    z = torch.randn(1, 7, 2) + 1.0
-    p0 = torch.tensor([[0.9, 0.1], [0.1, 0.6]])
-    reset_after = torch.zeros(1, 7, 1)
-    reset_after[0, 3, 0] = 1.0
-
-    def information(model, fe, fz, states, mask=None):
-        metric = EmbeddingFisherMetric(model, Fe_net=fe, Fz_net=fz, device="cpu", gamma=1.0,
-                                       planning_rollout=planning_rollout, session_reset_variance=0.03)
-        rollout = {"model_state": states, "next_model_state": states.clone()}
-        if mask is not None:
-            rollout["session_reset_after"] = mask
-        return metric._rollout_parameter_information(rollout, fe, fz)
-
-    model, fe, fz = _information_problem(p0)
-    joint = information(model, fe, fz, z, reset_after)
-    prefix = information(model, fe, fz, z[:, :4])
-    fresh_model, fe, fz = _information_problem(0.03 * torch.eye(2))
-    suffix = information(fresh_model, fe, fz, z[:, 4:])
-    torch.testing.assert_close(joint, prefix + suffix)
-    no_reset = information(model, fe, fz, z)
-    assert not torch.allclose(joint, no_reset)
 
 
 def test_filter_reset_keeps_the_parameter_belief_and_clears_the_sensitivity():
@@ -386,12 +273,12 @@ def test_task_controllers_respect_the_budget_and_target_the_other_pool():
 def test_task_jobs_pair_every_controller_on_the_same_sessions():
     from experiments.tnsre import eval_spiking_sessions as ev
 
-    run = {"policy": "adaptive", "seed": 3, "est": {k: np.full(5, float(k)) for k in (0, 1, 2, 5, 20)},
+    run = {"policy": "adaptive", "seed": 3, "est": {k: np.full(5, float(k)) for k in (0, 1, 5, 10, 15, 20)},
            "C": np.zeros((4, 2)), "b": np.zeros(4), "dynamics_type": "wong_wang_inside_gain",
            "full_params": np.zeros(5), "min_embedding_dim": 5}
     units = ev.controller_units([run], np.arange(5.0))
     names = [(u["policy"], u["checkpoint"]) for u in units]
-    assert names == [("adaptive", 1), ("adaptive", 2), ("adaptive", 5), ("adaptive", 20), ("prior", 0),
+    assert names == [("adaptive", 1), ("adaptive", 5), ("adaptive", 10), ("adaptive", 15), ("adaptive", 20), ("prior", 0),
                      ("reduced_fit", -1), ("none", -1), ("spread", -1), ("front", -1)]
     jobs = ev.task_jobs(units)
     sessions = {(u, task, b): sorted(s for uu, tt, bb, s in jobs if (uu, tt, bb) == (u, task, b))
@@ -449,3 +336,334 @@ def test_warm_controller_paths_keep_the_fresh_results():
     fresh, warm = controller_paths(Path("e"), "fresh"), controller_paths(Path("e"), "warm")
     assert fresh == {"task": Path("e/task"), "summary": Path("e/task_summary.csv")}
     assert warm == {"task": Path("e/task_warm"), "summary": Path("e/task_summary_warm.csv")}
+
+
+def test_fixed_length_preset_ends_sessions_only_at_the_time_limit():
+    """Preset ``tbme_wong_wang_snn_sessions_m2_fixed``: a decision does not end the session."""
+    from dataclasses import replace
+
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    configure_tbme_catalogs(suite_entries={})
+    fixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_fixed"), 4.0)
+    base = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2"), 4.0)
+    assert replace(fixed, post_decision_bins=base.post_decision_bins) == base  # only the session end differs
+    assert fixed.max_session_bins == 400 and fixed.post_decision_bins >= fixed.max_session_bins
+    env = SpikingDecisionEnv(ScriptedNetwork(rate=0.3), session_rule=replace(fixed, max_sessions=2))
+    env.reset(seed=7)
+    ends, terminated = [], False
+    while not terminated:
+        _z, _r, terminated, _trunc, info = env.step(np.zeros(2))
+        ends.append(info["session_end"])
+    assert [i + 1 for i, e in enumerate(ends) if e] == [400, 800]  # environment
+    assert [s["decision"] for s in env.session_log] == [1, 1]  # decisions are still recorded
+
+
+def test_observation_presets_change_only_the_recorded_neurons():
+    """Low-SNR and biased fixed-trial presets record (4, 4), (2, 2), and (40, 2) neurons; nothing else changes."""
+    from dataclasses import replace
+
+    from actdyn.environment.spiking_decision import observed_counts
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    configure_tbme_catalogs(suite_entries={})
+    second = (("n10_10", (10, 10)), ("n20_20", (20, 20)), ("n20_5", (20, 5)))
+    for protocol in ("_fixed", "", "_evmix", "_fixed_evmix", "_evfirst"):  # fixed, decision-ended, mixed evidence
+        base = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}")
+        assert observed_counts(base) == (40, 40)
+        names = {"_fixed": (("lowsnr4", (4, 4)), ("lowsnr2", (2, 2)), ("biased", (40, 2))),
+                 "": (("lowsnr4", (4, 4)), ("biased", (40, 2))), "_evmix": (), "_fixed_evmix": (), "_evfirst": ()}[protocol] + second
+        for name, counts in names:
+            p = get_environment_preset(f"tbme_wong_wang_snn_sessions_m2{protocol}_{name}")
+            assert observed_counts(p) == counts and p.observation_dim == sum(counts)
+            same = replace(p, preset_id=base.preset_id, system_label=base.system_label, observation_dim=base.observation_dim,
+                           spiking_observed_per_pool=base.spiking_observed_per_pool, spiking_observed_pool2=None)
+            assert same == base
+
+
+def test_reactive_paldi_changes_only_the_minimum_intervals():
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    bundle = configure_tbme_catalogs(suite_entries={})
+    base, fast = bundle.policy_specs["adaptive"], bundle.policy_specs["adaptive_reactive"]
+    sb, sf = bundle.schedule_specs[base.schedule_id], bundle.schedule_specs[fast.schedule_id]
+    assert (sb.adaptive_update_min_interval, sb.adaptive_replan_min_interval) == (5, 5)
+    assert (sf.adaptive_update_min_interval, sf.adaptive_replan_min_interval) == (1, 1)
+    assert (sf.planning_horizon, sf.replan_interval, sf.update_interval) == (sb.planning_horizon, sb.replan_interval, sb.update_interval)
+    assert fast.objective_kind == base.objective_kind and fast.coarse_dt_factor == base.coarse_dt_factor
+
+
+def test_paldi_c2_changes_only_the_planning_step_horizon_and_cadence():
+    from experiments.tnsre.eval_spiking_sessions import evaluated_policy
+    from experiments.tnsre.exp_spiking_sessions import EXPERIMENT_SUITES
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    bundle = configure_tbme_catalogs(suite_entries={})
+    base, c2 = bundle.policy_specs["adaptive"], bundle.policy_specs["adaptive_c2"]
+    sb, sc = bundle.schedule_specs[base.schedule_id], bundle.schedule_specs[c2.schedule_id]
+    assert (base.coarse_dt_factor, c2.coarse_dt_factor) == (20, 2)
+    assert base.coarse_dt_factor * sb.planning_horizon == c2.coarse_dt_factor * sc.planning_horizon == 800  # 4 s
+    assert (sc.adaptive_update_min_interval, sc.adaptive_replan_min_interval) == (3, 3)
+    assert (sc.replan_interval, sc.update_interval) == (sb.replan_interval, sb.update_interval)
+    assert c2.objective_kind == base.objective_kind
+    assert all("adaptive_c2" in s["model_ids"] for k, s in EXPERIMENT_SUITES.items()
+               if "_obs_" not in k and not k.startswith('wong_wang_snn_native_uniform'))
+    for suite in ('wong_wang_snn_native_uniform', 'wong_wang_snn_native_uniform_strong'):
+        assert EXPERIMENT_SUITES[suite]['model_ids'] == [
+            'adaptive_c2h20', 'active_myopic', 'flex_rollback', 'rhc', 'prbs', 'random']
+    assert evaluated_policy("adaptive_c2") == "adaptive" and evaluated_policy("rhc") == "rhc"
+    h20 = bundle.policy_specs["adaptive_c2h20"]
+    sh = bundle.schedule_specs[h20.schedule_id]
+    assert h20.coarse_dt_factor * sh.planning_horizon == 40  # 200 ms
+    assert (sh.adaptive_update_min_interval, sh.adaptive_replan_min_interval, sh.replan_interval) == (3, 3, 20)
+    assert all("adaptive_c2h20" in s["model_ids"] for k, s in EXPERIMENT_SUITES.items() if "_obs_" not in k)
+    assert evaluated_policy("adaptive_c2h20") == "adaptive"
+
+
+def test_runs_root_and_preset_come_from_the_experiment(tmp_path):
+    from experiments.tnsre.eval_spiking_sessions import runs_preset, runs_root_of
+
+    (tmp_path / "tracks" / "wong_wang_snn_sessions_m2_biased").mkdir(parents=True)
+    assert runs_root_of(tmp_path).name == "wong_wang_snn_sessions_m2_biased"
+    (tmp_path / "tracks" / "other").mkdir()
+    with pytest.raises(ValueError):
+        runs_root_of(tmp_path)
+    assert runs_preset([{"preset_id": "a"}, {"preset_id": "a"}]) == "a"
+    with pytest.raises(ValueError):
+        runs_preset([{"preset_id": "a"}, {"preset_id": "b"}])
+
+
+def test_mixed_evidence_preset_starts_the_evidence_at_session_eleven():
+    from dataclasses import replace
+
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    configure_tbme_catalogs(suite_entries={})
+    evidence = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evidence"), 4.0)
+    mixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evmix"), 4.0)
+    assert mixed.evidence_first_session == 10 and evidence.evidence_first_session == 0
+    assert replace(mixed, evidence_first_session=0) == evidence  # same evidence and session end otherwise
+    fixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_fixed"), 4.0)
+    fixed_mixed = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_fixed_evmix"), 4.0)
+    assert fixed_mixed == replace(mixed, post_decision_bins=fixed.post_decision_bins)  # fixed 2-s sessions
+
+
+def test_sessions_before_the_first_evidence_session_have_no_evidence():
+    rule = SessionRule(evidence_amplitude=0.3, evidence_bins=50)
+    zero = session_evidence(torch.tensor([0, 10]), torch.tensor([NO_EVIDENCE, NO_EVIDENCE]), rule)
+    torch.testing.assert_close(zero, torch.zeros(2, 2))
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=4, max_session_bins=30, max_sessions=2,
+                       evidence_amplitude=0.3, evidence_bins=5, evidence_first_session=1)
+    env = SpikingDecisionEnv(ScriptedNetwork(rate=0.3), session_rule=rule)
+    env.reset(seed=7)
+    assert env.session_context()["evidence_pool"] == NO_EVIDENCE and env.session_context()["session_index"] == 0
+    seen = {0: [], 1: []}
+    terminated = False
+    while not terminated:
+        index = env.session_index
+        _z, _r, terminated, _trunc, info = env.step(np.zeros(2))
+        seen[index].append(np.asarray(info["evidence"]))
+    assert np.all(np.stack(seen[0]) == 0.0)
+    first = np.stack(seen[1][:5])
+    assert np.allclose(first.sum(axis=1), 0.3) and np.all(np.stack(seen[1][5:]) == 0.0)
+    assert [s["evidence_pool"] for s in env.session_log][0] == NO_EVIDENCE
+    assert env.session_log[1]["evidence_pool"] in (0, 1)
+
+
+def test_planner_rollout_adds_no_evidence_in_a_session_without_evidence():
+    """A rollout in a no-evidence session stays without evidence, also past the session end."""
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=1, max_session_bins=100,
+                       evidence_amplitude=2.0, evidence_bins=2, evidence_first_session=1)
+    planner, _ = _session_planner(rule)
+    planner.session_context = {"bins": 0, "decided": False, "since": 0, "evidence_pool": NO_EVIDENCE,
+                               "session_index": 0}
+    actions = torch.tensor([[1.0, 0.0]]).repeat(1, 5, 1)
+    rollout = planner.simulate(None, actions)
+    torch.testing.assert_close(rollout["env_action"], actions)
+    torch.testing.assert_close(rollout["next_model_state"][0, 4], torch.tensor([3.0, -2.0]))
+
+
+def test_evidence_sessions_then_fixed_sessions():
+    """Evidence (decision-ended) sessions before ``evidence_last_session``; fixed-length sessions from ``fixed_first_session``."""
+    from dataclasses import replace
+
+    from actdyn.environment.session import session_post_decision_bins
+    from actdyn.environment.spiking_decision import session_rule_from_preset
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+
+    rule = SessionRule(decision_gap=2.0, post_decision_bins=4, max_session_bins=30, max_sessions=2,
+                       evidence_amplitude=0.3, evidence_bins=5, evidence_last_session=1, fixed_first_session=1)
+    assert [session_post_decision_bins(rule, k) for k in (0, 1)] == [4, 30]
+    env = SpikingDecisionEnv(ScriptedNetwork(rate=0.3), session_rule=rule)
+    env.reset(seed=7)
+    ends, seen, terminated = [], {0: [], 1: []}, False
+    while not terminated:
+        index = env.session_index
+        _z, _r, terminated, _trunc, info = env.step(np.zeros(2))
+        ends.append(info["session_end"])
+        seen[index].append(np.asarray(info.get("evidence", np.zeros(2))))
+    assert [i + 1 for i, e in enumerate(ends) if e] == [11, 41]  # decision at bin 7 + 4; then the full 30 bins
+    assert np.allclose(np.stack(seen[0][:5]).sum(axis=1), 0.3) and np.all(np.stack(seen[1]) == 0.0)
+    assert env.session_log[0]["evidence_pool"] in (0, 1) and env.session_log[1]["evidence_pool"] == NO_EVIDENCE
+    assert [s["decision"] for s in env.session_log] == [1, 1]  # the decision is still recorded
+
+    configure_tbme_catalogs(suite_entries={})
+    evidence = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evidence"), 4.0)
+    first = session_rule_from_preset(get_environment_preset("tbme_wong_wang_snn_sessions_m2_evfirst_n20_5"), 4.0)
+    assert first == replace(evidence, evidence_last_session=10, fixed_first_session=10)
+
+
+def _information_problem(p0):
+    a = torch.tensor([[0.1, 0.3], [-0.2, -0.1]])
+    b = torch.tensor([[1.0, 0.2], [0.1, 0.5]])
+    model = SimpleNamespace(
+        e={"m": torch.zeros(1, 2), "P": torch.eye(2).unsqueeze(0)},
+        z={"m": torch.zeros(1, 1, 2), "P": p0.unsqueeze(0)},
+        dynamics=SimpleNamespace(logvar=torch.log(torch.expm1(torch.tensor([[0.05, 0.02]])))),
+        decoder=LinearGaussianDecoder(torch.tensor([[1.0, 0.2], [0.0, 1.0]]), torch.diag(torch.tensor([0.5, 0.8]))),
+        dt=1.0,
+    )
+
+    def fe(z, e):
+        return z[..., :1, None] * b.to(z)
+
+    def fz(z, e):
+        return a.to(z).expand(*z.shape[:-1], 2, 2)
+
+    return model, fe, fz
+
+
+@pytest.mark.parametrize('bound', [.25, .5, 1.])
+def test_lower_action_bound_applies_to_fixed_pushes_and_planner_seeds(monkeypatch, bound):
+    from experiments.tnsre import eval_spiking_sessions as ev
+
+    monkeypatch.setitem(ev.PROTOCOL, 'action_max', bound)
+    dt, window = .05, 400
+    for budget in [0., .0037, *[b * bound**2 for b in (5., 10., 12., 15., 25.)]]:
+        expected = min(budget, dt * window * bound**2)
+        for name in ('front', 'spread'):
+            u = np.stack([ev.model_free_input(name, 'overturn', k, 1, budget, dt)
+                          for k in range(window + 2)])
+            assert np.linalg.norm(u, axis=-1).max() <= bound + 1e-12
+            assert dt * np.square(u).sum() == pytest.approx(expected, abs=1e-12)
+            assert not u[window:].any()
+        seeds = ev.seed_pushes(window, budget, dt, 10)
+        assert np.linalg.norm(seeds, axis=-1).max() <= bound + 1e-12
+        np.testing.assert_allclose(10 * dt * np.square(seeds).sum(axis=(1, 2)), expected, atol=1e-12)
+
+
+def test_task_icem_passes_the_reduced_bound_to_candidate_projection(monkeypatch):
+    from experiments.tnsre import eval_spiking_sessions as ev
+    from actdyn.utils import validation
+
+    monkeypatch.setitem(ev.PROTOCOL, 'action_max', .25)
+    calls = []
+
+    def capture(transition, z0, drive, **kw):
+        calls.append(kw)
+        return {'u': np.zeros((kw['window'], 2))}
+
+    monkeypatch.setattr(validation, 'icem_reversal_plan', capture)
+    model = object.__new__(ev.IcemController)
+    model.m, model.dt, model.seed = np.zeros(2), .05, 91000
+    model.warm_start, model._last_plan = False, None
+    model.transition = {'plan': None}
+    model.plan('overturn', 120, 0, 1, 0, .75)
+    assert calls[0]['action_max'] == .25
+    assert np.linalg.norm(calls[0]['seed_candidates'], axis=-1).max() <= .25 + 1e-12
+
+
+def test_task_loop_rejects_a_controller_that_exceeds_the_reduced_bound(monkeypatch):
+    from experiments.tnsre import eval_spiking_sessions as ev
+
+    monkeypatch.setitem(ev.PROTOCOL, 'action_max', .25)
+    model = SimpleNamespace(observe=lambda *args: None,
+                            plan=lambda *args: np.tile([.3, 0.], (400, 1)))
+    with pytest.raises(RuntimeError, match='action bound'):
+        ev.run_task_session(ScriptedNetwork(rate=3.), 'overturn', 91000, .75, 'icem', model)
+
+
+def test_control_dose_accounts_for_actual_neuron_weights():
+    from experiments.tnsre.wong_wang_budget import control_costs
+
+    trace = [{'u': [.25, -.25]}, {'u': [0., .5]}]
+    weights = np.array([[0., 2.], [.5, 1.5]])
+    result = control_costs(trace, weights, .05)
+    assert result['peak_action_norm'] == pytest.approx(.5)
+    assert result['peak_neuron_current_pa'] == pytest.approx(15.)
+    # dt_phys=.005 s; actual currents are [0,10,-2.5,-7.5] then [0,0,5,15] pA.
+    assert result['total_squared_current_pa2_s'] == pytest.approx(.005 * (100 + 6.25 + 56.25 + 25 + 225))
+
+
+def test_task_evaluator_keeps_sensory_evidence_separate_from_control(monkeypatch):
+    from experiments.tnsre import eval_spiking_sessions as ev
+
+    class RecordingNetwork:
+        dt_latent = .05
+
+        def reset(self, seed):
+            self.calls = []
+            return np.array([-2., -2.])
+
+        def step(self, action, *, evidence):
+            self.calls.append((np.asarray(action), np.asarray(evidence)))
+            # First bin decides pool 1; second bin reverses the choice.
+            state = np.array([1., -2.]) if len(self.calls) == 1 else np.array([-2., 1.])
+            return np.zeros(2), state
+
+    net = RecordingNetwork()
+    result = ev.run_task_session(net, 'overturn', 91000, 12., 'front', None)
+    assert result['valid'] == 1 and result['success'] == 1
+    np.testing.assert_allclose(net.calls[0][0], [0., 0.])
+    assert net.calls[0][1].sum() == pytest.approx(.3)
+    np.testing.assert_allclose(net.calls[1][0], ev.target_direction(1))
+    np.testing.assert_allclose(net.calls[1][1], net.calls[0][1])
+
+
+def test_full_wong_wang_training_presets_have_no_evidence():
+    from experiments.tnsre.wong_wang_full import TRAIN_ARMS, SUITES
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+    from experiments.experiment_definitions import get_environment_preset
+
+    configure_tbme_catalogs(suite_entries=SUITES)
+    for arm in TRAIN_ARMS:
+        p = get_environment_preset(f'tbme_ww_full_{arm}')
+        assert p.spiking_session_evidence_amplitude == 0
+        assert p.spiking_session_evidence_bins == 0
+        assert p.spiking_evidence_mode == 'current'
+        assert p.spiking_sessions == 20
+        assert len(SUITES[arm]['model_ids']) == 6
+
+
+def test_numerical_controller_failure_keeps_valid_task_in_denominator():
+    from experiments.tnsre.wong_wang_full import failed_control_outcome
+
+    trace = [{'u': [0., 0.], 'z': [-2., 1.]}, {'u': [.5, -.5], 'z': [-1., 1.]}]
+    result = failed_control_outcome(trace, seed=91000, dt=.05)
+    assert result['valid'] == 1 and result['success'] == 0
+    assert result['target'] == 0 and result['onset'] == 1
+    assert result['energy'] == pytest.approx(.025)
+    # A physical reversal already observed in the failed bin remains a success.
+    trace[-1]['z'] = [1., -2.]
+    result = failed_control_outcome(trace, seed=91000, dt=.05)
+    assert result['success'] == 1 and result['outcome_bin'] == 2
+
+
+def test_predecision_failure_requires_independent_task_validity():
+    from experiments.tnsre.wong_wang_full import failed_control_outcome
+
+    trace = [{'u': [0., 0.], 'z': [-2., -2.]}]
+    with pytest.raises(ValueError, match='uncontrolled validity'):
+        failed_control_outcome(trace, seed=91000, dt=.05)
+    result = failed_control_outcome(trace, seed=91000, dt=.05,
+                                   baseline={'valid': 1, 'onset': 120, 'target': 0})
+    assert result['valid'] == 1 and result['success'] == 0 and result['onset'] == 120
+    result = failed_control_outcome(trace, seed=91000, dt=.05,
+                                   baseline={'valid': 0, 'onset': -1, 'target': -1})
+    assert result['valid'] == 0 and result['success'] == 0

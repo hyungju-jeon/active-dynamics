@@ -23,8 +23,8 @@ in the manuscript asset style:
   the fit and batch refits on PALDI's session data.
 
 Usage:
-    python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20260924_snn_sessions_m2 \\
-        --figure all
+    python -m experiments.tnsre.figures.spiking_sessions --experiment-dir results/tnsre/20261008_snn_native_uniform_weak5_x10_ball \\
+        --figure manuscript
 """
 
 from __future__ import annotations
@@ -54,8 +54,19 @@ from .assets import (
 from .theme import NEUTRAL_LIGHT, STROKE_COLOR, style_experiment_axis
 
 POLICIES = ("adaptive", "active_myopic", "flex_rollback", "rhc", "prbs", "random")
+CURVE_STYLE = {
+    'adaptive': dict(linestyle='-', marker='o'),
+    'active_myopic': dict(linestyle='--', marker='s'),
+    'flex_rollback': dict(linestyle='-.', marker='D'),
+    'rhc': dict(linestyle='-', marker='^'),
+    'prbs': dict(linestyle='--', marker='v'),
+    'random': dict(linestyle=':', marker='x'),
+    'off_policy': dict(linestyle='-', marker='P'),
+}
+# Passive reference of the prediction panel: evidence in all 20 trials and no control input
+# (scenario ``passive_e20``), drawn when ``<experiment_dir>/passive_e20`` exists.
+PASSIVE_DIR, PASSIVE_POLICY, PASSIVE_LABEL = "passive_e20", "off_policy", "Passive"
 ACTIVE = ("adaptive", "active_myopic", "rhc")
-EXP_ID = "wong_wang_snn_sessions_m2"
 FINAL_SESSIONS = 20
 POOL_COLORS = ("#3E6FB0", "#C9562C")
 # Area shading shared by the spiking figures: identification input (gray), control input in the
@@ -71,11 +82,12 @@ REFERENCE_STYLE = {
     "front": dict(color="#8B6B4A", linestyle="-.", marker="v", label="Maximum-amplitude"),
 }
 DECISION_MARKER = dict(marker="o", ms=3.0, markeredgecolor="white", markeredgewidth=0.4)
-T_SHOWN_MS = 2500.0  # example session axis; both unsuccessful traces stay below the threshold after it
+T_SHOWN_MS = 2000.0  # display limit only; control and success windows retain their full durations
 TASK_TITLES = {"force": "Force", "overturn": "Overturn"}
 CURRENT_PA = 20.0
 BUDGET_PA2_S = CURRENT_PA ** 2 * 0.1  # normalized time unit = 100 ms
 CURVE_BUDGETS = {"force": 1.0, "overturn": 12.0}
+CONTROL_CHECKPOINTS = (0, 1, 5, 10, 15, 20)  # identification trials shown in the control figure's success panel
 
 
 # ------------------------------------------------------------------ data helpers
@@ -233,17 +245,61 @@ def _example_run(experiment_dir: Path, policy: str = "adaptive", seed: int = 0) 
     """Spike counts, network latent, filtered state, input, and session ends of one run."""
     import pickle
 
-    run = experiment_dir / "tracks" / EXP_ID / policy / f"seed_{seed}" / "repeat_01"
+    from experiments.tnsre.eval_spiking_sessions import runs_root_of, evaluated_policy
+
+    candidates = [p.parent for p in runs_root_of(experiment_dir).glob(f'*/seed_{seed}/repeat_01/run_metadata.json')
+                  if evaluated_policy(json.loads(p.read_text())['policy_id']) == policy]
+    if len(candidates) != 1:
+        raise ValueError(f'Expected one {policy} run for seed {seed}: {candidates}')
+    run = candidates[0]
     with open(sorted(glob.glob(str(run / "*" / "rollouts" / "*.pkl")))[0], "rb") as fh:
         rollout = pickle.load(fh)
     rows = _read(run / "state_action_trace.csv")
+    meta = json.loads((run / "run_metadata.json").read_text())
+    session_end = np.array([r["session_end"] == "True" for r in rows])
+    # The environment input is the agent's input plus the session's evidence (pool, amplitude, first bins).
+    pools = [int(s["evidence_pool"]) for s in meta.get("session_log", [])]
+    rule = meta.get("session_rule") or {}
+    evidence = np.zeros((len(rows), 2))
+    for (a, b), pool in zip(_session_bounds(session_end), pools):
+        if pool >= 0:
+            evidence[a:min(b, a + int(rule["evidence_bins"])), pool] = float(rule["evidence_amplitude"])
+    u_env = np.array([[float(r["env_action_x"]), float(r["env_action_v"])] for r in rows])
     return {
         "counts": rollout["obs"].reshape(len(rows), -1).numpy(),
         "z": np.array([[float(r["true_z0"]), float(r["true_z1"])] for r in rows]),
         "m": np.array([[float(r["model_z0"]), float(r["model_z1"])] for r in rows]),
-        "u": np.array([[float(r["env_action_x"]), float(r["env_action_v"])] for r in rows]),
-        "session_end": np.array([r["session_end"] == "True" for r in rows]),
+        "u": u_env - evidence,
+        "evidence": evidence,
+        "evidence_pool": pools,
+        # Trials from fixed_first_session (0-based) on run the full length: no post-decision hold.
+        "fixed_first_trial": None if rule.get("fixed_first_session") is None else int(rule["fixed_first_session"]) + 1,
+        "session_end": session_end,
     }
+
+
+def _evidence_trials(experiment_dir: Path) -> tuple[int, int] | None:
+    """First and last evidence trial (1-based) in the shared seed-0 protocol."""
+    from experiments.tnsre.eval_spiking_sessions import runs_root_of
+
+    meta_path = next(runs_root_of(experiment_dir).glob("*/seed_0/repeat_*/run_metadata.json"))
+    trials = [int(s["session"]) + 1 for s in json.loads(meta_path.read_text()).get("session_log", [])
+              if int(s["evidence_pool"]) >= 0]
+    return (min(trials), max(trials)) if trials else None
+
+
+def _shade_evidence_trials(ax: Any, start: float, stop: float, *, vertical_label: bool = False,
+                           label_y: float = 0.985) -> None:
+    """Light band over the identification trials with evidence; label near the top (axes fraction
+    ``label_y``), or upright in a narrow band."""
+    ax.axvspan(start, stop, color=NEUTRAL_LIGHT, alpha=0.45, lw=0, zorder=0)
+    x = 0.5 * (start + stop)
+    if vertical_label:
+        ax.text(x, 0.8, "evidence", transform=ax.get_xaxis_transform(), ha="center", va="center", rotation=90,
+                fontsize=_ASSET_TICK_SIZE, color=PROBE_TEXT)
+    else:
+        ax.text(x, label_y, "evidence", transform=ax.get_xaxis_transform(), ha="center", va="top",
+                fontsize=_ASSET_TICK_SIZE, color=PROBE_TEXT)
 
 
 def _session_bounds(session_end: np.ndarray) -> list[tuple[int, int]]:
@@ -258,34 +314,38 @@ def _filter_rmse(z: np.ndarray, m: np.ndarray) -> float:
 
 
 def generate_identification(experiment_dir: Path, output: Path, *,
-                            sessions_shown: tuple[int, ...] = (1, 20)) -> Path:
-    """Identification figure: (A) circuit above (B) session structure in the first column,
-    then (C) sessions ``sessions_shown`` (1-based) of PALDI seed 0 and (D) held-out R2
-    along identification.
+                            sessions_shown: tuple[int, ...] = (1, 20), example_seed: int = 6) -> Path:
+    """Identification: (A) phase portrait, (B) PALDI trials, (C) held-out R2.
 
-    The shown sessions follow a fixed rule (first and last), not a selection by eye.
+    Show the first and last trials of seed 6, selected for its longer first trial
+    (1.09 s) in the native/uniform weak5 campaign, not for prediction performance.
     """
     from experiments.tnsre.eval_spiking_sessions import PROTOCOL
 
     r2_rows = _read(experiment_dir / "eval" / "r2_per_session.csv")
-    fit_r2 = float(json.loads(Path(PROTOCOL["reduced_fit"]).read_text())["r2_test_piecewise"])
-    ex = _example_run(experiment_dir)
+    from .spiking_characterization import reference_record
+    reference = reference_record(experiment_dir)
+    fit_r2 = float(reference['r2_test_piecewise_current'] if 'r2_test_piecewise_current' in reference
+                   else reference['r2_test_piecewise'])
+    ex = _example_run(experiment_dir, seed=example_seed)
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     fig = plt.figure(figsize=(FIGURE_WIDTH, 2.7))
     from .spiking_characterization import draw_phase_portrait
     # A: phase portrait; B: actual trial structure and recordings; C: prediction.
     top, bottom = 0.8, 0.15
-    ax = fig.add_axes([0.065, bottom, 0.22, 0.22 * FIGURE_WIDTH / 2.7])
+    ax = fig.add_axes([0.065, bottom, 0.19, 0.19 * FIGURE_WIDTH / 2.7])
     equilibria = draw_phase_portrait(ax, experiment_dir)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.with_suffix('.fixed_points.json').write_text(json.dumps(equilibria, indent=2))
     fig.text(.035, top+.02, 'A', fontsize=_ASSET_PANEL_LABEL_SIZE, fontweight='bold')
-    row = fig.add_gridspec(1, 2, width_ratios=[2.5, 1.05], left=0.365, right=0.99,
-                          top=top, bottom=bottom, wspace=0.33)
+    row = fig.add_gridspec(1, 2, width_ratios=[2.6, 1.5], left=0.325, right=0.99,
+                          top=top, bottom=bottom, wspace=0.21)
     bounds = [_session_bounds(ex["session_end"])[k - 1] for k in sessions_shown]
+    longest = max(b - a for a, b in bounds)
+    # Give short trials enough width for the hold label; each column has its own time axis.
     sub = row[0].subgridspec(4, len(bounds), height_ratios=[0.5, 0.7, 1.15, 0.9],
-                           hspace=0.1, wspace=0.1, width_ratios=[b-a for a,b in bounds])
+                           hspace=0.1, wspace=0.1, width_ratios=[max(b - a, 0.75 * longest) for a, b in bounds])
     n_obs = ex["counts"].shape[1]
     shared_y = []
     for col, (k, (a, b)) in enumerate(zip(sessions_shown, bounds)):
@@ -305,37 +365,49 @@ def generate_identification(experiment_dir: Path, output: Path, *,
             ax_r.scatter(t_ms[spikes], np.full(spikes.size, j), s=2.0, marker="|", linewidths=0.6,
                          color=POOL_COLORS[0 if j < n_obs // 2 else 1], rasterized=True)
         rmse = _filter_rmse(ex["z"][a:b], ex["m"][a:b])
+        pool = ex["evidence_pool"][k - 1] if k - 1 < len(ex["evidence_pool"]) else -1
+        fixed = ex["fixed_first_trial"] is not None and k >= ex["fixed_first_trial"]
         ax_t.set_title(f"Trial {k}", fontsize=_ASSET_LABEL_SIZE, pad=2.0, loc="left")
-        ax_r.set_ylim(-1, n_obs)
-        ax_r.set_yticks([20, 60])
+        # Center labels on the recorded neurons in each pool. Fixed 80-neuron
+        # ticks expand the shared axis when this run records only 40 neurons.
+        split = n_obs // 2
+        ax_r.set_yticks([(split - 1) / 2, (split + n_obs - 1) / 2])
         ax_r.set_yticklabels(["1", "2"])
+        ax_r.set_ylim(-0.5, n_obs - 0.5)
+        if pool >= 0:  # evidence of this trial: light area under its current, in the pool's color
+            ax_u.fill_between(t_ms, 0.0, CURRENT_PA * ex["evidence"][a:b, pool], color=POOL_COLORS[pool],
+                              alpha=0.25, lw=0, step="post", zorder=1)
         for i in range(2):
             ax_z.plot(t_ms, ex["z"][a:b, i], color=POOL_COLORS[i], lw=0.8)
             ax_z.plot(t_ms, ex["m"][a:b, i], color=POOL_COLORS[i], lw=0.55, ls="--", alpha=0.8)
             ax_u.plot(t_ms, CURRENT_PA * ex["u"][a:b, i], color=POOL_COLORS[i], lw=0.6)
         ax_z.set_ylim(-2.4, 2.4)
-        ax_u.set_ylim(-22, 22)
-        # Decision (first bin with |z_1 - z_2| > gap, dashed) and the hold until the reset (shaded).
+        ax_u.set_ylim(-10, 10)
+        # Evidence can continue after a decision. Shade its saved nonzero bins,
+        # independently of the decision and reset markers.
+        evidence_present = np.any(ex["evidence"][a:b] != 0.0, axis=1)
+        edges = np.diff(np.r_[False, evidence_present, False].astype(int))
+        evidence_spans = list(zip(np.flatnonzero(edges == 1) * 5.0,
+                                  np.flatnonzero(edges == -1) * 5.0))
         lead = ex["z"][a:b, 0] - ex["z"][a:b, 1]
         decided = np.flatnonzero(np.abs(lead) > float(PROTOCOL["decision_gap"]))
         from matplotlib.patches import Rectangle
         decision_ms = decided[0] * 5.0 if decided.size else (b-a)*5.0
         end_ms = (b-a)*5.0
-        ax_t.add_patch(Rectangle((0, .25), decision_ms, .6, color=PROBE_SHADE, lw=0))
-        ax_t.add_patch(Rectangle((decision_ms,.25), end_ms-decision_ms,.6,
-                                color=DECISION_SHADE, alpha=DECISION_ALPHA, lw=0))
-        ax_t.text(decision_ms/2,.55,'input',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
+        for start_ms, stop_ms in evidence_spans:
+            ax_t.add_patch(Rectangle((start_ms, .25), stop_ms-start_ms, .6, color=PROBE_SHADE, lw=0))
+            ax_t.text((start_ms+stop_ms)/2,.55,'evidence',
+                      ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
         if decided.size:
             ax_t.axvline(decision_ms,color=STROKE_COLOR,ls='--',lw=.6)
-            ax_t.text((decision_ms+end_ms)/2,.55,'hold',ha='center',va='center',fontsize=_ASSET_TICK_SIZE)
+            if not fixed:
+                ax_t.text((decision_ms+end_ms)/2,.55,'hold',ha='center',va='center',
+                          fontsize=_ASSET_TICK_SIZE)
         ax_t.plot([end_ms,end_ms],[.1,1.1],color=STROKE_COLOR,lw=.7,clip_on=False)
         ax_t.text(end_ms,1.12,'reset',ha='right',va='bottom',fontsize=_ASSET_TICK_SIZE)
         ax_t.set_ylim(0,1.8); ax_t.axis('off')
-        if decided.size:
-            for ax in (ax_r, ax_z, ax_u):
-                ax.axvspan(0.0, decided[0] * 5.0, color=PROBE_SHADE, lw=0, zorder=0)
-                ax.axvspan(decided[0] * 5.0, (b - a) * 5.0, color=DECISION_SHADE,
-                           alpha=DECISION_ALPHA, lw=0, zorder=0)
+        for ax in (ax_r, ax_z, ax_u):
+            if decided.size:
                 ax.axvline(decided[0] * 5.0, color=STROKE_COLOR, lw=0.6, ls="--")
         # Ticks every 500 ms, none at the right edge where the next column starts.
         ax_u.set_xlim(0.0, (b - a) * 5.0)
@@ -352,33 +424,45 @@ def generate_identification(experiment_dir: Path, output: Path, *,
                 axis.tick_params(axis="y", pad=1.0)
                 axis.set_ylabel(label, fontsize=_ASSET_LABEL_SIZE, labelpad=1.0)
             _panel_label(ax_t, "B", dx=-34)
+        if col == len(bounds) - 1:
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.8, label="network")
             ax_z.plot([], [], color=STROKE_COLOR, lw=0.55, ls="--", label="filtered")
-            ax_z.legend(loc="upper left", fontsize=_ASSET_TICK_SIZE, frameon=False, ncol=2,
+            ax_z.legend(loc="upper right", fontsize=_ASSET_TICK_SIZE, frameon=False, ncol=2,
                         handlelength=1.4, borderaxespad=0.1)
     fig.align_ylabels(shared_y)
-    # (D) held-out R2 after each identification session.
+    # (C) held-out R2 after each identification session.
     ax = fig.add_subplot(row[1])
-    by = _r2_by_session(r2_rows)
-    for policy in POLICIES:
+    curves = [(policy, _r2_by_session(r2_rows)) for policy in POLICIES]
+    passive_r2 = experiment_dir / PASSIVE_DIR / "eval" / "r2_per_session.csv"
+    if passive_r2.exists():  # drawn first, beneath the methods
+        curves.insert(0, (PASSIVE_POLICY, _r2_by_session(_read(passive_r2))))
+    for policy, by in curves:
         ks = np.array(sorted(k for p, k in by if p == policy))
         vals = [np.asarray(by[(policy, k)]) for k in ks]
         color = _asset_baseline_policy_color(policy)
-        ax.plot(ks, [np.median(v) for v in vals], color=color, lw=0.95)
+        ax.plot(ks, [np.median(v) for v in vals], color=color, lw=0.95,
+                **CURVE_STYLE[policy], markersize=2.2, markevery=5, markeredgewidth=.35)
         ax.fill_between(ks, [np.percentile(v, 25) for v in vals], [np.percentile(v, 75) for v in vals],
                         color=color, alpha=0.1, lw=0)
     ax.axhline(fit_r2, color=REFERENCE_STYLE["reduced_fit"]["color"], ls=":", lw=0.8)
+    evidence_trials = _evidence_trials(experiment_dir)
+    if evidence_trials is not None:  # R2 after trial k sits at x = k; trial k spans (k - 1, k]
+        # Label below the fitted-model line (R2 0.97 is at axes fraction 0.97).
+        _shade_evidence_trials(ax, evidence_trials[0] - 1, evidence_trials[1], label_y=0.94)
     ax.set_xlim(0, FINAL_SESSIONS)
     ax.set_ylim(-0.2, 1.0)
     ax.set_xticks([0, 5, 10, 15, 20])
     ax.set_xlabel("Identification trials")
-    ax.set_ylabel(r"Held-out $R^2_{\mathrm{roll}}$")
+    ax.set_ylabel(r"Held-out $R^2_{\mathrm{roll}}$", labelpad=1.0)
     ax.set_title("Prediction", fontsize=_ASSET_LABEL_SIZE, pad=2.0)
     style_experiment_axis(ax)
+    ax.tick_params(axis="y", pad=1.0)
     _panel_label(ax, "C", dx=-32)
 
-    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0, label=_asset_policy_label(p))
-               for p in POLICIES]
+    shown = [*POLICIES, *([PASSIVE_POLICY] if passive_r2.exists() else [])]
+    handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0, **CURVE_STYLE[p], markersize=2.2,
+                          label=PASSIVE_LABEL if p == PASSIVE_POLICY else _asset_policy_label(p))
+               for p in shown]
     handles.append(plt.Line2D([], [], color=REFERENCE_STYLE["reduced_fit"]["color"], ls=":", lw=0.9,
                               label=REFERENCE_STYLE["reduced_fit"]["label"]))
     fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.0), ncol=len(handles),
@@ -409,16 +493,26 @@ def _draw_budget_panel(ax: Any, look: dict, task: str, budgets: list[float], *, 
     style_experiment_axis(ax)
 
 
-def _draw_session_panel(ax: Any, look: dict, task: str, checkpoints: list[int], *, ylabel: bool) -> None:
-    """Task success at budget ``CURVE_BUDGETS[task]`` along identification (0 = shared initial estimate)."""
+def _draw_session_panel(ax: Any, look: dict, task: str, checkpoints: list[int], *, ylabel: bool,
+                        evidence_trials: tuple[int, int] | None = None) -> None:
+    """Task success at budget ``CURVE_BUDGETS[task]`` along identification (0 = shared initial estimate).
+
+    ``evidence_trials`` (first, last; 1-based) shades the checkpoints whose added trials had evidence.
+    """
     pos = np.arange(len(checkpoints))
+    if evidence_trials is not None:  # checkpoint i covers the trials after checkpoint i - 1
+        inside = [i for i, k in enumerate(checkpoints) if evidence_trials[0] <= k <= evidence_trials[1]]
+        if inside:
+            _shade_evidence_trials(ax, inside[0] - 1, inside[-1], vertical_label=len(inside) == 1, label_y=0.86)
     b = CURVE_BUDGETS[task]
     prior = look.get(("prior", 0, task, b), (np.nan, 0.0))
     for policy in POLICIES:
-        pts = [prior if k == 0 else look.get((policy, k, task, b), (np.nan, 0.0)) for k in checkpoints]
+        pts = [prior if k == 0 else look[(policy, k, task, b)] for k in checkpoints]
         m, e = (np.array(v) for v in zip(*pts))
+        if not np.isfinite(m).all():
+            raise ValueError(f'Missing control checkpoints for {policy}')
         color = _asset_baseline_policy_color(policy)
-        ax.plot(pos, m, color=color, lw=0.9, marker="o", ms=2.2)
+        ax.plot(pos, m, color=color, lw=0.9, **CURVE_STYLE[policy], ms=2.2)
         ax.fill_between(pos, m - e, m + e, color=color, alpha=0.1, lw=0)
     for name, style in REFERENCE_STYLE.items():
         value = look.get((name, -1, task, b), (np.nan, 0.0))[0]
@@ -466,7 +560,8 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     ax_t.text(20.0, 1.75, "evidence 6 pA", ha="left", va="center", fontsize=_ASSET_TICK_SIZE)
     ax_t.add_patch(Rectangle((onset_ms, 0.075), window_ms, 0.95, facecolor=CONTROL_SHADE,
                              edgecolor="none"))
-    ax_t.text(onset_ms + 0.5 * window_ms, 0.55, "control input (at most 2 s)", ha="center", va="center",
+    visible_control_end = min(onset_ms + window_ms, T_SHOWN_MS)
+    ax_t.text(0.5 * (onset_ms + visible_control_end), 0.55, "control input (at most 2 s)", ha="center", va="center",
               fontsize=_ASSET_TICK_SIZE)
     ax_t.set_ylim(0.0, 2.4)
     ax_t.axis("off")
@@ -485,6 +580,11 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
               **DECISION_MARKER, markerfacecolor=STROKE_COLOR)
     u = ex[f"{task}_learned_u"]
     t_ms = np.arange(u.shape[0]) * 5.0
+    evidence = ex[f"{task}_learned_evidence"]
+    for i in range(2):
+        if np.any(evidence[:, i]):
+            ax_u.fill_between(t_ms, 0.0, CURRENT_PA * evidence[:, i], color=POOL_COLORS[i],
+                              alpha=0.25, lw=0, step="post", zorder=1)
     ax_u.plot(t_ms, CURRENT_PA * u[:, target], color=POOL_COLORS[target], lw=0.8, label="to target pool")
     ax_u.plot(t_ms, CURRENT_PA * u[:, 1 - target], color=POOL_COLORS[1-target], lw=0.8, label="to initial-choice pool")
     ax_t.axvline(onset_ms, ymax=0.94, color=STROKE_COLOR, lw=0.6, ls="--")
@@ -508,6 +608,7 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
     ax_u.set_ylim(-22, 22)
     ax_u.set_xlabel("Time (ms)")
     ax_u.set_xlim(0.0, T_SHOWN_MS)
+    ax_u.set_xticks(np.arange(0.0, T_SHOWN_MS + 1, 500.0))
     # Before control onset both inputs are zero, leaving room above the traces.
     ax_u.legend(handles=[
         Line2D([], [], color=POOL_COLORS[i], lw=0.8, label=str(i + 1))
@@ -519,7 +620,7 @@ def _draw_example_session(fig: Any, cell: Any, eval_dir: Path, task: str) -> Any
 
 def _control_legend(fig: Any, plt: Any) -> None:
     model_handles = [plt.Line2D([], [], color=_asset_baseline_policy_color(p), lw=1.0,
-                                label=_asset_policy_label(p)) for p in POLICIES]
+                                **CURVE_STYLE[p], ms=2.2, label=_asset_policy_label(p)) for p in POLICIES]
     style = REFERENCE_STYLE["reduced_fit"]
     model_handles.append(plt.Line2D([], [], color=style["color"], ls=style["linestyle"],
                                    marker=style["marker"], ms=2.8, lw=0.8, label="Fitted"))
@@ -558,20 +659,24 @@ def generate_control(experiment_dir: Path, output: Path, *, summary_name: str = 
 
     eval_dir = experiment_dir / "eval"
     look = _summary_lookup(eval_dir / summary_name)
-    checkpoints = [int(k) for k in PROTOCOL["task_checkpoints"]]
+    checkpoints = list(CONTROL_CHECKPOINTS)
     task = "overturn"
 
     plt = load_plotting(output, apply_style=_apply_asset_style, path_is_file=True)
     fig = plt.figure(figsize=(FIGURE_WIDTH, 2.05))
-    example = fig.add_gridspec(1, 1, left=0.065, right=0.49, top=0.84, bottom=0.20)
-    comparison = fig.add_gridspec(1, 1, left=0.825, right=0.995, top=0.8, bottom=0.20)
+    example = fig.add_gridspec(1, 1, left=0.065, right=0.405, top=0.84, bottom=0.20)
+    comparison = fig.add_gridspec(1, 1, left=0.74, right=0.995, top=0.8, bottom=0.20)
     _panel_label(_draw_example_session(fig, example[0], eval_dir, task), "A", dx=-30)
     from .spiking_characterization import draw_control_phase
-    ax = fig.add_axes([0.565, 0.20, 0.175, 0.60])
-    draw_control_phase(ax, experiment_dir, Path("results/tnsre/20260929_manuscript_update/control_phase_uniform"))
+    ax = fig.add_axes([0.48, 0.20, 0.175, 0.60])
+    # The phase trajectories must belong to this experiment's selected model.
+    phase_dir = experiment_dir / "control_phase_all"
+    if not phase_dir.exists():
+        raise FileNotFoundError(f'Missing verified control replay: {phase_dir}')
+    draw_control_phase(ax, experiment_dir, phase_dir)
     _panel_label(ax, "B", dx=-18)
     ax = fig.add_subplot(comparison[0])
-    _draw_session_panel(ax, look, task, checkpoints, ylabel=True)
+    _draw_session_panel(ax, look, task, checkpoints, ylabel=True, evidence_trials=_evidence_trials(experiment_dir))
     _panel_label(ax, "C", dx=-28)
     _control_legend(fig, plt)
     return save_figure(fig, output, plt_module=plt)
@@ -805,12 +910,13 @@ FIGURES = {
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Figures of the spiking-network decision experiment.")
     parser.add_argument("--experiment-dir", type=Path, required=True)
-    parser.add_argument("--figure", choices=[*FIGURES, "all"], default="all")
+    parser.add_argument("--figure", choices=[*FIGURES, "manuscript", "all"], default="manuscript")
     parser.add_argument("--out-dir", type=Path, default=None, help="default: <experiment-dir>/eval/figures")
     parser.add_argument("--format", default="pdf", choices=["pdf", "png", "svg"])
     args = parser.parse_args(argv)
     out_dir = args.out_dir or args.experiment_dir / "eval" / "figures"
-    names = list(FIGURES) if args.figure == "all" else [args.figure]
+    names = (list(FIGURES) if args.figure == "all" else
+             ['identification', 'circuit', 'control'] if args.figure == 'manuscript' else [args.figure])
     for name in names:
         stem, fn = FIGURES[name]
         print(fn(args.experiment_dir, out_dir / f"{stem}.{args.format}"))

@@ -118,7 +118,7 @@ def _predictive_only_embedding_step(model: Any, action: Any) -> dict[str, Any]:
         '_normalize_embedding_belief',
         '_ensure_state_belief_shapes',
         'dynamics',
-        'Fz',
+        '_jac_state',
         'predict',
         '_project_spd',
         'z',
@@ -139,7 +139,7 @@ def _predictive_only_embedding_step(model: Any, action: Any) -> dict[str, Any]:
         u_enc = model.action_encoder(action_bt, model.z['m'])
     else:
         u_enc = action_bt
-    fz = model.Fz(model.z['m'], model.e['m'])
+    fz = model._jac_state(model.z['m'], model.e['m'], u_enc)
     dfdz = fz * model.dt + eye
     pred_m = model.predict(action=u_enc)
     pred_cov = model._project_spd(dfdz @ model.z['P'] @ dfdz.transpose(-1, -2) + q + 1e-6 * eye)
@@ -199,10 +199,16 @@ def _model_input(action: torch.Tensor | None, env_info: Dict[str, Any]) -> torch
 
 
 def _apply_session_reset(model: Any, policy: Any, env_info: Dict[str, Any]) -> None:
-    """Move the state belief to the announced reset state and let the policy restart its plan."""
+    """Move the state belief to the announced reset state and let the policy restart its plan.
+
+    The policy gets the new session's clock first, so the restarted plan uses that
+    session's action bound (``SessionRule.action_scale``).
+    """
     reset_state_belief = getattr(model, 'reset_session_state', None)
     if callable(reset_state_belief):
         reset_state_belief(env_info['session_reset_state'], float(env_info['session_reset_variance']))
+    if 'session_context' in env_info:
+        setattr(policy, 'session_context', env_info['session_context'])
     on_session_reset = getattr(policy, 'on_session_reset', None)
     if callable(on_session_reset):
         on_session_reset(model.get_state())

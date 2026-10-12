@@ -68,6 +68,7 @@ models:
     replan_interval: 20
     planning_horizon: 20
     policy_type: rhc
+    action_constraint: radius   # ball ||u|| <= action_max, as every TBME policy
 
 
   prbs:
@@ -76,6 +77,15 @@ models:
     planning_horizon: 1
     policy_type: baseline-prbs
     passive: true
+    action_constraint: radius   # levels +-action_max / sqrt(2) per input: on the ball
+
+  random:
+    # The shared catalog's random policy (schedule u1_r1_h1) with the ball constraint: inputs uniform in
+    # ||u|| <= action_max, as every TBME policy.
+    schedule_id: u1_r1_h1
+    policy_type: random
+    passive: true
+    action_constraint: radius
 
 
 # Schedule Experiment
@@ -124,6 +134,29 @@ models:
     adaptive_update_eig_threshold: 0.05
     adaptive_replan_min_interval: 5
     adaptive_replan_state_error_threshold: 3.0
+
+  # PALDI reacting at every step (2026-10-04): the parameter block may be applied, and a replan
+  # triggered, after one step instead of five; the maximum intervals (20 steps) are unchanged.
+  adaptive_reactive:
+    extends: adaptive
+    adaptive_update_min_interval: 1
+    adaptive_replan_min_interval: 1
+
+  # PALDI on a 2-bin planning grid with a faster cadence (SNN, 2026-10-06): planning step 2 bins
+  # (10 ms) instead of 20, the same 4-s horizon (400 steps), and parameter updates and replans at
+  # least 3 bins apart instead of 5; the maximum intervals (20 bins) are unchanged.
+  adaptive_c2:
+    extends: adaptive
+    coarse_dt_factor: 2
+    planning_horizon: 400
+    adaptive_update_min_interval: 3
+    adaptive_replan_min_interval: 3
+
+  # PALDI c2 with a 200-ms horizon (SNN, 2026-10-06): 20 planning steps of 2 bins instead of 400, so a
+  # rollout covers 200 ms of the 2-s trial; step and cadence as adaptive_c2.
+  adaptive_c2h20:
+    extends: adaptive_c2
+    planning_horizon: 20
 
   adaptive_async_realtime:
     extends: adaptive
@@ -214,3 +247,11 @@ models:
     action_constraint: radius
     coarse_dt_factor: 20
     coarse_action_mapping: hold
+
+  # SNN manuscript PALDI: 200 ms horizon, 10 ms planning steps, 15 ms minimum cadence.
+  adaptive_c2h20:
+    extends: adaptive
+    coarse_dt_factor: 2
+    planning_horizon: 20
+    adaptive_update_min_interval: 3
+    adaptive_replan_min_interval: 3

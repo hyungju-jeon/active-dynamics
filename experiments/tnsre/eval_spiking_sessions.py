@@ -1,11 +1,10 @@
 """Identification over decision sessions, then a decision task, on the Wang (2002) network.
 
-Identification (``experiments.tnsre.exp_spiking_sessions``): every agent runs 20
-decision sessions. A session starts in the quiet state; a decision is made when
-``|z_1 - z_2| > 2``; 200 ms later, or after 2 s without a decision, the circuit
-resets. The agents know this rule. Every identified model is the learner's
-reduced Wong-Wang drift with the input inside the gain (``wong_wang_inside_gain``)
-and the estimate a run held after ``k`` completed sessions.
+Identification (``experiments.tnsre.exp_spiking_sessions``): each agent runs 20
+trials using the saved run's dynamics family, readout, and trial protocol. The
+selected native/uniform experiment uses ten evidence-led decision-ended trials
+followed by ten fixed 2-s trials without evidence. Estimates are frozen after
+``k`` completed trials. The historical sigmoid family remains supported.
 
 This module scores those models against the spiking network:
 
@@ -54,7 +53,7 @@ Stages (``--stage``):
     examples   a few task sessions recorded bin by bin       (one network; for figures)
 
 Example:
-    E=results/tnsre/20260924_snn_sessions_m2/eval; RUNS=results/tnsre/20260924_snn_sessions_m2/tracks/wong_wang_snn_sessions_m2
+    E=results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/eval; RUNS=results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/tracks/ww_weak_evidence5_explore10_transfer_uniform
     python -m experiments.tnsre.eval_spiking_sessions --stage r2 --out $E --runs-root $RUNS
     python -m experiments.tnsre.eval_spiking_sessions --stage task --out $E --runs-root $RUNS --worker-index 0 --n-workers 1
 """
@@ -70,24 +69,26 @@ from typing import Any, Sequence
 import numpy as np
 import torch
 
-PRESET_ID = "tbme_wong_wang_snn_sessions_m2"
+PRESET_ID = "tbme_ww_observation_transfer_uniform"
 TASKS = ("force", "overturn")
 
 PROTOCOL: dict[str, Any] = {
     # Held-out trajectories: 12 network runs under random piecewise-constant pool drives.
-    "test_trajectories": "results/tnsre/20260924_snn_sessions_m2/data/test_trajectories.npz",
+    "test_trajectories": "results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/data/test_trajectories.npz",
     "test_seeds": list(range(70000, 70012)),
     "test_bins": 400,
     "test_hold": 40,
     "test_levels": [-1.0, -0.5, 0.0, 0.5, 1.0],
     # Reduced model fitted to network data (the reference of the evaluation).
-    "reduced_fit": "results/tnsre/20260924_snn_sessions_m2/reference/m2_fit.json",
+    "reduced_fit": "results/tnsre/20261008_snn_native_uniform_weak5_x10_ball/reference/native_fit.json",
     "r2_horizon": 100,
     "r2_stride": 20,
-    "task_checkpoints": [0, 1, 2, 5, 20],       # completed identification sessions
+    # Completed identification trials in the selected manuscript control curve.
+    "task_checkpoints": [0, 1, 5, 10, 15, 20],
     "task_sessions": 8,                        # task sessions per task
     "task_seeds": {"force": 90000, "overturn": 91000},
     "evidence_amplitude": 0.3,                 # 6 pA in action units (x 20 pA)
+    "action_max": 1.0,                        # L2 norm bound on the two control inputs
     "evidence_bins": 200,
     "decision_gap": 2.0,
     "max_session_bins": 400,
@@ -134,21 +135,30 @@ EXAMPLES: dict[str, Any] = {
 
 
 # ------------------------------------------------------------------ network and held-out data
-def build_network(seed: int = 0):
-    """Wang (2002) network with the configuration of the experiment's preset."""
-    from actdyn.environment.spiking_decision import TAU_NMDA_MS, WangDecisionNetwork
+def build_network(seed: int = 0, preset_id: str | None = None):
+    """Wang (2002) network with the configuration of a preset (default: the experiment's).
+
+    The task stage passes the identification runs' preset, so the network records the same
+    neurons as the runs' readouts.
+    """
+    from actdyn.environment.spiking_decision import TAU_NMDA_MS, WangDecisionNetwork, observed_counts
     from experiments.experiment_definitions import get_environment_preset
     from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
 
     configure_tbme_catalogs(suite_entries={})
-    p = get_environment_preset(PRESET_ID)
+    p = get_environment_preset(PRESET_ID if preset_id is None else preset_id)
     return WangDecisionNetwork(
         n_e=int(p.spiking_n_e), n_i=int(p.spiking_n_i), f_sel=float(p.spiking_f_sel),
         w_plus=float(p.spiking_w_plus), sim_dt_ms=float(p.spiking_sim_dt_ms),
         control_bin_ms=float(p.dt) * TAU_NMDA_MS, stim_gain_pa=float(p.spiking_stim_gain_pa),
-        observed_per_pool=int(p.spiking_observed_per_pool),
+        observed_per_pool=observed_counts(p),
         background_rate_hz=float(p.spiking_background_rate_hz), seed=int(seed),
         codegen_target=str(p.spiking_codegen_target),
+        stim_fraction=float(p.spiking_stim_fraction),
+        stim_weight_cv=float(p.spiking_stim_weight_cv),
+        stim_mask_seed=int(p.spiking_stim_mask_seed),
+        evidence_mode=str(p.spiking_evidence_mode),
+        evidence_reference_mv=float(p.spiking_evidence_reference_mv),
     )
 
 
@@ -208,6 +218,31 @@ def learner_transition(dynamics_type: str, theta: np.ndarray, full_params: np.nd
     return transition
 
 
+def runs_root_of(experiment_dir: Path) -> Path:
+    """The single run folder ``<experiment_dir>/tracks/<environment slug>`` of an experiment."""
+    roots = [p for p in sorted((Path(experiment_dir) / "tracks").iterdir()) if p.is_dir()]
+    if len(roots) != 1:
+        raise ValueError(f"expected one run folder under {experiment_dir}/tracks, found {[p.name for p in roots]}")
+    return roots[0]
+
+
+def runs_preset(runs: Sequence[dict[str, Any]]) -> str:
+    """The environment preset shared by ``runs`` (the task network records the same neurons)."""
+    presets = {run["preset_id"] for run in runs}
+    if len(presets) != 1:
+        raise ValueError(f"runs come from several presets: {sorted(presets)}")
+    return presets.pop()
+
+
+# PALDI variants evaluated as PALDI ("adaptive"); their run metadata keeps the variant's id and settings.
+PALDI_VARIANTS = ("adaptive_c2", "adaptive_c2h20")
+
+
+def evaluated_policy(policy_id: str) -> str:
+    """Policy name of a run in the evaluation: a PALDI variant counts as PALDI."""
+    return "adaptive" if policy_id in PALDI_VARIANTS else policy_id
+
+
 def load_session_runs(runs_root: Path) -> list[dict[str, Any]]:
     """Estimates after each completed session, readout, and prior of every completed run."""
     runs = []
@@ -226,14 +261,18 @@ def load_session_runs(runs_root: Path) -> list[dict[str, Any]]:
                 est[k] = np.array([float(r[f"e{i}"]) for i in range(n_e)])
                 bins[k] = int(float(r["step"]))
         runs.append({
-            "policy": str(meta["policy_id"]), "seed": int(meta["seed"]), "est": est, "bins": bins,
+            "policy": evaluated_policy(str(meta["policy_id"])), "seed": int(meta["seed"]), "est": est, "bins": bins,
             "dynamics_type": str(meta["estimator_dynamics_type"]),
             "full_params": np.asarray(meta["estimator_true_params_full"], dtype=np.float64),
             "min_embedding_dim": int(meta["min_embedding_dim"]),
             "C": np.asarray(meta["observation_loading_matrix"], dtype=np.float64),
             "b": np.asarray(meta["observation_loading_bias"], dtype=np.float64),
             "session_log": meta.get("session_log", []),
+            "preset_id": str(meta.get("env_preset_id", PRESET_ID)),
         })
+    keys = [(run["policy"], run["seed"]) for run in runs]
+    if len(keys) != len(set(keys)):
+        raise ValueError(f"several runs per policy and seed in {runs_root} (PALDI and a PALDI variant?)")
     return runs
 
 
@@ -262,10 +301,12 @@ def model_free_input(name: str, task: str, k: int, target: int, budget: float, d
     window = int(PROTOCOL["window"][task])
     if name == "none" or k >= window:
         return np.zeros(2)
+    bound = float(PROTOCOL["action_max"])
     if name == "spread":
-        return min(1.0, float(np.sqrt(budget / (dt * window)))) * target_direction(target)
+        return min(bound, float(np.sqrt(budget / (dt * window)))) * target_direction(target)
     if name == "front":
-        return target_direction(target) if k < int(budget / dt + 1e-9) else np.zeros(2)
+        remaining = max(float(budget) - k * dt * bound**2, 0.0)
+        return min(bound, float(np.sqrt(remaining / dt))) * target_direction(target)
     raise ValueError(f"unknown model-free controller {name!r}")
 
 
@@ -279,12 +320,14 @@ def seed_pushes(window_left: int, budget_left: float, dt: float, factor: int) ->
     hc = int(window_left) // int(factor)
     coarse_dt = float(dt) * int(factor)
     directions = (np.array([-1.0, 1.0]) / np.sqrt(2.0), np.array([0.0, 1.0]), np.array([-1.0, 0.0]))
-    n_full = min(hc, int(np.floor(float(budget_left) / coarse_dt + 1e-9)))
+    bound = float(PROTOCOL["action_max"])
+    step_cost = coarse_dt * bound**2
+    n_full = min(hc, int(np.floor(float(budget_left) / step_cost + 1e-9)))
     front = np.zeros(hc)
-    front[:n_full] = 1.0
+    front[:n_full] = bound
     if n_full < hc:
-        front[n_full] = np.sqrt(max(float(budget_left) - n_full * coarse_dt, 0.0) / coarse_dt)
-    even = np.full(hc, min(1.0, float(np.sqrt(float(budget_left) / (coarse_dt * hc)))))
+        front[n_full] = min(bound, np.sqrt(max(float(budget_left) - n_full * step_cost, 0.0) / coarse_dt))
+    even = np.full(hc, min(bound, float(np.sqrt(float(budget_left) / (coarse_dt * hc)))))
     return np.stack([shape[:, None] * d[None, :] for d in directions for shape in (front, even)])
 
 
@@ -348,7 +391,7 @@ class IcemController:
             seeds = np.concatenate([seeds, carry_over_plan(self._last_plan, k, target, factor)[None]], axis=0)
         out = icem_reversal_plan(
             self.transition["plan"], z0, drive, dt=self.dt, window=window_left, coarse_factor=factor,
-            budget=float(budget_left), action_max=1.0, noise_var=float(PROTOCOL["planner_noise_var"]),
+            budget=float(budget_left), action_max=float(PROTOCOL["action_max"]), noise_var=float(PROTOCOL["planner_noise_var"]),
             objective=str(PROTOCOL["planner_objective"][task]), success_gap=float(PROTOCOL["decision_gap"]),
             mc_samples=int(PROTOCOL["planner_mc_samples"]), mc_seed=self.seed, action_seed=self.seed * 1000 + int(k),
             num_samples=int(PROTOCOL["icem_num_samples"]), num_elites=int(PROTOCOL["icem_num_elites"]),
@@ -379,7 +422,7 @@ def run_task_session(net, task: str, seed: int, budget: float, controller: str,
     if task == "overturn":
         while t < int(PROTOCOL["max_session_bins"]):
             drive = evidence_drive(t, pool)
-            counts, z = net.step(drive)
+            counts, z = net.step(np.zeros(2), evidence=drive)
             if model is not None:
                 model.observe(counts, drive)
             if trace is not None:
@@ -412,13 +455,15 @@ def run_task_session(net, task: str, seed: int, budget: float, controller: str,
                     plan = None
                 if plan is not None:
                     u = plan[k - plan_k]
+            if not np.isfinite(u).all() or np.linalg.norm(u) > float(PROTOCOL["action_max"]) + 1e-6:
+                raise RuntimeError(f"Control violates action bound: {u}")
             step_energy = dt * float(u @ u)
             if energy + step_energy > budget:  # numerical guard; plans are budget-projected
                 u = u * np.sqrt(max(budget - energy, 0.0) / max(step_energy, 1e-12))
                 step_energy = dt * float(u @ u)
             energy += step_energy
         drive = evidence_drive(t, pool) + u
-        counts, z = net.step(drive)
+        counts, z = net.step(u, evidence=evidence_drive(t, pool))
         if model is not None:
             model.observe(counts, drive)
         if trace is not None:
@@ -513,7 +558,7 @@ def stage_task(out: Path, runs_root: Path, worker_index: int, n_workers: int, co
         with open(other) as fh:
             done |= {(r["controller"], r["policy"], int(r["seed"]), int(r["checkpoint"]), r["task"], float(r["budget"]),
                       int(r["task_seed"])) for r in csv.DictReader(fh)}
-    net = build_network()
+    net = build_network(preset_id=runs_preset(runs))  # record the neurons of the runs' readouts
     dt = float(net.dt_latent)
     new_file = not path.exists()
     with open(path, "a", newline="") as fh:
@@ -547,7 +592,7 @@ def stage_examples(out: Path, runs_root: Path) -> None:
     dyn = {"dynamics_type": run["dynamics_type"], "full_params": run["full_params"],
            "min_embedding_dim": run["min_embedding_dim"]}
     controllers = {"learned": run["est"][int(EXAMPLES["checkpoint"])], "fit": reference_fit()}
-    net = build_network()
+    net = build_network(preset_id=runs_preset(list(runs.values())))
     dt = float(net.dt_latent)
     arrays: dict[str, np.ndarray] = {}
     rows = []

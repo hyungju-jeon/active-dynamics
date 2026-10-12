@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from actdyn.environment.session import SessionRule, session_evidence
+from actdyn.environment.session import SessionRule, session_action_scale, session_evidence
 from actdyn.models.planning_surrogates import LocalRBFBayesianLinearDynamics, RFFBayesianLinearDynamics
 from actdyn.utils.rollout import RecentRollout
 
@@ -93,6 +93,7 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         rbf_epsilon: float = 0.01,
         state_bound: float | np.ndarray = 5.0,
         rbf_include_bias: bool = False,
+        action_radius: float | None = None,
         **_: Any,
     ) -> None:
         super().__init__(action_space=action_space, chunk=max(1, int(horizon)), device=device)
@@ -124,6 +125,8 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         self.rbf_epsilon = float(np.clip(rbf_epsilon, 1e-8, 0.5))
         self.state_bound = state_bound
         self.rbf_include_bias = bool(rbf_include_bias)
+        # Ball constraint ||u|| <= action_radius on the planned inputs; None keeps the action-space box.
+        self.action_radius = None if action_radius is None else float(action_radius)
         self._rng = np.random.default_rng(int(seed))
         self._internal_model: RFFBayesianLinearDynamics | LocalRBFBayesianLinearDynamics | None = None
         self._planner: RhcMultipleShootingPlanner | None = None
@@ -164,8 +167,9 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
         self._ensure_model(x0)
         assert self._planner is not None
         evidence = self._known_evidence()
-        plan = (self._planner.plan(x0=x0, objective=self.objective) if evidence is None
-                else self._planner.plan(x0=x0, objective=self.objective, input_offset=evidence))
+        scale = session_action_scale(self.session_rule, self.session_context)
+        plan = (self._planner.plan(x0=x0, objective=self.objective, action_scale=scale) if evidence is None
+                else self._planner.plan(x0=x0, objective=self.objective, input_offset=evidence, action_scale=scale))
         action_tensor = torch.as_tensor(plan.actions[None, :, :], dtype=torch.float32, device=self.device)
         cost_tensor = torch.as_tensor([[plan.cost]], dtype=torch.float32, device=self.device)
         assert self._internal_model is not None
@@ -266,4 +270,5 @@ class RecedingHorizonCuriosityPolicy(BasePolicy):
             planner_maxiter=self.planner_maxiter,
             warm_start=self.warm_start,
             rng=self._rng,
+            action_radius=self.action_radius,
         )

@@ -23,6 +23,39 @@ from actdyn.models.model import FilteringEmbedding
 RAW = [1.2, 0.7, -0.9, 1.8, -0.4]  # (w_+, w_-, h_raw, gamma_raw, g_raw)
 
 
+def test_wong_wang_transfer_has_finite_values_and_derivatives_at_threshold():
+    from actdyn.utils.vectorfields_eqn import wong_wang_activation
+
+    q = torch.tensor([-1000., -2., -1e-5, 0., 1e-5, 2., 1000.], dtype=torch.float64, requires_grad=True)
+    y = wong_wang_activation(q)
+    dy = torch.autograd.grad(y.sum(), q, create_graph=True)[0]
+    ddy = torch.autograd.grad(dy.sum(), q)[0]
+    assert torch.isfinite(y).all() and torch.isfinite(dy).all() and torch.isfinite(ddy).all()
+    torch.testing.assert_close(y[3], torch.tensor(1., dtype=q.dtype))
+    torch.testing.assert_close(dy[3], torch.tensor(.5, dtype=q.dtype))
+    torch.testing.assert_close(ddy[3], torch.tensor(1 / 6, dtype=q.dtype))
+    torch.testing.assert_close(y[-1], q[-1])  # high-drive linear limit, no logistic ceiling
+    assert torch.autograd.gradcheck(wong_wang_activation, (q,))
+
+
+def test_wong_wang_transfer_matches_published_physical_equation_and_gate_bounds():
+    from actdyn.utils.vectorfields_eqn import WongWangTransfer
+
+    vf = WongWangTransfer()
+    z = torch.tensor([[-1., -.5], [.1, .3], [-2., 2.]])
+    u = torch.tensor([[.2, -.3], [-.7, .8], [5., -5.]])
+    s = z.double() / 4 + .5
+    current = .2609 * s - .0497 * s.flip(-1) + .3255 + .020 * u.double()
+    y = 270 * current - 108
+    rate = y / -torch.expm1(-.154 * y)
+    expected = 4 * (-s + .1 * .641 * (1 - s) * rate)
+    torch.testing.assert_close(vf.compute_with_input(z, u), expected.float(), rtol=2e-5, atol=2e-5)
+    assert vf.compute_with_input(z, u)[-1, 0] >= 0
+    assert vf.compute_with_input(z, u)[-1, 1] < 0
+    torch.testing.assert_close(vf.compute_with_input(z.flip(-1), u.flip(-1)),
+                               vf.compute_with_input(z, u).flip(-1))
+
+
 def _states(n=6, seed=0):
     g = torch.Generator().manual_seed(seed)
     return 1.5 * torch.randn(n, 2, generator=g), torch.randn(n, 2, generator=g)
@@ -57,27 +90,30 @@ def test_additive_fields_keep_their_drift_and_jacobians():
         torch.testing.assert_close(jac(u), jac(None), rtol=0, atol=0)  # an additive input has no effect
 
 
-def test_inside_gain_jacobians_depend_on_the_input():
+@pytest.mark.parametrize("family", ["wong_wang_inside_gain", "wong_wang_transfer"])
+def test_inside_gain_jacobians_depend_on_the_input(family):
     z, u = _states(seed=2)
     e = torch.tensor(RAW).expand(6, 5)
     kw = dict(full_params=tuple(RAW), min_embedding_dim=5, dynamics_alpha=1.0)
-    Fe_u = jacobian_embedding_torch("wong_wang_inside_gain", z, e, u=u, **kw)
-    Fe_0 = jacobian_embedding_torch("wong_wang_inside_gain", z, e, **kw)
+    Fe_u = jacobian_embedding_torch(family, z, e, u=u, **kw)
+    Fe_0 = jacobian_embedding_torch(family, z, e, **kw)
     assert Fe_u.shape == (6, 2, 5)
     assert torch.allclose(Fe_0[..., 4], torch.zeros_like(Fe_0[..., 4]))  # no input: g is not identified
     assert not torch.allclose(Fe_u, Fe_0)
     # Finite-difference check of d f / d z at the input.
-    Fz = jacobian_state_torch("wong_wang_inside_gain", z, torch.tensor([RAW]), dynamics_alpha=1.0, u=u)
+    Fz = jacobian_state_torch(family, z, torch.tensor([RAW]), dynamics_alpha=1.0, u=u)
     h = 1e-3
     for j in range(2):
         dz = torch.zeros(2)
         dz[j] = h
-        fd = (drift_torch("wong_wang_inside_gain", z + dz, torch.tensor([RAW]), u, dynamics_alpha=1.0)
-              - drift_torch("wong_wang_inside_gain", z - dz, torch.tensor([RAW]), u, dynamics_alpha=1.0)) / (2 * h)
+        fd = (drift_torch(family, z + dz, torch.tensor([RAW]), u, dynamics_alpha=1.0)
+              - drift_torch(family, z - dz, torch.tensor([RAW]), u, dynamics_alpha=1.0)) / (2 * h)
         torch.testing.assert_close(Fz[..., j], fd, rtol=2e-2, atol=2e-3)
 
 
-@pytest.mark.parametrize("dynamics_type,params", [("wong_wang", [1.2, 0.8]), ("wong_wang_inside_gain", RAW)])
+@pytest.mark.parametrize("dynamics_type,params", [("wong_wang", [1.2, 0.8]), ("wong_wang_inside_gain", RAW),
+                                                ("wong_wang_transfer", RAW),
+                                                ("wilson_cowan_1972_native_input", [12.0, 4.0, 13.0, 11.0])])
 def test_forward_step_and_env_step_use_the_input_as_the_field_defines(dynamics_type, params):
     env = VectorFieldEnv(dynamics_type, d_state=2, d_action=2, Q=0.0, dt=0.05, dyn_params=torch.tensor([params]))
     dyn = FunctionDynamics(state_dim=2, dt=0.05, dynamics_fn=env)
@@ -90,6 +126,55 @@ def test_forward_step_and_env_step_use_the_input_as_the_field_defines(dynamics_t
     env.state = z.reshape(2).clone()
     state, *_ = env.step(u.reshape(2))
     torch.testing.assert_close(state, expected.reshape(2), rtol=1e-6, atol=1e-6)
+
+
+def test_env_step_from_the_reset_state_runs_in_float32():
+    # The reset state is float16; the input-dependent step must not keep that precision.
+    params = [12.0, 4.0, 13.0, 11.0]
+    env = VectorFieldEnv("wilson_cowan_1972_native_input", d_state=2, d_action=2, Q=0.0, dt=0.01,
+                         dyn_params=torch.tensor([params]), initial_state=[0.5, -0.9], state_bounds=[-5.0, 5.0])
+    z, _ = env.reset()
+    u = torch.tensor([1.3, -0.7])
+    expected = z.float()
+    for _ in range(50):
+        z, *_ = env.step(u)
+        expected = expected + 0.01 * drift_torch("wilson_cowan_1972_native_input", expected[None], torch.tensor([params]),
+                                                 u[None], dynamics_alpha=1.0)[0]
+    assert z.dtype == torch.float32
+    torch.testing.assert_close(z, expected, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("dynamics_type,params", [("duffing", [0.1, -0.1, 0.1]),
+                                                  ("wilson_cowan_1972_native_input", [12.0, 4.0, 13.0, 11.0])])
+def test_step_np_is_the_euler_step_of_the_drift(dynamics_type, params):
+    from actdyn.environment.vectorfield import step_np
+
+    z, u = _states(n=4, seed=6)
+    out = step_np(dynamics_type, z.numpy(), u.numpy(), dyn_params=np.asarray(params), dt=0.01,
+                  dynamics_alpha=1.0, clip_limit=100.0)
+    expected = z + 0.01 * drift_torch(dynamics_type, z, torch.tensor(params), u, dynamics_alpha=1.0)
+    np.testing.assert_allclose(out, expected.numpy(), rtol=1e-6, atol=1e-6)
+
+
+def test_predictive_only_step_linearizes_at_the_input():
+    from actdyn.core.agent import _predictive_only_embedding_step
+
+    calls = []
+
+    class Stub(SimpleNamespace):
+        def _jac_state(self, z, e, u):
+            calls.append(u)
+            return torch.zeros(*z.shape, z.shape[-1])
+
+    stub = Stub(
+        _normalize_embedding_belief=lambda: None, _ensure_state_belief_shapes=lambda batch_size: None,
+        dynamics=SimpleNamespace(logvar=torch.zeros(2)), predict=lambda action: torch.zeros(1, 1, 2),
+        _project_spd=lambda p: p, z={"m": torch.zeros(1, 1, 2), "P": torch.eye(2).reshape(1, 1, 2, 2)},
+        e={"m": torch.zeros(1, 4)}, dt=0.01, latent_dim=2, device="cpu", action_encoder=None,
+    )
+    _predictive_only_embedding_step(stub, torch.ones(1, 1, 2))
+    assert len(calls) == 1
+    torch.testing.assert_close(calls[0], torch.ones(1, 1, 2))
 
 
 def test_filter_and_metric_pass_the_input_only_to_input_dependent_drifts():
@@ -121,13 +206,15 @@ def test_filter_and_metric_pass_the_input_only_to_input_dependent_drifts():
     assert calls == [("e", True), ("z", True)]
 
 
-def test_flex_inside_gain_model_matches_the_field_and_its_input_matrix():
-    from actdyn.policy.baseline_flex import FlexWongWangInsideGainModel
+@pytest.mark.parametrize("family", ["wong_wang_inside_gain", "wong_wang_transfer"])
+def test_flex_inside_gain_model_matches_the_field_and_its_input_matrix(family):
+    from actdyn.policy.baseline_flex import FlexWongWangInsideGainModel, FlexWongWangTransferModel
 
-    flex = FlexWongWangInsideGainModel(dt=0.05, dynamics_alpha=1.0, latent_dim=2, action_dim=2,
+    cls = FlexWongWangInsideGainModel if family == "wong_wang_inside_gain" else FlexWongWangTransferModel
+    flex = cls(dt=0.05, dynamics_alpha=1.0, latent_dim=2, action_dim=2,
                                        initial_embedding=np.asarray(RAW), fixed_tail=np.zeros(0))
     z, u = _states(n=5, seed=4)
-    vf = build_vectorfield("wong_wang_inside_gain", torch.tensor([RAW]))
+    vf = build_vectorfield(family, torch.tensor([RAW]))
     torch.testing.assert_close(flex(torch.cat([z, u], dim=1)), vf.compute_with_input(z, u), rtol=1e-5, atol=1e-5)
     x = z[0]
     B = flex.get_B(x)
@@ -146,6 +233,23 @@ def test_eval_learner_transition_is_the_euler_step_of_the_drift():
     step = learner_transition("wong_wang_inside_gain", np.asarray(RAW), np.asarray(RAW), 5, 0.05, torch.float32)
     expected = z + 0.05 * drift_torch("wong_wang_inside_gain", z, torch.tensor([RAW]), u, dynamics_alpha=1.0)
     torch.testing.assert_close(step(z, u), expected)
+
+
+def test_wong_wang_input_presets_keep_the_two_input_changes_independent():
+    from experiments.tnsre.run_tbme_experiments import configure_tbme_catalogs
+    from experiments.experiment_definitions import get_environment_preset
+    from experiments.tnsre.exp_wong_wang_inputs import EXPERIMENT_SUITES
+
+    configure_tbme_catalogs(suite_entries=EXPERIMENT_SUITES)
+    for name, spec in EXPERIMENT_SUITES.items():
+        preset = get_environment_preset(spec["env_preset_id"])
+        partial = name.endswith(("partial", "both"))
+        synaptic = name.endswith(("synaptic", "both"))
+        assert preset.spiking_stim_fraction == (.5 if partial else 1.)
+        assert preset.spiking_stim_weight_cv == (.25 if partial else 0.)
+        assert preset.spiking_evidence_mode == ("poisson" if synaptic else "current")
+        assert preset.dynamics_type == ("wong_wang_transfer" if "transfer" in name else "wong_wang_inside_gain")
+        assert len(preset.resolved_true_params()) == 5
 
 
 def test_reference_fit_reads_the_learner_parameters_of_the_record(tmp_path, monkeypatch):

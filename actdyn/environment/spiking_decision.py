@@ -10,13 +10,18 @@ generating dynamics.
 Equations, parameters, and population structure follow the Brian2 reference
 implementation distributed with Wang's textbook
 (``xjwanglab/book``, ``chapter06-decision-making-spiking-network-model``).
-Two changes make the circuit controllable online:
+The circuit is controllable online:
 
 * the sensory Poisson inputs of the original protocol are replaced by an
   injected current ``I_stim`` per selective pool, set from the 2-D action at
   every control bin (positive current depolarizes);
 * the network is advanced in control bins of ``control_bin_ms`` and reports the
   spike counts of a fixed subset of selective neurons for each bin.
+
+Optional input ablations target a fixed, unequal subset with current and route
+separate sensory evidence through Poisson-driven AMPA synapses. Uniform current
+remains the default. Targeting preserves total pool current, not squared-current
+dose. Poisson evidence matches the nominal steady mean only at a reference voltage.
 
 Latent proxy. The pool-averaged NMDA gating variables ``s_1, s_2`` are the
 state variables of the Wong-Wang reduction. They are exposed as the latent
@@ -36,10 +41,43 @@ import numpy as np
 import torch
 from gymnasium import spaces
 
-from actdyn.environment.session import SessionRule, session_evidence, session_evidence_pool
+from actdyn.environment.session import (
+    NO_EVIDENCE, SessionRule, session_action_scale, session_evidence, session_evidence_pool, session_has_evidence,
+    session_post_decision_bins,
+)
 
 # Wang (2002) time constant of NMDA gating, the unit of time of the reduced model.
 TAU_NMDA_MS = 100.0
+
+
+def stimulation_weights(n: int, *, fraction: float, cv: float, seed: int) -> np.ndarray:
+    """Return fixed float64 neuron weights (n,), normalized to mean one.
+
+    A seeded subset receives lognormal weights. This preserves total pool
+    current at a given action, not the per-neuron peak or squared-current dose.
+    The targeting seed is separate from the trial's network-noise seed.
+    """
+    if n < 1 or not 0 < fraction <= 1 or not np.isfinite(cv) or cv < 0:
+        raise ValueError("Need n >= 1, fraction in (0, 1], and finite cv >= 0.")
+    rng = np.random.default_rng(seed)
+    count = max(1, int(round(n * fraction)))
+    selected = rng.choice(n, count, replace=False)
+    sigma = np.sqrt(np.log1p(cv * cv))
+    weights = np.zeros(n, dtype=np.float64)
+    weights[selected] = rng.lognormal(-sigma * sigma / 2, sigma, count)
+    return weights * (n / weights.sum())
+
+
+def sensory_rate_gain_hz(stim_gain_pa: float, reference_voltage_mv: float = -55.0) -> float:
+    """Nominal Hz/input unit matching current at a fixed reference voltage.
+
+    For 2.1 nS external AMPA and tau_AMPA = 2 ms, the mean inward current
+    is 2.1 * 0.002 * (0 - V_mV) pA per Hz. This matches only the steady mean
+    at V_ref; synaptic filtering, voltage dependence, and shot noise remain.
+    """
+    if not np.isfinite(reference_voltage_mv) or reference_voltage_mv >= 0:
+        raise ValueError("Sensory reference voltage must be finite and below 0 mV.")
+    return float(stim_gain_pa) / (2.1 * 0.002 * -reference_voltage_mv)
 
 
 def _brian2():
@@ -125,13 +163,19 @@ class WangDecisionNetwork:
             still resolves to one winner and an antisymmetric drive of 0.7 flips
             a committed choice within about 1 s; from 25 pA upward a symmetric
             drive co-activates both pools, a regime the reduced model lacks.
-        observed_per_pool: Number of neurons recorded from each selective pool.
+        observed_per_pool: Neurons recorded from each selective pool: one count for both
+            pools, or ``(pool 1, pool 2)`` for an unequal (biased) recording.
         background_rate_hz: Rate of the independent external Poisson drive.
         state_scale: Latent proxy scale, ``z = state_scale (s - 1/2)``.
         seed: Seed of the Brian2 random streams.
         codegen_target: Brian2 code generation target (``"cython"`` or ``"numpy"``).
         max_duration_ms: Length of the single background run (one hour by default);
             the worker stops early when the environment is closed.
+        stim_fraction, stim_weight_cv, stim_mask_seed: Fixed subset and unequal
+            current weights, normalized to preserve each pool's total current.
+        evidence_mode: "current" or "poisson". Sensory evidence is separate
+            from the control action; Poisson evidence drives external AMPA.
+        evidence_reference_mv: Voltage used only for nominal mean-current matching.
     """
 
     def __init__(
@@ -144,13 +188,20 @@ class WangDecisionNetwork:
         sim_dt_ms: float = 0.1,
         control_bin_ms: float = 5.0,
         stim_gain_pa: float = 20.0,
-        observed_per_pool: int = 40,
+        observed_per_pool: int | tuple[int, int] = 40,
         background_rate_hz: float = 2400.0,
         state_scale: float = 4.0,
         seed: int = 0,
         codegen_target: str = "cython",
         max_duration_ms: float = 3.6e6,
+        stim_fraction: float = 1.0,
+        stim_weight_cv: float = 0.0,
+        stim_mask_seed: int = 0,
+        evidence_mode: str = "current",
+        evidence_reference_mv: float = -55.0,
     ) -> None:
+        if evidence_mode not in ("current", "poisson"):
+            raise ValueError("evidence_mode must be 'current' or 'poisson'.")
         b2 = _brian2()
         b2.prefs.codegen.target = str(codegen_target)
         b2.defaultclock.dt = float(sim_dt_ms) * b2.ms
@@ -158,13 +209,17 @@ class WangDecisionNetwork:
         self.control_bin_ms = float(control_bin_ms)
         self.stim_gain_pa = float(stim_gain_pa)
         self.state_scale = float(state_scale)
-        self.observed_per_pool = int(observed_per_pool)
+        self.observed_per_pool = (
+            (int(observed_per_pool),) * 2 if np.isscalar(observed_per_pool) else tuple(int(n) for n in observed_per_pool)
+        )
         self.seed = int(seed)
+        self.evidence_mode = evidence_mode
+        self.evidence_rate_gain_hz = sensory_rate_gain_hz(stim_gain_pa, evidence_reference_mv)
         params = _model_parameters(
             b2, n_e=n_e, n_i=n_i, f_sel=f_sel, w_plus=w_plus, background_rate_hz=background_rate_hz
         )
         self.params = params
-        if self.observed_per_pool > params["N1"]:
+        if len(self.observed_per_pool) != 2 or max(self.observed_per_pool) > params["N1"]:
             raise ValueError(
                 f"observed_per_pool={observed_per_pool} exceeds pool size {params['N1']}."
             )
@@ -188,11 +243,24 @@ class WangDecisionNetwork:
         n0, n1 = params["N0"], params["N1"]
         self.pool_slices = (slice(0, n0), slice(n0, n0 + n1), slice(n0 + n1, n0 + 2 * n1))
         exc = OrderedDict((k, net["E"][s]) for k, s in enumerate(self.pool_slices))
+        self.stim_weights = np.stack([
+            stimulation_weights(n1, fraction=stim_fraction, cv=stim_weight_cv,
+                                seed=stim_mask_seed + i) for i in range(2)
+        ])
 
         for label in ("E", "I"):
             net["pg" + label] = b2.PoissonGroup(params["N_" + label], params["nu_ext"])
             net["ic" + label] = b2.Synapses(net["pg" + label], net[label], on_pre="sAMPA_ext += 1", delay=params["delay"])
             net["ic" + label].connect(condition="i == j")
+        if evidence_mode == "poisson":
+            # Independent afferent spike streams, one per selective neuron.
+            net["sensory"] = b2.PoissonGroup(2 * n1, rates=0 * b2.Hz, name="sensory_inputs")
+            net["sensory_synapses"] = b2.Synapses(
+                net["sensory"], net["E"], on_pre="sAMPA_ext += 1", delay=params["delay"],
+                name="sensory_ampa",
+            )
+            net["sensory_synapses"].connect(i=np.arange(2 * n1), j=np.arange(n0, n0 + 2 * n1))
+            net["sensory_spikes"] = b2.SpikeMonitor(net["sensory"], record=False)
         net["icAMPA"] = b2.Synapses(net["E"], net["E"], on_pre="sAMPA += 1", delay=params["delay"])
         net["icAMPA"].connect(condition="i == j")
         net["icNMDA"] = b2.Synapses(net["E"], net["E"], on_pre="x += 1", delay=params["delay"])
@@ -242,9 +310,9 @@ class WangDecisionNetwork:
         self.spike_monitor = b2.SpikeMonitor(net["E"], record=False, name="spikes_E")
         self.net = net
         self.exc = exc
-        # Observed neurons: the first ``observed_per_pool`` neurons of each selective pool.
+        # Observed neurons: the first ``observed_per_pool[k]`` neurons of selective pool k.
         self.observed_indices = np.concatenate(
-            [np.arange(s.start, s.start + self.observed_per_pool) for s in self.pool_slices[1:]]
+            [np.arange(s.start, s.start + n) for s, n in zip(self.pool_slices[1:], self.observed_per_pool)]
         )
         self._prev_count = np.zeros(params["N_E"], dtype=np.int64)
         self._stim = np.zeros(params["N_E"], dtype=np.float64)
@@ -278,11 +346,19 @@ class WangDecisionNetwork:
         if kind == "reset":
             self._reinit(int(payload))
             self._stim[:] = 0.0
+            if self.evidence_mode == "poisson":
+                self.net["sensory"].rates = 0 * b2.Hz
         elif kind == "act":
-            a = np.asarray(payload, dtype=np.float64).reshape(-1)
+            a, evidence = payload
             self._stim[:] = 0.0
-            self._stim[self.pool_slices[1]] = self.stim_gain_pa * a[0]
-            self._stim[self.pool_slices[2]] = self.stim_gain_pa * a[1]
+            for i, pool in enumerate(self.pool_slices[1:]):
+                self._stim[pool] = self.stim_gain_pa * self.stim_weights[i] * a[i]
+                if self.evidence_mode == "current":
+                    self._stim[pool] += self.stim_gain_pa * evidence[i]
+            if self.evidence_mode == "poisson":
+                self.net["sensory"].rates = np.repeat(
+                    evidence * self.evidence_rate_gain_hz, self.params["N1"]
+                ) * b2.Hz
         else:
             raise ValueError(f"Unknown command {kind!r}")
         self.net["E"].I_stim = self._stim * b2.pA
@@ -409,11 +485,13 @@ class WangDecisionNetwork:
         _counts, z = self._receive()
         return z
 
-    def step(self, action: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        """Advance one control bin with pool currents ``stim_gain_pa * action``.
+    def step(self, action: np.ndarray, *, evidence: np.ndarray | None = None) -> Tuple[np.ndarray, np.ndarray]:
+        """Advance one bin with targeted control currents and separate sensory evidence.
 
         Args:
             action: Shape (2,), dimensionless drive to pool 1 and pool 2.
+            evidence: Shape (2,), nonnegative nominal drive. Uniform current or
+                AMPA spike trains, selected at construction; defaults to zero.
 
         Returns:
             ``(counts, z)``: spike counts of the observed neurons in this bin with
@@ -422,8 +500,11 @@ class WangDecisionNetwork:
         a = np.asarray(action, dtype=np.float64).reshape(-1)
         if a.shape[0] != 2:
             raise ValueError(f"action must have 2 entries, got shape {a.shape}.")
+        e = np.zeros(2) if evidence is None else np.asarray(evidence, dtype=np.float64).reshape(-1)
+        if not np.all(np.isfinite(a)) or e.shape != (2,) or not np.all(np.isfinite(e)) or np.any(e < 0):
+            raise ValueError("Need finite action and finite nonnegative evidence with 2 entries.")
         self.start()
-        self._to_net.put(("act", a))
+        self._to_net.put(("act", (a.copy(), e.copy())))
         return self._receive()
 
 
@@ -487,8 +568,12 @@ class SpikingDecisionEnv(gym.Env):
         self.session_bins = 0
         self.decision = 0
         self.decision_bin = -1
-        self.evidence_pool = (session_evidence_pool(self.session_seed(self._run_seed, session_index))
-                              if self._has_evidence() else -1)
+        if not self._has_evidence():
+            self.evidence_pool = -1
+        elif session_has_evidence(self.session_rule, session_index):
+            self.evidence_pool = session_evidence_pool(self.session_seed(self._run_seed, session_index))
+        else:  # a session outside the evidence sessions (mixed protocols)
+            self.evidence_pool = NO_EVIDENCE
 
     def _has_evidence(self) -> bool:
         return self.session_rule is not None and float(self.session_rule.evidence_amplitude) > 0.0
@@ -513,7 +598,7 @@ class SpikingDecisionEnv(gym.Env):
         decided = self.decision != 0
         return {"bins": self.session_bins, "decided": decided,
                 "since": self.session_bins - self.decision_bin if decided else 0,
-                "evidence_pool": self.evidence_pool}
+                "evidence_pool": self.evidence_pool, "session_index": self.session_index}
 
     def reset(self, *, seed: Optional[int] = None, options: Optional[Dict[str, Any]] = None):
         if seed is not None:
@@ -532,9 +617,12 @@ class SpikingDecisionEnv(gym.Env):
 
     def step(self, action: Any):
         a = action.detach().cpu().numpy() if isinstance(action, torch.Tensor) else np.asarray(action)
+        # The control alone must lie in the session's action box; evidence adds after this check.
+        bound = session_action_scale(self.session_rule, self.session_context()) * self.action_space.high
+        if np.any(np.abs(a.reshape(-1)) > bound + 1e-6):
+            raise ValueError(f"Action {a.reshape(-1)} exceeds the session-{self.session_index} bound {bound}.")
         evidence = self._evidence() if self._has_evidence() else None
-        drive = a.reshape(-1) if evidence is None else a.reshape(-1) + evidence
-        counts, z = self.network.step(drive)
+        counts, z = self.network.step(a.reshape(-1), evidence=evidence)
         self.last_counts = counts
         info: Dict[str, Any] = {"latent_state": z, "spike_counts": counts}
         if evidence is not None:
@@ -548,7 +636,7 @@ class SpikingDecisionEnv(gym.Env):
                 self.decision = 1 if gap > 0 else 2
                 self.decision_bin = self.session_bins
             decided = self.decision != 0
-            end = (decided and self.session_bins - self.decision_bin >= int(rule.post_decision_bins)) or (
+            end = (decided and self.session_bins - self.decision_bin >= session_post_decision_bins(rule, self.session_index)) or (
                 self.session_bins >= int(rule.max_session_bins))
             info.update(session_index=self.session_index, decision=self.decision, session_end=bool(end))
             if end:
@@ -716,15 +804,20 @@ def build_spiking_environment(
         sim_dt_ms=float(env_preset.spiking_sim_dt_ms),
         control_bin_ms=dt * TAU_NMDA_MS,
         stim_gain_pa=float(env_preset.spiking_stim_gain_pa),
-        observed_per_pool=int(env_preset.spiking_observed_per_pool),
+        observed_per_pool=observed_counts(env_preset),
         background_rate_hz=float(env_preset.spiking_background_rate_hz),
         seed=int(seed),
         codegen_target=str(env_preset.spiking_codegen_target),
+        stim_fraction=float(env_preset.spiking_stim_fraction),
+        stim_weight_cv=float(env_preset.spiking_stim_weight_cv),
+        stim_mask_seed=int(env_preset.spiking_stim_mask_seed),
+        evidence_mode=str(env_preset.spiking_evidence_mode),
+        evidence_reference_mv=float(env_preset.spiking_evidence_reference_mv),
     )
     if int(env_preset.observation_dim) != network.n_observed:
         raise ValueError(
-            f"observation_dim={env_preset.observation_dim} must equal 2 * spiking_observed_per_pool "
-            f"= {network.n_observed} for {env_preset.preset_id}."
+            f"observation_dim={env_preset.observation_dim} must equal the recorded neurons "
+            f"{observed_counts(env_preset)} = {network.n_observed} for {env_preset.preset_id}."
         )
     weight, bias, diagnostics = calibrate_spike_readout(
         network,
@@ -734,12 +827,30 @@ def build_spiking_environment(
         action_max=float(action_max if env_preset.spiking_calibration_amplitude is None
                          else env_preset.spiking_calibration_amplitude),
     )
+    diagnostics.update(
+        stimulation_fraction=float(env_preset.spiking_stim_fraction),
+        stimulation_weight_cv=float(env_preset.spiking_stim_weight_cv),
+        stimulation_mask_seed=int(env_preset.spiking_stim_mask_seed),
+        stimulation_peak_weight=float(network.stim_weights.max()),
+        stimulation_squared_current_ratio=float(np.mean(network.stim_weights ** 2)),
+        sensory_poisson=float(network.evidence_mode == "poisson"),
+        sensory_rate_gain_hz=float(network.evidence_rate_gain_hz),
+        sensory_reference_mv=float(env_preset.spiking_evidence_reference_mv),
+    )
     reference = np.asarray(env_preset.resolved_true_params(), dtype=np.float32)
     env = SpikingDecisionEnv(network, action_max=action_max, reference_params=reference,
                              session_rule=session_rule_from_preset(env_preset, network.state_scale),
                              device=device)
     obs_model = SpikeCountObservation(env, weight=weight, bias=bias, dt=dt, device=device)
     return env, obs_model, diagnostics
+
+
+def observed_counts(env_preset: Any) -> tuple[int, int]:
+    """Neurons recorded from (pool 1, pool 2): ``spiking_observed_per_pool``, with pool 2 overridden
+    by ``spiking_observed_pool2`` when the preset sets it (biased recording)."""
+    n1 = int(env_preset.spiking_observed_per_pool)
+    n2 = getattr(env_preset, "spiking_observed_pool2", None)
+    return n1, n1 if n2 is None else int(n2)
 
 
 def session_rule_from_preset(env_preset: Any, state_scale: float) -> Optional[SessionRule]:
@@ -759,5 +870,10 @@ def session_rule_from_preset(env_preset: Any, state_scale: float) -> Optional[Se
         max_sessions=int(n_sessions),
         evidence_amplitude=float(env_preset.spiking_session_evidence_amplitude),
         evidence_bins=int(env_preset.spiking_session_evidence_bins),
+        evidence_first_session=int(getattr(env_preset, "spiking_session_evidence_first_session", 0)),
+        evidence_last_session=getattr(env_preset, "spiking_session_evidence_last_session", None),
+        fixed_first_session=getattr(env_preset, "spiking_fixed_first_session", None),
+        action_scale=float(getattr(env_preset, "spiking_session_action_scale", 1.0)),
+        action_scale_last_session=int(getattr(env_preset, "spiking_session_action_scale_last_session", 0)),
+        action_scale_later=float(getattr(env_preset, "spiking_session_action_scale_later", 1.0)),
     )
-
